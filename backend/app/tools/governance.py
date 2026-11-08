@@ -1399,8 +1399,7 @@ async def _capability_denied(
         ],
     )
     if context.tool_name == "create_employee_from_request":
-        message = ("公司已在工具设置中关闭新建助手。" if result.reason ==
-                   "Tool 'create_employee_from_request' is disabled in workspace tool settings"
+        message = ("公司已在工具设置中关闭新建助手。" if getattr(result, "reason_code", None) == "tool_disabled"
                    else "公司不允许创建数字员工。")
     await _write_capability_audit(
         context,

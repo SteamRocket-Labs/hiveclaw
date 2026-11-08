@@ -327,7 +327,7 @@ async def websocket_chat(
             )
             if active_session is None:
                 raise SessionSubscriptionError("session_not_found")
-            if active_session.source_channel == "agent" or active_session.session_kind in {"agent_chat", "delegation_run"}:
+            if active_session.source_channel == "agent" or active_session.session_kind == "agent_chat":
                 raise SessionSubscriptionError("session_forbidden")
             try:
                 if active_session.audience_kind == "group":

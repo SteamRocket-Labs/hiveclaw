@@ -171,6 +171,10 @@ async def test_context_uses_observed_content_and_recorded_origins(
     monkeypatch.setattr(agent_manager, "settings", settings)
     monkeypatch.setattr(agent_context, "PERSISTENT_DATA", tmp_path)
     monkeypatch.setattr(agent_context, "TOOL_WORKSPACE", tmp_path)
+    # Round 4 S1 omits the unfilled scaffold. These source-integrity checks
+    # need actual resident content; retain every original binding assertion.
+    monkeypatch.setattr(agent_manager, "EMPTY_SELF_CONTENT",
+        agent_manager.EMPTY_SELF_CONTENT + "\nOWNER_DECLARED_RESIDENT_CONTEXT\n")
     root = tmp_path / str(agent_id)
     if creation == "repair":
         root.mkdir()

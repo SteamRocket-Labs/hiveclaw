@@ -28,6 +28,7 @@ TOOL_NAME = "create_employee_from_request"
 AUTHORIZATION_SCHEMA = "hive.employee_creation_authorization.v1"
 WEB_INPUT_SOURCES = {
     "legacy_rest_create_session_run", "legacy_rest_start_session_run", "session_input_api", "websocket_message",
+    "session_command_steer",
 }
 
 
@@ -149,9 +150,8 @@ async def _require_policy(db, evidence):
         "tenant_id", "source_agent_id", "requester_user_id",
     ))
     capability = await check_capability(db, tenant_id, agent_id, TOOL_NAME)
-    # The tool boundary already consumed the exact approval decision. The job
-    # persists that decision; it does not consume or re-prove the ticket again.
-    approved = bool(evidence.get("approval"))
+    approved = await _approval_valid(db, evidence.get("approval"), tenant_id=tenant_id,
+        agent_id=agent_id, user_id=user_id, input_hash=evidence["tool_input_hash"])
     live = await build_live_approval_policy_snapshot(db=db, tenant_id=tenant_id, agent_id=agent_id, tool_name=TOOL_NAME)
     verdict = evaluate_guard_policy(tool_name=TOOL_NAME, arguments=evidence["tool_arguments"],
                                     external_visible=False, snapshot=live["guard_policy"])
@@ -180,7 +180,7 @@ async def require_local_write(db, evidence, *, approved: bool):
     zone = policy.zone_for(ACTION_LOCAL_WRITE).value
     if not policy.valid or zone == "never_do":
         _refused("capability_denied", "当前权限设置不允许创建助手。")
-    if zone != "full_authority" and not approved:
+    if zone != "full_authority" and not (approved and policy.content_hash == evidence.get("owner_policy_hash")):
         _refused("approval_required", "当前权限设置要求先批准创建助手。")
 
 
@@ -229,11 +229,12 @@ async def create_from_request(db, request):
                                 run_id=run_id, call_id=context.tool_call_id, tool_name=TOOL_NAME)
     dependencies, complete = _model_dependencies(parent[1] if parent else None)
     command = await db.get(SessionCommand, row.command_id)
+    input_sources = (WEB_INPUT_SOURCES if (command.target_json or {}).get("runtime_metadata", {}).get("source")
+                     in WEB_INPUT_SOURCES else {"feishu"})
     current_input = {"source_kind": "session_command", "source_id": str(command.id),
                      "source_version": command.request_hash}
     fixed_context = {
         "agent_identity": {"identity"}, "agent_context_resource": {"soul", "channels", "a2a-collaborators"},
-        "agent_resident_memory": {"memory/self/self.md"},
         "owner_action_policy": None, "agent_platform_skill_file": None,
     }
     command_ids = []
@@ -259,6 +260,8 @@ async def create_from_request(db, request):
         if source["source_kind"] == "session_command":
             author_command = commands.get(source["source_id"])
             return (author_command is not None and author_command.request_hash == source["source_version"]
+                    and (author_command.target_json or {}).get("runtime_metadata", {}).get("source")
+                    in input_sources
                     and source["source_id"] not in attached_commands)
         if source["source_kind"] in {"session_actor_identity", "agent_directory_observation"}:
             return True

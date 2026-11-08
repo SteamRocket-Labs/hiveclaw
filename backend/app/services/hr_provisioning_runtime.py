@@ -566,7 +566,7 @@ async def execute_claimed_hr_provisioning(task_id: uuid.UUID) -> str:
         if disposition == "execute":
             result = await _run_domain_provisioning(task=task, draft=draft)
     except HrCreationConflict as exc:
-        error = f"{type(exc).__name__}: {exc}"
+        error = exc.message
         if exc.code in ({
             "blueprint_integrity_mismatch",
             "missing_confirmation_evidence",

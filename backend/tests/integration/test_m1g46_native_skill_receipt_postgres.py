@@ -306,6 +306,12 @@ async def test_normal_kernel_skill_output_has_a_usable_source_receipt(
     from app.models.organization_identity import ContentInputReceipt
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionModelResult
+    from app.services import agent_manager
+
+    # Round 4 S1 excludes the empty scaffold from prompts. Keep these exact
+    # resident-source and revocation checks on real initialized content.
+    monkeypatch.setattr(agent_manager, "EMPTY_SELF_CONTENT",
+        agent_manager.EMPTY_SELF_CONTENT + "\nOWNER_DECLARED_RESIDENT_CONTEXT\n")
 
     seed, client, bindings, imported = await _run_native_skill_task(
         owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path

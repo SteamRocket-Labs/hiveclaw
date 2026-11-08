@@ -436,7 +436,7 @@ async def dispatch_first_task(db, draft, *, execution_context=None, arguments=No
             await require_local_write(db, policy_evidence, approved=approved or session_granted)
             capability = await check_capability(db, draft.tenant_id, draft.hr_agent_id, "delegate_to_agent")
             if capability.denied:
-                raise HrCreationConflict("capability_denied", capability.reason or "公司不允许派发首任务。")
+                raise HrCreationConflict("capability_denied", "公司不允许派发首任务。")
             if capability.policy_found and capability.escalate_to_l3 and not (approved and tool_name == "delegate_to_agent"):
                 raise HrCreationConflict("approval_required", "The first task delegation requires approval.")
             # The member already requested this work for their own new bot.

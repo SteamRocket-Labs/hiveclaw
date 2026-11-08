@@ -185,7 +185,9 @@ async def test_earlier_commands_create_directly_only_for_the_requester(
             principal_type="user", principal_id=earlier_user, namespace="human_input", command_kind="start_turn",
             idempotency_key=str(earlier_id), request_hash=_hash({"command_kind": "start_turn",
                 "request": {"content": "Build a research employee"}}),
-            target_hash=_hash({}), request_json={"content": "Build a research employee"}, target_json={},
+            target_hash=_hash({"runtime_metadata": {"source": "websocket_message"}}),
+            request_json={"content": "Build a research employee"},
+            target_json={"runtime_metadata": {"source": "websocket_message"}},
             status="applied", receipt_ref=f"input:{earlier_id}")
         db.add(command)
         await db.commit()
@@ -220,6 +222,7 @@ async def test_company_tool_off_without_capability_policy_still_refuses(
         decision = await check_capability(db, user.tenant_id, context.agent_id, "create_employee_from_request")
         assert decision.denied and not decision.allowed
         assert decision.reason == "Tool 'create_employee_from_request' is disabled in workspace tool settings"
+        assert decision.reason_code == "tool_disabled"
     result = await _direct_call(context)
     assert result["error"] == "capability_denied", result
     from app.services import agent_tools
@@ -227,6 +230,15 @@ async def test_company_tool_off_without_capability_policy_still_refuses(
     monkeypatch.setattr("app.tools.resolver.async_session", app_user_sessionmaker)
     monkeypatch.setattr("app.tools.governance_resolver.async_session", app_user_sessionmaker)
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
+    from app.services.capability_gate import check_capability as real_check
+
+    async def changed_diagnostic(*args, **kwargs):
+        decision = await real_check(*args, **kwargs)
+        decision.reason = "Diagnostic wording can change independently of the public reason code."
+        return decision
+
+    # Round 4 nit: translation follows the reason code, not English diagnostics.
+    monkeypatch.setattr("app.tools.governance_resolver.check_capability", changed_diagnostic)
     result = await agent_tools._get_tool_runtime_service().execute("create_employee_from_request", _direct_arguments(),
         agent_id=context.agent_id, user_id=user.id, session_id=context.session_id,
         runtime_task_id=context.runtime_task_id, emit_runtime_hooks=False)

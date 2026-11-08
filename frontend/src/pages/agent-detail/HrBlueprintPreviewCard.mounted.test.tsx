@@ -297,3 +297,37 @@ it('shows a compact created bot card with conversation and undo actions', async 
     newSessionDraft: { agent_id: 'weekly-assistant', request_id: expect.any(String) },
   });
 });
+
+it.each(['capability_denied', 'approval_required'])('shows the stored company reason for a %s click job', async (code) => {
+  // Round 4 nit: job-time refusals must retain the company-written sentence.
+  const direct = { ...preview, status: 'failed', authorizationMode: 'policy_direct' };
+  hrMocks.get.mockResolvedValue({ blueprint_id: direct.blueprintId, blueprint_version: 1,
+    blueprint_hash: direct.blueprintHash, draft_status: 'failed', blueprint: {},
+    failure: { code, message: '公司暂停创建，请联系管理员。' } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={direct} /></QueryClientProvider>);
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveProperty('textContent', '公司暂停创建，请联系管理员。'));
+});
+
+it('shows a Chinese sentence for a disabled first-task tool', async () => {
+  const direct = { ...preview, status: 'completed', authorizationMode: 'policy_direct' };
+  hrMocks.get.mockResolvedValue({ blueprint_id: direct.blueprintId, blueprint_version: 1,
+    blueprint_hash: direct.blueprintHash, draft_status: 'completed', blueprint: {}, created_agent_id: 'employee',
+    provisioning: { first_task: { status: 'blocked', error: 'capability_denied', message: '公司不允许派发首任务。' } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={direct} /></QueryClientProvider>);
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', '公司不允许派发首任务。');
+});
+
+it('keeps a reloaded undone employee stopped without conversation or undo actions', async () => {
+  // Round 4 nit: the server's bot status survives a new query client/page load.
+  const direct = { ...preview, status: 'completed', authorizationMode: 'policy_direct' };
+  hrMocks.get.mockResolvedValue({ blueprint_id: direct.blueprintId, blueprint_version: 1,
+    blueprint_hash: direct.blueprintHash, draft_status: 'completed', blueprint: {},
+    created_agent_id: 'employee', creation_state: 'stopped' });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={direct} /></QueryClientProvider>);
+  expect(await screen.findByText('Stopped')).toBeTruthy();
+  expect(screen.queryByRole('link', { name: 'Talk to it' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+});

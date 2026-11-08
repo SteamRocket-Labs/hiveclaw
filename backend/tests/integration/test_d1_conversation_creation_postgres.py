@@ -111,7 +111,9 @@ async def test_d1_background_cannot_borrow_a_human_input(direct_origin, owner_se
     assert result.get("error") == "direct_human_input_required", result
 
 
-@pytest.mark.parametrize("source", ["hr_agent_handoff", "file", "tool_result", "trigger"])
+# Round 4 nit: exercise the source values written by real platform producers.
+@pytest.mark.parametrize("source", ["hr_agent_handoff", "plan_mode_handoff", "runtime_result_integration",
+    "goal_continuation", "session_goal", "trigger_reflection", "system_plan_run", "agent_team_member_run"])
 async def test_d1_nonhuman_sources_cannot_authorize_creation(direct_origin, owner_sessionmaker, source):
     from app.models.session_v2 import SessionCommand, SessionTurnInput
 

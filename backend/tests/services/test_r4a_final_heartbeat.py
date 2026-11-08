@@ -157,3 +157,109 @@ async def test_expired_final_recovery_retains_already_committed_write_artifact(o
         recovered = await recover_terminal_candidates_once(db, worker_id="r4a-recovery", run_id=seed.run_id)
     assert recovered["terminal_committed"] == 1
     await _assert_delivered(owner_sessionmaker, seed)
+
+
+async def test_artifact_materialization_releases_task_lock(owner_sessionmaker, migrated_pg_url, monkeypatch):
+    from app.services import chat_artifact_delivery as artifacts, web_chat_runtime as runtime
+    from app.services.web_chat_run_orchestrator import _record_canonical_terminal_artifact_selection
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import _patch_runtime_seams
+
+    seed = await _committed_answer(owner_sessionmaker)
+    _patch_runtime_seams(monkeypatch, {**vars(seed), "data_root": "/unused"}, owner_sessionmaker)
+    original = artifacts.materialize_declared_read_artifacts
+
+    async def observe_unlocked(db, **kwargs):
+        async with owner_sessionmaker() as other:
+            await other.execute(text("SET LOCAL statement_timeout = '50ms'"))
+            await other.execute(text("SELECT id FROM runtime_tasks WHERE id=:id FOR UPDATE"), {"id": seed.run_id})
+        return await original(db, **kwargs)
+
+    monkeypatch.setattr(artifacts, "materialize_declared_read_artifacts", observe_unlocked)
+    state = SimpleNamespace(run_uuid=seed.run_id, agent=SimpleNamespace(id=seed.agent_id, tenant_id=seed.tenant_id),
+        session_id=str(seed.session_id), runtime_session_context=None,
+        ports=SimpleNamespace(runtime=runtime._web_chat_run_ports().runtime,
+            artifacts=SimpleNamespace(artifact_paths=lambda *_: ["workspace/report.md"],
+                declared_paths=lambda *_: ["workspace/report.md"], rejected_paths=lambda *_: [])))
+    await _record_canonical_terminal_artifact_selection(state, seed.content,
+        terminal_result_id=uuid.UUID(seed.receipt["result_id"]))
+
+
+async def test_foreign_task_lock_past_expiry_never_renews_or_executes_tool(owner_sessionmaker, monkeypatch):
+    from app import database
+    from app.models.runtime_task import RuntimeTask
+    from app.services import runtime_task_fence as fence
+    from app.tools.service import _renew_runtime_task_lease_before_execution
+
+    seed = await _committed_answer(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, seed.run_id)
+        task.claim_expires_at = datetime.now(UTC) + timedelta(seconds=0.15)
+        await db.commit()
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+    renewed, effects = [], []
+    original = fence.renew_current_runtime_task_lease
+
+    async def observe_renewal(**kwargs):
+        result = await original(**kwargs)
+        renewed.append(result)
+        return result
+
+    monkeypatch.setattr(fence, "renew_current_runtime_task_lease", observe_renewal)
+
+    async def work():
+        await asyncio.sleep(0.25)
+        await _renew_runtime_task_lease_before_execution()
+        effects.append("tool effect")
+
+    async with owner_sessionmaker() as locker:
+        await locker.scalar(select(RuntimeTask).where(RuntimeTask.id == seed.run_id).with_for_update())
+
+        async def release_lock():
+            await asyncio.sleep(0.3)
+            await locker.rollback()
+
+        release = asyncio.create_task(release_lock())
+        try:
+            with pytest.raises(fence.StaleRuntimeTaskFenceError):
+                await fence.run_claimed_runtime_task(work(), task_id=seed.run_id,
+                    claim_version=1, worker_id="r4a-worker", lease_seconds=0.15)
+        finally:
+            await release
+    assert renewed == [], "a locked row must not be reported as renewed"
+    assert effects == []
+
+
+async def test_artifact_selection_rechecks_claim_after_materialization(owner_sessionmaker, monkeypatch):
+    from app.models.runtime_task import RuntimeTask
+    from app.services import chat_artifact_delivery as artifacts, runtime_task_fence as fence, web_chat_runtime as runtime
+    from app.services.web_chat_run_orchestrator import _record_canonical_terminal_artifact_selection
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import _patch_runtime_seams
+
+    seed = await _committed_answer(owner_sessionmaker)
+    _patch_runtime_seams(monkeypatch, {**vars(seed), "data_root": "/unused"}, owner_sessionmaker)
+
+    async def reclaim_during_selection(db, **kwargs):
+        async with owner_sessionmaker() as other:
+            await other.execute(text("SET LOCAL statement_timeout = '50ms'"))
+            await other.execute(text("UPDATE runtime_tasks SET claim_version=2, claimed_by='new-worker' WHERE id=:id"),
+                {"id": seed.run_id})
+            await other.commit()
+        return []
+
+    monkeypatch.setattr(artifacts, "materialize_declared_read_artifacts", reclaim_during_selection)
+    state = SimpleNamespace(run_uuid=seed.run_id, agent=SimpleNamespace(id=seed.agent_id, tenant_id=seed.tenant_id),
+        session_id=str(seed.session_id), runtime_session_context=None,
+        ports=SimpleNamespace(runtime=runtime._web_chat_run_ports().runtime,
+            artifacts=SimpleNamespace(artifact_paths=lambda *_: ["workspace/report.md"],
+                declared_paths=lambda *_: ["workspace/report.md"], rejected_paths=lambda *_: [])))
+    token = fence.set_runtime_task_fence(task_id=seed.run_id, claim_version=1, worker_id="r4a-worker")
+    try:
+        with pytest.raises(fence.StaleRuntimeTaskFenceError):
+            await _record_canonical_terminal_artifact_selection(state, seed.content,
+                terminal_result_id=uuid.UUID(seed.receipt["result_id"]))
+    finally:
+        fence.reset_runtime_task_fence(token)
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, seed.run_id)
+        assert task.claim_version == 2 and task.claimed_by == "new-worker"
+        assert "artifact_selection_result_id" not in task.metadata_json

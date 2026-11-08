@@ -15,22 +15,57 @@ import {
 import type { AgentChatMessage } from '../agent-detail/chatRuntime';
 import type { SessionIndex } from '../../api/domains/chat';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
+import { applyTranscriptEvent, createEmptyTranscriptReplayState } from '../agent-detail/chatRuntime';
+import { normalizeThreadItemPayload, threadItemToAgentChatMessage } from './threadItemReducer';
 
 describe('session workbench timeline model', () => {
-  it('keeps a quarantined historical run failed after a later run completes', () => {
-    const messages: AgentChatMessage[] = [
+  it.each(['replay', 'thread-item'] as const)('uses canonical quarantine status after %s hydration and live updates', (hydration) => {
+    const quarantine = { id: 'quarantine', sequence: 3, session_id: 'session-1', run_id: 'run-quarantined',
+      event_type: 'error', actor_type: 'system', source: 'web_chat_recovery',
+      content: 'Web chat recovery stopped after repeated expired worker claims; administrator reconciliation is required.',
+      created_at: '2026-11-08T01:47:17Z', metadata: { status: 'needs_reconciliation',
+        terminal_reason: 'persistence_error', reconciliation_reason: 'web_chat_recovery_attempts_exhausted',
+        execution_attempt_count: 4, max_execution_attempts: 3 } };
+    const initial: AgentChatMessage[] = [
       { id: 'input', role: 'user', content: 'Continue the report.', timestamp: '2026-11-08T01:31:25Z' },
       { id: 'tool', role: 'tool_call', content: 'Report saved.', toolName: 'edit_file', toolStatus: 'done',
         eventRuntimeTaskId: 'run-quarantined', timestamp: '2026-11-08T01:35:54Z' },
-      { id: 'quarantine', role: 'event', content: 'Task interrupted.', eventType: 'error',
-        eventStatus: 'needs_reconciliation', eventRuntimeTaskId: 'run-quarantined', timestamp: '2026-11-08T01:47:17Z' },
+    ];
+    const messages = hydration === 'replay'
+      ? applyTranscriptEvent({ ...createEmptyTranscriptReplayState(), messages: initial }, quarantine).messages
+      : [...initial, threadItemToAgentChatMessage(normalizeThreadItemPayload(quarantine)!)];
+    const input = { messages, activeSession: { id: 'session-1', title: 'Report' },
+      isWaiting: false, isStreaming: false, activeRunStatus: null };
+    const workbench: SessionWorkbench = { schema: 'hive.session_workbench.v1', agent_id: 'agent-1',
+      session: { id: 'session-1' }, turn: { truth_source: 'session_transcript', event_count: 3 },
+      controls: {}, runtime_tasks: [], goals: [], teams: [] };
+    const running = { ...workbench, runtime_tasks: [{ id: 'run-quarantined', status: 'running' }] };
+    const interrupted = { ...workbench, runtime_tasks: [{ id: 'run-quarantined', status: 'needs_reconciliation' }] };
+    const live = buildThreadTimelineCached({ ...input, sessionWorkbench: running }, createThreadTimelineCache());
+    expect(live.cells.find(cell => cell.kind === 'active_run')?.kind).toBe('active_run');
+    for (const status of ['needs_reconciliation', 'failed']) {
+      const model = buildThreadTimeline({ ...input,
+        sessionWorkbench: { ...workbench, runtime_tasks: [{ id: 'run-quarantined', status }] } });
+      const run = model.cells.find(cell => cell.kind === 'active_run' && cell.runId === 'run-quarantined');
+      expect(run?.kind === 'active_run' && run.timeline.status).toBe('failed');
+      expect(model.header.status).toBe('failed');
+      const partialAnswer = buildThreadTimeline({ ...input, messages: [...messages,
+        { id: 'partial', role: 'assistant', content: 'Draft saved; delivery interrupted.',
+          eventRuntimeTaskId: 'run-quarantined', timestamp: '2026-11-08T01:47:18Z' }],
+        sessionWorkbench: { ...workbench, runtime_tasks: [{ id: 'run-quarantined', status }] } });
+      expect(partialAnswer.header.status).toBe('failed');
+    }
+    const cache = createThreadTimelineCache();
+    buildThreadTimelineCached({ ...input, sessionWorkbench: running }, cache);
+    expect(buildThreadTimelineCached({ ...input, sessionWorkbench: interrupted }, cache).header.status).toBe('failed');
+    const laterMessages: AgentChatMessage[] = [...messages,
       { id: 'next-input', role: 'user', content: 'Count the lines.', timestamp: '2026-11-08T01:47:26Z' },
       { id: 'answer', role: 'assistant', content: '106', eventRuntimeTaskId: 'run-next', timestamp: '2026-11-08T02:01:53Z' },
     ];
-    const model = buildThreadTimeline({ messages, activeSession: { id: 'session-1', title: 'Report' },
-      isWaiting: false, isStreaming: false, activeRunStatus: null });
+    const model = buildThreadTimeline({ ...input, messages: laterMessages, sessionWorkbench: interrupted });
     const run = model.cells.find(cell => cell.kind === 'active_run' && cell.runId === 'run-quarantined');
     expect(run?.kind === 'active_run' && run.timeline.status).toBe('failed');
+    expect(model.header.status).toBe('complete');
   });
 
   it('keeps branch lineage in navigation instead of repeating it in the session title', () => {

@@ -227,9 +227,9 @@ async def test_shared_terminal_boundary_disarms_blocked_lease_renewer_before_ses
     renewal_started = asyncio.Event()
     real_renew = fence_service.renew_current_runtime_task_lease
 
-    async def observed_renew(*, lease_seconds, skip_locked=False):
+    async def observed_renew(*, lease_seconds):
         renewal_started.set()
-        return await real_renew(lease_seconds=lease_seconds, skip_locked=skip_locked)
+        return await real_renew(lease_seconds=lease_seconds)
 
     monkeypatch.setattr(fence_service, "renew_current_runtime_task_lease", observed_renew)
 
@@ -310,8 +310,8 @@ async def test_runtime_task_lease_renewal_predicate_cannot_revive_expired_claim(
     finally:
         reset_runtime_task_fence(token)
 
-    assert len(statements) == 1
-    compiled = str(statements[0].compile(dialect=postgresql.dialect()))
+    assert len(statements) == 2
+    compiled = str(statements[-1].compile(dialect=postgresql.dialect()))
     assert "runtime_tasks.claim_expires_at >" in compiled
 
 
@@ -322,7 +322,7 @@ async def test_claimed_runtime_wrapper_keeps_fence_and_renews_until_completion(m
     task_id = uuid4()
     renewals: list[tuple[str, int, str]] = []
 
-    async def fake_renew(*, lease_seconds, skip_locked=False):
+    async def fake_renew(*, lease_seconds):
         fence = fence_service.current_runtime_task_fence()
         assert fence is not None
         renewals.append((str(fence.task_id), fence.claim_version, fence.worker_id))
@@ -356,7 +356,7 @@ async def test_claimed_runtime_wrapper_allows_cleanup_after_committed_claim_tran
     task_id = uuid4()
     renewals = 0
 
-    async def fake_renew(*, lease_seconds, skip_locked=False):
+    async def fake_renew(*, lease_seconds):
         nonlocal renewals
         renewals += 1
         return datetime.now(timezone.utc)

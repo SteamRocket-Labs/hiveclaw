@@ -852,7 +852,8 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # R1 round 2 validates workspace sources at input admission; no bypass callsite or allowlist changes.
 # Merging R1 with main accepts the exact three-way module-source merge of session_model_round.py; no bypass scope changed on both sides.
 # Committed-final recovery retains the owning claim; bypass grants and query shapes are unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "d8fa1d5c3f2f79aa2fc6edbd8e827c21579f9c88683bba1bfc9a97c095897369"
+# Artifact selection releases the task lock before materialization; bypass grants and scopes are unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "55038b1aa61127b2e2cc21e58e81e9ff9f57845bb4bde39f53a846eb014405b4"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

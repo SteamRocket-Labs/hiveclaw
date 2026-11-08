@@ -2003,12 +2003,12 @@ function applyCanonicalRunTerminalEvidence(
   messages: AgentChatMessage[],
   activeRunId?: string | null,
   activeRunStatus?: string | null,
+  runtimeTasks: Record<string, unknown>[] = [],
 ): ThreadTimelineCell[] {
   const terminalByRunId = new Map<string, { completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
   messages.forEach((message) => {
     const item = message.sessionItem;
-    const lifecycle = message.eventType === 'error' && message.eventStatus === 'needs_reconciliation'
-      ? 'needs_reconciliation' : item?.kind === 'run' ? item.lifecycle : null;
+    const lifecycle = item?.kind === 'run' ? item.lifecycle : null;
     if (!lifecycle || !CANONICAL_RUN_TERMINAL_LIFECYCLES.has(lifecycle)) return;
     const runId = messageRunId(message);
     const completedAtMs = Date.parse(message.timestamp || item?.occurredAt || '');
@@ -2025,8 +2025,11 @@ function applyCanonicalRunTerminalEvidence(
     const terminal = terminalByRunId.get(cell.runId);
     const liveStatus = activeRunStatus && activeRunId && isSameSessionRunId(cell.runId, activeRunId)
       ? runtimeStatusKey(activeRunStatus) : null;
-    const status = terminal?.status ?? (liveStatus === 'waiting' ? 'blocked' : liveStatus === 'stopped' ? 'cancelled'
-      : liveStatus === 'done' ? 'done' : liveStatus);
+    const task = runtimeTasks.find(task => isSameSessionRunId(readString(task, ['runtime_task_id', 'id'], ''), cell.runId));
+    const taskStatus = task && runtimeStatusKey(readString(task, ['status'], ''));
+    const canonicalStatus = taskStatus || liveStatus;
+    const status = canonicalStatus ? (canonicalStatus === 'waiting' ? 'blocked' : canonicalStatus === 'stopped' ? 'cancelled'
+      : canonicalStatus === 'done' ? 'done' : canonicalStatus) : terminal?.status;
     if (!status) return cell;
     if (status === 'running' || status === 'blocked') return { ...cell, timeline: { ...cell.timeline, status } };
     const currentCompletedAtMs = Date.parse(cell.timeline.completedAt || '');
@@ -2142,6 +2145,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const cells = applyCanonicalRunTerminalEvidence(
     coalesceProcessCellsByUserTurn(buildCells(input.messages, input.runtimePhase), input.messages),
     input.messages,
+    null, null, input.sessionWorkbench?.runtime_tasks,
   );
   const latestTurnAnswered = hasAssistantAnswerAfterLatestUser(input.messages);
   const latestAnsweredRunId = latestTurnAnswered
@@ -2192,9 +2196,11 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const sessionIndex = input.sessionIndex && !Array.isArray(input.sessionIndex) ? input.sessionIndex : null;
   const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
   const runtimeSummary = input.runtimeSummary || null;
-  const runLifecycle = currentRun?.lifecycle;
+  const headerRunId = currentRun?.runId || messageRunId(input.messages.slice(latestUserMessageIndex(input.messages) + 1)
+    .reverse().find(message => messageRunId(message)));
   const blockedRun = sessionWorkbench?.runtime_tasks?.find(task => isSameSessionRunId(
-    readString(task, ['runtime_task_id', 'id'], ''), currentRun?.runId));
+    readString(task, ['runtime_task_id', 'id'], ''), headerRunId));
+  const runLifecycle = readString(blockedRun ?? {}, ['status'], '') || currentRun?.lifecycle;
   const guidance = runLifecycle === 'needs_reconciliation'
     ? readString(asRecord(blockedRun?.user_blocker) ?? {}, ['next_action'], '') : '';
   const runDisplay = runLifecycle ? runtimeStatusKey(runLifecycle) : null;
@@ -2209,7 +2215,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
         : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus, input.runtimePhase);
 
   return {
-    cells: applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle),
+    cells: applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle, sessionWorkbench?.runtime_tasks),
     header: {
       title: getSessionTitle(input.activeSession),
       status: headerStatus,

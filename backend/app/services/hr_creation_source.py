@@ -26,15 +26,15 @@ async def require_creation_capability(db: AsyncSession, tenant_id: uuid.UUID, ag
         result = await check_capability(db, tenant_id, agent_id, "create_digital_employee")
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=503, detail={
-            "error": "capability_unavailable", "message": "Employee creation policy is temporarily unavailable.",
+            "error": "capability_unavailable", "message": "暂时无法读取公司的创建规则，请稍后重试。",
         }) from exc
     if result.denied:
         raise HTTPException(status_code=403, detail={
-            "error": "capability_denied", "message": "Employee creation is denied by the current capability policy.",
+            "error": "capability_denied", "message": "公司规则不允许创建数字员工，请联系管理员。",
         })
     if result.escalate_to_l3 and result.policy_found:
         raise HTTPException(status_code=409, detail={
-            "error": "approval_required", "message": "Enterprise approval is required before employee creation.",
+            "error": "approval_required", "message": "创建数字员工需要公司批准，请联系管理员。",
         })
 
 

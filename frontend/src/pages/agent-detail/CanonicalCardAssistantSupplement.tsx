@@ -5,7 +5,7 @@ import type { AgentChatMessage } from './chatRuntime';
 
 export function isSupersededCreationCard(messages: AgentChatMessage[], index: number): boolean {
   const card = messages[index]?.toolMeta;
-  if (card?.kind !== 'hr_preview' || card.authorizationMode !== 'policy_direct' || !card.blueprintId) return false;
+  if (card?.kind !== 'hr_preview' || !card.blueprintId) return false;
   return messages.slice(index + 1).some((message) => message.toolMeta?.kind === 'hr_preview'
     && message.toolMeta.blueprintId === card.blueprintId);
 }
@@ -23,7 +23,8 @@ export function shouldCollapseAssistantSupplement(messages: AgentChatMessage[], 
   while (start >= 0 && messages[start].role !== 'user') start -= 1;
   while (end < messages.length && messages[end].role !== 'user') end += 1;
   return messages.slice(start + 1, end).some(
-    (candidate) => candidate.role === 'tool_call' && candidate.toolMeta && candidate.toolMeta.kind === 'hr_preview',
+    (candidate) => candidate.role === 'tool_call' && candidate.toolName !== 'create_employee_from_request'
+      && candidate.toolMeta && candidate.toolMeta.kind === 'hr_preview',
   );
 }
 

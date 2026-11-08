@@ -7,6 +7,15 @@ import {
   parsePreviewAgentBlueprintResult,
 } from './toolResultEnvelope';
 
+it.each(['awaiting_confirmation', 'rejected', 'completed'])('uses the Chinese next step for creation %s', (status) => {
+  const message = status === 'rejected' ? '没有创建数字员工。你想修改什么？' : '请在卡片中查看数字员工。';
+  const result = normalizeToolCallResult('create_employee_from_request', { status: 'preview', draft_status: status,
+    blueprint_id: 'draft', blueprint_hash: 'bp_private', blueprint: { name: '周报助手' }, message });
+  expect(result.displayResult).toBe(message);
+  expect(result.toolMeta).toMatchObject({ kind: 'hr_preview', status });
+  expect(result.displayResult).not.toMatch(/bp_private|Blueprint|activation/);
+});
+
 it('recognizes only a confirmed recorded first-task receipt', () => {
   const receipt = { ok: true, status: 'queued', first_task_draft_id: 'draft', runtime_task_id: 'same-child' };
   expect(normalizeToolCallResult('delegate_to_agent', receipt).toolMeta).toEqual({
@@ -32,7 +41,7 @@ it('keeps a mixed-input creation proposal on the existing confirmation card with
     creation_authorization: { mode: 'policy_direct', first_task: 'Draft the authorized report' } };
   const projected = normalizeToolCallResult('create_employee_from_request', result);
   expect(projected.toolMeta).toMatchObject({ kind: 'hr_preview', status: 'awaiting_confirmation',
-    authorizationMode: null, permissionScope: 'self', explicitFirstTask: 'Draft the authorized report',
+    authorizationMode: 'policy_direct', permissionScope: 'self', explicitFirstTask: 'Draft the authorized report',
     firstMission: 'Draft the authorized report' });
 });
 

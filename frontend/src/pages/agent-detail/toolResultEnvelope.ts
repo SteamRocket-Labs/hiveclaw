@@ -13,6 +13,7 @@ export interface HrPreviewToolResult {
   blueprintVersion: number;
   blueprintHash: string | null;
   status: string;
+  message?: string | null;
   name: string | null;
   mission: string | null;
   firstMission: string | null;
@@ -270,6 +271,7 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
     blueprintVersion: typeof parsed.blueprint_version === 'number' ? parsed.blueprint_version : 1,
     blueprintHash: typeof parsed.blueprint_hash === 'string' ? parsed.blueprint_hash : null,
     status: typeof parsed.draft_status === 'string' ? parsed.draft_status : 'legacy_preview',
+    ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}),
     name: typeof blueprint.name === 'string' ? blueprint.name : null,
     mission: typeof summary.mission === 'string' ? summary.mission : null,
     firstMission: typeof authorization.first_task === 'string' && authorization.first_task
@@ -280,7 +282,7 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
     permissionScope: typeof blueprint.permission_scope === 'string' ? blueprint.permission_scope : null,
     firstTaskAutostart: typeof blueprint.first_task_autostart === 'boolean' ? blueprint.first_task_autostart : null,
     ...(authorization.mode === 'policy_direct' ? {
-      authorizationMode: parsed.draft_status === 'awaiting_confirmation' ? null : 'policy_direct',
+      authorizationMode: 'policy_direct',
       explicitFirstTask: typeof authorization.first_task === 'string' ? authorization.first_task : null,
     } : {}),
     sourceAttributions: normalizeRecordList(blueprint.source_attributions),
@@ -297,6 +299,7 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
 }
 
 function buildPreviewDisplayResult(preview: HrPreviewToolResult): string {
+  if (preview.message) return preview.message;
   if (preview.authorizationMode === 'policy_direct') {
     return preview.name ? `Employee creation requested for ${preview.name}.` : 'Employee creation requested.';
   }

@@ -1226,7 +1226,7 @@ async def _draft(owner_sessionmaker, context):
         return draft.id
 
 
-async def test_native_preview_remains_in_original_work_without_hr_session(
+async def test_native_assistant_cannot_bypass_the_hr_only_preview_handler(
     origin,
     owner_sessionmaker,
 ):
@@ -1240,12 +1240,10 @@ async def test_native_preview_remains_in_original_work_without_hr_session(
             )
         )
     )
-    assert payload.get("status") == "preview", payload
-    assert payload["session_id"] == context.session_id
-    assert payload["hr_agent_id"] == str(context.agent_id)
-    assert payload["requested_by_user_id"] == str(user.id)
-    assert payload["blueprint"]["first_task_autostart"] is False
+    assert payload.get("status") == "error", payload
+    assert payload["error"] == "hr_agent_required"
     async with owner_sessionmaker() as db:
+        assert not list(await db.scalars(select(HrCreationDraft).where(HrCreationDraft.tenant_id == user.tenant_id)))
         assert len((await db.scalars(select(ChatSession).where(ChatSession.tenant_id == user.tenant_id))).all()) == 1
         assert len((await db.scalars(select(Agent).where(Agent.tenant_id == user.tenant_id))).all()) == 1
 
@@ -1371,6 +1369,8 @@ async def test_platform_requester_uses_the_runtime_selected_company(origin, owne
         principal = await db.get(User, user.id)
         principal.role = "platform_admin"
         principal.tenant_id = None
+        agent = await db.get(Agent, context.agent_id)
+        agent.name, agent.agent_class = "__system_hr__", "internal_system"
         await db.commit()
     payload = json.loads(
         await preview_agent_blueprint(
@@ -1446,7 +1446,7 @@ async def test_provisioning_rechecks_source_access_before_acquiring_a_claim(
 
 
 @pytest.mark.parametrize("platform", [False, True])
-async def test_original_work_drives_real_native_provisioning_and_reopens_the_receipt(
+async def test_hr_work_drives_real_native_provisioning_and_reopens_the_receipt(
     origin,
     owner_sessionmaker,
     app_user_sessionmaker,
@@ -1469,6 +1469,8 @@ async def test_original_work_drives_real_native_provisioning_and_reopens_the_rec
         user.role = "platform_admin"
     model_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, context.agent_id)
+        agent.name, agent.agent_class = "__system_hr__", "internal_system"
         db.add(
             LLMModel(
                 id=model_id,
@@ -1563,11 +1565,12 @@ async def test_original_work_drives_real_native_provisioning_and_reopens_the_rec
         )
 
 
-def test_preview_is_discoverable_by_native_employees_but_creation_stays_worker_owned():
+def test_native_employees_use_one_creation_tool_while_legacy_creation_stays_hr_owned():
     from types import SimpleNamespace
     from app.services.agent_tools import _core_tools_for_agent
 
     agent = SimpleNamespace(agent_class="internal_tenant", name="My Assistant", agent_type="native")
     names = {tool["function"]["name"] for tool in _core_tools_for_agent(agent)}
-    assert "preview_agent_blueprint" in names
+    assert "create_employee_from_request" in names
+    assert "preview_agent_blueprint" not in names
     assert "create_digital_employee" not in names

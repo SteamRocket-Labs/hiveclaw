@@ -1925,39 +1925,8 @@ async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
                 ensure_ascii=False,
             )
         if not is_hr_agent(hr_agent):
-            from fastapi import HTTPException
-            from app.models.runtime_task import RuntimeTask
-            from app.models.user import User
-            from app.services.hr_creation_handoff_service import HrCreationHandoffError, _verify_source_authority
-            from app.services.hr_creation_source import load_creation_requester, load_creation_source_agent
-            from app.services.session_human_input import SESSION_TARGETABLE_RUN_STATUSES
-
-            try:
-                source_run_id = uuid.UUID(str(request.context.runtime_task_id or ""))
-                source_task = await db.get(RuntimeTask, source_run_id)
-                requester = await load_creation_requester(db, user_id)
-                _verify_source_authority(
-                    tenant_id=tenant_id,
-                    requester_user_id=user_id,
-                    source_agent_id=hr_agent_id,
-                    source_session_id=session_id,
-                    source_runtime_task_id=source_run_id,
-                    user=requester,
-                    source_agent=hr_agent,
-                    source_session=source_session,
-                    source_task=source_task,
-                )
-                await load_creation_source_agent(db, requester, hr_agent_id, require_execute=True)
-                if source_task.status not in SESSION_TARGETABLE_RUN_STATUSES:
-                    raise HrCreationHandoffError("source_run_not_active", "The originating turn has ended.")
-            except (ValueError, HrCreationHandoffError, HTTPException) as exc:
-                return json.dumps(
-                    {
-                        "status": "error",
-                        "error": getattr(exc, "reason_code", "authority_mismatch"),
-                        "message": "Creation preview requires a current authorized user turn.",
-                    }
-                )
+            return json.dumps({"status": "error", "error": "hr_agent_required",
+                "message": "请在当前对话中直接提出创建数字员工的请求。"}, ensure_ascii=False)
         from app.tools.handlers.knowledge import _company_kb_runtime_principal
 
         preview_arguments = dict(request.arguments)

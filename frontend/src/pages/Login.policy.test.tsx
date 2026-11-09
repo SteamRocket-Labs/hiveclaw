@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { translateFromCatalog } from '../test/i18nMock';
 import en from '../i18n/en.json';
 import zh from '../i18n/zh.json';
+import { ApiError } from '../api/core/errors';
 
 const { api, setAuth, language } = vi.hoisted(() => ({
   api: { getRegistrationConfig: vi.fn(), getOidcConfig: vi.fn(), register: vi.fn(), login: vi.fn() },
@@ -32,6 +33,23 @@ function mount(path = '/login') {
 }
 
 describe('Login policy', () => {
+  it.each([
+    [new ApiError(0, '网络连接失败，请检查网络后重试。'), '无法连接服务器，请检查网络连接后重试。'],
+    [new TypeError('A localized network failure'), '无法连接服务器，请检查网络连接后重试。'],
+    [new ApiError(503, '服务暂时没有响应，请稍后再试。', { parseError: 'Unexpected HTML response' }), '服务正在启动中，请稍后重试。'],
+    [new ApiError(502, '服务暂时没有响应，请稍后再试。'), '服务正在启动中，请稍后重试。'],
+    [new ApiError(503, '账号服务维护中，请联系值班人员。', '账号服务维护中，请联系值班人员。'), '账号服务维护中，请联系值班人员。'],
+  ])('keeps login-specific recovery copy by error type and status: %s', async (error, expected) => {
+    language.value = 'zh';
+    api.login.mockRejectedValue(error);
+    const { container } = mount();
+    fireEvent.change(container.querySelector('form input')!, { target: { value: 'member' } });
+    fireEvent.change(container.querySelector('input[type=password]')!, { target: { value: 'local-password' } });
+    fireEvent.submit(container.querySelector('form')!);
+    expect(await screen.findByText(expected)).toBeTruthy();
+    expect(setAuth).not.toHaveBeenCalled();
+  });
+
   it('shows configured company SSO and discovers by explicit tenant slug', async () => {
     api.getOidcConfig.mockResolvedValue({ configured: true, display_name: 'Company sign-in' });
     mount('/login?tenant_slug=acme');

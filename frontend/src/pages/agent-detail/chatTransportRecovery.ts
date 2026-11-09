@@ -37,7 +37,7 @@ export function isRetryableSessionReadError(error: unknown): boolean {
   const candidate = error as { name?: unknown; status?: unknown };
   if (candidate.name === 'AbortError') return false;
   const status = typeof candidate.status === 'number' ? candidate.status : Number(candidate.status);
-  return status === 408 || status === 425 || status === 429 || status >= 500;
+  return candidate.status === 0 || status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 type SessionReadRetryState = {

@@ -1483,7 +1483,7 @@ function getHeaderStatus(
   for (let index = cells.length - 1; index >= 0; index -= 1) {
     const cell = cells[index];
     if (cell.kind === 'user_turn') {
-      if (cell.message.sendState === 'failed') return 'idle';
+      if (cell.message.sendState === 'failed' && index === cells.length - 1) return 'idle';
       break;
     }
     if (cell.kind === 'assistant_final') return 'complete';

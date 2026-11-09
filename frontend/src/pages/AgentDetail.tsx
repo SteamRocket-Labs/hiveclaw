@@ -64,10 +64,10 @@ import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } fr
 import { enterpriseApi } from '../api/domains/enterprise';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
-import { chatApi, type ChatSession, type ConversationBranchMode, type SessionRun, type SessionStartResponse, type StartSessionRunInput, type UploadedChatFile } from '../api/domains/chat';
+import { chatApi, type ChatSession, type ConversationBranchMode, type SessionRun, type SessionStartResponse, type StartSessionRunInput } from '../api/domains/chat';
 import { ccParityApi } from '../api/domains/ccParity';
 import { ApiError } from '../api/core';
-import { uploadFileWithProgress } from '../api/core/upload-progress';
+import { useChatAttachments } from './agent-detail/useChatAttachments';
 import { useAuthStore } from '../stores';
 import { useOriginalDraftRemoval } from './agent-detail/useOriginalDraftRemoval';
 import EmployeeReadinessControls from '../components/EmployeeReadinessControls';
@@ -1466,7 +1466,9 @@ function AgentDetailInner() {
         activeSession?.permission_profile?.mode,
         activeSession?.transcript_metadata_json?.permission_mode,
     ]);
-    const [uploading, setUploading] = useState(false);
+    const { uploading, uploadProgress, uploadAbortRef, attachedFiles, setAttachedFiles,
+        fileInputRef, handleChatFile, handlePaste } = useChatAttachments(id, t,
+            (message, type) => showToast(message, type));
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
     // RuntimePhase for the ACTIVE session (§3 seam 1). isWaiting/isStreaming are
@@ -1481,26 +1483,10 @@ function AgentDetailInner() {
     };
     const [transportNotice, setTransportNotice] = useState<string | null>(null);
 
-    const [uploadProgress, setUploadProgress] = useState(-1);
-    const uploadAbortRef = useRef<(() => void) | null>(null);
-    const [attachedFiles, setAttachedFiles] = useState<{
-        originalAttachment?: UploadedChatFile['original_attachment'];
-        name: string;
-        text: string;
-        path?: string;
-        imageUrl?: string;
-        conversion?: {
-            status?: string;
-            markdownPath?: string;
-            metadataPath?: string;
-            engine?: string;
-        };
-    }[]>([]);
     const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const chatInputRef = useRef<HTMLTextAreaElement>(null);
-    const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Settings form local state
     const [settingsForm, setSettingsForm] = useState({
@@ -2094,10 +2080,6 @@ function AgentDetailInner() {
             invalidateSessionRuntimeQueries(id, runSessionId);
             return true;
         } catch (err: any) {
-            if (!activeRunStateRef.current[sendKey]?.runId) {
-                setSessionPhase(sendKey, 'idle');
-                if (activeSessionIdRef.current === sendSessionId) syncActivePhase('idle');
-            }
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             if (goalModeRequested) {
                 setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'run_start_failed' })]);
@@ -2264,105 +2246,6 @@ function AgentDetailInner() {
             const msg = err?.message || t('agent.chat.branch.failed', 'Failed to create branch');
             showToast(msg, 'error');
         }
-    };
-
-    const handleChatFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const files = Array.from(e.target.files || []);
-        if (!files.length) return;
-        const allowedFiles = files.slice(0, 10 - attachedFiles.length);
-        if (!allowedFiles.length) {
-            showToast(t('agent.upload.limit', 'Limit of 10 attached files reached.'), 'error');
-            return;
-        }
-        
-        setUploading(true); setUploadProgress(0);
-        try {
-            const uploadPromises = allowedFiles.map(file => {
-                const { promise } = uploadFileWithProgress(
-                    `/chat/upload`,
-                    file,
-                    () => {}, // Avoid updating progress per file to prevent flickering, could implement total progress
-                    id ? { agent_id: id } : undefined,
-                );
-                return promise;
-            });
-            const results = await Promise.all(uploadPromises);
-            const newAttached = results.map(data => ({
-                originalAttachment: data.original_attachment,
-                name: data.filename,
-                text: data.extracted_text,
-                path: data.workspace_path,
-                imageUrl: data.image_data_url || undefined,
-                conversion: data.conversion ? {
-                    status: data.conversion.status,
-                    markdownPath: data.conversion.markdown_path,
-                    metadataPath: data.conversion.metadata_path,
-                    engine: data.conversion.engine,
-                } : undefined,
-            }));
-            setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
-        } catch (err: any) {
-            if (err?.message !== 'Upload cancelled') showToast(t('agent.upload.failed'), 'error');
-        } finally { 
-            setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; 
-            if (fileInputRef.current) fileInputRef.current.value = ''; 
-        }
-    };
-
-    // Clipboard paste handler — auto-upload pasted images
-    const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-        const items = e.clipboardData?.items;
-        if (!items) return;
-        
-        const filesToUpload: File[] = [];
-        for (let i = 0; i < items.length; i++) {
-            if (items[i].type.startsWith('image/')) {
-                const blob = items[i].getAsFile();
-                if (blob) {
-                    const ext = blob.type.split('/')[1] || 'png';
-                    const fileName = `paste-${Date.now()}-${i}.${ext}`;
-                    filesToUpload.push(new File([blob], fileName, { type: blob.type }));
-                }
-            }
-        }
-        
-        if (!filesToUpload.length) return;
-        e.preventDefault();
-        const allowedFiles = filesToUpload.slice(0, 10 - attachedFiles.length);
-        if (!allowedFiles.length) {
-            showToast(t('agent.upload.limit', 'Limit of 10 attached files reached.'), 'error');
-            return;
-        }
-
-        setUploading(true); setUploadProgress(0);
-        try {
-            const uploadPromises = allowedFiles.map(file => {
-                const { promise } = uploadFileWithProgress(
-                    `/chat/upload`,
-                    file,
-                    () => {},
-                    id ? { agent_id: id } : undefined,
-                );
-                return promise;
-            });
-            const results = await Promise.all(uploadPromises);
-            const newAttached = results.map(data => ({
-                originalAttachment: data.original_attachment,
-                name: data.filename,
-                text: data.extracted_text,
-                path: data.workspace_path,
-                imageUrl: data.image_data_url || undefined,
-                conversion: data.conversion ? {
-                    status: data.conversion.status,
-                    markdownPath: data.conversion.markdown_path,
-                    metadataPath: data.conversion.metadata_path,
-                    engine: data.conversion.engine,
-                } : undefined,
-            }));
-            setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
-        } catch (err: any) {
-            if (err?.message !== 'Upload cancelled') showToast(t('agent.upload.failed'), 'error');
-        } finally { setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; }
     };
 
     // Expandable activity log

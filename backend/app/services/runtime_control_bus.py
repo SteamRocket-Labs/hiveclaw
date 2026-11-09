@@ -433,6 +433,24 @@ async def _is_settled_question_followup(db: AsyncSession, *, transcript_event: A
         and _uuid_or_none(receipt.get("t0_boundary_id")) is not None)
 
 
+async def _merge_transcript_bridge_metadata(db, event, metadata):
+    if not isinstance(db, AsyncSession):
+        event.metadata_json = metadata
+        return
+    from sqlalchemy import update
+    from sqlalchemy.orm.attributes import set_committed_value
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    # The read projection may contain a bounded head of historical raw output.
+    # Merge only bridge bookkeeping in SQL; never write that head over stored evidence.
+    patch = {key: value for key, value in metadata.items() if key.startswith("t0_bridge_")}
+    await db.execute(update(ChatTranscriptEvent).where(ChatTranscriptEvent.id == event.id,
+        ChatTranscriptEvent.tenant_id == event.tenant_id).values(
+            metadata_json=ChatTranscriptEvent.metadata_json.op("||")(patch)
+        ).execution_options(synchronize_session=False))
+    set_committed_value(event, "metadata_json", metadata)
+
+
 async def bridge_transcript_event_to_t0(
     *,
     transcript_event_id: str | Any,
@@ -627,7 +645,7 @@ async def bridge_transcript_event_to_t0(
                                     "t0_bridge_attempts": transcript_event.projection_attempts,
                                 }
                             )
-                            transcript_event.metadata_json = metadata
+                            await _merge_transcript_bridge_metadata(db, transcript_event, metadata)
                             _STATE["last_error"] = projection_error
                             projection_failed = True
                         else:
@@ -641,7 +659,7 @@ async def bridge_transcript_event_to_t0(
                                     "t0_bridge_sequence": t0_sequence,
                                 }
                             )
-                            transcript_event.metadata_json = metadata
+                            await _merge_transcript_bridge_metadata(db, transcript_event, metadata)
                             transcript_event.projection_status = "projected"
                             transcript_event.projection_error = None
                             transcript_event.projected_at = datetime.now(timezone.utc)

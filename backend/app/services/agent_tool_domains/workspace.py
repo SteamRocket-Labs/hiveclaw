@@ -10,7 +10,6 @@ import subprocess
 import tempfile
 import uuid
 import json
-from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -32,6 +31,7 @@ from app.services.workspace_resource_authority import (
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 from app.runtime.ccplus_contracts import permission_profile_snapshot
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
+from app.tools.output_limits import TOOL_OUTPUT_BYTES, ToolOutputBuffer, bound_tool_output
 
 logger = logging.getLogger(__name__)
 
@@ -1641,7 +1641,8 @@ def _grep_search(
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     explicit_limit = max(1, int(max_results)) if max_results is not None else None
-    matches: list[str] = []
+    matches = ToolOutputBuffer()
+    match_count = 0
 
     native_rg = shutil.which("rg")
     compiled = None
@@ -1665,50 +1666,60 @@ def _grep_search(
             if resolved is not None and _authority_allows_path(authority_scope, resolved.relative_to(ws.resolve()).as_posix()):
                 paths.append(rel_path)
         if native_rg:
-            # Bound open descriptors, never the authorized search coverage.
-            for offset in range(0, len(paths), 32):
-                if explicit_limit is not None and len(matches) >= explicit_limit:
+            for rel_path in paths:
+                if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
                     break
-                with ExitStack() as inputs:
-                    descriptors = {}
-                    for rel_path in paths[offset : offset + 32]:
-                        # rg consumes the exact verified snapshot, even if the
-                        # original inode changes after its source check.
-                        raw = read_search_bytes(rel_path)
-                        source = inputs.enter_context(tempfile.TemporaryFile())
-                        source.write(raw)
-                        source.seek(0)
-                        descriptors[f"/dev/fd/{source.fileno()}"] = (rel_path, source.fileno())
+                # Search one verified snapshot at a time; stdout is drained only
+                # until the byte budget, including when rg emits one huge line.
+                with tempfile.TemporaryFile() as source, tempfile.TemporaryFile() as errors:
+                    raw = read_search_bytes(rel_path)
+                    source.write(raw)
+                    del raw
+                    source.seek(0)
+                    descriptor = f"/dev/fd/{source.fileno()}"
                     command = ["rg", "--with-filename", "--line-number", "--color", "never"]
                     if explicit_limit is not None:
-                        command.extend(("--max-count", str(explicit_limit)))
-                    # The model-authored pattern remains data, never an rg option.
-                    command.extend(("--", pattern, *descriptors))
-                    proc = subprocess.run(command, pass_fds=tuple(fd for _, fd in descriptors.values()),
-                        capture_output=True, text=True, check=False)
-                if proc.returncode not in (0, 1):
-                    return _workspace_error(tool_name, "operation_failed", f"Grep search failed: {proc.stderr.strip()}", retryable=True)
-                batch_matches = []
-                for line in proc.stdout.splitlines():
-                    descriptor, separator, match = line.partition(":")
-                    if descriptor in descriptors:
-                        batch_matches.append((descriptors[descriptor][0], int(match.partition(":")[0]), match))
-                for rel_path, _line_number, match in sorted(batch_matches):
-                    matches.append(f"{rel_path}:{match}")
-                    if explicit_limit is not None and len(matches) >= explicit_limit:
-                        break
+                        command.extend(("--max-count", str(explicit_limit - match_count)))
+                    command.extend(("--", pattern, descriptor))
+                    with subprocess.Popen(command, pass_fds=(source.fileno(),), stdout=subprocess.PIPE, stderr=errors) as proc:
+                        try:
+                            while line := proc.stdout.readline(TOOL_OUTPUT_BYTES + 1):
+                                _, _, match = line.decode("utf-8", errors="replace").partition(":")
+                                matches.append(f"- {rel_path}:{match.rstrip(chr(10))}")
+                                match_count += 1
+                                if len(line) > TOOL_OUTPUT_BYTES and not line.endswith(b"\n"):
+                                    matches.cut()
+                                if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
+                                    break
+                        finally:
+                            proc.stdout.close()
+                            stopped_early = matches.truncated or explicit_limit is not None and match_count >= explicit_limit
+                            if stopped_early and proc.poll() is None:
+                                proc.terminate()
+                            proc.wait()
+                        if not stopped_early and proc.returncode not in (0, 1):
+                            errors.seek(0)
+                            error = errors.read(TOOL_OUTPUT_BYTES).decode("utf-8", errors="replace")
+                            return _workspace_error(tool_name, "operation_failed", f"Grep search failed: {error.strip()}", retryable=True)
         else:
             for rel_path in paths:
-                if explicit_limit is not None and len(matches) >= explicit_limit:
+                if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
                     break
                 try:
                     raw = read_search_bytes(rel_path)
                     with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as handle:
-                        for idx, line in enumerate(handle, start=1):
+                        idx = 0
+                        while line := handle.readline(TOOL_OUTPUT_BYTES + 1):
+                            idx += 1
                             if compiled.search(line):
-                                matches.append(f"{rel_path}:{idx}:{line.strip()}")
-                                if explicit_limit is not None and len(matches) >= explicit_limit:
+                                matches.append(f"- {rel_path}:{idx}:{bound_tool_output(line).strip()}")
+                                match_count += 1
+                                if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
                                     break
+                            if len(line) > TOOL_OUTPUT_BYTES and not line.endswith("\n"):
+                                matches.append("文件中有过长的行，搜索未完成。请缩小范围后继续查找。")
+                                matches.cut()
+                                break
                 except WorkspaceAuthorityError:
                     raise
                 except Exception as _read_err:
@@ -1721,9 +1732,7 @@ def _grep_search(
 
     if not matches:
         return f"🔎 No matches for '{pattern}'"
-    lines = [f"🔎 Grep results for '{pattern}' ({len(matches)} match(es)):"]
-    lines.extend(f"- {match}" for match in matches)
-    return "\n".join(lines)
+    return bound_tool_output(f"🔎 Grep results for '{pattern}' ({match_count} match(es)):\n" + matches.text())
 
 
 async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | None = None, *, authority_scope=None) -> str:

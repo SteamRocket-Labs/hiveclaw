@@ -306,6 +306,13 @@ async def append_session_event(
     else:
         sequence = await allocate_transcript_sequence(db, session_id=session_uuid)
     content_text = content or ""
+    if event_type in {"tool_result", "tool_result.completed"}:
+        from app.tools.output_limits import bound_tool_output
+
+        content_text = bound_tool_output(content_text)
+        payload = (metadata or {}).get("v2_payload")
+        if isinstance(payload, dict) and isinstance(payload.get("content"), str):
+            metadata = {**metadata, "v2_payload": {**payload, "content": bound_tool_output(payload["content"])}}
     event_input_metadata = enrich_knowledge_event_metadata(
         event_type=event_type,
         content=content_text,

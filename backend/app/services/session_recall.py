@@ -16,6 +16,7 @@ from app.database import tenant_scoped_session
 from app.memory.t0.ledger import T0LedgerIntegrityError, replay_t0_session_events
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.tools.output_limits import ToolOutputBuffer, bound_tool_output
 
 _FALLBACK_HEADLINE = "回顾到与查询相关的历史会话"
 _EXCLUDED_CHANNELS = {"agent", "heartbeat", "trigger", "task", "dream"}
@@ -141,25 +142,32 @@ def _normalize_transcript_line(line: str) -> str:
 
 
 def _transcript_lines_from_body(body: str) -> list[str]:
-    lines: list[str] = []
-    for raw_line in body.splitlines():
+    lines = ToolOutputBuffer()
+    for raw_line in bound_tool_output(body).splitlines():
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("## Turn"):
             continue
         normalized = _normalize_transcript_line(stripped)
         if normalized:
             lines.append(normalized)
-    return lines
+        if lines.truncated:
+            break
+    return list(lines)
 
 
 def _transcript_lines_from_messages(messages: list[tuple[str, str]]) -> list[str]:
-    lines: list[str] = []
+    lines = ToolOutputBuffer()
     for role, content in messages:
-        cleaned = re.sub(r"\s+", " ", (content or "").strip())
+        bounded = bound_tool_output(content or "")
+        cleaned = re.sub(r"\s+", " ", bounded.strip())
         if not cleaned:
             continue
         lines.append(f"{_speaker_label(role)}: {cleaned}")
-    return lines
+        if bounded != (content or ""):
+            lines.cut()
+        if lines.truncated:
+            break
+    return list(lines)
 
 
 def _extract_snippets(body: str, query: str, *, snippet_limit: int) -> list[str]:

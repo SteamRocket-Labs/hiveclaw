@@ -4860,10 +4860,8 @@ async def _persist_tool_call(
                         agent_id=agent_id,
                         session_id=session_uuid,
                         invocation_id=invocation.id,
-                        # Durable receipt first: the transcript tool_result keeps
-                        # the complete raw evidence (UI, audit, recovery), while
-                        # the bounded provider projection survives only as the
-                        # model-replay view of that same event.
+                        # The transcript retains a bounded raw head while the
+                        # provider projection keeps the model's exact replay view.
                         provider_result_content=str(raw_result),
                         model_visible_content=(
                             provider_content

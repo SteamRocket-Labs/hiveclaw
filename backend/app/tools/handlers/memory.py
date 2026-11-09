@@ -1100,6 +1100,7 @@ async def search_memory(
     from pathlib import Path
 
     from app.config import get_settings
+    from app.tools.output_limits import ToolOutputBuffer, bound_tool_output
 
     if set(arguments) - {"query", "scope", "limit", "date_from", "date_to"}:
         return json.dumps(
@@ -1126,7 +1127,7 @@ async def search_memory(
             return "[Error] limit must be a positive integer when provided."
     date_from = (arguments.get("date_from") or "").strip() or None
     date_to = (arguments.get("date_to") or "").strip() or None
-    results: list[str] = []
+    results = ToolOutputBuffer()
     overlay_pairs = []
     overlay_facts = []
     team_pairs = []
@@ -1153,7 +1154,7 @@ async def search_memory(
             limit=limit,
             **({"authorized_entries": authorized_entries} if execution_context is not None else {}),
         )
-        overlay_facts = [fact for fact in overlay_facts if _memory_fact_visible(fact)]
+        overlay_facts, overlay_cut = _bounded_visible_memory_facts(overlay_facts)
 
         from app.memory.plane_read import search_plane_facts
 
@@ -1176,7 +1177,7 @@ async def search_memory(
             facts = _dedupe_fact_results([*backend_facts, *facts])
             if limit is not None:
                 facts = facts[:limit]
-        facts = [fact for fact in facts if _memory_fact_visible(fact)]
+        facts, facts_cut = _bounded_visible_memory_facts(facts)
         if facts and execution_context is not None:
             issues.append({"status": "unavailable", "code": "legacy_memory_sources_unverified", "count": len(facts)})
             facts = []
@@ -1184,12 +1185,16 @@ async def search_memory(
             unbound.append("legacy_memory_sources")
             results.append("## 相关记忆")
             for f in facts:
+                if results.truncated:
+                    break
                 entry_id = f.get("id", "")
                 content = f.get("content") or f.get("preview", "")
-                results.append(_render_memory_fact(content, entry_id, source=f.get("source", ""), timestamp=f.get("timestamp", "")))
+                results.append(_render_memory_fact(bound_tool_output(content), entry_id, source=f.get("source", ""), timestamp=f.get("timestamp", "")))
+            if facts_cut:
+                results.cut()
 
     # --- Cross-session recall ---
-    if scope in ("sessions", "all"):
+    if scope in ("sessions", "all") and not results.truncated:
         try:
             from app.tools.runtime import ToolExecutionRequest
 
@@ -1217,40 +1222,43 @@ async def search_memory(
                 unbound.append("session_recall_sources")
                 results.append("## 相关对话")
                 for hit in recalled:
+                    if results.truncated:
+                        break
                     ts = hit.get("started_at", "?")
                     headline = hit.get("headline", "past session")
                     results.append(f"- {headline}（{ts}）")
-                    complete_transcript = (hit.get("transcript") or "").strip()
+                    complete_transcript = bound_tool_output(hit.get("transcript") or "").strip()
                     if complete_transcript:
                         results.append("  Complete transcript:")
-                        for line in complete_transcript.splitlines():
-                            results.append(f"    {line}")
+                        results.extend(f"    {line}" for line in complete_transcript.splitlines())
                     else:
                         # Legacy/degraded hits may lack a canonical transcript.
                         # In that case expose every available evidence projection.
-                        focused_recap = (hit.get("focused_recap") or "").strip()
+                        focused_recap = bound_tool_output(hit.get("focused_recap") or "").strip()
                         if focused_recap:
                             results.append(f"  Recap: {focused_recap}")
-                        summary = (hit.get("summary") or "").strip()
+                        summary = bound_tool_output(hit.get("summary") or "").strip()
                         if summary and summary != focused_recap:
                             results.append(f"  Summary: {summary}")
                         evidence_lines = hit.get("evidence_lines") or []
                         if evidence_lines:
                             results.append("  Evidence:")
                             for line in evidence_lines:
+                                if results.truncated:
+                                    break
+                                line = bound_tool_output(line)
                                 cleaned = line.strip()
                                 if cleaned:
                                     results.append(f"    {cleaned}")
-                        transcript_window = (hit.get("transcript_window") or "").strip()
+                        transcript_window = bound_tool_output(hit.get("transcript_window") or "").strip()
                         if transcript_window:
                             results.append("  Context:")
-                            for line in transcript_window.splitlines():
-                                cleaned = line.strip()
-                                if cleaned:
-                                    results.append(f"    {cleaned}")
+                            results.extend(f"    {line.strip()}" for line in transcript_window.splitlines() if line.strip())
                         display_snippets = hit.get("context_snippets") or hit.get("snippets", [])
                         for snippet in display_snippets:
-                            results.append(f"  - {snippet}")
+                            if results.truncated:
+                                break
+                            results.append(f"  - {bound_tool_output(snippet)}")
         except SessionRecallError as exc:
             if scope == "sessions" and execution_context is not None:
                 return await _record_memory_error("search_memory", agent_id, arguments, execution_context, exc)
@@ -1295,7 +1303,7 @@ async def search_memory(
         )
         allowed_ids = {entry.entry_id for entry, _receipt in overlay_pairs}
         overlay_facts = [fact for fact in overlay_facts if fact["id"] in allowed_ids]
-    if execution_context is not None and scope in {"facts", "all"}:
+    if execution_context is not None and scope in {"facts", "all"} and not results.truncated:
         from app.services.team_memory_runtime import read_entries, render_entry
         from app.tools.runtime import ToolExecutionRequest
 
@@ -1309,16 +1317,24 @@ async def search_memory(
             if limit is not None:
                 team_pairs = team_pairs[:limit]
             if team_pairs:
-                results.append("## 团队记忆\n" + "\n".join(render_entry(entry) for entry, _receipt in team_pairs))
+                from dataclasses import replace
+
+                results.append("## 团队记忆")
+                results.extend(render_entry(replace(entry, content=bound_tool_output(entry.content))) for entry, _receipt in team_pairs)
         except Exception:
             issues.append({"status": "unavailable", "code": "team_memory_source_unavailable"})
-    overlay_lines = []
+    overlay_lines = ToolOutputBuffer()
     if overlay_facts:
         overlay_lines.append("## 你要求记住的内容")
         for fact in overlay_facts:
+            if overlay_lines.truncated:
+                break
             entry_id = fact["id"]
-            overlay_lines.append(_render_memory_fact(fact.get('content') or fact.get('preview', ''), entry_id))
-    results = [*overlay_lines, *results]
+            overlay_lines.append(_render_memory_fact(bound_tool_output(fact.get('content') or fact.get('preview', '')), entry_id))
+        if overlay_cut:
+            overlay_lines.cut()
+    overlay_lines.extend(results)
+    results = overlay_lines
     if not results:
         content = (
             f"没有找到与“{query}”匹配的记忆。这只是本次查询未命中，不代表相关记忆不存在。"
@@ -1327,8 +1343,8 @@ async def search_memory(
         )
 
     else:
-        content = "\n".join(results)
-    content = _memory_availability(content, issues)
+        content = results.text()
+    content = bound_tool_output(_memory_availability(content, issues))
     if execution_context is not None:
         used_ids = {fact["id"] for fact in overlay_facts}
         return await _record_memory_output(
@@ -1387,6 +1403,21 @@ def _memory_fact_visible(fact: dict) -> bool:
 
         sensitivity = classify_text_sensitivity(str(fact.get("content") or fact.get("preview") or ""))
     return _memory_metadata_visible({"sensitivity": sensitivity})
+
+
+def _bounded_visible_memory_facts(facts):
+    from app.tools.output_limits import ToolOutputBuffer
+
+    selected = []
+    budget = ToolOutputBuffer()
+    for fact in facts:
+        if not _memory_fact_visible(fact):
+            continue
+        selected.append(fact)
+        budget.append(fact.get("content") or fact.get("preview", ""))
+        if budget.truncated:
+            break
+    return selected, budget.truncated
 
 
 def _wiki_hit_visible(data_root: Path, agent_id: uuid.UUID, hit: dict) -> bool:

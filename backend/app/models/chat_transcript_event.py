@@ -22,9 +22,77 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql.functions import FunctionElement
+from sqlalchemy.types import TypeDecorator
 
 from app.database import Base
+from app.tools.output_limits import TOOL_OUTPUT_BYTES, TOOL_OUTPUT_TRUNCATION
+
+
+class _ToolTextRead(FunctionElement):
+    type = Text()
+    inherit_cache = True
+
+
+class _ToolMetadataRead(FunctionElement):
+    type = JSONB()
+    inherit_cache = True
+
+
+@compiles(_ToolTextRead)
+@compiles(_ToolMetadataRead)
+def _plain_transcript_column(element, compiler, **kw):
+    return compiler.process(next(iter(element.clauses)), **kw)
+
+
+def _tool_text_sql(value, compiler):
+    marker = compiler.render_literal_value(TOOL_OUTPUT_TRUNCATION, Text())
+    # Six bytes per character covers JSON escaping as well as UTF-8; include quotes.
+    head = (TOOL_OUTPUT_BYTES - len(TOOL_OUTPUT_TRUNCATION.encode("utf-8")) - 4) // 6
+    return f"CASE WHEN {_tool_text_oversized_sql(value)} THEN left({value}, {head}) || {marker} ELSE {value} END"
+
+
+def _tool_text_oversized_sql(value):
+    return (f"CASE WHEN octet_length({value}) > {TOOL_OUTPUT_BYTES} THEN true "
+        f"ELSE octet_length(to_jsonb({value})::text) > {TOOL_OUTPUT_BYTES} END")
+
+
+@compiles(_ToolTextRead, "postgresql")
+def _bounded_tool_text(element, compiler, **kw):
+    column = next(iter(element.clauses))
+    value = compiler.process(column, **kw)
+    kind = compiler.process(column.table.c.event_type, **kw)
+    return f"CASE WHEN {kind} IN ('tool_result', 'tool_result.completed') THEN {_tool_text_sql(value, compiler)} ELSE {value} END"
+
+
+@compiles(_ToolMetadataRead, "postgresql")
+def _bounded_tool_metadata(element, compiler, **kw):
+    column = next(iter(element.clauses))
+    value = compiler.process(column, **kw)
+    kind = compiler.process(column.table.c.event_type, **kw)
+    content = f"({value} #>> '{{v2_payload,content}}')"
+    # Replace only the duplicated raw text; retain authority, model projection and all other metadata.
+    return (f"CASE WHEN {kind} IN ('tool_result', 'tool_result.completed') "
+        f"AND ({_tool_text_oversized_sql(content)}) THEN "
+        f"jsonb_set({value}, '{{v2_payload,content}}', to_jsonb({_tool_text_sql(content, compiler)}), false) ELSE {value} END")
+
+
+class _TranscriptText(TypeDecorator):
+    impl = Text
+    cache_ok = True
+
+    def column_expression(self, column):
+        return _ToolTextRead(column)
+
+
+class _TranscriptMetadata(TypeDecorator):
+    impl = JSONB
+    cache_ok = True
+
+    def column_expression(self, column):
+        return _ToolMetadataRead(column) if getattr(column, "name", None) == "metadata_json" else column
 
 
 class ChatTranscriptEvent(Base):
@@ -125,9 +193,9 @@ class ChatTranscriptEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     visibility_scope: Mapped[str] = mapped_column(String(64), nullable=False, default="direct_user")
     listed_surface: Mapped[str] = mapped_column(String(64), nullable=False, default="chat")
-    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content: Mapped[str | None] = mapped_column(_TranscriptText(), nullable=True)
     parts_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(_TranscriptMetadata(), nullable=True)
     projection_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", server_default=text("'pending'"), index=True
     )

@@ -620,8 +620,8 @@ async def complete_tool_invocation(
 ) -> list[ChatTranscriptEvent]:
     """Settle one invocation and append its unique Provider matching result.
 
-    ``provider_result_content`` is the complete durable receipt persisted as the
-    tool_result event content (UI, audit, recovery). ``model_visible_content``
+    ``provider_result_content`` is the raw receipt; a bounded head is retained
+    in the tool_result event (UI, audit, recovery). ``model_visible_content``
     optionally carries the bounded provider projection a ToolContentEnvelope
     producer declared; session replay feeds that projection — not the raw
     receipt — back into model context when present.
@@ -852,8 +852,10 @@ async def complete_tool_invocation(
         invocation.version = int(invocation.version) + 1
         return waiting_events
 
-    content = str(provider_result_content)
-    content_hash = _sha256(content)
+    from app.tools.output_limits import bound_tool_output
+
+    content = bound_tool_output(str(provider_result_content))
+    content_hash = _sha256(str(provider_result_content))
     publication_errors: list[dict[str, Any]] = []
     workspace_execution_ref = None
     expected_content_hashes: dict[str, str] = {}

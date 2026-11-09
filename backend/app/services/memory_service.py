@@ -1025,7 +1025,11 @@ async def maybe_compress_messages(
     # No mechanical semantic summary fallback. Keep the prompt honest: the model
     # sees that older context was omitted instead of a platform-inferred summary.
     logger.warning("[Memory] Semantic compaction summary unavailable — using degraded trim marker")
+    from app.runtime.context_candidates import ContextMessageOrigin
+
     marker = {"role": "system", "content": "[Older messages omitted: LLM semantic compaction summary unavailable]"}
+    marker["context_origin"] = ContextMessageOrigin.capture(
+        kind="compaction_status", role="system", content=marker["content"], sources=(), unbound=())
     return [marker] + recent_messages
 
 

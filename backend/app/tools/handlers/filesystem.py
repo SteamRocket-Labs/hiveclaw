@@ -313,7 +313,7 @@ def glob_search(
 @tool(
     ToolMeta(
         name="grep_search",
-        description="Search file contents for a text pattern inside the workspace. Prefer this before opening many files one by one.",
+        description="Search file contents for a text or regex pattern. Default searches cover workspace/ only; set root to a folder inside workspace/ to narrow the search. Prefer this before opening many files one by one.",
         parameters={
             "type": "object",
             "properties": {

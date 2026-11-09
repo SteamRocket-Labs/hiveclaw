@@ -389,6 +389,10 @@ def _messages_to_dicts(messages: list[LLMMessage]) -> list[dict[str, Any]]:
             item["reasoning_content"] = reasoning
         if signature is not None:
             item["reasoning_signature"] = signature
+        if msg.source_ref is not None:
+            item["source_ref"] = msg.source_ref
+        if msg.context_origin is not None:
+            item["context_origin"] = msg.context_origin
         result.append(item)
     return result
 
@@ -402,6 +406,8 @@ def _dicts_to_messages(messages: list[dict[str, Any]]) -> list[LLMMessage]:
             tool_call_id=msg.get("tool_call_id"),
             reasoning_content=msg.get("reasoning_content"),
             reasoning_signature=msg.get("reasoning_signature"),
+            source_ref=msg.get("source_ref"),
+            context_origin=msg.get("context_origin"),
         )
         for msg in messages
     ]

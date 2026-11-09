@@ -1675,9 +1675,7 @@ def _grep_search(
             if resolved is not None and _authority_allows_path(authority_scope, resolved.relative_to(ws.resolve()).as_posix()):
                 relative = resolved.relative_to(ws.resolve()).as_posix()
                 if search_root == ws.resolve() and authority_scope is not None:
-                    managed = (_managed_system_path_message(relative) or relative.split("/", 1)[0] == "skills"
-                        or relative in _WRITE_PROTECTED or relative in _ROOT_MANAGED_FILE_MESSAGES)
-                    if managed and authority_scope.input_read(relative) is None:
+                    if relative != "workspace" and not relative.startswith("workspace/"):
                         continue
                 paths.append(rel_path)
         if native_rg:

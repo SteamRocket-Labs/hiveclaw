@@ -1491,9 +1491,10 @@ async def _compress_messages_with_trace(
     if compressed == messages:
         return compressed
 
+    trace_input = [{key: value for key, value in message.items() if key != "context_origin"} for message in messages]
     request = CompactionRequest(
         model=str(kwargs.get("model_name") or getattr(trace_context, "model", "") or ""),
-        input=list(messages),
+        input=trace_input,
         instructions=instructions,
         tools=list(tools or []),
         parallel_tool_calls=parallel_tool_calls,
@@ -1509,11 +1510,12 @@ async def _compress_messages_with_trace(
         source = {"schema": "hive.compaction_source.v1", "source_id": str(source_id),
             "message": message_snapshot(summary), "inputs": compressed.source_messages}
         compressed = [summary, *compressed[1:]]
-    await attempt.record_completed(output_items=list(compressed), status="completed")
+    trace_output = [{key: value for key, value in message.items() if key != "context_origin"} for message in compressed]
+    await attempt.record_completed(output_items=trace_output, status="completed")
     if source is not None:
-        await trace_context.record_installed(input_history=list(messages), replacement_history=list(compressed), source=source)
+        await trace_context.record_installed(input_history=trace_input, replacement_history=trace_output, source=source)
     else:
-        await trace_context.record_installed(input_history=list(messages), replacement_history=list(compressed))
+        await trace_context.record_installed(input_history=trace_input, replacement_history=trace_output)
     return compressed
 
 

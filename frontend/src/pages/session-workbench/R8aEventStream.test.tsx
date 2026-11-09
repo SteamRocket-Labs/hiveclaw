@@ -99,6 +99,23 @@ it('keeps a company approval pause nonfinal and includes the later same-run step
   expect(runs(resumed)[0].timeline).toMatchObject({ status: 'done', durationMs: 300_000, durationIsFinal: true });
 });
 
+it.each(['idle', 'awaiting_approval'])('keeps company approval waiting with a completed workbench task (%s)', runtimePhase => {
+  const events = [user(1), ev(2, 'run', 'queued', 0), work(3, 1),
+    ev(4, 'run', 'completed', 2, { reason_code: 'company_approval_required' }), work(5, 3)];
+  const sessionWorkbench = { runtime_tasks: [{ id: 'run-1', status: 'completed',
+    result_summary: 'awaiting_company_approval', started_at: at(0), completed_at: at(2) }] };
+  // AgentChatSection supplies the hydrated messages and workbench payload together.
+  const model = build(events, { sessionWorkbench, runtimePhase, isWaiting: runtimePhase !== 'idle' });
+  expect(runs(model)[0].timeline.status).not.toBe('done');
+  expect(runs(model)[0].timeline.durationIsFinal).toBe(false);
+  expect(runs(model)[0].timeline.completedAt).toBeUndefined();
+  expect(model.header.status).toBe('waiting');
+  expect(runs(model)[0].sourceMessages.some(e => e.message.id === 'item-5')).toBe(true);
+  const resumed = build([...events, ev(6, 'run', 'completed', 5)], { sessionWorkbench });
+  expect(runs(resumed)[0].timeline).toMatchObject({ status: 'done', durationMs: 300_000, durationIsFinal: true });
+  expect(resumed.header.status).toBe('complete');
+});
+
 it.each(['human_chat', 'trigger_run', 'delegation_run'])('does not apply the session runtime id to a new unlabelled turn (%s)', session_kind => {
   const messages = [...hydrateSessionTranscriptEvents(completed as any).messages,
     { id: 'next', role: 'user' as const, content: 'Follow up', timestamp: at(8), sendState: 'sending' as const },

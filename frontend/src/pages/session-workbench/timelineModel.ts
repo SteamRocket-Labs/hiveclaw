@@ -2058,6 +2058,12 @@ function isCanonicalRunTerminal(message: AgentChatMessage): boolean {
     && terminalRuntimePhaseForSessionEvent(item.kind, item.lifecycle, item.payload) !== 'awaiting_approval';
 }
 
+function runAwaitsApproval(messages: AgentChatMessage[], runId?: string | null): boolean {
+  return Boolean(runId && messages.some(message => message.sessionItem?.kind === 'run'
+    && isSameSessionRunId(messageRunId(message), runId)
+    && terminalRuntimePhaseForSessionEvent('run', message.sessionItem.lifecycle, message.sessionItem.payload) === 'awaiting_approval'));
+}
+
 function applyCanonicalRunTerminalEvidence(
   cells: ThreadTimelineCell[],
   messages: AgentChatMessage[],
@@ -2087,11 +2093,12 @@ function applyCanonicalRunTerminalEvidence(
     const runId = cell.runId || (cell.sourceMessages.length > 0 ? normalizeSessionRunId(sessionRunId) : null);
     if (!runId) return cell;
     const terminal = terminalByRunId.get(runId);
+    const awaitingApproval = runAwaitsApproval(messages, runId);
     const liveStatus = activeRunStatus && activeRunId && isSameSessionRunId(runId, activeRunId)
       ? runtimeStatusKey(activeRunStatus) : null;
     const task = runtimeTasks.find(task => isSameSessionRunId(readString(task, ['runtime_task_id', 'id'], ''), runId));
     const taskStatus = task && runtimeStatusKey(readString(task, ['status'], ''));
-    const canonicalStatus = terminal?.status || taskStatus || liveStatus;
+    const canonicalStatus = terminal?.status || (awaitingApproval ? 'waiting' : taskStatus || liveStatus);
     const status = canonicalStatus ? (canonicalStatus === 'waiting' ? 'blocked' : canonicalStatus === 'stopped' ? 'cancelled'
       : canonicalStatus === 'done' ? 'done' : canonicalStatus) : terminal?.status;
     if (!status) return cell;
@@ -2099,7 +2106,9 @@ function applyCanonicalRunTerminalEvidence(
     // when a paginated runtime-task row appears or disappears.
     const startedAt = terminal ? terminal.startedAt || cell.timeline.startedAt
       : readString(task ?? {}, ['started_at', 'created_at'], '') || cell.timeline.startedAt;
-    if (status === 'running' || status === 'blocked') return { ...cell, runId, timeline: { ...cell.timeline, status, startedAt } };
+    if (status === 'running' || status === 'blocked') return { ...cell, runId, timeline: { ...cell.timeline, status, startedAt,
+      ...(awaitingApproval ? { durationIsFinal: false, completedAt: undefined } : {}),
+    } };
     const taskCompletedAtMs = Date.parse(readString(task ?? {}, ['completed_at'], ''));
     const completedAtMs = terminal?.completedAtMs ?? (Number.isFinite(taskCompletedAtMs)
       ? taskCompletedAtMs : Date.parse(cell.timeline.completedAt || ''));
@@ -2236,7 +2245,8 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     || sessionRunId;
   const currentTask = input.sessionWorkbench?.runtime_tasks?.find(task => isSameSessionRunId(
     readString(task, ['runtime_task_id', 'id'], ''), currentRunId));
-  const taskLifecycle = readString(currentTask ?? {}, ['status'], '');
+  const awaitingApproval = runAwaitsApproval(input.messages, currentRunId);
+  const taskLifecycle = awaitingApproval ? '' : readString(currentTask ?? {}, ['status'], '');
   if (taskLifecycle && !CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     && (!currentRun || CANONICAL_RUN_TERMINAL_LIFECYCLES.has(taskLifecycle))) {
     currentRun = { runId: currentRunId, lifecycle: taskLifecycle };
@@ -2291,7 +2301,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     .reverse().find(message => messageRunId(message)));
   const blockedRun = sessionWorkbench?.runtime_tasks?.find(task => isSameSessionRunId(
     readString(task, ['runtime_task_id', 'id'], ''), headerRunId));
-  const runLifecycle = CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
+  const runLifecycle = awaitingApproval ? 'waiting' : CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     ? currentRun?.lifecycle : readString(blockedRun ?? {}, ['status'], '') || currentRun?.lifecycle;
   const guidance = runLifecycle === 'needs_reconciliation'
     ? readString(asRecord(blockedRun?.user_blocker) ?? {}, ['next_action'], '') : '';

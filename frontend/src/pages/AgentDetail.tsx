@@ -1976,6 +1976,7 @@ function AgentDetailInner() {
         let sendSessionId = String(sendSession.id);
         let sendKey = buildSessionRuntimeKey(id, sendSessionId);
         let refused = false;
+        let retryable = true;
         let queued = false;
         const updateSend = (patch: Partial<AgentChatMessage>) => {
             pendingUserMessagesRef.current[sendKey] = (pendingUserMessagesRef.current[sendKey] || []).map(item =>
@@ -2057,7 +2058,10 @@ function AgentDetailInner() {
                 const issue = submittedSessionInputIssue(started.run);
                 refused = issue === 'refused';
                 queued = issue === 'queued';
-                if (refused) throw new Error(String(started.run.dispatch?.message || '') || (started.run.admission_state === 'cancelled'
+                retryable = started.run.dispatch?.retryable !== false;
+                if (refused) throw new Error(started.run.dispatch?.reason_code === 'terminal_boundary_dead_letter'
+                    ? t('agent.chat.previousRunUnfinished', 'The previous task did not end normally. This conversation cannot continue. Please start a new conversation and try again.')
+                    : String(started.run.dispatch?.message || '') || (started.run.admission_state === 'cancelled'
                     ? t('agent.chat.sendCancelled', 'Not sent: sending was cancelled.')
                     : started.run.admission_state === 'needs_reconciliation'
                         ? t('agent.chat.sendUnconfirmed', 'Could not confirm whether this message was saved.')
@@ -2091,7 +2095,7 @@ function AgentDetailInner() {
             } else {
                 // An uncertain refusal can rarely duplicate; re-read the thread before retry in a future upgrade.
                 updateSend({ sendState: 'failed', sendError: refused ? msg : t('agent.chat.sendFailed', 'Message not sent. Try again.'),
-                    retrySend: () => { if (activeSessionIdRef.current === sendSessionId && stillOriginalSubject()) void sendChatMsg({ ...options, inputId: refused ? globalThis.crypto.randomUUID() : acceptedInputId }, acceptedInputId, isDraftHumanChatSession(sendSession) ? undefined : sendSession); } });
+                    retrySend: retryable ? () => { if (activeSessionIdRef.current === sendSessionId && stillOriginalSubject()) void sendChatMsg({ ...options, inputId: refused ? globalThis.crypto.randomUUID() : acceptedInputId }, acceptedInputId, isDraftHumanChatSession(sendSession) ? undefined : sendSession); } : undefined });
             }
             return false;
         } finally {

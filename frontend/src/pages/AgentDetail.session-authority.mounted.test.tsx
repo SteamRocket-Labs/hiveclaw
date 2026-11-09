@@ -2,11 +2,12 @@
 
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../api/core';
 import { ccParityApi } from '../api/domains/ccParity';
 import { StructuredToolResultBody } from './agent-detail/StructuredToolResult';
+import zh from '../i18n/zh.json';
 
 const mocks = vi.hoisted(() => ({
   queryCalls: [] as Array<{ key: unknown[]; enabled: unknown }>,
@@ -38,14 +39,18 @@ const mocks = vi.hoisted(() => ({
   answerQuestion: vi.fn(),
   questionControl: false,
   transport: null as any,
+  language: 'en',
 }));
 
 vi.mock('../api/core/upload-progress', () => ({ uploadFileWithProgress: (...args: unknown[]) => ({ promise: mocks.upload(...args) }) }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, fallback?: string | Record<string, unknown>) => typeof fallback === 'string' ? fallback : key,
-    i18n: { language: 'en' },
+    t: (key: string, fallback?: string | Record<string, unknown>) => {
+      const translated = mocks.language === 'zh' ? key.split('.').reduce<any>((value, part) => value?.[part], zh) : undefined;
+      return typeof translated === 'string' ? translated : typeof fallback === 'string' ? fallback : key;
+    },
+    i18n: { language: mocks.language },
   }),
 }));
 
@@ -206,6 +211,11 @@ import AgentDetail from './AgentDetail';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+beforeAll(async () => {
+  // Resolve the real lazy chat module before the first mounted waitFor starts.
+  await import('./agent-detail/AgentChatSection');
+}, 30_000);
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -244,6 +254,7 @@ beforeEach(() => {
   mocks.deleteSession.mockReset();
   mocks.activeSessionRun = null;
   mocks.questionControl = false;
+  mocks.language = 'en';
 });
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -871,9 +882,10 @@ it.each(['deferred', 'successor'])('shows an accepted %s message as queued until
   await waitFor(() => expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running'));
 });
 
-it('presents a dead-letter rejection with the backend message and a new input id on retry', async () => {
+it('presents a nonretryable dead-letter rejection without Retry', async () => {
   const message = '上一轮任务没有正常结束，这段对话暂时无法继续。请新建对话后再试。';
   mocks.realChat = true;
+  mocks.language = 'zh';
   mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: 'admitted',
     status: 'rejected', run: null, dispatch: { kind: 'rejected', retryable: false,
       reason_code: 'terminal_boundary_dead_letter', message } });
@@ -881,10 +893,58 @@ it('presents a dead-letter rejection with the backend message and a new input id
   await act(async () => { expect(await mocks.chatProps.onSendChatMsg()).toBe(false); });
   expect(mocks.chatProps.chatInput).toBe('Keep this message');
   expect(screen.getByText(message)).toBeTruthy();
+  // Round 3 replaces the round-2 Retry expectation: retryable:false forbids another attempt here.
+  expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
+  expect(mocks.chatProps.chatMessages.at(-1).retrySend).toBeUndefined();
+  expect(mocks.startSessionRun).toHaveBeenCalledTimes(1);
+});
+
+function heldInputEvent(sequence: number, inputId: string, lifecycle: 'accepted' | 'rejected', reason_code?: string) {
+  return { schema: 'hive.session_event', schema_version: 2, event_id: `held-${sequence}`, tenant_id: 'tenant-1',
+    sequence, item_id: inputId, item_kind: 'human_input', kind: `human_input.${lifecycle}`, lifecycle,
+    payload_schema: `hive.session.payload.human_input.${lifecycle}.v2`,
+    scope: { level: 'session', session_id: mocks.sessionId, thread_id: mocks.sessionId },
+    actor: { type: 'runtime' }, visibility: { audience: 'direct_user' },
+    payload: lifecycle === 'accepted' ? { input_id: inputId, intent: 'start_turn',
+      content_parts: [{ type: 'text', text: '压缩前的三件事是什么？' }] }
+      : { input_id: inputId, intent: 'start_turn', reason_code },
+    occurred_at: '2026-11-09T00:00:00Z', persisted_at: '2026-11-09T00:00:00Z' };
+}
+
+it('replaces a deferred queued bubble with the localized dead-letter refusal on the open page', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: 'admitted',
+    status: 'accepted', run: null, dispatch: { kind: 'deferred', code: 'terminal_boundary_ack_pending' } });
+  await composeOrdinaryMessage('压缩前的三件事是什么？');
+  await act(async () => { expect(await mocks.chatProps.onSendChatMsg()).toBe(true); });
+  expect(screen.getByTestId('message-send-status').textContent).toBe('排队中');
   const inputId = mocks.startSessionRun.mock.calls[0][2].input_id;
-  mocks.startSessionRun.mockResolvedValue({ run_id: 'new-run', status: 'pending' });
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Retry' })); });
-  expect(mocks.startSessionRun.mock.calls[1][2].input_id).not.toBe(inputId);
+  await act(async () => receiveLiveMessage(heldInputEvent(1, inputId, 'accepted')));
+  expect(screen.getByTestId('message-send-status').textContent).toBe('排队中');
+  await act(async () => receiveLiveMessage(heldInputEvent(2, inputId, 'rejected', 'terminal_boundary_dead_letter')));
+  await waitFor(() => expect(screen.queryByText('排队中')).toBeNull());
+  expect(screen.getByTestId('message-send-status').textContent).toBe('上一轮任务没有正常结束，这段对话暂时无法继续。请新建对话后再试。');
+  expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
+  expect(mocks.chatProps.chatMessages.filter((m: any) => m.role === 'user')).toHaveLength(1);
+  expect(mocks.chatProps.chatMessages.find((m: any) => m.id === inputId).sendState).toBe('failed');
+});
+
+it('reloads a rejected human input as refused without an HTTP receipt or Retry', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.sessionId = 'held-reload';
+  mocks.listSessions.mockResolvedValue([{ id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
+    title: 'Held message', session_kind: 'human_chat', read_only: false }]);
+  mocks.getSessionTranscript.mockResolvedValue([heldInputEvent(1, 'held-input', 'accepted'),
+    heldInputEvent(2, 'held-input', 'rejected', 'terminal_boundary_dead_letter')]);
+  render(<AgentDetail />);
+  await waitFor(() => expect(screen.getByTestId('message-send-status').textContent)
+    .toBe('上一轮任务没有正常结束，这段对话暂时无法继续。请新建对话后再试。'));
+  expect(screen.getByText('压缩前的三件事是什么？')).toBeTruthy();
+  expect(screen.queryByText('排队中')).toBeNull();
+  expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
 });
 
 it('trusts a mailbox receipt even without a local active run id', async () => {

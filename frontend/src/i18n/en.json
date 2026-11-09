@@ -2474,6 +2474,7 @@
       "sendCancelled": "Not sent: sending was cancelled.",
       "sendUnconfirmed": "Could not confirm whether this message was saved.",
       "sendRefused": "Not sent: this message could not be accepted.",
+      "previousRunUnfinished": "The previous task did not end normally. This conversation cannot continue. Please start a new conversation and try again.",
       "sendFailed": "Message not sent. Try again.",
       "mySessions": "My Conversations",
       "allUsers": "All Users",

@@ -830,7 +830,10 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         {msg.sendState && <div role="status" data-testid="message-send-status">
           {msg.sendState === 'queued' ? t('agent.aware.workQueued', 'Queued')
             : msg.sendState === 'sending' ? t('agent.chat.sending', 'Sending…') : <>
-            {msg.sendError} <button type="button" onClick={msg.retrySend}>{t('common.retry', 'Retry')}</button>
+            {msg.sessionItem?.payload.reason_code === 'terminal_boundary_dead_letter'
+              ? t('agent.chat.previousRunUnfinished', 'The previous task did not end normally. This conversation cannot continue. Please start a new conversation and try again.')
+              : msg.sendError || t('agent.chat.sendRefused', 'Not sent: this message could not be accepted.')}
+            {msg.retrySend && <button type="button" onClick={msg.retrySend}>{t('common.retry', 'Retry')}</button>}
           </>}
         </div>}
         {msg.role === 'user' && msg.inputAttachmentFailures?.map((file, index) => <div

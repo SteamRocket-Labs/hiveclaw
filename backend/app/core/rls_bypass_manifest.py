@@ -898,7 +898,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # no entry removed, no bypass scope, predicate or callsite changed (still 122 callsites).
 # Native directory recovery uses only approved invocation captures; the 122
 # bypass callsites and the reviewed entry count (790) remain unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "1e515de32991ae49fe96bce66fcd461ec49f11d4e93a772b546d0784896d60d0"
+# Land13 (R7b, R7c, R7e, R8b) versus land12: 27 module-source lines added and 5 removed
+# (tenant-pinned InvocationSpan select for approved directory captures, the single
+# validation read scope, recovery-seal declared paths); still 122 callsites, no scope change.
+RLS_BYPASS_SCOPES_SHA256 = "b3fdb3173c86848b7c772241800313717ce4fa7bc1ef755f616523bc6c718ad7"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -6303,5 +6303,42 @@
     "noMemory": "还没有你让它记住的内容。",
     "botFailed": "无法读取「{{name}}」的任务，请稍后重试。",
     "onRequest": "收到请求时"
+  },
+  "vault": {
+    "title": "保险箱",
+    "description": "管理你和数字员工已有的凭据。保存的值不会显示，也无法读回。",
+    "empty": "还没有保存的凭据。需要时，数字员工会在对话里请你提供。",
+    "replace": "替换",
+    "remove": "移除",
+    "replaceTitle": "替换凭据",
+    "removeTitle": "移除凭据",
+    "credential": "凭据",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "unassigned": "尚未指定数字员工",
+    "secureInput": "新值直接保存，不会进入对话。",
+    "saved": "凭据已替换。",
+    "failed": "暂时无法完成，请稍后重试。",
+    "reviewRequired": "已选择此账号的工作需要重新确认账号。",
+    "labels": {
+      "token": "访问令牌",
+      "apiKey": "API Key",
+      "password": "密码",
+      "username": "账号名",
+      "appSecret": "应用密钥"
+    },
+    "scope": {
+      "personal": "我的账号",
+      "bot": "只给这个 bot",
+      "company": "公司共享"
+    },
+    "removal": {
+      "company": "删除后，这个 bot 会改用公司的连接。",
+      "existing": "删除后，新的工作会使用已有的连接或服务默认凭据。",
+      "configuration": "删除后，需要此凭据的工作会请你重新配置。",
+      "personal": "删除后，这个 bot 会使用你已连接的另一个账号。",
+      "mixed": "删除后，已有其他连接的数字员工会继续使用该连接，其余会请你重新配置。",
+      "authorization": "删除后，已有授权暂时保留，需要续期时请重新授权。"
+    }
   }
 }

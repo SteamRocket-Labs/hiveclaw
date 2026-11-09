@@ -65,6 +65,7 @@ from app.api.onboarding import router as onboarding_router
 from app.api.office import router as office_router
 from app.api.projects import router as projects_router
 from app.api.mcp_servers import router as mcp_servers_router
+from app.api.vault import router as vault_router
 from app.api.mcp_oauth import router as mcp_oauth_router
 from app.api.plugins import router as plugins_router
 from app.api.organization import router as org_router
@@ -911,6 +912,7 @@ _api_routers = [
     capabilities_router,
     onboarding_router,
     mcp_servers_router,
+    vault_router,
     mcp_oauth_router,
     plugins_router,
     plans_router,

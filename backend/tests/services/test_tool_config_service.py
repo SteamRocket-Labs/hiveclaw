@@ -5,6 +5,19 @@ from __future__ import annotations
 import uuid
 
 
+def test_form_secret_declarations_are_encrypted_and_read_back_only_at_runtime():
+    import json
+    from app.services.tool_config_service import encrypt_tool_config_secrets, decrypt_tool_config_secrets, mask_tool_config_secrets
+    for declaration in ({"type": "string", "format": "password"}, {"type": "string", "writeOnly": True}):
+        schema = {"fields": [{"key": "credential", **declaration}]}
+        original = {"credential": "synthetic-write-only-value", "ordinary": "keep-exactly"}
+        stored = encrypt_tool_config_secrets(original, schema)
+        assert "synthetic-write-only-value" not in json.dumps(stored)
+        assert stored["ordinary"] == "keep-exactly"
+        assert decrypt_tool_config_secrets(stored, schema) == original
+        assert "synthetic-write-only-value" not in json.dumps(mask_tool_config_secrets(stored, schema))
+
+
 class TestResolveToolConfigForTenantDisplay:
     """Unit tests for the config merge logic."""
 

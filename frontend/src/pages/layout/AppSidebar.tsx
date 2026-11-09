@@ -313,7 +313,7 @@ export default function AppSidebar({
                 </NavLink>
                 <NavLink to="/connections" className="account-dropdown-item">
                   <IconWorld size={15} stroke={1.5} />
-                  <span>{t('agent.mcpConnect.title')}</span>
+                  <span>{t('vault.title')}</span>
                 </NavLink>
                 <NavLink to="/scheduled-work" className="account-dropdown-item">
                   <IconBell size={15} stroke={1.5} />

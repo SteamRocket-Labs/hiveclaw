@@ -6303,5 +6303,42 @@
     "noMemory": "Nothing you asked it to remember yet.",
     "botFailed": "Could not read work for {{name}}. Try again later.",
     "onRequest": "When a request arrives"
+  },
+  "vault": {
+    "title": "Vault",
+    "description": "Manage existing credentials used by you and your assistants. Saved values are never displayed or returned.",
+    "empty": "No saved credentials yet. Your assistant will ask in the conversation when one is needed.",
+    "replace": "Replace",
+    "remove": "Remove",
+    "replaceTitle": "Replace credential",
+    "removeTitle": "Remove credential",
+    "credential": "Credential",
+    "configured": "Configured",
+    "notConfigured": "Not configured",
+    "unassigned": "No assistant assigned yet",
+    "secureInput": "The new value is saved directly and stays out of the conversation.",
+    "saved": "Credential replaced.",
+    "failed": "Unable to complete this. Please try again.",
+    "reviewRequired": "Work that selected this account needs its account choice confirmed again.",
+    "labels": {
+      "token": "Access token",
+      "apiKey": "API Key",
+      "password": "Password",
+      "username": "Username",
+      "appSecret": "App secret"
+    },
+    "scope": {
+      "personal": "My account",
+      "bot": "Only this bot",
+      "company": "Company shared"
+    },
+    "removal": {
+      "company": "After removal, this bot will use the company connection.",
+      "existing": "After removal, new work will use the existing connection or service defaults.",
+      "configuration": "After removal, work that needs this credential will ask you to configure it again.",
+      "personal": "After removal, this bot will use another account you have connected.",
+      "mixed": "After removal, assistants with another connection will use it; the others will ask you to configure one.",
+      "authorization": "Existing authorization remains available until it needs renewal. Please authorize again at that point."
+    }
   }
 }

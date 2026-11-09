@@ -1,6 +1,6 @@
 import { del, get, put } from '../core';
 
-export interface VaultRemoval { fallback: 'company' | 'existing' | 'configuration' | 'mixed'; review_required?: boolean }
+export interface VaultRemoval { fallback: 'company' | 'configuration'; review_required?: boolean }
 export interface VaultRow {
   kind: string; id: string; name: string; scope: 'personal' | 'bot' | 'company';
   configured: boolean; read_only: boolean; fields: Array<{ key: string; label: string }>; field?: string | null;

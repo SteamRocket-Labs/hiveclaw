@@ -40,10 +40,10 @@ it('lists existing credentials and asks before removal, including the real compa
   expect(screen.queryByText(/unknown|last used|access_token/i)).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
   const dialog = screen.getByRole('dialog');
-  expect(within(dialog).getByText('After removal, this digital employee will use the company settings.')).toBeTruthy();
+  expect(within(dialog).getByText('After removal, this digital employee will use company or system defaults.')).toBeTruthy();
   expect(calls).toEqual([['/api/vault', 'GET']]);
   fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
-  await screen.findByText('After removal, this digital employee will use the company settings.');
+  await screen.findByText('After removal, this digital employee will use company or system defaults.');
   await waitFor(() => expect(screen.queryByText('Documents')).toBeNull());
   expect(calls).toEqual([['/api/vault', 'GET'], ['/api/vault/mcp/owned', 'DELETE'], ['/api/vault', 'GET']]);
 });
@@ -89,6 +89,33 @@ it('retains a failed edit for retry without rendering raw server errors', async 
   await screen.findByRole('alert');
   expect((screen.getByLabelText('Credential') as HTMLInputElement).value).toBe('retry-token');
   expect(screen.queryByText('RAW_PRIVATE_TOKEN')).toBeNull();
+});
+
+it.each(['replace', 'remove'])('refetches after a conflicting %s and retries with the current version', async (operation) => {
+  let version = 1;
+  const attempts: number[] = [];
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+    if (init?.method === 'PUT' || init?.method === 'DELETE') {
+      attempts.push(init.method === 'PUT' ? JSON.parse(String(init.body)).version : Number(new URL(String(url), 'http://local').searchParams.get('version')));
+      if (attempts.length === 1) {
+        version = 2;
+        return new Response(JSON.stringify({ detail: 'Conflict' }), { status: 409 });
+      }
+      return new Response(JSON.stringify({ removed: operation === 'remove', removal: row.removal }));
+    }
+    return new Response(JSON.stringify([{ ...row, version }]));
+  });
+  mount(); await screen.findByText('Documents');
+  const action = operation === 'remove' ? 'Remove' : 'Replace';
+  fireEvent.click(screen.getByRole('button', { name: action }));
+  if (operation === 'replace') fireEvent.change(screen.getByLabelText('Credential'), { target: { value: 'replacement-token' } });
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: operation === 'remove' ? 'Remove' : 'Save' }));
+  await screen.findByRole('alert');
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect((within(screen.getByRole('dialog')).getByRole('button', { name: operation === 'remove' ? 'Remove' : 'Save' }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: operation === 'remove' ? 'Remove' : 'Save' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(attempts).toEqual([1, 2]);
 });
 
 it('hides the prior member list and open credential dialog while the next member loads', async () => {
@@ -138,7 +165,7 @@ it('uses the English list separator and plural consequence for several digital e
   }])));
   mount(); await screen.findByText('Finance assistant, Research assistant');
   fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
-  expect(within(screen.getByRole('dialog')).getByText('After removal, these digital employees will use the company settings.')).toBeTruthy();
+  expect(within(screen.getByRole('dialog')).getByText('After removal, these digital employees will use company or system defaults.')).toBeTruthy();
 });
 
 it('explains the existing account review after a custom API secret changes', async () => {

@@ -6333,13 +6333,11 @@
       "company": "Company shared"
     },
     "removal": {
-      "company": "After removal, new work will use the company settings.",
-      "existing": "After removal, new work will use the existing connection or service defaults.",
+      "company": "After removal, new work will use company or system defaults.",
       "configuration": "Work that needs this credential will ask you to configure it again.",
-      "mixed": "After removal, digital employees with other settings will use them; the others will ask you to configure them.",
-      "companySingle": "After removal, this digital employee will use the company settings.",
-      "companyMultiple": "After removal, these digital employees will use the company settings."
+      "companySingle": "After removal, this digital employee will use company or system defaults.",
+      "companyMultiple": "After removal, these digital employees will use company or system defaults."
     },
-    "removeOwnCredential": "Remove this digital employee’s own credential. Future use will follow available company settings or ask you to configure it again."
+    "removeOwnCredential": "Remove this digital employee’s own credential. Future use will follow available company or system defaults or ask you to configure it again."
   }
 }

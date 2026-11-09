@@ -254,7 +254,7 @@ async def test_private_api_replacement_uses_new_value_after_existing_account_rev
         assert "Private bills ready" in str(await invoke())
         assert sent == ["Bearer vault-private-api-new"]
         removed = await http.delete(f"{path}?version={current.version}")
-        assert removed.status_code == 200 and removed.json()["removal"] == {"fallback": "existing", "review_required": True}
+        assert removed.status_code == 200 and removed.json()["removal"] == {"fallback": "company", "review_required": True}
         assert "review" in str(await invoke()).lower() and sent == ["Bearer vault-private-api-new"]
 
 
@@ -297,30 +297,38 @@ async def test_mailbox_replacement_reaches_imap_and_revocation_keeps_the_existin
         assert sent == ["vault-private-mail-new"]
 
 
-@pytest.mark.parametrize("store", ["tenant_override", "tool"])
-async def test_company_slot_clear_preserves_other_values_and_invalid_bodies_never_echo_input(owner_sessionmaker, app_user_sessionmaker, store):
+async def test_company_slot_clear_preserves_other_values_and_invalid_bodies_never_echo_input(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path):
     data = await seed(owner_sessionmaker)
     async with owner_sessionmaker() as db:
         override = await db.scalar(select(TenantToolConfig).where(TenantToolConfig.tool_id == data["tool"]))
         tool = await db.get(Tool, data["tool"])
-        if store == "tool":
-            await db.delete(override)
-            tool.config = encrypt_tool_config_secrets({**tool.config, "bearer_token": "vault-company-old",
-                "ordinary_setting": "keep-company-setting"}, tool.config_schema)
-            ordinary = {key: value for key, value in tool.config.items() if key != "bearer_token"}
-        else:
-            override.config = {**override.config, "ordinary_setting": "keep-company-setting"}
-            ordinary = {"ordinary_setting": "keep-company-setting"}
+        override.config = {**override.config, "ordinary_setting": "keep-company-setting"}
+        original_tool_config = dict(tool.config)
+        (await db.get(AgentTool, data["assignment"])).config = {}
         await db.commit()
+    from app.services import agent_tools, custom_api_connectors
+    from app.tools.runtime import ToolExecutionContext
+    monkeypatch.setattr("app.database.async_session", app_user_sessionmaker)
+    monkeypatch.setattr("app.tools.resolver.async_session", app_user_sessionmaker)
+    monkeypatch.setattr("app.tools.governance_resolver.async_session", app_user_sessionmaker)
+    monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
+    sent = []
+    async def provider(name, request):
+        sent.append(request.headers["Authorization"])
+        return "Company bills ready"
+    monkeypatch.setattr(custom_api_connectors, "execute_prepared_custom_api_request", provider)
+    context = ToolExecutionContext(agent_id=data["bot"], user_id=data["member"], tenant_id=str(data["tenant"]), workspace=tmp_path)
     async with await client_for(data, owner_sessionmaker, app_user_sessionmaker, "admin") as http:
         path = f'/api/vault/company/{data["tool"]}?field=bearer_token'
         saved = await http.put(path, json={"values": {"bearer_token": "vault-company-new"}})
         assert saved.status_code == 200 and "vault-company-new" not in saved.text
+        assert "Company bills ready" in str(await agent_tools._get_tool_runtime_service().execute_with_context(tool.name, {}, context))
+        assert sent == ["Bearer vault-company-new"]
         removed = await http.delete(path)
         assert removed.status_code == 200 and removed.json()["removal"]["fallback"] == "configuration"
         bad = await http.put(path, json={"values": ["NEVER_ECHO_INVALID_PRIVATE_INPUT"]})
         assert bad.status_code == 422 and "NEVER_ECHO_INVALID_PRIVATE_INPUT" not in bad.text
     async with owner_sessionmaker() as db:
-        record = await db.get(Tool, data["tool"]) if store == "tool" else await db.scalar(
-            select(TenantToolConfig).where(TenantToolConfig.tool_id == data["tool"]))
-        assert record.config == {**ordinary, "bearer_token": ""}
+        record = await db.scalar(select(TenantToolConfig).where(TenantToolConfig.tool_id == data["tool"]))
+        assert record.config == {"ordinary_setting": "keep-company-setting"}
+        assert (await db.get(Tool, data["tool"])).config == original_tool_config

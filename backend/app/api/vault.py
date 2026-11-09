@@ -88,14 +88,7 @@ async def _account_removal(db, account, kind, user, tenant, tools):
     grants = (await db.scalars(select(grant_model).where(grant_model.tenant_id == tenant,
         grant_model.account_id == account.id, grant_model.requester_user_id == user.id, grant_model.enabled.is_(True)))).all()
     company = await resolve_tool_config(tool.name, tenant, db=db) if tool else {}
-    outcomes = set() if grants else {"company" if fields and all(company.get(f["key"]) for f in fields) else "configuration"}
-    if tool:
-        for grant in grants:
-            config = await resolve_tool_config(tool.name, tenant, agent_id=grant.agent_id, db=db)
-            configured = bool(fields) and all(config.get(f["key"]) for f in fields)
-            outcomes.add("company" if configured and all(config.get(f["key"]) == company.get(f["key"]) for f in fields)
-                else "existing" if configured else "configuration")
-    fallback = next(iter(outcomes)) if len(outcomes) == 1 else "mixed" if outcomes else "configuration"
+    fallback = "company" if fields and all(company.get(f["key"]) for f in fields) else "configuration"
     binding = CustomApiWorkAccountBinding if kind == "api" else EmailWorkAccountBinding
     used = await db.scalar(select(binding.id).where(binding.tenant_id == tenant, binding.account_id == account.id).limit(1))
     return {"fallback": fallback, "review_required": used is not None}, grants
@@ -150,6 +143,7 @@ async def list_vault(current_user: User = Depends(get_current_user), db: AsyncSe
         (await db.scalars(select(AgentMCPServerAssignment).where(AgentMCPServerAssignment.tenant_id == tenant))).all()}
     rows = await _personal_rows(db, current_user, tenant, agents, tools, mcp_assignments)
     assignments = (await db.scalars(select(AgentTool).where(AgentTool.tenant_id == tenant))).all()
+    overrides = {r.tool_id: r for r in (await db.scalars(select(TenantToolConfig).where(TenantToolConfig.tenant_id == tenant))).all()}
     company_configs = {}
     for assignment in assignments:
         if assignment.agent_id not in agents or agents[assignment.agent_id][1] != "manage":
@@ -158,11 +152,15 @@ async def list_vault(current_user: User = Depends(get_current_user), db: AsyncSe
         if tool is None or tool.type == "mcp":
             continue  # MCP account credentials use the requester-owned account writer.
         if tool.id not in company_configs:
-            company_configs[tool.id] = await resolve_tool_config(tool.name, tenant, db=db)
+            override = overrides.get(tool.id)
+            company_configs[tool.id] = decrypt_tool_config_secrets(
+                {**(tool.config or {}), **((override.config or {}) if override else {})}, tool.config_schema)
         company = company_configs[tool.id]
         config = decrypt_tool_config_secrets(assignment.config, tool.config_schema)
         for field in _fields(tool.config_schema):
-            if field["key"] in config and field["key"] in company and config[field["key"]] == company[field["key"]]:
+            if field["key"] not in config:
+                continue
+            if config[field["key"]] and field["key"] in company and config[field["key"]] == company[field["key"]]:
                 continue
             rows.append(_row("bot", assignment, tool.display_name, "bot", [field], config,
                 [{"id": str(assignment.agent_id), "name": agents[assignment.agent_id][0].name}], field=field["key"],
@@ -175,7 +173,6 @@ async def list_vault(current_user: User = Depends(get_current_user), db: AsyncSe
             rows.append(_row("company_mcp", server, server.name, "company", [{"key": "access_token", "label": ""}],
                 {"access_token": _mcp_configured(server)}, [{"id": str(i), "name": a.name} for i, (a, _) in agents.items()
                     if mcp_assignments.get((i, server.id), True)], read_only=True))
-        overrides = {r.tool_id: r for r in (await db.scalars(select(TenantToolConfig).where(TenantToolConfig.tenant_id == tenant))).all()}
         for tool in tools.values():
             if tool.type == "mcp":
                 continue
@@ -215,14 +212,13 @@ async def _change(kind, record_id, field, data, user, db, *, version=None):
     elif kind in {"api", "email"}:
         if kind == "api":
             from app.api.custom_api_connectors import _owned_api_account as owned, ApiAccountSaveIn as SaveIn, ApiAccountRevokeIn as RevokeIn, save_api_account as save, revoke_api_account as revoke
-            from app.services.custom_api_accounts import load_connector
         else:
             from app.api.email_channel import _owned_mailbox as owned, MailboxSaveIn as SaveIn, MailboxRevokeIn as RevokeIn, save_email_account as save, revoke_email_account as revoke
         account = await owned(db, user, record_id)
         expected_version = version if removing else data.version
         if expected_version is None or expected_version < 1:
             raise HTTPException(409, "Read the current account before changing it")
-        tool = await load_connector(db, tenant_id=tenant, tool_id=account.tool_id) if kind == "api" else await db.scalar(
+        tool = await db.get(Tool, account.tool_id) if kind == "api" else await db.scalar(
             select(Tool).where(Tool.name == "send_email", or_(Tool.tenant_id == tenant, Tool.tenant_id.is_(None))).limit(1))
         removal, _ = await _account_removal(db, account, kind, user, tenant, {tool.id: tool} if tool else {})
         if removing:
@@ -231,21 +227,26 @@ async def _change(kind, record_id, field, data, user, db, *, version=None):
             if kind == "api" and not data.connection_revision:
                 raise HTTPException(409, "Read the current account before replacing it")
             extra = {"connection_revision": data.connection_revision} if kind == "api" else {}
-            await save(record_id, SaveIn(expected_version=expected_version, config=data.values, **extra), current_user=user, db=db)
+            previous_version = account.version
+            saved = await save(record_id, SaveIn(expected_version=expected_version, config=data.values, **extra), current_user=user, db=db)
+            removal["review_required"] = removal["review_required"] and saved["version"] != previous_version
     elif kind in {"bot", "company"}:
-        from app.api.tools import CategoryConfigIn, ToolUpdateIn, update_global_tool, update_tool_config
+        from app.api.tools import CategoryConfigIn, update_tool_config
         from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment, lock_agent_tool_config_write
         if kind == "bot":
             assignment = await db.scalar(select(AgentTool).where(AgentTool.id == record_id, AgentTool.tenant_id == tenant))
             if assignment is None:
                 raise HTTPException(404, "Credential not found")
             agent = await lock_agent_tool_config_write(db, assignment.agent_id, current_user=user)
+            await db.refresh(assignment, with_for_update=True)
             tool = await db.get(Tool, assignment.tool_id)
         else:
             await get_current_admin(user)
             tool = await db.scalar(select(Tool).where(Tool.id == record_id, or_(Tool.tenant_id == tenant, Tool.tenant_id.is_(None))))
             copies = (await db.scalars(select(AgentTool).where(AgentTool.tenant_id == tenant, AgentTool.tool_id == record_id))).all()
-            if tool is not None and _company_read_only(tool, field, await resolve_tool_config(tool.name, tenant, db=db), copies):
+            override = await db.scalar(select(TenantToolConfig).where(TenantToolConfig.tenant_id == tenant, TenantToolConfig.tool_id == record_id))
+            company = decrypt_tool_config_secrets({**(tool.config or {}), **((override.config or {}) if override else {})}, tool.config_schema) if tool else {}
+            if tool is not None and _company_read_only(tool, field, company, copies):
                 raise HTTPException(403, "Manage this credential in company settings")
         if tool is None or tool.type == "mcp" or field not in _secret_field_keys(tool.config_schema):
             raise HTTPException(404, "Credential not found")
@@ -263,12 +264,14 @@ async def _change(kind, record_id, field, data, user, db, *, version=None):
                     CategoryConfigIn(config={**(assignment.config or {}), **values}), current_user=user, db=db)
             after = await resolve_tool_config(tool.name, tenant, agent_id=assignment.agent_id, db=db)
         else:
-            override = await db.scalar(select(TenantToolConfig).where(TenantToolConfig.tenant_id == tenant, TenantToolConfig.tool_id == tool.id))
-            if tool.tenant_id is None or override is not None and field in (override.config or {}):
-                await update_tenant_tool_config(db, tenant, tool.id, config={**((override.config or {}) if override else {}), **values}, config_schema=tool.config_schema)
-                await db.commit()
+            config = dict((override.config or {}) if override else {})
+            if removing:
+                config.pop(field, None)
             else:
-                await update_global_tool(tool.id, ToolUpdateIn(config={**(tool.config or {}), **values}), current_user=user, db=db)
+                config.update(values)
+            # Removal passes only stored bytes; omit the schema so omission cannot restore the deleted key.
+            await update_tenant_tool_config(db, tenant, tool.id, config=config, config_schema=None if removing else tool.config_schema)
+            await db.commit()
             after = await resolve_tool_config(tool.name, tenant, db=db)
         removal = {"fallback": "company" if after.get(field) else "configuration",
             "review_required": await _company_review(db, tool, tenant, assignment.agent_id if kind == "bot" else None)}

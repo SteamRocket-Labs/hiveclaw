@@ -37,11 +37,12 @@ function VaultList({ userId, tenant }: { userId?: string; tenant: string | null 
     if (!editing || busy) return;
     setBusy(true); setError(false);
     try {
-      const result = await (editing.remove ? vaultApi.remove(editing.row) : vaultApi.replace(editing.row, values));
+      const current = rows.data?.find((row) => row.kind === editing.row.kind && row.id === editing.row.id && row.field === editing.row.field) || editing.row;
+      const result = await (editing.remove ? vaultApi.remove(current) : vaultApi.replace(current, values));
       setValues({}); setEditing(undefined);
       setMessage(result.removed ? effect(result.removal, editing.row.bots.length) : t('vault.saved') + (result.removal.review_required ? ` ${t('vault.reviewRequired')}` : ''));
       await client.invalidateQueries({ queryKey });
-    } catch { setError(true); }
+    } catch { setError(true); await client.invalidateQueries({ queryKey }); }
     finally { setBusy(false); }
   };
   return <section className="vault-page">

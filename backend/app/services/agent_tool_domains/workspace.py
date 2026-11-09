@@ -1843,12 +1843,25 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         render_tool_search_manifest_sections(manifest),
     ]
     if company_applications is not None:
+        lines.extend(["Connection actions:", json.dumps({
+            "not_connected": {
+                "when": "The requested service is absent from company_applications.",
+                "connect_action": {"location": "company connections", "actor": "administrator"},
+            },
+            "account_required": [{"name": app["name"], "connect_action": {
+                "tool": "ask_user_question", "arguments": {
+                    "configuration": {"mcp_server_id": app["mcp_server_id"]},
+                },
+            }} for app in company_applications],
+        }, ensure_ascii=False)])
         lines.append(
             "company_applications is the complete list of company-registered apps, not a list of personal accounts. "
-            "If the requested app is absent, the company has not connected it: give a brief answer in the member's language "
-            "and ask an administrator to add it in company connections. Do not install, create, or connect anything. "
+            "If the requested app is absent, it is not connected: say so in one plain sentence in the member's language "
+            "and offer its connect_action. Do not probe browser sessions, email or importable integrations as workarounds. "
+            "Do not install or create a company connection. "
             "If the app is registered but needs the member's account, use ask_user_question with configuration.mcp_server_id "
-            "from the matching entry to show the personal-account connection card; never ask for credentials in chat."
+            "from its connect_action to show the existing personal-account connection card, adding a question in the member's language. "
+            "Registration alone does not mean the member is connected. Never ask for credentials in chat or name internal mechanisms to the member."
         )
     else:
         lines.append("Company application registration is unknown; do not claim that an application is unconnected.")

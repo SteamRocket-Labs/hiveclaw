@@ -1482,7 +1482,10 @@ function getHeaderStatus(
   if (isStreaming) return 'streaming';
   for (let index = cells.length - 1; index >= 0; index -= 1) {
     const cell = cells[index];
-    if (cell.kind === 'user_turn') break;
+    if (cell.kind === 'user_turn') {
+      if (cell.message.sendState === 'failed') return 'idle';
+      break;
+    }
     if (cell.kind === 'assistant_final') return 'complete';
     if (
       cell.kind === 'boundary'
@@ -2198,6 +2201,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const trailingUserTurn = cells.at(-1)?.kind === 'user_turn';
   const interruptedUserTurn = trailingUserTurn && runtimePhaseValue === 'cancelled';
   const unresolvedUserTurn = trailingUserTurn
+    && input.messages[latestUserMessageIndex(input.messages)]?.sendState !== 'failed'
     && !input.isWaiting
     && !input.isStreaming
     && !activeRunStatus

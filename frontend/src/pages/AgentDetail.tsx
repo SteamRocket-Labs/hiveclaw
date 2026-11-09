@@ -2094,8 +2094,10 @@ function AgentDetailInner() {
             invalidateSessionRuntimeQueries(id, runSessionId);
             return true;
         } catch (err: any) {
-            setIsWaiting(false);
-            setIsStreaming(false);
+            if (!activeRunStateRef.current[sendKey]?.runId) {
+                setSessionPhase(sendKey, 'idle');
+                if (activeSessionIdRef.current === sendSessionId) syncActivePhase('idle');
+            }
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             if (goalModeRequested) {
                 setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'run_start_failed' })]);

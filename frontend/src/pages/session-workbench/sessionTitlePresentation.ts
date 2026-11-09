@@ -125,6 +125,10 @@ export function sessionTitleForUser(
       + names.split(' ↔ ').map((name) => assistantNameForDisplay(name, assistantLabel)).join(' ↔ ');
   }
   if (!hasSessionBranchIdentity(source)) {
+    const defaultTitle = rawTitle.match(/^Session (\d{2}-\d{2} \d{2}:\d{2})$/);
+    if (defaultTitle && source.session_kind !== 'agent_chat') {
+      return fallback ? `${fallback} ${defaultTitle[1]}` : '';
+    }
     // A runtime-JSON title recovers its member text or falls to the plain
     // default — the raw JSON encoding is never a title (B2 r3). Current
     // titles carry the composer's leading attachment markers; the title is

@@ -2596,6 +2596,10 @@
       },
       "disclosure": {
         "processing": "处理中",
+        "thought": "已思考",
+        "otherAction": "其他操作",
+        "commandOutput": "输出：",
+        "clippedLines": "… 省略 {{count}} 行 …",
         "interruptedHint": "该回合没有留下完成记录；发送新消息即可继续。",
         "showCompleteOutput": "查看完整输出",
         "waiting": "等待输入",
@@ -4962,6 +4966,9 @@
     }
   },
   "common": {
+    "serviceUnavailable": "服务暂时没有响应，请稍后再试。",
+    "networkFailed": "网络连接失败，请检查网络后重试。",
+    "requestFailed": "操作未能完成，请稍后重试。",
     "create": "创建",
     "save": "保存",
     "saving": "保存中...",

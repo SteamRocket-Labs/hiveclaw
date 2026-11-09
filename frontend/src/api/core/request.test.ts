@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { get, post } from './request';
+import i18n from '../../i18n';
 
 const localStore: Record<string, string> = {};
 const localStorageStub = {
@@ -70,5 +71,37 @@ describe('request auth errors', () => {
     expect(localStorageStub.removeItem).toHaveBeenCalledWith('token');
     expect(localStorageStub.removeItem).toHaveBeenCalledWith('user');
     expect(window.location.href).toBe('/login');
+  });
+
+  it.each([502, 503, 504])('uses plain Chinese for a gateway %s instead of raw HTTP or HTML', async status => {
+    await i18n.changeLanguage('zh');
+    vi.mocked(fetch).mockResolvedValue(new Response('<html>Gateway timeout</html>', { status }));
+    await expect(get('/agents/bot/sessions/work')).rejects.toMatchObject({
+      status, message: '服务暂时没有响应，请稍后再试。',
+    });
+  });
+
+  it('uses a localized network failure while keeping aborts recognizable', async () => {
+    await i18n.changeLanguage('zh');
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(get('/agents')).rejects.toMatchObject({ message: '网络连接失败，请检查网络后重试。' });
+    const aborted = new DOMException('Aborted', 'AbortError');
+    vi.mocked(fetch).mockRejectedValueOnce(aborted);
+    await expect(get('/agents')).rejects.toBe(aborted);
+  });
+
+  it('keeps a specific application error and its structured fields on a 503', async () => {
+    await i18n.changeLanguage('zh');
+    const detail = { message: '资料仍在处理，请稍后重试。', code: 'processing' };
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ detail }), { status: 503 }));
+    await expect(get('/documents')).rejects.toMatchObject({ status: 503, message: detail.message, data: detail });
+  });
+
+  it('keeps gateway and network fallback messages English in the English UI', async () => {
+    await i18n.changeLanguage('en');
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('', { status: 504 }));
+    await expect(get('/agents')).rejects.toMatchObject({ message: 'The service is not responding. Please try again later.' });
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(get('/agents')).rejects.toMatchObject({ message: 'Could not connect. Check your network and try again.' });
   });
 });

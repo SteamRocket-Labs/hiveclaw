@@ -2596,6 +2596,10 @@
       },
       "disclosure": {
         "processing": "Processing",
+        "thought": "Thought",
+        "otherAction": "Other action",
+        "commandOutput": "Output:",
+        "clippedLines": "… {{count}} lines …",
         "interruptedHint": "This turn has no completion record; send a new message to continue.",
         "showCompleteOutput": "Show complete output",
         "waiting": "Waiting for input",
@@ -4962,6 +4966,9 @@
     }
   },
   "common": {
+    "serviceUnavailable": "The service is not responding. Please try again later.",
+    "networkFailed": "Could not connect. Check your network and try again.",
+    "requestFailed": "The operation could not be completed. Please try again later.",
     "create": "Create",
     "save": "Save",
     "saving": "Saving…",

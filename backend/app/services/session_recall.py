@@ -391,19 +391,24 @@ def _search_t0_session_ledger(
         session_id = session_dir.name
         if authorized_session_ids is not None and session_id not in authorized_session_ids:
             continue
-        try:
-            events = [
-                event
-                for event in replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=data_root)
-                if event.event_type != "segment_boundary"
-                and event.role not in _EXCLUDED_ROLES
-                and event.content.strip()
-            ]
-        except T0LedgerIntegrityError as exc:
-            if integrity_errors is None:
-                raise
-            integrity_errors[session_id] = exc
-            continue
+        for attempt in range(2):
+            try:
+                events = [
+                    event
+                    for event in replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=data_root)
+                    if event.event_type != "segment_boundary"
+                    and event.role not in _EXCLUDED_ROLES
+                    and event.content.strip()
+                ]
+                break
+            except T0LedgerIntegrityError as exc:
+                if exc.code == "t0_snapshot_changed" and attempt == 0:
+                    continue
+                if integrity_errors is None:
+                    raise
+                integrity_errors[session_id] = exc
+                events = []
+                break
         if not events:
             continue
         source = next((event.source for event in events if event.source), "unknown")
@@ -460,7 +465,7 @@ def _search_t0_chat_logs(
     for path in sorted(logs_root.rglob("chat-*.md"), reverse=True):
         try:
             raw = path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         metadata, body = _split_frontmatter(raw)
         if metadata.get("type") != "chat":
@@ -664,6 +669,7 @@ async def search_session_history(
         if not allowed:
             return []
         integrity_errors: dict[str, T0LedgerIntegrityError] = {}
+        # Caller cancellation leaves this read-only scan running; per-session stop flags could bound it.
         hits = await asyncio.to_thread(_search_t0_session_ledger, agent_id, needle, limit=limit,
             snippet_limit=snippet_limit, authorized_session_ids=allowed, integrity_errors=integrity_errors)
         readable = allowed - integrity_errors.keys()
@@ -678,8 +684,10 @@ async def search_session_history(
         current = await _authorized_recall_session_ids(agent_id, tenant_id, runtime_request)
         current = current - {current_session_id}
         if issue_observer is not None:
-            issue_observer.extend({"status": "unavailable", "code": "session_recall_evidence_unavailable",
-                "integrity_code": error.code} for session_id, error in integrity_errors.items() if session_id in current)
+            current_errors = [error for session_id, error in integrity_errors.items() if session_id in current]
+            if current_errors:
+                issue_observer.append({"status": "unavailable", "code": "session_recall_evidence_unavailable",
+                    "count": len(current_errors), "integrity_codes": sorted({error.code for error in current_errors})})
         return hits if all(hit.get("session_id") in current for hit in hits) else [
             hit for hit in hits if hit.get("session_id") in current]
     except SessionRecallError:

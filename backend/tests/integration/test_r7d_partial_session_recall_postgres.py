@@ -18,6 +18,7 @@ from tests.integration.test_m1g38_session_recall_actor_postgres import _search, 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 NOTICE = "部分较早的对话暂时无法读取，相关内容未用于本次回忆。"
+GENERAL_NOTICE = "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"
 CODES = {"oversized": "t0_record_too_large", "body": "t0_record_hash_mismatch", "truncated": "t0_record_truncated"}
 
 
@@ -103,15 +104,95 @@ async def test_native_recall_keeps_readable_hits_and_reports_unreadable_sessions
     assert "DAMAGED_" not in str(hits) + result and str(damaged) not in str(hits) + result
     assert "<tool_error>" not in result, result
     availability = json.loads(result.split("## 可用情况\n", 1)[1])
-    assert availability["status"] == "partial" and availability["message"] == NOTICE
+    # Keep the general warning: the same result also has unverified recall sources.
+    assert availability["status"] == "partial" and availability["message"] == GENERAL_NOTICE + NOTICE
+    # R2 aggregates damaged sessions without losing the exact integrity codes.
     assert {"status": "unavailable", "code": "session_recall_evidence_unavailable",
-        "integrity_code": CODES[damage]} in availability["issues"]
+        "count": 1, "integrity_codes": [CODES[damage]]} in availability["issues"]
+    assert {"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1} in availability["issues"]
     # Keep R1's source-verification rule, exactly as m1g38 does: ACL-valid
     # service hits are observed inside the real tool, not promoted to model input.
     assert "INTACT_CONVERSATION" not in result
     expected = [] if healthy_source == "ledger" else ["legacy"] if healthy_source == "legacy" else ["legacy", "db"]
     assert secondary_calls == [(source, {str(healthy)}) for source in expected]
     assert _fingerprints(n) == before
+
+
+@pytest.mark.parametrize("snapshot_failures", [1, 2])
+async def test_native_recall_retries_a_changed_snapshot_once(
+    native_workspace, owner_sessionmaker, monkeypatch, recall_results, snapshot_failures,  # noqa: F811
+):
+    from app.services import session_recall
+
+    n = native_workspace
+    session = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(ChatSession(id=session, tenant_id=n.tenant, agent_id=n.agent, user_id=n.user, audience_kind="private"))
+        await db.commit()
+    ledger.append_t0_session_event(agent_id=n.agent, session_id=session, event_type="user_message", role="user",
+        content="meeting INTACT_CONVERSATION INTACT_CONTINUATION", source="web", data_root=n.root.parent)
+    before = _fingerprints(n)
+    calls = []
+    original = session_recall.replay_t0_session_events
+
+    def concurrent_append(**kwargs):
+        calls.append(kwargs["session_id"])
+        if len(calls) <= snapshot_failures:
+            raise ledger.T0LedgerIntegrityError("t0_snapshot_changed")
+        return original(**kwargs)
+
+    monkeypatch.setattr(session_recall, "replay_t0_session_events", concurrent_append)
+    result = await _search(n)
+    if snapshot_failures == 1:
+        assert "<tool_error>" not in result, result
+        assert recall_results and recall_results[-1][0]["session_id"] == str(session)
+        assert "INTACT_CONVERSATION" in recall_results[-1][0]["transcript"]
+        assert "INTACT_CONTINUATION" in recall_results[-1][0]["transcript"]
+        availability = json.loads(result.split("## 可用情况\n", 1)[1])
+        assert availability["issues"] == [
+            {"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}]
+        assert availability["message"] == GENERAL_NOTICE
+    else:
+        error = json.loads(result.split("<tool_error>", 1)[1].split("</tool_error>", 1)[0])
+        assert error["reason_code"] == "session_recall_evidence_unavailable"
+        assert error["integrity_code"] == "t0_snapshot_changed" and error["retryable"] is True
+        assert error["ok"] is False and error["http_status"] == 503
+        assert recall_results == []
+    assert calls == [str(session)] * 2
+    assert _fingerprints(n) == before
+
+
+async def test_native_recall_aggregates_damaged_sessions_without_identifiers(
+    native_workspace, owner_sessionmaker, recall_results,  # noqa: F811
+):
+    n = native_workspace
+    pairs = [await _paired_sessions(n, owner_sessionmaker, damage=damage)
+        for damage in ("body", "body", "truncated")]
+    result = await _search(n)
+    assert "<tool_error>" not in result, result
+    assert recall_results and recall_results[-1][0]["session_id"] in {str(healthy) for healthy, _ in pairs}
+    assert "INTACT_CONVERSATION" in recall_results[-1][0]["transcript"]
+    availability = json.loads(result.split("## 可用情况\n", 1)[1])
+    damaged_issues = [issue for issue in availability["issues"] if issue["code"] == "session_recall_evidence_unavailable"]
+    assert damaged_issues == [{"status": "unavailable", "code": "session_recall_evidence_unavailable",
+        "count": 3, "integrity_codes": sorted({CODES["body"], CODES["truncated"]})}]
+    assert all(str(damaged) not in result + str(recall_results) for _, damaged in pairs)
+    assert "DAMAGED_" not in result + str(recall_results)
+
+
+async def test_native_recall_skips_invalid_utf8_log_before_healthy_db_hit(
+    native_workspace, owner_sessionmaker, recall_results,  # noqa: F811
+):
+    n = native_workspace
+    healthy, damaged = await _paired_sessions(n, owner_sessionmaker, healthy_source="db")
+    (n.root / "logs" / f"chat-{damaged}.md").write_bytes(b"\xff")
+    result = await _search(n)
+    assert "<tool_error>" not in result, result
+    assert recall_results and len(recall_results[-1]) == 1
+    assert recall_results[-1][0]["session_id"] == str(healthy)
+    assert "INTACT_CONVERSATION" in recall_results[-1][0]["transcript"]
+    assert "INTACT_CONTINUATION" in recall_results[-1][0]["transcript"]
+    assert "DAMAGED_" not in result + str(recall_results) and str(damaged) not in result + str(recall_results)
 
 
 async def test_native_recall_without_readable_hits_preserves_oversized_error(

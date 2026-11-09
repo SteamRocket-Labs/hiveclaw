@@ -969,7 +969,7 @@ def _memory_availability(content, issues):
 
     message = "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"
     if any(issue.get("code") == "session_recall_evidence_unavailable" for issue in issues):
-        message = "部分较早的对话暂时无法读取，相关内容未用于本次回忆。"
+        message += "部分较早的对话暂时无法读取，相关内容未用于本次回忆。"
     return (
         content
         + "\n\n## 可用情况\n"

@@ -47,36 +47,46 @@ def _plain_transcript_column(element, compiler, **kw):
     return compiler.process(next(iter(element.clauses)), **kw)
 
 
-def _tool_text_sql(value, compiler):
+def _tool_text_prefix_sql(value, compiler):
     marker = compiler.render_literal_value(TOOL_OUTPUT_TRUNCATION, Text())
-    # Six bytes per character covers JSON escaping as well as UTF-8; include quotes.
-    head = (TOOL_OUTPUT_BYTES - len(TOOL_OUTPUT_TRUNCATION.encode("utf-8")) - 4) // 6
-    return f"CASE WHEN {_tool_text_oversized_sql(value)} THEN left({value}, {head}) || {marker} ELSE {value} END"
+    budget = TOOL_OUTPUT_BYTES - len(TOOL_OUTPUT_TRUNCATION.encode("utf-8"))
+    # Trim at the last complete UTF-8 character, inspecting at most one bounded prefix.
+    return (f"(SELECT convert_from(substring(b FROM 1 FOR CASE "
+        f"WHEN octet_length(b) < {budget} THEN octet_length(b) "
+        f"WHEN get_byte(b, {budget - 1}) >= 192 THEN {budget - 1} "
+        f"WHEN get_byte(b, {budget - 2}) >= 224 THEN {budget - 2} "
+        f"WHEN get_byte(b, {budget - 3}) >= 240 THEN {budget - 3} ELSE {budget} END), 'UTF8') || {marker} "
+        f"FROM (SELECT substring(convert_to(left({value}, {budget}), 'UTF8') FROM 1 FOR {budget}) AS b OFFSET 0) AS prefix)")
 
 
-def _tool_text_oversized_sql(value):
-    return (f"CASE WHEN octet_length({value}) > {TOOL_OUTPUT_BYTES} THEN true "
-        f"ELSE octet_length(to_jsonb({value})::text) > {TOOL_OUTPUT_BYTES} END")
+def _tool_read_gate(column, compiler, **kw):
+    columns = getattr(getattr(column, "table", None), "c", None)
+    if columns is None or "event_type" not in columns or "content" not in columns:
+        return None
+    kind = compiler.process(columns.event_type, **kw)
+    content = compiler.process(columns.content, **kw)
+    return f"{kind} IN ('tool_result', 'tool_result.completed') AND octet_length({content}) > {TOOL_OUTPUT_BYTES}"
 
 
 @compiles(_ToolTextRead, "postgresql")
 def _bounded_tool_text(element, compiler, **kw):
     column = next(iter(element.clauses))
     value = compiler.process(column, **kw)
-    kind = compiler.process(column.table.c.event_type, **kw)
-    return f"CASE WHEN {kind} IN ('tool_result', 'tool_result.completed') THEN {_tool_text_sql(value, compiler)} ELSE {value} END"
+    gate = _tool_read_gate(column, compiler, **kw)
+    return f"CASE WHEN {gate} THEN {_tool_text_prefix_sql(value, compiler)} ELSE {value} END" if gate else value
 
 
 @compiles(_ToolMetadataRead, "postgresql")
 def _bounded_tool_metadata(element, compiler, **kw):
     column = next(iter(element.clauses))
     value = compiler.process(column, **kw)
-    kind = compiler.process(column.table.c.event_type, **kw)
+    gate = _tool_read_gate(column, compiler, **kw)
+    if not gate:
+        return value
     content = f"({value} #>> '{{v2_payload,content}}')"
     # Replace only the duplicated raw text; retain authority, model projection and all other metadata.
-    return (f"CASE WHEN {kind} IN ('tool_result', 'tool_result.completed') "
-        f"AND ({_tool_text_oversized_sql(content)}) THEN "
-        f"jsonb_set({value}, '{{v2_payload,content}}', to_jsonb({_tool_text_sql(content, compiler)}), false) ELSE {value} END")
+    return (f"CASE WHEN {gate} THEN "
+        f"jsonb_set({value}, '{{v2_payload,content}}', coalesce(to_jsonb({_tool_text_prefix_sql(content, compiler)}), 'null'::jsonb), false) ELSE {value} END")
 
 
 class _TranscriptText(TypeDecorator):

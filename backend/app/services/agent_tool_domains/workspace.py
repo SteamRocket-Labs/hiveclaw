@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import uuid
 import json
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -421,23 +422,31 @@ def _list_files(
     return result
 
 
-def _read_receipted_workspace_bytes(read_root: Path, read_path: str, authority_scope, authority_path: str) -> bytes:
+def _read_receipted_workspace_bytes(read_root: Path, read_path: str, authority_scope, authority_path: str, *, snapshot=None):
     with open_workspace_file(read_root, read_path) as source:
-        raw = source.read()
+        if snapshot is None:
+            raw = source.read()
+            digest = hashlib.sha256(raw).hexdigest()
+        else:
+            hasher = hashlib.sha256()
+            while block := source.read(64 * 1024):
+                hasher.update(block)
+                snapshot.write(block)
+            digest = hasher.hexdigest()
     read = authority_scope.input_read(authority_path) if hasattr(authority_scope, "input_read") else None
     if read is not None:
         if read.carrier_kind == "workspace_artifact":
-            read.observed_sha256 = hashlib.sha256(raw).hexdigest()
+            read.observed_sha256 = digest
         else:
-            read.verify(raw)
+            read.verify_digest(digest)
     learned = next((digest for path, _revision, digest in getattr(authority_scope, "learning_files", ())
         if path == authority_path), None)
-    if learned is not None and hashlib.sha256(raw).hexdigest() != learned:
+    if learned is not None and digest != learned:
         raise WorkspaceAuthorityError("learned_skill_bytes_changed", "The learned source bytes changed after authority was checked.")
     capture = getattr(authority_scope, "skill_inputs", None)
     if capture is not None:
-        capture.observe_file(authority_path, hashlib.sha256(raw).hexdigest())
-    return raw
+        capture.observe_file(authority_path, digest)
+    return raw if snapshot is None else digest
 
 
 def _read_file(
@@ -1622,11 +1631,11 @@ def _grep_search(
     if execution_inputs is not None:
         execution_inputs.observe({}, authority_scope)
 
-    def read_search_bytes(path):
-        raw = _read_receipted_workspace_bytes(ws, path, authority_scope, path)
+    def search_snapshot(path, snapshot):
+        digest = _read_receipted_workspace_bytes(ws, path, authority_scope, path, snapshot=snapshot)
         if execution_inputs is not None:
-            execution_inputs.observe({path: {"path": path, "sha256": hashlib.sha256(raw).hexdigest()}}, authority_scope)
-        return raw
+            execution_inputs.observe({path: {"path": path, "sha256": digest}}, authority_scope)
+        snapshot.seek(0)
 
     if _authority_known_foreign_path(authority_scope, root):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
@@ -1666,35 +1675,34 @@ def _grep_search(
             if resolved is not None and _authority_allows_path(authority_scope, resolved.relative_to(ws.resolve()).as_posix()):
                 paths.append(rel_path)
         if native_rg:
-            for rel_path in paths:
+            for offset in range(0, len(paths), 32):
                 if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
                     break
-                # Search one verified snapshot at a time; stdout is drained only
-                # until the byte budget, including when rg emits one huge line.
-                with tempfile.TemporaryFile() as source, tempfile.TemporaryFile() as errors:
-                    raw = read_search_bytes(rel_path)
-                    source.write(raw)
-                    del raw
-                    source.seek(0)
-                    descriptor = f"/dev/fd/{source.fileno()}"
+                with ExitStack() as inputs, tempfile.TemporaryFile() as errors:
+                    descriptors = {}
+                    for rel_path in paths[offset : offset + 32]:
+                        source = inputs.enter_context(tempfile.TemporaryFile())
+                        search_snapshot(rel_path, source)
+                        descriptors[f"/dev/fd/{source.fileno()}"] = (rel_path, source.fileno())
                     command = ["rg", "--with-filename", "--line-number", "--color", "never"]
                     if explicit_limit is not None:
-                        command.extend(("--max-count", str(explicit_limit - match_count)))
-                    command.extend(("--", pattern, descriptor))
-                    with subprocess.Popen(command, pass_fds=(source.fileno(),), stdout=subprocess.PIPE, stderr=errors) as proc:
+                        command.extend(("--max-count", str(explicit_limit)))
+                    command.extend(("--", pattern, *descriptors))
+                    batch_matches, batch_bytes, stopped_early = [], matches.size, False
+                    with subprocess.Popen(command, pass_fds=tuple(fd for _, fd in descriptors.values()), stdout=subprocess.PIPE, stderr=errors) as proc:
                         try:
                             while line := proc.stdout.readline(TOOL_OUTPUT_BYTES + 1):
-                                _, _, match = line.decode("utf-8", errors="replace").partition(":")
+                                descriptor, _, match = line.decode("utf-8", errors="replace").partition(":")
+                                if descriptor not in descriptors:
+                                    continue
                                 match = match.rstrip("\r\n")
-                                matches.append(f"- {rel_path}:{match}")
-                                match_count += 1
-                                if len(line) > TOOL_OUTPUT_BYTES and not line.endswith(b"\n"):
-                                    matches.cut()
-                                if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
+                                batch_matches.append((descriptors[descriptor][0], int(match.partition(":")[0]), match))
+                                batch_bytes += len(line)
+                                if batch_bytes > TOOL_OUTPUT_BYTES:
+                                    stopped_early = True
                                     break
                         finally:
                             proc.stdout.close()
-                            stopped_early = matches.truncated or explicit_limit is not None and match_count >= explicit_limit
                             if stopped_early and proc.poll() is None:
                                 proc.terminate()
                             proc.wait()
@@ -1702,13 +1710,21 @@ def _grep_search(
                             errors.seek(0)
                             error = errors.read(TOOL_OUTPUT_BYTES).decode("utf-8", errors="replace")
                             return _workspace_error(tool_name, "operation_failed", f"Grep search failed: {error.strip()}", retryable=True)
+                    for rel_path, _line_number, match in sorted(batch_matches):
+                        matches.append(f"- {rel_path}:{match}")
+                        match_count += 1
+                        if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
+                            break
+                    if stopped_early:
+                        matches.cut()
         else:
             for rel_path in paths:
                 if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
                     break
                 try:
-                    raw = read_search_bytes(rel_path)
-                    with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as handle:
+                    with tempfile.TemporaryFile() as source:
+                        search_snapshot(rel_path, source)
+                        handle = io.TextIOWrapper(source, encoding="utf-8", errors="replace")
                         idx = 0
                         while line := handle.readline(TOOL_OUTPUT_BYTES + 1):
                             idx += 1
@@ -1718,9 +1734,9 @@ def _grep_search(
                                 if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
                                     break
                             if len(line) > TOOL_OUTPUT_BYTES and not line.endswith("\n"):
-                                matches.append("文件中有过长的行，搜索未完成。请缩小范围后继续查找。")
-                                matches.cut()
-                                break
+                                while tail := handle.readline(TOOL_OUTPUT_BYTES):
+                                    if tail.endswith("\n"):
+                                        break
                 except WorkspaceAuthorityError:
                     raise
                 except Exception as _read_err:

@@ -28,7 +28,7 @@ async def test_tool_writes_bound_both_columns_and_outbox_keep_model_projection(o
 
     tenant, agent, session, run = await _seed_run(owner_sessionmaker)
     async with owner_sessionmaker() as db:
-        for content in ("small result", '检索结果 "quoted"\n' * 20_000, "\x00" * 20_000):
+        for content in ("small result", '检索结果 "quoted"\n' * 200_000, "\x00" * 200_000):
             rows = await append_session_events(db, tenant_id=tenant, agent_id=agent, session_id=session,
                 drafts=[SessionEventDraft(item_id=uuid.uuid4(), item_kind="tool_result", lifecycle="completed",
                     scope={"level": "round", "session_id": str(session), "thread_id": str(session),
@@ -36,8 +36,8 @@ async def test_tool_writes_bound_both_columns_and_outbox_keep_model_projection(o
                     actor={"type": "tool"}, payload={"content": content, "model_visible_content": "provider projection"})])
             await db.commit()
             row = rows[0]
-            stored = (await db.execute(text("SELECT octet_length(content), octet_length((metadata_json->'v2_payload'->'content')::text) FROM chat_transcript_events WHERE id=:id"), {"id": row.id})).one()
-            assert max(stored) <= 65_536
+            stored = (await db.execute(text("SELECT octet_length(content), octet_length(metadata_json->'v2_payload'->>'content') FROM chat_transcript_events WHERE id=:id"), {"id": row.id})).one()
+            assert max(stored) <= 1024 * 1024
             outbox = await db.scalar(select(SessionEventOutbox).where(SessionEventOutbox.event_id == row.id))
             payload = outbox.envelope_json["payload"]
             assert payload["content"] == row.content
@@ -45,15 +45,16 @@ async def test_tool_writes_bound_both_columns_and_outbox_keep_model_projection(o
             if content == "small result":
                 assert payload["content"] == content
             else:
-                assert "请缩小范围后继续查找" in payload["content"]
+                assert "结果过大，只保留了前面部分。" in payload["content"]
 
 
-async def test_old_tool_rows_are_bounded_for_orm_scalar_and_alias_without_rewrite(owner_sessionmaker):
+@pytest.mark.parametrize("raw", ["old result\n" * 100_000, "中" * 400_000, "😀" * 300_000])
+async def test_old_tool_rows_are_bounded_for_orm_scalar_and_alias_without_rewrite(owner_sessionmaker, raw):
     from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.tools.output_limits import bound_tool_output
 
     tenant, agent, session, _run = await _seed_run(owner_sessionmaker)
     event_id = uuid.uuid4()
-    raw = "old result\n" * 100_000
     async with owner_sessionmaker() as db:
         db.add(ChatTranscriptEvent(id=event_id, tenant_id=tenant, agent_id=agent, session_id=session,
             sequence=1, actor_type="tool", event_type="tool_result", content=raw,
@@ -61,15 +62,16 @@ async def test_old_tool_rows_are_bounded_for_orm_scalar_and_alias_without_rewrit
         await db.commit()
     async with owner_sessionmaker() as db:
         row = await db.get(ChatTranscriptEvent, event_id)
-        assert len(row.content.encode()) <= 65_536
-        assert "请缩小范围后继续查找" in row.content
-        assert len(row.metadata_json["v2_payload"]["content"].encode()) <= 65_536
+        assert len(row.content.encode()) <= 1024 * 1024
+        assert row.content == bound_tool_output(raw)
+        assert "结果过大，只保留了前面部分。" in row.content
+        assert len(row.metadata_json["v2_payload"]["content"].encode()) <= 1024 * 1024
         assert row.metadata_json["v2_payload"]["model_visible_content"] == "model text"
         assert row.metadata_json["v2_payload"]["content_hash"] == "original hash"
         assert row.metadata_json["kept"] == "authority metadata"
-        assert len((await db.scalar(select(ChatTranscriptEvent.content).where(ChatTranscriptEvent.id == event_id))).encode()) <= 65_536
+        assert len((await db.scalar(select(ChatTranscriptEvent.content).where(ChatTranscriptEvent.id == event_id))).encode()) <= 1024 * 1024
         event_alias = aliased(ChatTranscriptEvent)
-        assert len((await db.scalar(select(event_alias).where(event_alias.id == event_id))).content.encode()) <= 65_536
+        assert len((await db.scalar(select(event_alias).where(event_alias.id == event_id))).content.encode()) <= 1024 * 1024
         from app.services.runtime_control_bus import _merge_transcript_bridge_metadata
 
         await _merge_transcript_bridge_metadata(db, row, {**row.metadata_json, "t0_bridge_pending": False})
@@ -99,12 +101,12 @@ async def test_legacy_tool_writer_bounds_a_copied_v2_payload(owner_sessionmaker)
     from app.services.chat_transcript import append_session_event
 
     tenant, agent, session, _run = await _seed_run(owner_sessionmaker)
-    raw = '"legacy result"\n' * 20_000
+    raw = '"legacy result"\n' * 200_000
     async with owner_sessionmaker() as db:
         event = await append_session_event(db=db, tenant_id=tenant, agent_id=agent, session_id=session,
             actor_type="tool", event_type="tool_result", content=raw, bridge_to_t0=False,
             materialize_chat_message=False, metadata={"v2_payload": {"content": raw, "model_visible_content": "unchanged"}})
         await db.commit()
-        sizes = (await db.execute(text("SELECT octet_length(content), octet_length((metadata_json->'v2_payload'->'content')::text) FROM chat_transcript_events WHERE id=:id"), {"id": event.event_id})).one()
-        assert max(sizes) <= 65_536
+        sizes = (await db.execute(text("SELECT octet_length(content), octet_length(metadata_json->'v2_payload'->>'content') FROM chat_transcript_events WHERE id=:id"), {"id": event.event_id})).one()
+        assert max(sizes) <= 1024 * 1024
         assert event.transcript_event.metadata_json["v2_payload"]["model_visible_content"] == "unchanged"

@@ -242,7 +242,7 @@ async def test_search_memory_has_no_hidden_default_result_cap(tmp_path: Path) ->
 
     def fake_search_overlay(_root, _agent_id, _query, *, limit, output_byte_limit):
         assert limit is None
-        assert output_byte_limit == 65_536
+        assert output_byte_limit == 1024 * 1024
         return [
             {
                 "id": f"memory-{index}",

@@ -1,21 +1,20 @@
 """Bound retained tool text before serialization or accumulation."""
 
 from collections.abc import Iterable
-import json
 
 
-TOOL_OUTPUT_BYTES = 64 * 1024
-TOOL_OUTPUT_TRUNCATION = "\n\n结果较多，已保留前面部分。请缩小范围后继续查找。"
+TOOL_OUTPUT_BYTES = 1024 * 1024
+TOOL_OUTPUT_TRUNCATION = "\n\n结果过大，只保留了前面部分。"
 
 
-def bound_tool_output(text: str) -> str:
+def bound_tool_output(text: str, *, byte_limit: int = TOOL_OUTPUT_BYTES) -> str:
     # Inspect at most one bounded prefix, including for a single enormous line.
-    prefix = text[:TOOL_OUTPUT_BYTES].replace("\x00", "\\u0000")
-    if len(text) <= TOOL_OUTPUT_BYTES and len(json.dumps(prefix, ensure_ascii=False).encode("utf-8")) <= TOOL_OUTPUT_BYTES:
+    # PostgreSQL repairs NUL to this literal spelling before storing text.
+    prefix = text[:byte_limit].replace("\x00", "\\u0000").encode("utf-8")
+    if len(text) <= byte_limit and len(prefix) <= byte_limit:
         return text
-    # Six bytes per character covers JSON control escapes as well as UTF-8.
-    budget = TOOL_OUTPUT_BYTES - len(json.dumps(TOOL_OUTPUT_TRUNCATION, ensure_ascii=False).encode("utf-8"))
-    return prefix[:budget // 6] + TOOL_OUTPUT_TRUNCATION
+    budget = byte_limit - len(TOOL_OUTPUT_TRUNCATION.encode("utf-8"))
+    return prefix[:max(0, budget)].decode("utf-8", errors="ignore") + TOOL_OUTPUT_TRUNCATION
 
 
 class ToolOutputBuffer:

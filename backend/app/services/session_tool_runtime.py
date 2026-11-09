@@ -852,10 +852,8 @@ async def complete_tool_invocation(
         invocation.version = int(invocation.version) + 1
         return waiting_events
 
-    from app.tools.output_limits import bound_tool_output
-
-    content = bound_tool_output(str(provider_result_content))
-    content_hash = _sha256(str(provider_result_content))
+    content = str(provider_result_content)
+    content_hash = _sha256(content)
     publication_errors: list[dict[str, Any]] = []
     workspace_execution_ref = None
     expected_content_hashes: dict[str, str] = {}

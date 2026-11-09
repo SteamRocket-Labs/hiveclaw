@@ -1100,7 +1100,7 @@ async def search_memory(
     from pathlib import Path
 
     from app.config import get_settings
-    from app.tools.output_limits import TOOL_OUTPUT_BYTES, ToolOutputBuffer, bound_tool_output
+    from app.tools.output_limits import TOOL_OUTPUT_BYTES, TOOL_OUTPUT_TRUNCATION, ToolOutputBuffer, bound_tool_output
 
     if set(arguments) - {"query", "scope", "limit", "date_from", "date_to"}:
         return json.dumps(
@@ -1156,17 +1156,17 @@ async def search_memory(
             output_byte_limit=TOOL_OUTPUT_BYTES,
             **({"authorized_entries": authorized_entries} if execution_context is not None else {}),
         )
-        overlay_facts, overlay_cut = _bounded_visible_memory_facts(overlay_facts)
+        overlay_facts = [fact for fact in overlay_facts if _memory_fact_visible(fact)]
 
         from app.memory.plane_read import search_plane_facts
 
-        facts = [] if overlay_cut else search_plane_facts(
+        facts = search_plane_facts(
             Path(settings.AGENT_DATA_DIR),
             agent_id,
             query,
             limit=limit,
         )
-        backend_facts = [] if overlay_cut else await _search_semantic_backend_facts(
+        backend_facts = await _search_semantic_backend_facts(
             agent_id,
             tenant_id=tenant_id,
             query=query,
@@ -1179,7 +1179,7 @@ async def search_memory(
             facts = _dedupe_fact_results([*backend_facts, *facts])
             if limit is not None:
                 facts = facts[:limit]
-        facts, facts_cut = _bounded_visible_memory_facts(facts)
+        facts = [fact for fact in facts if _memory_fact_visible(fact)]
         if facts and execution_context is not None:
             issues.append({"status": "unavailable", "code": "legacy_memory_sources_unverified", "count": len(facts)})
             facts = []
@@ -1192,11 +1192,9 @@ async def search_memory(
                 entry_id = f.get("id", "")
                 content = f.get("content") or f.get("preview", "")
                 results.append(_render_memory_fact(bound_tool_output(content), entry_id, source=f.get("source", ""), timestamp=f.get("timestamp", "")))
-            if facts_cut:
-                results.cut()
 
     # --- Cross-session recall ---
-    if scope in ("sessions", "all") and not results.truncated:
+    if scope in ("sessions", "all"):
         try:
             from app.tools.runtime import ToolExecutionRequest
 
@@ -1305,7 +1303,7 @@ async def search_memory(
         )
         allowed_ids = {entry.entry_id for entry, _receipt in overlay_pairs}
         overlay_facts = [fact for fact in overlay_facts if fact["id"] in allowed_ids]
-    if execution_context is not None and scope in {"facts", "all"} and not results.truncated:
+    if execution_context is not None and scope in {"facts", "all"}:
         from app.services.team_memory_runtime import read_entries, render_entry
         from app.tools.runtime import ToolExecutionRequest
 
@@ -1333,8 +1331,6 @@ async def search_memory(
                 break
             entry_id = fact["id"]
             overlay_lines.append(_render_memory_fact(bound_tool_output(fact.get('content') or fact.get('preview', '')), entry_id))
-        if overlay_cut:
-            overlay_lines.cut()
     overlay_lines.extend(results)
     results = overlay_lines
     if not results:
@@ -1346,7 +1342,9 @@ async def search_memory(
 
     else:
         content = results.text()
-    content = bound_tool_output(_memory_availability(content, issues))
+    notice = TOOL_OUTPUT_TRUNCATION if any(fact.get("output_truncated") for fact in overlay_facts) and not results.truncated else ""
+    notice += _memory_availability("", issues)
+    content = bound_tool_output(content, byte_limit=TOOL_OUTPUT_BYTES - len(notice.encode("utf-8"))) + notice
     if execution_context is not None:
         used_ids = {fact["id"] for fact in overlay_facts}
         return await _record_memory_output(
@@ -1405,21 +1403,6 @@ def _memory_fact_visible(fact: dict) -> bool:
 
         sensitivity = classify_text_sensitivity(str(fact.get("content") or fact.get("preview") or ""))
     return _memory_metadata_visible({"sensitivity": sensitivity})
-
-
-def _bounded_visible_memory_facts(facts):
-    from app.tools.output_limits import ToolOutputBuffer
-
-    selected = []
-    budget = ToolOutputBuffer()
-    for fact in facts:
-        if not _memory_fact_visible(fact):
-            continue
-        selected.append(fact)
-        budget.append(fact.get("content") or fact.get("preview", ""))
-        if budget.truncated:
-            break
-    return selected, budget.truncated
 
 
 def _wiki_hit_visible(data_root: Path, agent_id: uuid.UUID, hit: dict) -> bool:

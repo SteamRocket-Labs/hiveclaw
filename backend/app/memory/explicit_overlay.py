@@ -51,6 +51,7 @@ class ExplicitMemoryOverlayEntry:
     created_at: str
     metadata: dict[str, str]
     source_sha256: str | None = None
+    output_truncated: bool = False
 
 
 async def write_explicit_memory_overlay(
@@ -208,7 +209,7 @@ def explicit_overlay_dir(data_root: Path, agent_id: uuid.UUID | str) -> Path:
 
 
 def _read_bounded_entry(reader, byte_limit):
-    from app.tools.output_limits import TOOL_OUTPUT_TRUNCATION, bound_tool_output
+    from app.tools.output_limits import TOOL_OUTPUT_TRUNCATION
 
     digest = hashlib.sha256()
     start, end = b"<normalized_memory>", b"</normalized_memory>"
@@ -241,7 +242,8 @@ def _read_bounded_entry(reader, byte_limit):
         return "", digest.hexdigest(), 0
     content = re.sub(r"\s+", " ", captured.decode("utf-8", errors="replace").strip())
     if body_bytes > byte_limit:
-        content = bound_tool_output(content + TOOL_OUTPUT_TRUNCATION)
+        budget = byte_limit - len(TOOL_OUTPUT_TRUNCATION.encode("utf-8"))
+        content = content.encode("utf-8")[:budget].decode("utf-8", errors="ignore") + TOOL_OUTPUT_TRUNCATION
     return content, digest.hexdigest(), body_bytes
 
 
@@ -285,7 +287,6 @@ def load_explicit_overlay_entries(
             latest[entry_id] = {str(key): str(value) for key, value in record.items() if value is not None}
 
     entries: list[ExplicitMemoryOverlayEntry] = []
-    collected_bytes = 0
     for entry_id, metadata in latest.items():
         if output_byte_limit is not None and metadata.get("status", "active") != "active":
             continue
@@ -303,7 +304,6 @@ def load_explicit_overlay_entries(
                     source_hash = hashlib.sha256(body).hexdigest()
                 else:
                     content, source_hash, content_bytes = _read_bounded_entry(reader, output_byte_limit)
-                    collected_bytes += content_bytes
         except (OSError, ValueError, WorkspaceAuthorityError):
             logger.warning("Explicit memory entry could not be read safely: %s", entry_id)
             continue
@@ -321,10 +321,9 @@ def load_explicit_overlay_entries(
                 created_at=metadata.get("created_at", ""),
                 metadata=metadata,
                 source_sha256=source_hash,
+                output_truncated=output_byte_limit is not None and content_bytes > output_byte_limit,
             )
         )
-        if output_byte_limit is not None and collected_bytes > output_byte_limit:
-            break
     return entries
 
 
@@ -364,6 +363,7 @@ def search_explicit_overlay_entries(
     ]
     scored.sort(key=lambda item: item[0], reverse=True)
     visible = scored if limit is None else scored[: max(0, limit)]
+    output_truncated = any(entry.output_truncated for entry in entries)
     if source_observer is not None:
         for _score, entry in visible:
             source_observer(entry.entry_id, (*manifest_sources, {"source_kind": "agent_memory_file",
@@ -380,6 +380,7 @@ def search_explicit_overlay_entries(
             "timestamp": entry.created_at,
             "sensitivity": entry.sensitivity,
             "retrieval_score": score,
+            **({"output_truncated": True} if output_truncated else {}),
             "metadata": {**_entry_metadata_with_activation_keys(entry), "retrieval_score": score},
         }
         for score, entry in visible
@@ -645,7 +646,7 @@ def _simple_score(query: str, content: str) -> float:
 def _term_set(text: str) -> set[str]:
     lowered = (text or "").lower()
     tokens = {token for token in re.split(r"\W+", lowered) if token}
-    cjk = {lowered[i : i + 2] for i in range(max(0, len(lowered) - 1)) if "\u4e00" <= lowered[i] <= "\u9fff"}
+    cjk = set(re.findall(r"(?=([\u4e00-\u9fff].))", lowered, flags=re.DOTALL))
     return tokens | cjk
 
 

@@ -17,9 +17,9 @@ def test_grep_stops_collecting_over_one_hundred_mb(tmp_path, monkeypatch, native
             stream.write(block)
     assert path.stat().st_size > 100 * 1024 * 1024
     result = workspace._grep_search(tmp_path, "match")
-    assert len(result.encode("utf-8")) <= 65_536
+    assert len(result.encode("utf-8")) <= 1024 * 1024
     assert "matches.txt:1:" in result
-    assert "请缩小范围后继续查找" in result
+    assert "结果过大，只保留了前面部分。" in result
 
 
 @pytest.mark.parametrize("scope", ["facts", "sessions"])
@@ -37,9 +37,9 @@ async def test_memory_stops_rendering_over_one_hundred_mb(monkeypatch, scope):
 
     monkeypatch.setattr(memory, "search_session_history", recall)
     result = await memory.search_memory(uuid4(), {"query": "match", "scope": scope})
-    assert len(str(result).encode("utf-8")) <= 65_536
+    assert len(str(result).encode("utf-8")) <= 1024 * 1024
     assert "记忆 match" in result
-    assert "请缩小范围后继续查找" in result
+    assert "结果过大，只保留了前面部分。" in result
 
 
 async def test_small_search_results_keep_complete_content(monkeypatch, tmp_path):
@@ -56,16 +56,13 @@ async def test_small_search_results_keep_complete_content(monkeypatch, tmp_path)
     assert result == '## 相关记忆\n- "完整的小结果"\n  管理引用（仅用于读取、更正或忘记，不要向用户展示）：id=fact-1'
 
 
-def test_recall_assembly_stops_before_building_a_huge_transcript():
+def test_recall_bounds_each_tool_message_without_dropping_later_messages():
     from app.services.session_recall import _transcript_lines_from_messages
 
-    def messages():
-        yield "user", "remember " * 10_000
-        raise AssertionError("Recall continued collecting after its output budget")
-
-    result = "\n".join(_transcript_lines_from_messages(messages()))
-    assert len(result.encode()) <= 65_536
-    assert "请缩小范围后继续查找" in result
+    result = _transcript_lines_from_messages([("tool", "remember " * 200_000), ("user", "later message")])
+    assert len(result[0].encode()) <= 1024 * 1024 + len("Tool: ")
+    assert "结果过大，只保留了前面部分。" in result[0]
+    assert result[1] == "User: later message"
 
 
 @pytest.mark.parametrize("native", [True, False])

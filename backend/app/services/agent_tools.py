@@ -732,13 +732,16 @@ def _deferred_tool_activation_keys(candidate: dict[str, Any]) -> dict[str, Any]:
 
 async def available_deferred_tool_candidates_for_agent(
     agent_id: uuid.UUID, *, limit: int = 80, source_unbound: list[str] | None = None,
+    bound_only: bool = False,
 ) -> list[dict[str, Any]]:
-    """Stable turn-1 deferred tool candidates with selector contract metadata."""
+    """Turn-1 candidates; bound_only keeps external names in tool_search instead."""
     names = await available_deferred_tool_names_for_agent(agent_id, limit=limit)
     builtin_names = AGENT_TEAM_DEFERRED_TOOL_NAMES | {
         name for capability in iter_runtime_l2_capabilities() for name in capability.tools}
     candidates = []
     for name in names:
+        if bound_only and name not in builtin_names:
+            continue
         candidate = make_deferred_tool_candidate(
             name,
             group=_deferred_tool_group_for_name(name),

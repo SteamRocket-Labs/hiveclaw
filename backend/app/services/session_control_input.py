@@ -1466,6 +1466,11 @@ async def _record_cancel_signal_delivery_attempt(
     control.recovery_owner = None
     command.updated_at = datetime.now(timezone.utc)
 
+    # The terminal writer holds the same session lock. Keep late transport
+    # facts in task metadata without advancing its already-bound frontier.
+    if task.status in _TERMINAL_RUN_STATUSES:
+        return
+
     lifecycle = "completed" if cross_process_delivered else "failed"
     await append_session_events(
         db,

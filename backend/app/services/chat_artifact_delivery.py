@@ -1239,7 +1239,6 @@ async def create_chat_artifacts_for_message(
     selection_model_result_id: uuid.UUID | None = None,
     execution_evidence_ref: str | None = None,
     tool_invocation_id: uuid.UUID | None = None,
-    source_validation_session: AsyncSession | None = None,
 ) -> list[dict[str, Any]]:
     """Create artifact rows for safe candidate paths and return message parts."""
     from app.services.content_input_receipts import (
@@ -1251,9 +1250,8 @@ async def create_chat_artifacts_for_message(
     )
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
-    # Source checks must not leave the publication connection idle. Reuse each
-    # source only within one file's disclosure; later publications revalidate.
-    source_db = source_validation_session if source_validation_session is not None else db
+    # Validate in the publication transaction. A failed source query rolls back
+    # only its file's savepoint, preserving the other files' cards.
     parts: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     session_uuid = uuid.UUID(str(session_id))
@@ -1399,16 +1397,17 @@ async def create_chat_artifacts_for_message(
                             "workspace_resource_forbidden", "This output is outside the machine work."
                         )
                 else:
-                    await authorize_workspace_path(
-                        db,
-                        authority_user,
-                        agent_id=agent_id,
-                        path=path,
-                        action="read",
-                        path_exists=True,
-                        session_id=session_uuid,
-                        runtime_principal=runtime_principal,
-                    )
+                    async with db.begin_nested():
+                        await authorize_workspace_path(
+                            db,
+                            authority_user,
+                            agent_id=agent_id,
+                            path=path,
+                            action="read",
+                            path_exists=True,
+                            session_id=session_uuid,
+                            runtime_principal=runtime_principal,
+                        )
             except (WorkspaceAuthorityError, HTTPException) as exc:
                 if publication_errors is not None:
                     denied = not isinstance(exc, HTTPException) or exc.status_code in {401, 403, 404}
@@ -1437,13 +1436,14 @@ async def create_chat_artifacts_for_message(
                 if native_artifact is not None:
                     try:
                         with group_source_read(batch_inputs=True):
-                            await validate_artifact_content_receipt(
-                                source_db,
-                                tenant_id,
-                                authority_user,
-                                native_artifact,
-                                runtime_principal=runtime_principal,
-                            )
+                            async with db.begin_nested():
+                                await validate_artifact_content_receipt(
+                                    db,
+                                    tenant_id,
+                                    authority_user,
+                                    native_artifact,
+                                    runtime_principal=runtime_principal,
+                                )
                         with captured_chat_artifact_file(native_artifact, workspace_root) as (captured, _source):
                             if captured is None:
                                 native_artifact = None
@@ -1535,15 +1535,16 @@ async def create_chat_artifacts_for_message(
             )
             try:
                 with group_source_read(batch_inputs=True):
-                    source_receipt = receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None
-                    if runtime_principal is not None:
-                        await validate_runtime_workspace_receipt(
-                            source_db, tenant_id, runtime_principal, source_receipt, candidate["content_hash"]
-                        )
-                    else:
-                        await validate_published_workspace_receipt(
-                            source_db, tenant_id, authority_user, source_receipt, candidate["content_hash"]
-                        )
+                    async with db.begin_nested():
+                        source_receipt = receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None
+                        if runtime_principal is not None:
+                            await validate_runtime_workspace_receipt(
+                                db, tenant_id, runtime_principal, source_receipt, candidate["content_hash"]
+                            )
+                        else:
+                            await validate_published_workspace_receipt(
+                                db, tenant_id, authority_user, source_receipt, candidate["content_hash"]
+                            )
             except ContentInputReceiptError as exc:
                 record_source_error(path, exc)
                 continue
@@ -1603,9 +1604,10 @@ async def create_chat_artifacts_for_message(
             if isinstance(db, AsyncSession):
                 try:
                     with group_source_read(batch_inputs=True):
-                        await validate_artifact_content_receipt(
-                            source_db, tenant_id, authority_user, existing, runtime_principal=runtime_principal
-                        )
+                        async with db.begin_nested():
+                            await validate_artifact_content_receipt(
+                                db, tenant_id, authority_user, existing, runtime_principal=runtime_principal
+                            )
                 except ContentInputReceiptError as exc:
                     record_source_error(path, exc)
                     continue

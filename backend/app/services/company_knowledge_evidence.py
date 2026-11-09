@@ -116,8 +116,9 @@ async def append_company_knowledge_event(
     """Stage one chained event in the caller's transaction; never commit here."""
 
     # The tenant row is the stable per-stream mutex, including the first event
-    # where no prior event row exists to lock.
-    await session.execute(select(Tenant.id).where(Tenant.id == event_input.tenant_id).with_for_update())
+    # where no prior event row exists to lock. NO KEY UPDATE still serializes
+    # writers without conflicting with foreign-key KEY SHARE locks.
+    await session.execute(select(Tenant.id).where(Tenant.id == event_input.tenant_id).with_for_update(key_share=True))
     previous = (
         await session.execute(
             select(CompanyKnowledgeEvent)

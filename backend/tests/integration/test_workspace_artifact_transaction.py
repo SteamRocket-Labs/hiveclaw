@@ -5,10 +5,12 @@ import hashlib
 import json
 import time
 import uuid
+from contextvars import ContextVar
 
 import pytest
 from sqlalchemy import event, select, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import Pool
 
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient, _seed_run
 
@@ -21,6 +23,7 @@ async def test_web_csv_report_delivers_without_blocking_its_settlement(
     monkeypatch,
     tmp_path,
     retained_reports,
+    company_knowledge=False,
 ):
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
@@ -184,6 +187,13 @@ async def test_web_csv_report_delivers_without_blocking_its_settlement(
         }
 
     path, body = "workspace/sales-report.md", "# Sales report\nRows: 20\nTotal sales: 240\n"
+    publication = None
+    if company_knowledge:
+        from tests.integration.test_artifact_publication_transactions import publish_company_source
+
+        publication, _version = await publish_company_source(
+            owner_sessionmaker, tenant=seed["tenant_id"], user=seed["user_id"], root=seed["data_root"]
+        )
     model_client = ScriptedLLMClient(
         [
             {
@@ -212,19 +222,38 @@ async def test_web_csv_report_delivers_without_blocking_its_settlement(
             {"content": f"Report ready: [{path}]({path})", "finish_reason": "stop"},
         ]
     )
+    if publication is not None:
+        model_client.script.insert(
+            0, call("read_company_kb", "company-report-source", {"publication_id": str(publication)})
+        )
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: model_client)
     artifact_started = asyncio.Event()
     original_create = chat_artifact_delivery.create_chat_artifacts_for_message
     timings = {}
     publication_context = {}
+    publication_connections = ContextVar("publication_connections", default=None)
+
+    def checkout(dbapi_connection, _record, _proxy):
+        scope = publication_connections.get()
+        if scope is not None:
+            scope["active"].add(id(dbapi_connection))
+            scope["peak"] = max(scope["peak"], len(scope["active"]))
+
+    def checkin(dbapi_connection, _record):
+        scope = publication_connections.get()
+        if scope is not None:
+            scope["active"].discard(id(dbapi_connection))
 
     def count_sql(_connection, _cursor, statement, _parameters, _context, _many):
         if timings.get("counting"):
             timings["artifact_queries"] = timings.get("artifact_queries", 0) + 1
 
     event.listen(Engine, "before_cursor_execute", count_sql)
+    event.listen(Pool, "checkout", checkout)
+    event.listen(Pool, "checkin", checkin)
 
     async def observe_create(**kwargs):
+        token = None
         if path in kwargs["paths"]:
             publication_context.update(
                 {
@@ -239,6 +268,9 @@ async def test_web_csv_report_delivers_without_blocking_its_settlement(
             )
             # Accelerate the production idle-connection failure on this local database.
             await kwargs["db"].execute(text("SET LOCAL idle_in_transaction_session_timeout = '1000ms'"))
+            connection = await kwargs["db"].connection()
+            scope = {"active": {id(connection.sync_connection.connection.dbapi_connection)}, "peak": 1}
+            token = publication_connections.set(scope)
             timings["artifact_start"] = time.monotonic()
             timings["counting"] = True
             artifact_started.set()
@@ -248,6 +280,9 @@ async def test_web_csv_report_delivers_without_blocking_its_settlement(
             if path in kwargs["paths"]:
                 timings["artifact_seconds"] = time.monotonic() - timings["artifact_start"]
                 timings["counting"] = False
+                timings["publication_peak_connections"] = scope["peak"]
+            if token is not None:
+                publication_connections.reset(token)
 
     monkeypatch.setattr(chat_artifact_delivery, "create_chat_artifacts_for_message", observe_create)
 
@@ -297,6 +332,8 @@ async def test_web_csv_report_delivers_without_blocking_its_settlement(
     finally:
         reset_runtime_task_fence(fence)
         event.remove(Engine, "before_cursor_execute", count_sql)
+        event.remove(Pool, "checkout", checkout)
+        event.remove(Pool, "checkin", checkin)
         if not artifact_started.is_set():
             observer.cancel()
     blocked = await observer
@@ -351,9 +388,12 @@ async def test_web_csv_report_delivers_without_blocking_its_settlement(
         assert any(line.strip() == "240" for content in calculation for line in content.splitlines()), calculation
         artifact_id, message_id = artifacts[0].id, artifacts[0].message_id
     assert not blocked
+    assert timings["publication_peak_connections"] == 1, "publication used more than one connection"
     assert timings["artifact_seconds"] < 3
     assert timings["write_completion_seconds"] < 3
-    assert "Alpha,12" in json.dumps(model_client.requests[1])
+    assert "Alpha,12" in json.dumps(model_client.requests[2 if company_knowledge else 1])
+    if company_knowledge:
+        assert "COMPANY_SOURCE_MARKER" in json.dumps(model_client.requests[1])
     assert (seed["agent_root"] / path).read_text() == body
 
     async def publish_again(*, rebind=False):

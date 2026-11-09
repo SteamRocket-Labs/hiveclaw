@@ -347,6 +347,14 @@ async def continue_session_goal(
     if goal.blocked_count and reason in {"", "turn_stop"}:
         goal.blocked_count = 0
 
+    from app.services.credential_boundary_loader import redact_runtime_ingress_payload
+
+    protected = await redact_runtime_ingress_payload(
+        db, tenant_id=agent.tenant_id, agent_id=agent.id, source_channel="web",
+        requester_user_id=getattr(goal, "created_by_user_id", None),
+        payload={"goal_objective": goal.objective},
+    )
+    goal.objective = protected.value["goal_objective"]
     # A7: if the objective was re-scoped via update_goal, re-orient this turn and
     # consume the one-shot steering flag so later turns do not repeat it.
     prompt = _continuation_prompt(goal, now=now)
@@ -354,15 +362,6 @@ async def continue_session_goal(
         prompt = f"{objective_updated_prompt(_prompt_state(goal, now=now))}\n\n{prompt}"
         metadata["objective_updated_pending"] = False
 
-    from app.services.credential_boundary_loader import redact_runtime_ingress_payload
-
-    protected = await redact_runtime_ingress_payload(
-        db, tenant_id=agent.tenant_id, agent_id=agent.id, source_channel="web",
-        requester_user_id=getattr(goal, "created_by_user_id", None),
-        payload={"prompt": prompt, "goal_objective": goal.objective},
-    )
-    prompt = protected.value["prompt"]
-    goal.objective = protected.value["goal_objective"]
     notice_metadata = dict(protected.value.get("extra_metadata") or {})
     metadata.pop("pasted_credential_notice", None)
     metadata.update(notice_metadata)

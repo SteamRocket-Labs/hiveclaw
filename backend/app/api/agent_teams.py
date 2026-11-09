@@ -633,7 +633,17 @@ async def start_agent_team_member_run(
         raise HTTPException(status_code=409, detail="Agent team member is closed")
     session = await _load_member_session_or_404(db, agent_id=agent_id, member=member)
 
+    from app.services.credential_boundary_loader import RuntimeIngressSecretBoundaryUnavailable, redact_runtime_ingress_payload
+
+    try:
+        protected = await redact_runtime_ingress_payload(db, tenant_id=agent.tenant_id,
+            agent_id=agent.id, requester_user_id=current_user.id, source_channel="web",
+            payload={"content": body.content, "display_content": body.display_content})
+    except RuntimeIngressSecretBoundaryUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc
+    body = body.model_copy(update={"content": protected.value["content"], "display_content": protected.value["display_content"]})
     metadata = {
+        **dict(protected.value.get("extra_metadata") or {}),
         "source": "agent_team",
         "team_id": str(team.id),
         "member_id": str(member.id),

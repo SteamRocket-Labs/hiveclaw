@@ -273,7 +273,7 @@ def prepare_custom_api_request(
     try:
         same_origin = http_origin(base_url) == http_origin(url)
     except ValueError as exc:
-        raise CustomApiConnectorError("连接地址端口无效，请管理员检查应用连接设置。") from exc
+        raise CustomApiConnectorError("连接地址无效，请管理员检查应用连接设置。") from exc
     if not same_origin:
         raise CustomApiConnectorError("连接地址与配置不一致，请管理员检查应用连接设置。")
     headers = {str(k): str(_render_template(v, arguments)) for k, v in dict(action.get("headers") or {}).items()}
@@ -282,7 +282,7 @@ def prepare_custom_api_request(
     scheme = str(auth.get("scheme") or "none").lower()
     location = str(auth.get("in") or "header").lower()
     auth_name = str(auth.get("name") or "X-API-Key")
-    secret_values = {v for v in secret_config.values() if isinstance(v, str) and v}
+    secret_values = {v for key, v in secret_config.items() if key != "basic_username" and isinstance(v, str) and v}
     if scheme == "api_key":
         api_key = secret_config.get("api_key")
         if not api_key:
@@ -308,6 +308,7 @@ def prepare_custom_api_request(
     elif scheme != "none":
         raise CustomApiConnectorError("Unsupported custom API auth scheme")
     secret_values.update(form for value in tuple(secret_values) for form in (quote(value, safe=""), quote_plus(value)))
+    secret_values.update(re.sub(r"%[0-9A-F]{2}", lambda match: match[0].lower(), value) for value in tuple(secret_values))
     timeout_seconds = float(action.get("timeout_seconds") or 30.0)
     timeout_seconds = min(max(timeout_seconds, 1.0), 120.0)
     audit_params = {k: ("[secret]" if v in secret_values else v) for k, v in params.items()}
@@ -387,7 +388,8 @@ async def execute_prepared_custom_api_request(tool_name: str, prepared: Prepared
     except Exception as exc:
         return _governed_custom_api_error(tool_name, exc, boundary=boundary)
     body = boundary.redact_text(response.text).text
-    if "application/json" in response.headers.get("content-type", ""):
+    media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type == "application/json" or media_type.endswith("+json"):
         try:
             body = json.dumps(boundary.redact_payload(response.json()), ensure_ascii=False, indent=2)
         except Exception:

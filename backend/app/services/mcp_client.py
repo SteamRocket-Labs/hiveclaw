@@ -303,7 +303,8 @@ class MCPClient:
         except MCPAuthzError:
             raise
         except Exception as sse_err:
-            raise Exception(f"Both transports failed. Streamable HTTP: {streamable_err}; SSE: {sse_err}")
+            hint = " 请管理员使用 https:// 地址配置连接。" if urlparse(self.server_url).scheme == "http" else ""
+            raise Exception(f"Both transports failed. Streamable HTTP: {streamable_err}; SSE: {sse_err}{hint}")
 
     # ── Public API ───────────────────────────────────────────────
 

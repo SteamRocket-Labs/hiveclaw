@@ -1425,7 +1425,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         if input_case == "first_task_explicit_unverified_memory":
             assert len(creator_client.requests) == 3
             assert "OLD_UNVERIFIED_CREATION_MEMORY" not in json.dumps(creator_client.requests[0]["messages"])
-            assert "OLD_UNVERIFIED_CREATION_MEMORY" not in json.dumps(creator_client.requests[1]["messages"])
+            # R5j ac1d44c5 and the 2026-11-08 controller ruling bind this own-private T2 read.
+            assert "OLD_UNVERIFIED_CREATION_MEMORY" in json.dumps(creator_client.requests[1]["messages"])
         elif memory_case:
             visible = json.dumps(creator_client.requests[0]["messages"])
             assert old_memory_path in visible and "source_unverified" in visible
@@ -1573,7 +1574,19 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert ordered[0].model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
                 snapshot = ordered[1].model_request_snapshot_json
                 assert snapshot["input_bindings"]["dependency_coverage"]["complete"]
-                assert any(entry["status"] == "withheld" for entry in snapshot["input_bindings"]["messages"])
+                if input_case == "first_task_explicit_unverified_memory":
+                    read_invocation = await db.scalar(select(SessionToolInvocation).where(
+                        SessionToolInvocation.run_id == seed["run_id"],
+                        SessionToolInvocation.provider_tool_use_id == "read-old-memory",
+                    ))
+                    assert read_invocation is not None
+                    read_bindings = [entry for entry in snapshot["input_bindings"]["messages"]
+                        if entry.get("source_ref") == f"session-tool-result:{read_invocation.id}"]
+                    assert len(read_bindings) == 1
+                    assert read_bindings[0]["status"] == "bound"
+                    assert read_bindings[0]["dependency_status"] == "resolved"
+                else:
+                    assert any(entry["status"] == "withheld" for entry in snapshot["input_bindings"]["messages"])
             elif discovery_case:
                 if creator_readiness_case:
                     assert len(creating_rounds) == 4 and all(

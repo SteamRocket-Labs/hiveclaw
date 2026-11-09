@@ -147,3 +147,27 @@ async def test_disclosure_expiring_during_validation_cannot_cache_the_late_succe
     release.set()
     await child
     assert calls == 2
+
+
+@pytest.mark.parametrize("batch_inputs", [None, False, True])
+async def test_top_level_read_reuses_successes_without_replacing_an_outer_scope(source_read, monkeypatch, batch_inputs):
+    receipts, tenant, source = source_read
+    db, reader = _Reader(), _Reader()
+    checked, scopes = [], []
+
+    async def authorize(_db, _tenant, dependencies, **_kwargs):
+        checked.extend(dependencies)
+        scopes.append(receipts._DISCLOSURE_SOURCE_VALIDATIONS.get())
+
+    monkeypatch.setattr(receipts, "_validate_input_dependency_batch", authorize)
+    with nullcontext() if batch_inputs is None else receipts.group_source_read(batch_inputs=batch_inputs):
+        outer = receipts._DISCLOSURE_SOURCE_VALIDATIONS.get()
+        await receipts._validate_input_dependencies(db, tenant, [source, source], user=reader)
+        assert checked == [source]
+        assert scopes[0] is not None and scopes[0].batch_inputs is (batch_inputs is True)
+        if outer is not None:
+            assert scopes[0] is outer
+        assert receipts._DISCLOSURE_SOURCE_VALIDATIONS.get() is outer
+        await receipts._validate_input_dependencies(db, tenant, [source], user=reader)
+        assert checked == ([source, source] if outer is None else [source])
+    assert receipts._DISCLOSURE_SOURCE_VALIDATIONS.get() is None

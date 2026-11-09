@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import mimetypes
@@ -41,7 +40,6 @@ CHAT_ARTIFACT_PROVENANCE_HINT_LIMIT = 5
 CHAT_ARTIFACT_IDEMPOTENCY_CONSTRAINT = "uq_chat_artifacts_agent_session_run_path_snapshot"
 CHAT_ARTIFACT_SNAPSHOT_GC_SCHEMA = "chat_artifact_snapshot_gc.v1"
 DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS = 30.0
-ARTIFACT_READ_TIMEOUT_SECONDS = 5.0
 
 
 def tool_session_write_paths(
@@ -1042,24 +1040,19 @@ async def authorize_artifact_recipient_read(db, user, artifact, **authority):
         if authority.get("allow_manager_override") is True
         else source_recipient_read(session_id=artifact.root_session_id or artifact.session_id, user_id=user.id)
     )
-    try:
-        with scope:
-            async with asyncio.timeout(ARTIFACT_READ_TIMEOUT_SECONDS):
-                return await authorize_resource_action(
-                    db,
-                    user,
-                    agent_id=artifact.agent_id,
-                    resource_kind="chat_artifact",
-                    resource_id=artifact.id,
-                    action="read",
-                    owner_user_id=artifact.owner_user_id,
-                    root_session_id=artifact.root_session_id or artifact.session_id,
-                    authority_state=artifact.authority_state,
-                    **authority,
-                )
-    except TimeoutError as exc:
-        raise HTTPException(status_code=503, detail={"code": "artifact_read_unavailable", "retryable": True,
-            "message": "文件暂时无法读取，请稍后重试。"}) from exc
+    with scope:
+        return await authorize_resource_action(
+            db,
+            user,
+            agent_id=artifact.agent_id,
+            resource_kind="chat_artifact",
+            resource_id=artifact.id,
+            action="read",
+            owner_user_id=artifact.owner_user_id,
+            root_session_id=artifact.root_session_id or artifact.session_id,
+            authority_state=artifact.authority_state,
+            **authority,
+        )
 
 
 def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:

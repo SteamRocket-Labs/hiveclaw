@@ -366,10 +366,11 @@ async def _validate_input_dependencies(
         )
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     context = {"user": user, "runtime_request": runtime_request, "active_workspace_receipts": active_workspace_receipts}
+    if scope is None or not scope.active:
+        with group_source_read():
+            return await _validate_input_dependencies(db, tenant_id, dependencies, **context)
     if (
-        scope is None
-        or not scope.active
-        or not isinstance(dependencies, list)
+        not isinstance(dependencies, list)
         or any(
             not isinstance(row, dict)
             or set(row) != {"source_kind", "source_id", "source_version"}
@@ -2243,11 +2244,6 @@ async def validate_runtime_workspace_receipt(db, tenant_id, principal, receipt, 
 
 async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, runtime_principal=None):
     """Recheck the captured version's sources without borrowing a later version's audience."""
-    with group_source_read(batch_inputs=True):
-        await _validate_artifact_content_receipt(db, tenant_id, user, artifact, runtime_principal=runtime_principal)
-
-
-async def _validate_artifact_content_receipt(db, tenant_id, user, artifact, *, runtime_principal):
     snapshot = artifact.snapshot_json or {}
     try:
         receipt_id = uuid.UUID(snapshot["content_input_receipt_id"])
@@ -2267,10 +2263,6 @@ async def _validate_artifact_content_receipt(db, tenant_id, user, artifact, *, r
         raise ContentInputReceiptError(
             "workspace_content_unverified", "The artifact's source receipt does not match its captured bytes."
         )
-    sources = [{"source_kind": "workspace_artifact", "source_id": str(receipt.id)}]
-    if snapshot.get("selection_model_result_id") is not None:
-        sources.append({"source_kind": "session_model_result", "source_id": snapshot["selection_model_result_id"]})
-    await _preload_execution_sources(db, tenant_id, sources)
     if runtime_principal is not None:
         await _runtime_input_actor(db, tenant_id, runtime_principal)
     if snapshot.get("selection_model_result_id") is not None:

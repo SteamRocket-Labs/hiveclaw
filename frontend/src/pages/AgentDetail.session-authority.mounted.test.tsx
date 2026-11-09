@@ -828,6 +828,46 @@ it.each(['rejected', 'cancelled', 'needs_reconciliation'])('keeps text and offer
   expect(mocks.chatProps.chatMessages.filter((m: any) => m.role === 'user')).toHaveLength(1);
 });
 
+it.each(['deferred', 'rejected', 'mailbox'])('does not acknowledge input as merged without a live run (%s)', async kind => {
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', schema_version: 2,
+    intent: 'start_turn', status: kind === 'rejected' ? 'rejected' : 'accepted',
+    admission_state: 'admitted', dispatch_status: kind === 'deferred' ? 'pending' : 'dispatched',
+    target_run_id: kind === 'mailbox' ? 'stopped-run' : null, run: null,
+    dispatch: { kind, code: kind === 'deferred' ? 'terminal_boundary_ack_pending' : undefined } });
+  await composeOrdinaryMessage('What were the three tasks before compaction?');
+  await act(async () => { expect(await mocks.chatProps.onSendChatMsg()).toBe(false); });
+  expect(mocks.chatProps.chatInput).toBe('What were the three tasks before compaction?');
+  expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ sendState: 'failed', retrySend: expect.any(Function) });
+  expect(mocks.chatProps.transportNotice || '').not.toContain('Your input is recorded');
+  const originalInputId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  mocks.startSessionRun.mockResolvedValue({ run_id: 'new-run', status: 'pending' });
+  await act(async () => { mocks.chatProps.chatMessages.at(-1).retrySend(); });
+  expect(mocks.startSessionRun.mock.calls[1][2].input_id === originalInputId).toBe(kind !== 'rejected');
+  if (kind === 'mailbox') {
+    mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', schema_version: 2,
+      admission_state: 'admitted', intent: 'steer_current_turn', status: 'queued', target_run_id: 'new-run',
+      run: null, dispatch: { kind: 'mailbox' } });
+    act(() => mocks.chatProps.onSetChatInput('Continue with this detail'));
+    await act(async () => { expect(await mocks.chatProps.onSendChatMsg()).toBe(true); });
+    expect(mocks.chatProps.chatInput).toBe('');
+    expect(mocks.chatProps.chatMessages.at(-1).sendState).toBeUndefined();
+  }
+});
+
+it('opens a writable conversation when the newest history entry is a delegated read-only session', async () => {
+  mocks.sessionId = undefined;
+  mocks.hash = '#chat';
+  mocks.getSessionTranscript.mockResolvedValue([]);
+  mocks.listSessions.mockResolvedValue([
+    { id: 'delegated', agent_id: 'agent-1', user_id: 'platform-admin-1', session_kind: 'delegation_run',
+      read_only: true, created_at: '2026-11-09T12:00:00Z' },
+    { id: 'editable', agent_id: 'agent-1', user_id: 'platform-admin-1', session_kind: 'human_chat',
+      read_only: false, source_channel: 'web', created_at: '2026-11-09T11:00:00Z' },
+  ]);
+  render(<AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe('editable'));
+});
+
 it('reuses the same attempt after a network failure with no response', async () => {
   mocks.startSessionRun.mockRejectedValue(new TypeError('Failed to fetch'));
   await composeOrdinaryMessage();

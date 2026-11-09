@@ -2473,6 +2473,7 @@
       "deactivatedNotice": "该数字员工已停用，文件和会话都会保留。",
       "sendCancelled": "未发送：发送已取消。",
       "sendUnconfirmed": "暂时无法确认这条消息是否已保存。",
+      "sendPending": "消息尚未开始处理，请稍后重试。",
       "sendRefused": "未发送：暂时无法接受这条消息。",
       "sendFailed": "消息未发送，请重试。",
       "mySessions": "我的对话",

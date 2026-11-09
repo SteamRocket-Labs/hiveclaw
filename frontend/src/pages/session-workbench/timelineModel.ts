@@ -1727,7 +1727,7 @@ function keepLatestProcessRunActive(
   let index = cells.length - 1;
   while (index >= 0 && cells[index]?.kind === 'boundary') index -= 1;
   const cell = cells[index];
-  if (!cell || cell.kind !== 'active_run' || cell.timeline.answerMessageId) return false;
+  if (!cell || cell.kind !== 'active_run' || cell.timeline.answerMessageId || cell.timeline.durationIsFinal) return false;
   const latestUserIndex = latestUserMessageIndex(input.messages);
   if (latestUserIndex < 0 || hasAssistantAnswerAfterLatestUser(input.messages)) return false;
   if (!cell.sourceMessages.some((entry) => entry.index > latestUserIndex)) return false;
@@ -1802,10 +1802,20 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
   const answeredRuns = new Map<string, Extract<ThreadTimelineCell, { kind: 'active_run' }>>();
   let runIndex = 0;
   let turnStartedAt: string | undefined;
+  let turnHasRun = false;
+  const terminalTimes = new Map<string, number>();
+  for (const message of messages) {
+    const runId = messageRunId(message);
+    if (runId && message.sessionItem?.kind === 'run'
+      && CANONICAL_RUN_TERMINAL_LIFECYCLES.has(message.sessionItem.lifecycle)) {
+      terminalTimes.set(runId, Date.parse(message.timestamp || message.sessionItem.occurredAt || ''));
+    }
+  }
 
   const flushRun = () => {
     if (pendingRun.length === 0) return;
-    cells.push(buildRunCell(runIndex, [...pendingRun], undefined, false, turnStartedAt));
+    cells.push(buildRunCell(runIndex, [...pendingRun], undefined, false, turnHasRun ? undefined : turnStartedAt));
+    turnHasRun = true;
     runIndex += 1;
     pendingRun.length = 0;
   };
@@ -1814,7 +1824,8 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
     sourceMessages: Array<{ message: AgentChatMessage; index: number }>,
     answer: { message: AgentChatMessage; index: number },
   ) => {
-    const runCell = buildRunCell(runIndex, sourceMessages, answer, false, turnStartedAt);
+    const runCell = buildRunCell(runIndex, sourceMessages, answer, false, turnHasRun ? undefined : turnStartedAt);
+    turnHasRun = true;
     cells.push(runCell, {
       kind: 'assistant_final',
       id: messageId(answer.message, `assistant-${answer.index}`),
@@ -1866,11 +1877,15 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
 
     if (isCanonicalSessionPresentationInternalItem(message)) return;
 
-    if (
+    const runId = messageRunId(message);
+    const sessionCompaction = !runId && message.threadItem?.metadata?.manual === true
+      && (message.eventType === 'session_compact' || message.sessionItem?.kind === 'context_compaction');
+    const afterTerminal = runId && Date.parse(message.timestamp || '') > (terminalTimes.get(runId) ?? Infinity);
+    if (!sessionCompaction && !afterTerminal && (
       isStreamingAssistantMessage(message)
       || isCanonicalSessionProcessItem(message)
       || isDisclosureStepMessage(message)
-    ) {
+    )) {
       if (!appendLateProcessToAnsweredRun(message, index)) pendingRun.push({ message, index });
       return;
     }
@@ -1879,6 +1894,7 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
     if (message.role === 'user') {
       answeredRuns.clear();
       turnStartedAt = message.timestamp;
+      turnHasRun = false;
       cells.push({
         kind: 'user_turn',
         id: messageId(message, `user-${index}`),
@@ -1888,7 +1904,7 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
       return;
     }
 
-    if (message.role === 'event') {
+    if (message.role === 'event' || afterTerminal) {
       if (message.sessionItem?.kind === 'run' && CANONICAL_RUN_TERMINAL_LIFECYCLES.has(message.sessionItem.lifecycle)
         && (runtimePhase !== 'idle' || ['cancelled', 'killed', 'canceled', 'failed', 'needs_reconciliation'].includes(message.sessionItem.lifecycle))
         && !cells.some(cell => cell.kind === 'active_run' && isSameSessionRunId(cell.runId, messageRunId(message)))) {
@@ -1925,6 +1941,7 @@ function processCellsShareTurn(
   current: Extract<ThreadTimelineCell, { kind: 'active_run' }>,
   next: Extract<ThreadTimelineCell, { kind: 'active_run' }>,
 ): boolean {
+  if (current.runId && next.runId && !isSameSessionRunId(current.runId, next.runId)) return false;
   const currentTurnId = processCellTurnId(current);
   const nextTurnId = processCellTurnId(next);
   if (currentTurnId && nextTurnId) return currentTurnId === nextTurnId;
@@ -2037,6 +2054,7 @@ function applyCanonicalRunTerminalEvidence(
   activeRunId?: string | null,
   activeRunStatus?: string | null,
   runtimeTasks: Record<string, unknown>[] = [],
+  sessionRunId?: string | null,
 ): ThreadTimelineCell[] {
   const terminalByRunId = new Map<string, { completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
   messages.forEach((message) => {
@@ -2054,31 +2072,38 @@ function applyCanonicalRunTerminalEvidence(
     terminalByRunId.set(runId, { completedAtMs, status });
   });
   return cells.map((cell) => {
-    if (cell.kind !== 'active_run' || !cell.runId) return cell;
-    const terminal = terminalByRunId.get(cell.runId);
-    const liveStatus = activeRunStatus && activeRunId && isSameSessionRunId(cell.runId, activeRunId)
+    if (cell.kind !== 'active_run') return cell;
+    const runId = cell.runId || normalizeSessionRunId(sessionRunId);
+    if (!runId) return cell;
+    const terminal = terminalByRunId.get(runId);
+    const liveStatus = activeRunStatus && activeRunId && isSameSessionRunId(runId, activeRunId)
       ? runtimeStatusKey(activeRunStatus) : null;
-    const task = runtimeTasks.find(task => isSameSessionRunId(readString(task, ['runtime_task_id', 'id'], ''), cell.runId));
+    const task = runtimeTasks.find(task => isSameSessionRunId(readString(task, ['runtime_task_id', 'id'], ''), runId));
     const taskStatus = task && runtimeStatusKey(readString(task, ['status'], ''));
-    const canonicalStatus = taskStatus || liveStatus;
+    const canonicalStatus = terminal?.status || taskStatus || liveStatus;
     const status = canonicalStatus ? (canonicalStatus === 'waiting' ? 'blocked' : canonicalStatus === 'stopped' ? 'cancelled'
       : canonicalStatus === 'done' ? 'done' : canonicalStatus) : terminal?.status;
     if (!status) return cell;
-    if (status === 'running' || status === 'blocked') return { ...cell, timeline: { ...cell.timeline, status } };
-    const currentCompletedAtMs = Date.parse(cell.timeline.completedAt || '');
-    const completedAtMs = terminal?.completedAtMs ?? currentCompletedAtMs;
-    const startedAtMs = Date.parse(cell.timeline.startedAt || '');
+    const startedAt = readString(task ?? {}, ['started_at', 'created_at'], '') || cell.timeline.startedAt;
+    if (status === 'running' || status === 'blocked') return { ...cell, runId, timeline: { ...cell.timeline, status, startedAt } };
+    const taskCompletedAtMs = Date.parse(readString(task ?? {}, ['completed_at'], ''));
+    const completedAtMs = terminal?.completedAtMs ?? (Number.isFinite(taskCompletedAtMs)
+      ? taskCompletedAtMs : Date.parse(cell.timeline.completedAt || ''));
+    const startedAtMs = Date.parse(startedAt || '');
     const durationMs = Number.isFinite(startedAtMs) && Number.isFinite(completedAtMs)
-      ? Math.max(cell.timeline.durationMs ?? 0, completedAtMs - startedAtMs, 0)
+      ? Math.max(completedAtMs - startedAtMs, 0)
       : cell.timeline.durationMs;
     return {
       ...cell,
+      runId,
       phase: undefined,
       timeline: {
         ...cell.timeline,
         status,
+        startedAt,
         completedAt: Number.isFinite(completedAtMs) ? new Date(completedAtMs).toISOString() : undefined,
         durationMs,
+        durationIsFinal: Boolean(terminal || Number.isFinite(taskCompletedAtMs)),
       },
     };
   });
@@ -2139,6 +2164,7 @@ function sameCellIdentity(previous: ThreadTimelineCell, next: ThreadTimelineCell
     if (previous.timeline.startedAt !== next.timeline.startedAt) return false;
     if (previous.timeline.completedAt !== next.timeline.completedAt) return false;
     if (previous.timeline.durationMs !== next.timeline.durationMs) return false;
+    if (previous.timeline.durationIsFinal !== next.timeline.durationIsFinal) return false;
     if (previous.timeline.answerMessageId !== next.timeline.answerMessageId) return false;
     if (previous.timeline.steps.length !== next.timeline.steps.length) return false;
     if (previous.timeline.steps.some((step, index) => (
@@ -2179,19 +2205,30 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const cells = applyCanonicalRunTerminalEvidence(
     coalesceProcessCellsByUserTurn(buildCells(input.messages, input.runtimePhase), input.messages),
     input.messages,
-    null, null, input.sessionWorkbench?.runtime_tasks,
+    null, null, input.sessionWorkbench?.runtime_tasks, readString(input.activeSession ?? {}, ['runtime_task_id'], ''),
   );
   const latestTurnAnswered = hasAssistantAnswerAfterLatestUser(input.messages);
   const latestAnsweredRunId = latestTurnAnswered
     ? messageRunId([...input.messages].reverse().find(isRenderableAssistantAnswer))
     : null;
-  const currentRun = currentHeaderRun(cells, getSessionId(input.activeSession), normalizeSessionRunId(input.activeRunId),
+  let currentRun = currentHeaderRun(cells, getSessionId(input.activeSession), normalizeSessionRunId(input.activeRunId),
     input.activeRunStatus, input.sessionWorkbench?.active_run);
+  const currentRunId = normalizeSessionRunId(input.activeRunId) || currentRun?.runId
+    || messageRunId([...input.messages].reverse().find(message => messageRunId(message)))
+    || readString(input.activeSession ?? {}, ['runtime_task_id'], '');
+  const currentTask = input.sessionWorkbench?.runtime_tasks?.find(task => isSameSessionRunId(
+    readString(task, ['runtime_task_id', 'id'], ''), currentRunId));
+  const taskLifecycle = readString(currentTask ?? {}, ['status'], '');
+  if (taskLifecycle && !CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
+    && (!currentRun || CANONICAL_RUN_TERMINAL_LIFECYCLES.has(taskLifecycle))) {
+    currentRun = { runId: currentRunId, lifecycle: taskLifecycle };
+  }
   const activeRunId = normalizeSessionRunId(input.activeRunId) || normalizeSessionRunId(currentRun?.runId);
   const terminalAnswerOwnsActiveRun = Boolean(
     latestAnsweredRunId && activeRunId && isSameSessionRunId(latestAnsweredRunId, activeRunId),
   );
-  const activeRunStatus = mainTurnActiveRunStatus(input, cells);
+  const activeRunStatus = CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
+    ? null : mainTurnActiveRunStatus(input, cells);
   const runtimePhaseValue = String(input.runtimePhase || '').trim();
   const terminalDeliveryPending = Boolean(input.terminalTranscriptPending) && (runtimePhaseValue === 'done'
     || runtimeStatusKey(currentRun?.lifecycle || activeRunStatus || '') === 'done')
@@ -2236,7 +2273,8 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     .reverse().find(message => messageRunId(message)));
   const blockedRun = sessionWorkbench?.runtime_tasks?.find(task => isSameSessionRunId(
     readString(task, ['runtime_task_id', 'id'], ''), headerRunId));
-  const runLifecycle = readString(blockedRun ?? {}, ['status'], '') || currentRun?.lifecycle;
+  const runLifecycle = CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
+    ? currentRun?.lifecycle : readString(blockedRun ?? {}, ['status'], '') || currentRun?.lifecycle;
   const guidance = runLifecycle === 'needs_reconciliation'
     ? readString(asRecord(blockedRun?.user_blocker) ?? {}, ['next_action'], '') : '';
   const runDisplay = runLifecycle ? runtimeStatusKey(runLifecycle) : null;
@@ -2254,7 +2292,8 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
         : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus, input.runtimePhase);
 
   return {
-    cells: applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle, sessionWorkbench?.runtime_tasks)
+    cells: applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle, sessionWorkbench?.runtime_tasks,
+      readString(input.activeSession ?? {}, ['runtime_task_id'], ''))
       .map(cell => terminalStatePending && cell.kind === 'active_run'
         && (!headerRunId || !cell.runId || isSameSessionRunId(cell.runId, headerRunId))
         && cell.timeline.status === 'done'

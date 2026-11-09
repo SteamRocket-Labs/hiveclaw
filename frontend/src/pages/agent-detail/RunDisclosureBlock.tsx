@@ -143,8 +143,9 @@ function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string |
         readObservedRunDuration(presentationKey),
       );
   React.useEffect(() => {
-    persistObservedRunDuration(presentationKey, observedDurationMs);
-  }, [observedDurationMs, presentationKey]);
+    if (!timeline.durationIsFinal) persistObservedRunDuration(presentationKey, observedDurationMs);
+  }, [observedDurationMs, presentationKey, timeline.durationIsFinal]);
+  if (timeline.durationIsFinal) return formatDuration(timeline.durationMs);
   const duration = formatDuration(Math.max(observedDurationMs, timeline.durationMs ?? 0));
   if (duration) return duration;
   return running && !Number.isNaN(parsed) ? '0s' : '';

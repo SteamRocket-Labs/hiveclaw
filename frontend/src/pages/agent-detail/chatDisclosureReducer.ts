@@ -78,6 +78,8 @@ export interface RunTimelineSnapshot {
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
+  /** The run terminal or runtime row supplies the exact duration. */
+  durationIsFinal?: boolean;
   summary?: RunAggregateSummary;
   steps: RunStepSnapshot[];
   answerMessageId?: string;

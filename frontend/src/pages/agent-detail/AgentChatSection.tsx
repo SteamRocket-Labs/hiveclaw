@@ -1424,7 +1424,7 @@ function AgentChatSection({
         );
         return;
       }
-      nodes.push(renderEventMessage(cell.message, cell.index));
+      nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index), checkpointByIndex));
     });
 
     return nodes;

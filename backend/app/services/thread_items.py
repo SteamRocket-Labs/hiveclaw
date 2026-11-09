@@ -773,7 +773,7 @@ def _user_summary(
         label = _text(data.get("target_agent_name") or data.get("child_agent_name"))
         return f"A2A 数字员工：{label}" if label else "A2A 数字员工状态已更新。"
     if item_type == "context_compaction":
-        return "已整理会话上下文，任务会继续。"
+        return "上下文已压缩。" if data.get("manual") is True else "已整理会话上下文，任务会继续。"
     if item_type == "artifact":
         path = _text(data.get("path") or data.get("filename"))
         return f"交付物已更新：{path.rsplit('/', 1)[-1]}" if path else "交付物已更新。"

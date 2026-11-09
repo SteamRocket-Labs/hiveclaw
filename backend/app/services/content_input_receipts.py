@@ -358,6 +358,7 @@ async def _validate_input_dependencies(
     active_workspace_receipts: frozenset[uuid.UUID] = frozenset(),
 ) -> None:
     from app.core.source_read_purpose import current_source_recipient
+    from app.services.project_context import _SOURCE_READER
 
     recipient = current_source_recipient()
     if recipient is not None and (runtime_request is not None or str(getattr(user, "id", None)) != recipient[1]):
@@ -387,6 +388,7 @@ async def _validate_input_dependencies(
             tenant_id,
             id(user),
             id(runtime_request),
+            _SOURCE_READER.get() is not None,
             recipient,
             None if scope.batch_inputs else active_workspace_receipts,
             source_key,

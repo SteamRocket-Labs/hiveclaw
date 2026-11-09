@@ -1508,7 +1508,9 @@ async def _compress_messages_with_trace(
         source_id = uuid4()
         summary = {**compressed[0], "source_ref": f"session-compaction:{source_id}"}
         source = {"schema": "hive.compaction_source.v1", "source_id": str(source_id),
-            "message": message_snapshot(summary), "inputs": compressed.source_messages}
+            "message": message_snapshot(summary), "inputs": [
+                {key: value for key, value in message.items() if key != "context_origin"}
+                for message in compressed.source_messages]}
         compressed = [summary, *compressed[1:]]
     trace_output = [{key: value for key, value in message.items() if key != "context_origin"} for message in compressed]
     await attempt.record_completed(output_items=trace_output, status="completed")

@@ -64,9 +64,8 @@ def _run_scope(session_id: uuid.UUID, task: RuntimeTask) -> dict[str, str]:
 
 
 def _run_scope_for_id(session_id: uuid.UUID, run_id: uuid.UUID) -> dict[str, str]:
-    # A rejected unknown target cannot claim a run-scoped event: the database
-    # authority trigger correctly requires every event.run_id to resolve to an
-    # existing RuntimeTask. Keep the attempted id only in the typed payload.
+    # Unknown targets have no run authority; terminal targets have already
+    # committed their execution frontier. Keep the attempted id in the payload.
     return {
         "level": "session",
         "session_id": str(session_id),
@@ -96,7 +95,7 @@ async def _append_control_rejected_event(
                 lifecycle="rejected",
                 scope=(
                     _run_scope(authority.session_id, task)
-                    if task is not None
+                    if task is not None and task.status not in _TERMINAL_RUN_STATUSES
                     else _run_scope_for_id(authority.session_id, run_id)
                 ),
                 actor={"type": "runtime"},
@@ -1465,11 +1464,6 @@ async def _record_cancel_signal_delivery_attempt(
     task.metadata_json = metadata
     control.recovery_owner = None
     command.updated_at = datetime.now(timezone.utc)
-
-    # The terminal writer holds the same session lock. Keep late transport
-    # facts in task metadata without advancing its already-bound frontier.
-    if task.status in _TERMINAL_RUN_STATUSES:
-        return
 
     lifecycle = "completed" if cross_process_delivered else "failed"
     await append_session_events(

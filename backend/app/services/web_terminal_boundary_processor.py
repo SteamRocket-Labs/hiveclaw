@@ -394,6 +394,10 @@ async def _latest_transcript_frontier(
             or_(ChatTranscriptEvent.item_kind.is_distinct_from('user_question'),
                 and_(ChatTranscriptEvent.actor_type.is_distinct_from('user'),
                      or_(ChatTranscriptEvent.command_id.is_(None), ChatTranscriptEvent.input_id.is_(None)))),
+            # Cancel-signal transport bookkeeping is not execution content and
+            # cannot advance its committed execution frontier.
+            or_(ChatTranscriptEvent.item_kind.is_distinct_from("recovery_action"),
+                ChatTranscriptEvent.command_id.is_(None)),
         )
         .order_by(ChatTranscriptEvent.sequence.desc())
         .limit(1)

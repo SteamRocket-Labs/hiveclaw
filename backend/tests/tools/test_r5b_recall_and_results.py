@@ -49,7 +49,7 @@ async def test_retired_and_temporary_platform_memory_is_hidden_from_all_readers(
         assert '"ok": false' in str(result)
     assert '"ok": false' in str(fs_list(tmp_path, {"path": f"memory/{prefix}"}))
     assert relative not in str(glob_search(tmp_path, {"pattern": "**/*"}))
-    assert "PLATFORM_SECRET" not in str(grep_search(tmp_path, {"pattern": "SECRET"}))
+    assert "PLATFORM_SECRET" not in str(await grep_search(tmp_path, {"pattern": "SECRET"}))
 
 
 def test_hidden_path_aliases_follow_the_filesystem_case_rules(tmp_path):

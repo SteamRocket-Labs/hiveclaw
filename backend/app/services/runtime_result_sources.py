@@ -466,7 +466,7 @@ async def _load_continuation_result_sources(db, result):
         # Continuation tasks execute on the child; source validation consumes
         # the original delegation's return route without mutating either row.
         published = SimpleNamespace(**{key: getattr(task, key) for key in (
-            "id", "tenant_id", "status", "task_type", "child_agent_id", "child_session_id", "root_user_id",
+            "id", "tenant_id", "status", "child_agent_id", "child_session_id", "root_user_id",
             "root_runtime_task_id", "machine_credential_id", "root_external_principal_id", "prompt")},
             parent_agent_id=delegation.parent_agent_id, parent_session_id=delegation.parent_session_id,
             result_summary=summary.strip())
@@ -1303,27 +1303,30 @@ async def runtime_result_tool_sources(db, *, agent_id, invocation, content):
                 {"complete": False}, {"complete": True}
             ):
                 return None
-            canonical = await load_canonical_result_sources(db, result)
-            if not canonical:
-                return None
-            task, _dependencies, _receipts = canonical
-            if (
-                task.parent_agent_id != agent_id
-                or uuid.UUID(task.parent_session_id) != invocation.session_id
-                or not await runtime_result_publication_bound(
-                    db, result=result, agent_id=agent_id, session_id=invocation.session_id, user_id=task.root_user_id
-                )
-            ):
-                return None
             if result.source_kind == "a2a_continuation":
+                from app.core.source_read_purpose import source_recipient_read
                 from app.models.chat_session import ChatSession
                 from app.models.user import User
 
                 current = await db.get(RuntimeTask, invocation.run_id, populate_existing=True)
                 session = await db.get(ChatSession, invocation.session_id, populate_existing=True)
                 user = await db.get(User, current.root_user_id) if current is not None and current.root_user_id else None
-                if user is None or session is None or not await validate_runtime_result_sources(
-                    db, None, result, user=user, session=session
+                if user is None or session is None:
+                    return None
+                with source_recipient_read(session_id=session.id, user_id=user.id):
+                    if not await validate_runtime_result_sources(db, None, result, user=user, session=session):
+                        return None
+            else:
+                canonical = await load_canonical_result_sources(db, result)
+                if not canonical:
+                    return None
+                task, _dependencies, _receipts = canonical
+                if (
+                    task.parent_agent_id != agent_id
+                    or uuid.UUID(task.parent_session_id) != invocation.session_id
+                    or not await runtime_result_publication_bound(
+                        db, result=result, agent_id=agent_id, session_id=invocation.session_id, user_id=task.root_user_id
+                    )
                 ):
                     return None
         return {

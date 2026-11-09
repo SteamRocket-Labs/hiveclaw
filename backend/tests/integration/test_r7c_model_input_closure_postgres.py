@@ -486,6 +486,22 @@ async def test_round2_platform_skill_read_keeps_existing_source_binding(
 async def test_round2_published_child_continuation_is_bound_only_to_its_parent(
     native_workspace, app_user_sessionmaker, owner_sessionmaker, alteration, historical_page,  # noqa: F811
 ):
+    await _published_child_continuation(
+        native_workspace, app_user_sessionmaker, owner_sessionmaker, alteration, historical_page)
+
+
+@pytest.mark.parametrize("alteration", ["org_admin_private_workspace", "org_admin_private_memory",
+    "altered_metadata", "other_session"])
+async def test_round3_continuation_revalidates_recipient_and_payload(
+    native_workspace, app_user_sessionmaker, owner_sessionmaker, alteration,  # noqa: F811
+):
+    await _published_child_continuation(
+        native_workspace, app_user_sessionmaker, owner_sessionmaker, alteration, False)
+
+
+async def _published_child_continuation(
+    native_workspace, app_user_sessionmaker, owner_sessionmaker, alteration, historical_page,  # noqa: F811
+):
     from types import SimpleNamespace
     from uuid import uuid4
     from app.models.agent import Agent
@@ -556,6 +572,21 @@ async def test_round2_published_child_continuation_is_bound_only_to_its_parent(
         assert publication.parent_agent_id == n.agent and publication.parent_session_id == n.session
         assert publication.parent_user_id == n.user
         ref = publication.result_ref
+        if alteration == "altered_metadata":
+            from app.services.runtime_result_store import encode_runtime_result_payload, runtime_result_object_id
+            payload = json.loads(bytes(result.payload_bytes))
+            encoded = encode_runtime_result_payload(summary=payload["summary"], artifacts=payload["artifacts"],
+                metadata={**payload["metadata"], "uncommitted_note": "R7C_ALTERED_METADATA"})
+            altered = RuntimeResultObject(id=runtime_result_object_id(tenant_id=n.tenant,
+                source_kind=result.source_kind, source_run_id=result.source_run_id, sha256=encoded.sha256),
+                tenant_id=n.tenant, source_kind=result.source_kind, source_run_id=result.source_run_id,
+                payload_bytes=encoded.payload_bytes, sha256=encoded.sha256, size_bytes=encoded.size_bytes)
+            db.add(altered)
+            await db.flush()
+            publication.result_object_id = altered.id
+            publication.result_ref = ref = f"runtime-result://{altered.id}/{altered.sha256}"
+            publication.result_sha256, publication.result_size_bytes = altered.sha256, altered.size_bytes
+            await db.commit()
     def old_page(value):
         return json.dumps({**json.loads(value), "dependency_coverage": {"complete": False}})
     call, value, turn = await _round2_call(n, app_user_sessionmaker, "read_runtime_result", {"result_ref": ref},
@@ -565,25 +596,40 @@ async def test_round2_published_child_continuation_is_bound_only_to_its_parent(
         await pin_rls_tenant_context(db, n.tenant)
         if alteration == "unpublished":
             await db.delete(await db.get(RuntimeNotificationOutbox, publication.id))
-        if alteration in {"unknown_input", "unreadable_input"}:
+        if alteration in {"org_admin_private_workspace", "org_admin_private_memory"}:
+            from app.models.user import User
+            (await db.get(User, n.user)).role = "org_admin"
+        if alteration in {"unknown_input", "unreadable_input", "org_admin_private_workspace", "org_admin_private_memory"}:
             from app.services.session_model_inputs import _hash
             child_model = await db.get(SessionModelResult, model.id)
             bindings = child_model.model_request_snapshot_json["input_bindings"]
-            if alteration == "unreadable_input":
+            if alteration in {"unreadable_input", "org_admin_private_workspace", "org_admin_private_memory"}:
                 import hashlib
                 from app.models.organization_identity import ContentInputReceipt
                 receipt = ContentInputReceipt(id=uuid4(), tenant_id=n.tenant, carrier_kind="workspace_artifact",
                     carrier_ref=f"{n.agent}\n{n.path}", revision=1,
                     content_sha256=hashlib.sha256(n.target.read_bytes()).hexdigest(), dependencies_json=[])
+                if alteration == "org_admin_private_memory":
+                    from app.services.explicit_memory_authority import AUTHORITY_SCHEMA
+                    source_session = uuid4()
+                    db.add(ChatSession(id=source_session, tenant_id=n.tenant, agent_id=n.agent,
+                        user_id=n.foreign, audience_kind="private"))
+                    target = n.root / "memory/explicit/entries/r7c-private.md"
+                    target.parent.mkdir(parents=True)
+                    target.write_bytes(n.target.read_bytes())
+                    receipt.carrier_kind, receipt.carrier_ref = "explicit_memory", f"{n.agent}\nr7c-private"
+                    receipt.authority_json = {"schema": AUTHORITY_SCHEMA, "state": "active",
+                        "tenant_id": str(n.tenant), "agent_id": str(n.agent), "audience_kind": "private",
+                        "owner_user_id": str(n.foreign), "source_session_id": str(source_session)}
                 db.add(receipt)
-                bindings = {**bindings, "dependencies": [{"source_kind": "workspace_artifact",
+                bindings = {**bindings, "dependencies": [{"source_kind": receipt.carrier_kind,
                     "source_id": str(receipt.id), "source_version": receipt.content_sha256}]}
             snapshot = {**child_model.model_request_snapshot_json, "input_bindings": {
                 **bindings, "dependency_coverage": {"complete": alteration != "unknown_input"}}}
             child_model.model_request_snapshot_json, child_model.model_request_hash = snapshot, _hash(snapshot)
         await db.commit()
         reader, messages = n, None
-        if alteration in {"other_member", "other_agent"}:
+        if alteration in {"other_member", "other_agent", "other_session"}:
             agent = n.agent
             if alteration == "other_agent":
                 agent = uuid4()

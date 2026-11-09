@@ -1140,6 +1140,7 @@ async def backfill_missing_chat_transcript_t0(
                     (
                         await bypass_db.execute(
                             select(func.count(ChatTranscriptEvent.id)).where(
+                                ChatTranscriptEvent.tenant_id == tenant_id,
                                 ChatTranscriptEvent.agent_id == agent_id,
                                 ChatTranscriptEvent.session_id == session_id,
                             )

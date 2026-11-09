@@ -884,7 +884,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # machine_runtime_authority, shared_group_authority and workspace_resource_authority
 # changed (16 removed / 21 added); the 122 callsites are identical. No new bypass
 # scope, authorization, or callsite.
-RLS_BYPASS_SCOPES_SHA256 = "1eb32d2e39c0c35d9caeb747323fa6f1f6a43271673d10f72bd74b9eace307cd"
+# Bounded tool evidence: 15 changed entries in eight modules, with the same 122 callsites.
+# Bridge updates bind event and tenant; legacy backfill counts bind tenant, agent and session.
+RLS_BYPASS_SCOPES_SHA256 = "064219ef382244088c3a06ead0e7736f4d7d64f841b38301c59155eebee5bca8"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

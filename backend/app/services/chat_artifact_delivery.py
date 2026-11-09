@@ -1242,19 +1242,18 @@ async def create_chat_artifacts_for_message(
     source_validation_session: AsyncSession | None = None,
 ) -> list[dict[str, Any]]:
     """Create artifact rows for safe candidate paths and return message parts."""
-    from contextlib import nullcontext
-    from app.database import tenant_scoped_session
-
-    # Trusted tenant-scoped callers can retain their transaction's identity
-    # locks; all other callers keep an independent source session by default.
     from app.services.content_input_receipts import (
         ContentInputReceiptError,
+        group_source_read,
         validate_artifact_content_receipt,
         validate_published_workspace_receipt,
         validate_runtime_workspace_receipt,
     )
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
+    # Source checks must not leave the publication connection idle. Reuse each
+    # source only within one file's disclosure; later publications revalidate.
+    source_db = source_validation_session if source_validation_session is not None else db
     parts: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     session_uuid = uuid.UUID(str(session_id))
@@ -1437,11 +1436,7 @@ async def create_chat_artifacts_for_message(
             if handled:
                 if native_artifact is not None:
                     try:
-                        async with (
-                            nullcontext(source_validation_session)
-                            if source_validation_session is not None
-                            else tenant_scoped_session(tenant_id)
-                        ) as source_db:
+                        with group_source_read(batch_inputs=True):
                             await validate_artifact_content_receipt(
                                 source_db,
                                 tenant_id,
@@ -1539,11 +1534,7 @@ async def create_chat_artifacts_for_message(
                 else None
             )
             try:
-                async with (
-                    nullcontext(source_validation_session)
-                    if source_validation_session is not None
-                    else tenant_scoped_session(tenant_id)
-                ) as source_db:
+                with group_source_read(batch_inputs=True):
                     source_receipt = receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None
                     if runtime_principal is not None:
                         await validate_runtime_workspace_receipt(
@@ -1611,11 +1602,7 @@ async def create_chat_artifacts_for_message(
                 await db.flush()
             if isinstance(db, AsyncSession):
                 try:
-                    async with (
-                        nullcontext(source_validation_session)
-                        if source_validation_session is not None
-                        else tenant_scoped_session(tenant_id)
-                    ) as source_db:
+                    with group_source_read(batch_inputs=True):
                         await validate_artifact_content_receipt(
                             source_db, tenant_id, authority_user, existing, runtime_principal=runtime_principal
                         )

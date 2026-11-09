@@ -1,7 +1,7 @@
 import { runtimeStatusLabel } from './runtimeStatus';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import type { TFunction } from 'i18next';
+import i18n, { type TFunction } from 'i18next';
 import {
   IconChevronDown,
   IconChevronRight,
@@ -18,7 +18,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { assistantReplyForDisplay } from './CanonicalCardAssistantSupplement';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
-import { toolFailureForDisplay } from './toolFailurePresentation';
+import { toolOutputForDisplay } from './toolFailurePresentation';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import { presentSystemStep } from './systemStepPresentation';
 import type {
@@ -70,10 +70,12 @@ function groupRunSteps(steps: RunStepSnapshot[]): RunRenderItem[] {
 function formatDuration(durationMs?: number): string {
   if (!durationMs || durationMs < 1000) return '';
   const seconds = Math.round(durationMs / 1000);
-  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 60) return i18n.t('agent.chat.disclosure.elapsedSeconds', '{{seconds}}s', { seconds }) || `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
-  return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
+  return remainder > 0
+    ? i18n.t('agent.chat.disclosure.elapsedMinutesSeconds', '{{minutes}}m {{seconds}}s', { minutes, seconds: remainder }) || `${minutes}m ${remainder}s`
+    : i18n.t('agent.chat.disclosure.elapsedMinutes', '{{minutes}}m', { minutes }) || `${minutes}m`;
 }
 
 const OBSERVED_RUN_DURATION_STORAGE_PREFIX = 'hive.session.observed-run-duration.v1:';
@@ -262,8 +264,8 @@ function ExecOutput({ exec }: { exec: ExecDetails }) {
 
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
-  const failure = toolFailureForDisplay(step.details, t, step.status);
-  if (failure) return <p>{failure}</p>;
+  const summary = toolOutputForDisplay(step.details, t, step.status);
+  if (summary) return <p>{summary}</p>;
   const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind, t) : null;
   if (exec) return <ExecOutput exec={exec} />;
   if (step.kind === 'tool' || step.kind === 'file' || step.kind === 'search' || typeof step.details !== 'string') {
@@ -428,7 +430,8 @@ function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
 function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
-  const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind, t) : null;
+  const exec = step.kind === 'command' && !toolOutputForDisplay(step.details, t, step.status)
+    ? asExecDetails(step.details, step.kind, t) : null;
   const hasDetails = step.details != null;
   const row = (
     <>

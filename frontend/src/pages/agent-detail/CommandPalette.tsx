@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ccParityApi, type CommandDefinition, type CommandIndexEntry, type ExecuteCommandResult } from '../../api/domains/ccParity';
 import { parseSlashCommandArgs } from './slashCommand';
 import './CommandPalette.css';
+import { commandCategoryForDisplay } from './sessionCommandPanelPresentation';
 
 export function filterCommandIndex(commands: CommandIndexEntry[] | undefined, query: string): CommandIndexEntry[] {
   const normalized = query.trim().toLowerCase();
@@ -131,7 +132,7 @@ export default function CommandPalette({
             {t('agent.chat.commands.title', 'Commands')}
           </div>
           <div className="command-palette-label-sub">
-            {selected ? `${selected.name} · ${selected.category}` : t('agent.chat.commands.empty', 'No commands available')}
+            {selected ? `${selected.name} · ${commandCategoryForDisplay(selected, t)}` : t('agent.chat.commands.empty', 'No commands available')}
           </div>
         </div>
         {open && (

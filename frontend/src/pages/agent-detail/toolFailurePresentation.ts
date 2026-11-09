@@ -18,7 +18,6 @@ const FAILURE_KIND = Object.fromEntries(FAILURE_GROUPS.flatMap(([kind, names]) =
 
 /** Only tool failure envelopes are projected; assistant prose is never scanned. */
 export function toolFailureForDisplay(details: unknown, t: TFunction, status: RunStepStatus): string | null {
-  if (status !== 'failed') return null;
   const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
   const raw = typeof details === 'string' ? details : record.result ?? record.output ?? record.rawResult;
   if (typeof raw === 'string') {
@@ -27,6 +26,8 @@ export function toolFailureForDisplay(details: unknown, t: TFunction, status: Ru
       if (result?.ok === true) return null;
     } catch { /* Native failure envelopes include text before their JSON. */ }
   }
+  if (status !== 'failed' && !(typeof raw === 'string' && (raw.trimStart().startsWith('<tool_error>')
+    || (raw.startsWith('❌') && raw.includes('<tool_error>'))))) return null;
   let error: Record<string, unknown>;
   if (typeof raw === 'string' && raw.includes('<tool_error>')) {
     const body = raw.split('<tool_error>', 2)[1]?.split('</tool_error>', 1)[0];
@@ -51,4 +52,34 @@ export function toolFailureForDisplay(details: unknown, t: TFunction, status: Ru
     }
   }
   return t(`agent.chat.disclosure.failure.${kind}`, 'The operation did not complete; the outcome is unconfirmed.');
+}
+
+/** Project known platform envelopes, including the JSON lines in memory results. */
+export function toolOutputForDisplay(details: unknown, t: TFunction, status: RunStepStatus): string | null {
+  const failure = toolFailureForDisplay(details, t, status);
+  if (failure) return failure;
+  const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
+  const raw = typeof details === 'string' ? details : record.result ?? record.output ?? record.rawResult;
+  const summary = (value: unknown): string | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const envelope = value as Record<string, unknown>;
+    if (envelope.schema === 'hive.session_recall_error.v1') {
+      return t('agent.chat.disclosure.memoryUnavailable', 'This part of the conversation history is temporarily unavailable. Please try again later.');
+    }
+    if (envelope.schema === 'hive.explicit_memory_availability.v1') {
+      return t('agent.chat.disclosure.memoryPartial', 'Only some memories are available. Unavailable memories cannot support conclusions; please try again later.');
+    }
+    return null;
+  };
+  if (typeof raw !== 'string') return summary(raw);
+  try { return summary(JSON.parse(raw)); } catch { /* Memory producers also return headings followed by JSON lines. */ }
+  let projected = false;
+  const lines = raw.split(/\r?\n/).map(line => {
+    try {
+      const text = summary(JSON.parse(line));
+      if (text) { projected = true; return text; }
+    } catch { /* Preserve ordinary tool output. */ }
+    return line;
+  });
+  return projected ? lines.join('\n') : null;
 }

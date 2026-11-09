@@ -1431,9 +1431,11 @@ class ToolRuntimeService:
                 if omitted_paths:
                     note = "\n\nFiles omitted from this execution because their sources could not be verified: " + _json.dumps(
                         sorted(omitted_paths), ensure_ascii=False) + ". Continue with the remaining verified inputs."
-                    value = replace(value, text=value.text + note,
-                        model_visible_text=value.model_visible_text + note if value.model_visible_text is not None else None
-                    ) if isinstance(value, ToolContentEnvelope) else str(value) + note
+                    member_note = "\n\n部分文件暂时无法读取，已使用其余可用资料继续处理。"
+                    value = replace(value, text=value.text + member_note,
+                        model_visible_text=(value.model_visible_text if value.model_visible_text is not None else value.text) + note
+                    ) if isinstance(value, ToolContentEnvelope) else ToolContentEnvelope(
+                        text=str(value) + member_note, model_visible_text=str(value) + note)
                 async def _settle_backend_result():
                     nonlocal value
                     value, _redaction = self._redact_runtime_egress(

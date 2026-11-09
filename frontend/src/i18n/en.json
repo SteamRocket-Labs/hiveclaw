@@ -2687,7 +2687,12 @@
           "commands": "Ran {{count}} commands",
           "commands_one": "Ran {{count}} command",
           "commands_other": "Ran {{count}} commands"
-        }
+        },
+        "elapsedSeconds": "{{seconds}}s",
+        "elapsedMinutes": "{{minutes}}m",
+        "elapsedMinutesSeconds": "{{minutes}}m {{seconds}}s",
+        "memoryUnavailable": "This part of the conversation history is temporarily unavailable. Please try again later.",
+        "memoryPartial": "Only some memories are available. Unavailable memories cannot support conclusions; please try again later."
       },
       "artifacts": {
         "viewSource": "View source",
@@ -2869,7 +2874,43 @@
         "running": "Running",
         "loading": "Loading commands...",
         "invalid": "Invalid slash command.",
-        "failed": "Failed to run command"
+        "failed": "Failed to run command",
+        "description": {
+          "plan": "Plan before starting work.",
+          "resume": "Continue a previous conversation.",
+          "rewind": "Return to an earlier conversation turn.",
+          "branch": "Start a branch conversation from here.",
+          "turn_steer": "Add instructions to the task in progress.",
+          "clear": "Clear the current context while keeping conversation history.",
+          "compact": "Condense the conversation context while keeping important information.",
+          "team_create": "Create a collaboration group.",
+          "task_create": "Add a task or delegate work.",
+          "goal_start": "Set a goal and keep working toward it.",
+          "schedule_create": "Schedule a recurring task.",
+          "schedule_once": "Schedule a one-time task.",
+          "loop": "Repeat a task in this conversation.",
+          "mcp": "View or use connected applications.",
+          "permissions": "View or change this conversation’s permissions.",
+          "skill": "View or use installed skills.",
+          "agent": "Choose a temporary assistant to help with a task.",
+          "workflow": "View or create a workflow.",
+          "usage": "View current usage.",
+          "context": "View the context used in this conversation."
+        },
+        "category": {
+          "plan": "Plan",
+          "session": "Conversation",
+          "team": "Collaboration",
+          "task": "Task",
+          "goal": "Goal",
+          "schedule": "Scheduled task",
+          "mcp": "Applications",
+          "governance": "Permissions",
+          "skill": "Skills",
+          "agent": "Assistant",
+          "workflow": "Workflow",
+          "diagnostic": "Usage and context"
+        }
       },
       "slashCommands": {
         "title": "Commands",

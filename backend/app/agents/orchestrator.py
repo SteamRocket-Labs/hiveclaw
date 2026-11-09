@@ -2323,7 +2323,7 @@ async def _delegate_after_cycle_check(
     except asyncio.TimeoutError:
         _delegation_status = "timeout"
         delegation_result = AgentDelegationResult(
-            content=(f"⚠️ Delegation to {request.target.name} timed out after {request.policy.timeout_seconds:.2f}s."),
+            content=(f"委派给{request.target.name}的任务超过 {request.policy.timeout_seconds:g} 秒未完成，结果未知。"),
             child_session_id=child_session_id,
             trace_id=trace_id,
             depth=request.depth,
@@ -2506,7 +2506,7 @@ async def _ensure_peer_delegation_session(
                 parent_session_id=parent_session_id,
                 root_session_id=parent_session_id or session_id,
                 runtime_task_id=runtime_task_id,
-                title=instruction[:200] if human_first_task else f"Delegation: {getattr(request.target, 'name', 'Agent')}"[:200],
+                title=instruction[:200] if human_first_task else f"委派：{getattr(request.target, 'name', '数字员工')}"[:200],
                 transcript_metadata_json={},
             )
             db.add(session)

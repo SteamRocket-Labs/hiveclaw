@@ -886,7 +886,11 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # scope, authorization, or callsite.
 # D9s round 2 completes requester propagation and narrows credential egress.
 # Only module-source entries change; existing bypass scopes and callsites remain unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "a436fbea2e70f82a06b4b26600fe72d52a3650f220d2f71408d4ef0bf01f03d6"
+# Artifact publication reuses only an exactly tenant-pinned source transaction;
+# privileged callers use a separate tenant-scoped source session. The existing
+# bypass callsites and query shapes are unchanged; only the publication source
+# and its containing module have new reviewed digests.
+RLS_BYPASS_SCOPES_SHA256 = "65e4b4e1fddd354dbf3a3a8010a1a741867319199a92ce2b1df34b38757bd9f5"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -428,7 +428,6 @@ async def import_packet(db, *, tenant_id, result_id, sha256, user):
                 workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(task.parent_agent_id),
                 source="remote_a2a_return",
                 action="created" if receipt.revision == 1 else "updated",
-                source_validation_session=db if session.audience_kind == "group" else None,
                 source_agent_id=task.child_agent_id,
                 download_agent_id=task.parent_agent_id,
                 source_receipt_ids={path: receipt.id},

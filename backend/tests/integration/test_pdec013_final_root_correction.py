@@ -563,7 +563,7 @@ async def test_http_platform_admin_artifact_download_uses_selection(owner_sessio
         anchor = await db.get(ChatArtifact, world.artifact_id)
         parts = await create_chat_artifacts_for_message(db=db, agent_id=world.agent, tenant_id=world.tenant_a,
             session_id=anchor.session_id, message_id=anchor.message_id, runtime_task_id=None,
-            paths=["workspace/report.md"], workspace_root=base, source_validation_session=db)
+            paths=["workspace/report.md"], workspace_root=base)
         assert len(parts) == 1, parts
         world.artifact_id = uuid.UUID(parts[0]["artifact_id"])
         await db.commit()

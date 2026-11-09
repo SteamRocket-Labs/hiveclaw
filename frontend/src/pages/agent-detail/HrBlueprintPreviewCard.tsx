@@ -25,17 +25,6 @@ function displayItem(value: unknown): string {
   return String(record.value_summary || record.reason || record.field || JSON.stringify(record));
 }
 
-function initialDraft(preview: HrPreviewToolResult): HrCreationDraft | undefined {
-  if (!preview.blueprintId) return undefined;
-  return {
-    blueprint_id: preview.blueprintId,
-    blueprint_version: preview.blueprintVersion,
-    blueprint_hash: preview.blueprintHash || '',
-    draft_status: preview.status,
-    blueprint: {},
-  };
-}
-
 export type HrCreationAction = 'confirm' | 'retry' | 'none';
 
 export function hrCreationActionForStatus(status: string): HrCreationAction {
@@ -145,8 +134,6 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     queryKey,
     queryFn: () => hrCreationApi.get(agentId!, preview.blueprintId!),
     enabled: canLoad,
-    initialData: initialDraft(preview),
-    initialDataUpdatedAt: 0,
     staleTime: 0,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
@@ -156,12 +143,13 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         ? 1_500 : false;
     },
   });
-  const status = draft?.draft_status || preview.status;
+  const status = draft?.draft_status
+    || (['completed', 'rejected', 'superseded', 'expired'].includes(preview.status) ? preview.status : '');
   const createdAgentId = draft?.created_agent_id;
   const canonicalPreview = draft && Object.keys(draft.blueprint || {}).length > 0
     ? parsePreviewAgentBlueprintResult({ status: 'preview', ...draft }) || preview
     : preview;
-  const statusLabel = blueprintStatusLabel(status, t);
+  const statusLabel = status ? blueprintStatusLabel(status, t) : t('common.loading');
   const scopeLabel = permissionScopeLabel(canonicalPreview.permissionScope, t);
   const reviewRiskLabel = riskLabel(canonicalPreview.riskClass, t);
   const provisioningSteps = draft?.provisioning_steps || [];
@@ -169,7 +157,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     || canonicalPreview.willInstall.length > 0
     || canonicalPreview.deferredCapabilities.length > 0
     || canonicalPreview.knowledgeDebt.length > 0;
-  const durableAction = draft?.recovery?.can_retry ? 'retry' : hrCreationActionForStatus(status);
+  const durableAction = draft?.recovery?.can_retry ? 'retry' : draft ? hrCreationActionForStatus(status) : 'none';
   const firstTask = draft?.provisioning?.first_task as { status?: string; session_id?: string; error?: string; message?: string } | undefined;
   const companyFailure = ['capability_denied', 'approval_required'].includes(String(draft?.failure?.code))
     ? (typeof draft?.failure?.message === 'string' && draft.failure.message) || creationActionError(draft?.failure, t)
@@ -257,12 +245,12 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const canStartCreation = canLoad
     && canonicalPreview.missingGates.length === 0
     && durableAction !== 'none';
-  const canReviseOrReject = canLoad && status === 'awaiting_confirmation';
+  const canReviseOrReject = canLoad && Boolean(draft) && status === 'awaiting_confirmation';
   const canRevise = canReviseOrReject && canonicalPreview.authorizationMode !== 'policy_direct';
   const canCancel = canLoad && ['confirmed', 'creating', 'provisioning'].includes(status);
   const openEmployee = createdAgentId && durableAction !== 'retry';
 
-  if (canonicalPreview.authorizationMode === 'policy_direct' && status !== 'awaiting_confirmation') {
+  if (canonicalPreview.authorizationMode === 'policy_direct' && status && status !== 'awaiting_confirmation') {
     const conversation = createdAgentId ? buildNewSessionDraftNavigation(createdAgentId) : null;
     return <article className="hr-blueprint-card">
       <header><div><h3>{canonicalPreview.name}</h3></div>
@@ -274,7 +262,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       {status === 'failed' && <p role="alert">{companyFailure || t('agent.chat.toolResults.creationFailed', 'Creation failed. Please retry.')}</p>}
       {firstTask?.status === 'blocked' && <p role="alert">{firstTask.message || t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
       {undoMutation.isError && <p role="alert">{t('agent.chat.toolResults.undoCreationFailed', 'Could not undo creation. Please retry.')}</p>}
-      <footer>
+      {draft && <footer>
         {conversation && !stopped && <Link className="btn btn-primary" to={conversation.to} state={conversation.state}>{t('agent.chat.toolResults.talkToCreatedBot', 'Talk to it')}</Link>}
         {createdAgentId && !stopped && <button type="button" className="btn btn-ghost"
           disabled={undoMutation.isPending || undoMutation.isSuccess}
@@ -282,7 +270,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         {durableAction === 'retry' && !stopped && <button type="button" className="btn btn-secondary"
           disabled={busy} onClick={runDurableAction}>{firstTask
             ? t('agent.chat.toolResults.retryFirstTask', 'Retry first task') : t('common.retry', 'Retry')}</button>}
-      </footer>
+      </footer>}
     </article>;
   }
 
@@ -407,7 +395,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
           </div>
         </form>
       )}
-      <footer>
+      {draft && <footer>
         <button
           type="button"
           className="btn btn-primary"
@@ -433,12 +421,12 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
             {t('hrChat.goToAgent')}
           </button>
         )}
-        {canonicalPreview.authorizationMode !== 'policy_direct' && <button type="button" className="btn btn-secondary" disabled={!canRevise || busy || !onSendMessage || revisionOpen} onClick={() => setRevisionOpen(true)}>
+        {canReviseOrReject && canonicalPreview.authorizationMode !== 'policy_direct' && <button type="button" className="btn btn-secondary" disabled={!canRevise || busy || !onSendMessage || revisionOpen} onClick={() => setRevisionOpen(true)}>
           {t('agent.chat.toolResults.requestChanges', 'Request changes')}
         </button>}
-        <button type="button" className="btn btn-ghost" disabled={!canReviseOrReject || busy || revisionOpen} onClick={reject}>
+        {canReviseOrReject && <button type="button" className="btn btn-ghost" disabled={busy || revisionOpen} onClick={reject}>
           {t('common.reject', 'Reject')}
-        </button>
+        </button>}
         {canCancel && (
           <button type="button" className="btn btn-ghost" disabled={busy} onClick={cancel}>
             {cancelMutation.isPending
@@ -446,7 +434,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
               : t('agent.chat.toolResults.cancelProvisioning', 'Cancel provisioning')}
           </button>
         )}
-      </footer>
+      </footer>}
     </article>
   );
 }

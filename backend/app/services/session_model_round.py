@@ -503,12 +503,17 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
                 indexes.add(j)
     indexes.update(index for index, origin in pairs.items() if origin in indexes)
     for index, replacement in {**partial, **{i: {"role": "system", "content": note} for i in indexes}}.items():
-        origin = getattr(messages[index], "context_origin", None)
+        origin = (messages[index].get("context_origin") if isinstance(messages[index], dict)
+            else getattr(messages[index], "context_origin", None))
         if isinstance(origin, ContextMessageOrigin) and any(section.get("name") == "skill_catalog" for section in origin.sections):
             replacement["content"] = "技能目录内容暂时无法核实，已略过；请使用其余内容继续，需要时向用户询问。"
         # Replacing the complete payload also removes arguments and private
         # reasoning; unaffected sibling calls keep their own paired results.
         wire_messages[index] = replacement
+        if replacement["role"] == "system":
+            replacement = {**replacement, "context_origin": ContextMessageOrigin.capture(
+                kind="source_withholding_notice", role="system", content=replacement["content"],
+                sources=(), unbound=())}
         messages[index] = dict(replacement) if isinstance(messages[index], dict) else LLMMessage(**replacement)
     for entry in input_bindings["messages"]:
         if entry["message_index"] in indexes:

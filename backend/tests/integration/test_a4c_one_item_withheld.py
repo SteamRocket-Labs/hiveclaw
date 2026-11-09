@@ -129,6 +129,10 @@ async def test_one_failing_source_replaces_its_message_and_continues(monkeypatch
         messages=messages, tools=[], provider="local", model="a4c", wire_request=wire_request)
 
     request = db.added[0].model_request_snapshot_json["wire_request"]
+    # Compiler-only origins are dataclasses; include their full fields in the
+    # JSON leak check without sending that metadata to the provider.
+    from dataclasses import asdict
+    messages = json.loads(json.dumps(messages, default=asdict))
     assert all("有一项上下文暂时无法核实" in m["content"]
         for m in request["messages"][:count])
     assert "recalled block" not in json.dumps(request)

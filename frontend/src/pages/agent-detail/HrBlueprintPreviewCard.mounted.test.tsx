@@ -68,7 +68,7 @@ const preview: HrPreviewToolResult = {
   manualSteps: [],
 };
 
-function renderCard(
+async function renderCard(
   onSendMessage?: (message: string) => Promise<unknown>,
   cardPreview: HrPreviewToolResult = preview,
 ) {
@@ -80,11 +80,13 @@ function renderCard(
     draft_status: cardPreview.status,
     blueprint: {},
   });
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <HrBlueprintPreviewCard agentId="hr-agent" preview={cardPreview} onSendMessage={onSendMessage} />
     </QueryClientProvider>,
   );
+  await screen.findByText('Needs confirmation');
+  return view;
 }
 
 afterEach(() => {
@@ -99,7 +101,7 @@ it('confirms a private creation proposal with one click and shows its exact firs
   hrMocks.confirm.mockResolvedValue({ blueprint_id: 'draft-1', draft_status: 'completed',
     blueprint: { name: 'Researcher', permission_scope: 'self' }, created_agent_id: 'confirmed-employee',
     creation_authorization: { mode: 'policy_direct', first_task: 'Draft the authorized report' } });
-  renderCard(undefined, proposal);
+  await renderCard(undefined, proposal);
   expect(screen.getByText('Draft the authorized report')).toBeTruthy();
   expect(screen.getByText('Access: Only me')).toBeTruthy();
   expect(hrMocks.confirm).not.toHaveBeenCalled();
@@ -149,7 +151,7 @@ it.each(['rejected', 'completed'])('reloads %s from the draft instead of the pen
 
 it('keeps internal confirmation errors out of the member card', async () => {
   hrMocks.confirm.mockRejectedValue(new Error('focus_content is empty; creation gates incomplete: activation bp_private'));
-  renderCard();
+  await renderCard();
   fireEvent.click(screen.getByRole('button', { name: 'agent.chat.toolResults.confirmAndCreate' }));
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Could not update creation. Please reload the card and retry.');
   expect(document.body.textContent).not.toMatch(/focus_content|creation gates|activation|bp_private/);
@@ -166,9 +168,9 @@ describe('HrBlueprintPreviewCard revision UX', () => {
     render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={cardPreview} /></QueryClientProvider>);
     expect(await screen.findByText('公司暂停首任务，请联系管理员。')).toBeTruthy();
   });
-  it('collects the requested change locally instead of sending an agent prompt on click', () => {
+  it('collects the requested change locally instead of sending an agent prompt on click', async () => {
     const onSendMessage = vi.fn().mockResolvedValue(undefined);
-    renderCard(onSendMessage);
+    await renderCard(onSendMessage);
 
     fireEvent.click(screen.getByRole('button', { name: 'Request changes' }));
 
@@ -179,7 +181,7 @@ describe('HrBlueprintPreviewCard revision UX', () => {
 
   it('submits the user change exactly once and closes the editor after success', async () => {
     const onSendMessage = vi.fn().mockResolvedValue(undefined);
-    renderCard(onSendMessage);
+    await renderCard(onSendMessage);
     fireEvent.click(screen.getByRole('button', { name: 'Request changes' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'What would you like to change?' }), {
       target: { value: 'Rename it to Weekend Release Coordinator V2.' },
@@ -196,9 +198,9 @@ describe('HrBlueprintPreviewCard revision UX', () => {
     });
   });
 
-  it('cancels a local edit without sending anything', () => {
+  it('cancels a local edit without sending anything', async () => {
     const onSendMessage = vi.fn().mockResolvedValue(undefined);
-    renderCard(onSendMessage);
+    await renderCard(onSendMessage);
     fireEvent.click(screen.getByRole('button', { name: 'Request changes' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'What would you like to change?' }), {
       target: { value: 'Discard me' },
@@ -212,7 +214,7 @@ describe('HrBlueprintPreviewCard revision UX', () => {
 
   it('keeps the edit recoverable when submission fails', async () => {
     const onSendMessage = vi.fn().mockRejectedValue(new Error('network offline'));
-    renderCard(onSendMessage);
+    await renderCard(onSendMessage);
     fireEvent.click(screen.getByRole('button', { name: 'Request changes' }));
     const input = screen.getByRole('textbox', { name: 'What would you like to change?' });
     fireEvent.change(input, { target: { value: 'Keep this change for retry.' } });
@@ -228,8 +230,8 @@ describe('HrBlueprintPreviewCard revision UX', () => {
 });
 
 describe('HrBlueprintPreviewCard decision hierarchy', () => {
-  it('keeps typed configuration evidence in a closed disclosure while actionable decisions stay visible', () => {
-    const { container } = renderCard(undefined, {
+  it('keeps typed configuration evidence in a closed disclosure while actionable decisions stay visible', async () => {
+    const { container } = await renderCard(undefined, {
       ...preview,
       readyNow: ['builtin tools + 9 default skills', 'workspace, memory, heartbeat, and self-evolution scaffolding'],
       willInstall: ['mcp: company-search'],
@@ -268,8 +270,8 @@ describe('HrBlueprintPreviewCard decision hierarchy', () => {
     }
   });
 
-  it('does not render an empty configuration disclosure', () => {
-    const { container } = renderCard(undefined, {
+  it('does not render an empty configuration disclosure', async () => {
+    const { container } = await renderCard(undefined, {
       ...preview,
       readyNow: [],
       willInstall: [],

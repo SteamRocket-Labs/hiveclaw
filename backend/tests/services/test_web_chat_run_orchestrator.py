@@ -1245,11 +1245,9 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
         "requires_user_decision": True,
         "terminal_reason": TerminalReason.PROVIDER_ERROR.value,
         "message": message,
-        # Typed replay-safety from the LLMError delivery classification: a
-        # rejected 402 send is safe for a user retry, while the typed
-        # requires_user_decision fact still forces resolving balance first.
-        # Nothing here authorizes automatic replay.
-        "retryable": True,
+        # R7a separates safe delivery from a retry that can succeed: quota
+        # must be fixed before the same request can help.
+        "retryable": False,
     }
     assert order == ["commit"]
     assert terminal_hooks == []
@@ -1359,6 +1357,7 @@ async def test_retry_safe_typed_rate_limit_failure_payload_is_user_retryable():
         terminal_reason=TerminalReason.PROVIDER_ERROR,
         failure_code="rate_limited",
         failure_delivery_state="rejected",
+        failure_retryable=True,
         failure_requires_user_decision=True,
         model_result_receipt=None,
     )

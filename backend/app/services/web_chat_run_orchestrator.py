@@ -1626,11 +1626,6 @@ def _terminal_failure_payload(result: Any, status: str, metadata: dict[str, Any]
         return None
     failure_code = getattr(result, "failure_code", None)
     delivery_state = getattr(result, "failure_delivery_state", None)
-    # Replay safety is the authoritative typed delivery fact from the LLMError
-    # classification: only an authoritatively rejected send is safe for a user
-    # retry.  Untyped/unknown delivery stays non-retryable, and nothing here
-    # ever authorizes automatic replay — the run is terminal either way.
-    retry_safe = str(delivery_state or "") == "rejected"
     requires_user_decision = bool(getattr(result, "failure_requires_user_decision", False))
     message = str(getattr(result, "content", "") or "").strip()
     return {
@@ -1639,7 +1634,7 @@ def _terminal_failure_payload(result: Any, status: str, metadata: dict[str, Any]
         "requires_user_decision": requires_user_decision,
         "terminal_reason": metadata.get("terminal_reason"),
         "message": message or None,
-        "retryable": retry_safe,
+        "retryable": bool(getattr(result, "failure_retryable", False)),
     }
 
 
@@ -1671,6 +1666,12 @@ async def _finalize_assistant_response(
             )
         return
     if status != "completed":
+        failure = _terminal_failure_payload(result, status, metadata)
+        if failure is not None and failure["failure_code"]:
+            # Existing task metadata is also the child's completion result
+            # read by its parent. Preserve the same typed failure there.
+            metadata = {**metadata, "error_code": failure["failure_code"],
+                **{key: failure[key] for key in ("retryable", "delivery_state", "requires_user_decision")}}
         finalized = await state.ports.terminal.finalize_without_assistant(
             run_uuid=state.run_uuid,
             agent_id=state.agent.id,
@@ -1678,7 +1679,7 @@ async def _finalize_assistant_response(
             status=status,
             result_summary=str(metadata.get("terminal_reason") or status),
             metadata_json=metadata,
-            failure=_terminal_failure_payload(result, status, metadata),
+            failure=failure,
             **_file_change_kwargs(state),
         )
         return

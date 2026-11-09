@@ -180,7 +180,10 @@ async def test_one_bad_tool_result_preserves_valid_sibling_call_and_result(monke
     assert "REVOKED_" not in json.dumps(wire)
     assert "VALID_RESULT" in json.dumps(wire) and "VALID_ARGUMENT" in json.dumps(wire)
     assert wire["messages"][0]["tool_calls"] == [calls[1]]
-    assert wire["messages"][2]["role"] == "tool"
+    # R7a: the surviving reply must directly follow its assistant; the
+    # withdrawal notice now follows the complete tool group.
+    assert wire["messages"][1]["role"] == "tool"
+    assert wire["messages"][2]["role"] == "system"
     assert bindings["dependencies"] == [good]
 
 

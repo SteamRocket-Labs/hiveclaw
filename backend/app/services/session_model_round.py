@@ -597,6 +597,32 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                     "这次对话暂时无法确认访问范围，请重试。", 503) from exc
             _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
 
+    # Withholding removes a call and replaces its reply with a notice. Keep
+    # those notices after all surviving replies, never inside a tool group.
+    wire_messages = wire_request["messages"]
+    withheld = {entry["message_index"] for entry in input_bindings["messages"] if entry["status"] == "withheld"}
+    order, notices, pending = [], [], set()
+    for index, message in enumerate(wire_messages):
+        if message.get("role") == "assistant":
+            pending = {call["id"] for call in message.get("tool_calls") or []}
+        if pending and index in withheld and message.get("role") == "system":
+            notices.append(index)
+            continue
+        order.append(index)
+        if message.get("role") == "tool":
+            pending.discard(message.get("tool_call_id"))
+        if not pending:
+            order.extend(notices)
+            notices = []
+    order.extend(notices)
+    if order != list(range(len(messages))):
+        messages[:] = [messages[index] for index in order]
+        wire_messages[:] = [wire_messages[index] for index in order]
+        positions = {old: new for new, old in enumerate(order)}
+        for entry in input_bindings["messages"]:
+            entry["message_index"] = positions[entry["message_index"]]
+        input_bindings["messages"].sort(key=lambda entry: entry["message_index"])
+
 
 async def prepare_model_request(
     db: AsyncSession,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Literal
 
 
@@ -24,16 +25,14 @@ class LLMErrorClassification:
     kind: LLMErrorKind
     user_message: str
     requires_user_decision: bool = False
+    retryable: bool = False
 
 
 def classify_llm_error(exc: Exception) -> LLMErrorClassification:
     """Classify model-provider failures without hiding account/config state.
 
-    Status-first hard invariant: an authoritative typed ``http_status ==
-    402`` owns the quota/balance outcome by itself — no natural-language
-    body text is required, and no text parser may override it.  Text
-    classification below remains display/user-message policy for every
-    other case.
+    A typed HTTP status owns the classification; provider text is a fallback
+    only when that status is unavailable. Retryability is separate from delivery.
     """
     if getattr(exc, "http_status", None) == 402:
         return LLMErrorClassification(
@@ -41,7 +40,8 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
             user_message="[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。",
             requires_user_decision=True,
         )
-    msg = str(exc)
+    status = getattr(exc, "http_status", None)
+    msg = str(exc) if status is None else ""
     lower = msg.lower()
 
     if (
@@ -71,15 +71,17 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
             requires_user_decision=True,
         )
 
-    if "529" in msg or "overloaded" in lower:
+    if status == 529 or "529" in msg or "overloaded" in lower:
         return LLMErrorClassification(
             kind="rate_limited",
             user_message="[LLM Error] AI 模型服务方暂时过载，已重试仍失败，请稍后重试。",
             requires_user_decision=False,
+            retryable=True,
         )
 
     if (
-        "429" in msg
+        status == 429
+        or "429" in msg
         or "too many requests" in lower
         or "rate_limit" in lower
         or "rate limit" in lower
@@ -89,6 +91,7 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
             kind="rate_limited",
             user_message="[LLM Error] AI 模型服务方已限流，请稍后重试，或由用户选择切换模型。",
             requires_user_decision=True,
+            retryable=True,
         )
 
     if (
@@ -105,7 +108,8 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
         )
 
     if (
-        "model not exist" in lower
+        status == 404
+        or "model not exist" in lower
         or "model_not_found" in lower
         or "model not found" in lower
         or "model does not exist" in lower
@@ -119,7 +123,8 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
         )
 
     if (
-        "401" in msg
+        status in {401, 403}
+        or "401" in msg
         or "403" in msg
         or "authentication" in lower
         or "unauthorized" in lower
@@ -132,28 +137,32 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
             requires_user_decision=True,
         )
 
-    if "400" in msg or "bad request" in lower or "invalid_request" in lower:
+    if status == 400 or "400" in msg or "bad request" in lower or "invalid_request" in lower:
         return LLMErrorClassification(
             kind="provider_bad_request",
             user_message="[LLM Error] AI 模型供应商拒绝了当前请求，请检查模型名称、参数或消息格式。",
             requires_user_decision=True,
         )
 
-    if "timeout" in lower or "timed out" in lower:
+    if status == 408 or "timeout" in lower or "timed out" in lower:
         return LLMErrorClassification(
             kind="timeout",
             user_message="[LLM Error] AI 模型服务方响应超时，请稍后重试。",
+            retryable=True,
         )
 
     if "connection" in lower or "connect" in lower:
         return LLMErrorClassification(
             kind="connection",
             user_message="[LLM Error] 连接 AI 模型服务方失败，请稍后重试。",
+            retryable=True,
         )
 
     return LLMErrorClassification(
         kind="unknown",
-        user_message=f"[LLM Error] AI 模型调用异常，请稍后重试。({msg})",
+        user_message="[LLM Error] AI 模型调用异常，请稍后重试。" + (f"({msg})" if msg else ""),
+        retryable=bool((status is not None and 500 <= status < 600)
+            or (status is None and re.search(r"\bHTTP\s+5\d\d\b", msg, re.IGNORECASE))),
     )
 
 

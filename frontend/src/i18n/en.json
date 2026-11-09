@@ -6306,8 +6306,8 @@
   },
   "vault": {
     "title": "Vault",
-    "description": "Manage existing credentials used by you and your assistants. Saved values are never displayed or returned.",
-    "empty": "No saved credentials yet. Your assistant will ask in the conversation when one is needed.",
+    "description": "Manage existing credentials used by you and your digital employees. Saved values are never displayed or returned.",
+    "empty": "No saved credentials yet. Your digital employee will ask in the conversation when one is needed.",
     "replace": "Replace",
     "remove": "Remove",
     "replaceTitle": "Replace credential",
@@ -6315,7 +6315,7 @@
     "credential": "Credential",
     "configured": "Configured",
     "notConfigured": "Not configured",
-    "unassigned": "No assistant assigned yet",
+    "unassigned": "No digital employee assigned yet",
     "secureInput": "The new value is saved directly and stays out of the conversation.",
     "saved": "Credential replaced.",
     "failed": "Unable to complete this. Please try again.",
@@ -6329,16 +6329,17 @@
     },
     "scope": {
       "personal": "My account",
-      "bot": "Only this bot",
+      "bot": "Only this digital employee",
       "company": "Company shared"
     },
     "removal": {
-      "company": "After removal, this bot will use the company connection.",
+      "company": "After removal, new work will use the company settings.",
       "existing": "After removal, new work will use the existing connection or service defaults.",
-      "configuration": "After removal, work that needs this credential will ask you to configure it again.",
-      "personal": "After removal, this bot will use another account you have connected.",
-      "mixed": "After removal, assistants with another connection will use it; the others will ask you to configure one.",
-      "authorization": "Existing authorization remains available until it needs renewal. Please authorize again at that point."
-    }
+      "configuration": "Work that needs this credential will ask you to configure it again.",
+      "mixed": "After removal, digital employees with other settings will use them; the others will ask you to configure them.",
+      "companySingle": "After removal, this digital employee will use the company settings.",
+      "companyMultiple": "After removal, these digital employees will use the company settings."
+    },
+    "removeOwnCredential": "Remove this digital employee’s own credential. Future use will follow available company settings or ask you to configure it again."
   }
 }

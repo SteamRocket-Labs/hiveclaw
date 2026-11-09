@@ -9,7 +9,7 @@ import { useAuthStore } from '../stores';
 import type { User } from '../types';
 
 const translate = (key: string, options?: Record<string, unknown>) => translateFromCatalog(en, key, options);
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate }) }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate, i18n: { language: 'en' } }) }));
 const row = { kind: 'mcp', id: 'owned', name: 'Documents', scope: 'personal', configured: true,
   fields: [{ key: 'access_token', label: '' }], bots: [{ id: 'bot', name: 'Finance assistant' }],
   removal: { fallback: 'company' }, version: null };
@@ -40,10 +40,10 @@ it('lists existing credentials and asks before removal, including the real compa
   expect(screen.queryByText(/unknown|last used|access_token/i)).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
   const dialog = screen.getByRole('dialog');
-  expect(within(dialog).getByText('After removal, this bot will use the company connection.')).toBeTruthy();
+  expect(within(dialog).getByText('After removal, this digital employee will use the company settings.')).toBeTruthy();
   expect(calls).toEqual([['/api/vault', 'GET']]);
   fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
-  await screen.findByText('After removal, this bot will use the company connection.');
+  await screen.findByText('After removal, this digital employee will use the company settings.');
   await waitFor(() => expect(screen.queryByText('Documents')).toBeNull());
   expect(calls).toEqual([['/api/vault', 'GET'], ['/api/vault/mcp/owned', 'DELETE'], ['/api/vault', 'GET']]);
 });
@@ -109,8 +109,45 @@ it('shows personal, managed-bot and company scopes without exposing field names 
     { ...row, kind: 'company', id: 'tool', name: 'Search', scope: 'company', configured: false, field: 'api_key', fields: [{ key: 'api_key', label: 'API Key' }] },
   ])));
   mount(); await screen.findByText('Billing');
-  expect(screen.getByText('Only this bot')).toBeTruthy();
+  expect(screen.getByText('Only this digital employee')).toBeTruthy();
   expect(screen.getByText('Company shared')).toBeTruthy();
   expect(screen.getByText('Not configured')).toBeTruthy();
   expect(screen.queryByText(/bearer_token|api_key|unknown|last used/i)).toBeNull();
+});
+
+it('renders copied company and OAuth rows without replacement or removal actions', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify([
+    { ...row, kind: 'company', id: 'search', name: 'Company search', scope: 'company', read_only: true },
+    { ...row, kind: 'company_mcp', id: 'oauth', name: 'Company documents', scope: 'company', read_only: true },
+    { ...row, kind: 'company', id: 'billing', name: 'Company billing', scope: 'company', read_only: false },
+  ])));
+  mount(); await screen.findByText('Company search');
+  for (const name of ['Company search', 'Company documents']) {
+    const section = screen.getByRole('heading', { name }).closest('article')!;
+    expect(within(section).queryByRole('button')).toBeNull();
+    expect(within(section).getByText('Company shared')).toBeTruthy();
+  }
+  const editable = screen.getByRole('heading', { name: 'Company billing' }).closest('article')!;
+  expect(within(editable).getByRole('button', { name: 'Replace' })).toBeTruthy();
+  expect(within(editable).getByRole('button', { name: 'Remove' })).toBeTruthy();
+});
+
+it('uses the English list separator and plural consequence for several digital employees', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify([{ ...row,
+    bots: [row.bots[0], { id: 'research', name: 'Research assistant' }],
+  }])));
+  mount(); await screen.findByText('Finance assistant, Research assistant');
+  fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+  expect(within(screen.getByRole('dialog')).getByText('After removal, these digital employees will use the company settings.')).toBeTruthy();
+});
+
+it('explains the existing account review after a custom API secret changes', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => init?.method === 'PUT'
+    ? new Response(JSON.stringify({ removed: false, removal: { fallback: 'company', review_required: true } }))
+    : new Response(JSON.stringify([row])));
+  mount(); await screen.findByText('Documents');
+  fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
+  fireEvent.change(screen.getByLabelText('Credential'), { target: { value: 'replacement-token' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await screen.findByText('Credential replaced. Work that selected this account needs its account choice confirmed again.');
 });

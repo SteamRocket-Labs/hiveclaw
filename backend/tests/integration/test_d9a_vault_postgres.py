@@ -139,13 +139,13 @@ async def test_replace_and_remove_change_real_tool_requests_without_clearing_oth
         assert sent == ["Bearer vault-bot-new"]
         removed = await http.delete(endpoint)
         assert removed.status_code == 200, removed.text
-        assert removed.json()["removal"]["fallback"] == "configuration"
+        assert removed.json()["removal"]["fallback"] == "company"
         result = str(await invoke())
-        assert "not configured" in result.lower() or "configuration" in result.lower(), result
-        assert sent == ["Bearer vault-bot-new"]
+        assert "Bills ready" in result
+        assert sent == ["Bearer vault-bot-new", "Bearer vault-company-old"]
     async with owner_sessionmaker() as db:
         row = await db.get(AgentTool, data["assignment"])
-        assert row.config == {"bearer_token": "", "ordinary_setting": "keep-me"}
+        assert row.config == {"ordinary_setting": "keep-me"}
 
 
 @pytest.mark.parametrize("kind,key", [("mcp", "mcp"), ("api", "api"), ("email", "email"), ("bot", "assignment"), ("company", "tool")])
@@ -199,9 +199,15 @@ async def test_personal_mcp_removal_reports_company_fallback_and_never_reuses_ol
         assert sent == ["Bearer vault-mcp-new", "Bearer vault-company-mcp"]
     async with await client_for(data, owner_sessionmaker, app_user_sessionmaker, "admin") as http:
         removed = await http.delete(f'/api/vault/company_mcp/{data["parent"]}?field=access_token')
-        assert removed.status_code == 200 and removed.json()["removal"]["fallback"] == "configuration"
-        assert "ask_user_question" in await invoke()
-        assert sent == ["Bearer vault-mcp-new", "Bearer vault-company-mcp"]
+        assert removed.status_code in {403, 404}
+    async with owner_sessionmaker() as db:
+        parent = await db.get(MCPServer, data["parent"])
+        parent.config_json = {"oauth": {"authorization_id": "synthetic-company-authorization-removed"}}
+        parent.auth_status = "none"
+        parent.status = "needs_auth"
+        await db.commit()
+    assert "ask_user_question" in await invoke()
+    assert sent == ["Bearer vault-mcp-new", "Bearer vault-company-mcp"]
 
 
 async def test_private_api_replacement_uses_new_value_after_existing_account_review(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path):
@@ -247,7 +253,7 @@ async def test_private_api_replacement_uses_new_value_after_existing_account_rev
             await db.commit()
         assert "Private bills ready" in str(await invoke())
         assert sent == ["Bearer vault-private-api-new"]
-        removed = await http.delete(path)
+        removed = await http.delete(f"{path}?version={current.version}")
         assert removed.status_code == 200 and removed.json()["removal"] == {"fallback": "existing", "review_required": True}
         assert "review" in str(await invoke()).lower() and sent == ["Bearer vault-private-api-new"]
 
@@ -285,7 +291,7 @@ async def test_mailbox_replacement_reaches_imap_and_revocation_keeps_the_existin
             await db.commit()
         assert "No emails" in await _handle_email_tool("read_emails", agent.id, tmp_path, {}, context=context)
         assert sent == ["vault-private-mail-new"]
-        removed = await http.delete(path)
+        removed = await http.delete(f"{path}?version={current.version}")
         assert removed.status_code == 200 and removed.json()["removal"]["review_required"]
         assert "review" in (await _handle_email_tool("read_emails", agent.id, tmp_path, {}, context=context)).lower()
         assert sent == ["vault-private-mail-new"]

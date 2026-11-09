@@ -14,7 +14,7 @@ export default function Connections() {
 }
 
 function VaultList({ userId, tenant }: { userId?: string; tenant: string | null }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const client = useQueryClient();
   const queryKey = ['vault', userId, tenant];
   const rows = useQuery({ queryKey, queryFn: vaultApi.list, enabled: !!userId && !!tenant });
@@ -28,7 +28,8 @@ function VaultList({ userId, tenant }: { userId?: string; tenant: string | null 
       auth_code: 'password', basic_password: 'password', basic_username: 'username', client_secret: 'appSecret' };
     return labels[field.key] ? t(`vault.labels.${labels[field.key]}`) : field.label || t('vault.credential');
   };
-  const effect = (removal: VaultRemoval) => t(`vault.removal.${removal.fallback}`)
+  const effect = (removal: VaultRemoval, count: number) => (removal.fallback === 'company' && count
+    ? t(count === 1 ? 'vault.removal.companySingle' : 'vault.removal.companyMultiple') : t(`vault.removal.${removal.fallback}`))
     + (removal.review_required ? ` ${t('vault.reviewRequired')}` : '');
   const close = () => { if (!busy) { setEditing(undefined); setValues({}); setError(false); } };
   const open = (row: VaultRow, remove: boolean) => { setValues({}); setError(false); setMessage(''); setEditing({ row, remove }); };
@@ -38,7 +39,7 @@ function VaultList({ userId, tenant }: { userId?: string; tenant: string | null 
     try {
       const result = await (editing.remove ? vaultApi.remove(editing.row) : vaultApi.replace(editing.row, values));
       setValues({}); setEditing(undefined);
-      setMessage(result.removed ? effect(result.removal) : t('vault.saved') + (result.removal.review_required ? ` ${t('vault.reviewRequired')}` : ''));
+      setMessage(result.removed ? effect(result.removal, editing.row.bots.length) : t('vault.saved') + (result.removal.review_required ? ` ${t('vault.reviewRequired')}` : ''));
       await client.invalidateQueries({ queryKey });
     } catch { setError(true); }
     finally { setBusy(false); }
@@ -55,24 +56,24 @@ function VaultList({ userId, tenant }: { userId?: string; tenant: string | null 
         <div className="vault-row-copy">
           <h2>{row.name}</h2>
           {row.field && <p>{fieldLabel(row.fields[0])}</p>}
-          <p>{row.bots.length ? row.bots.map((bot) => bot.name).join('、') : t('vault.unassigned')}</p>
+          <p>{row.bots.length ? row.bots.map((bot) => bot.name).join(i18n.language.startsWith('zh') ? '、' : ', ') : t('vault.unassigned')}</p>
           <div className="vault-facts"><span>{t(`vault.scope.${row.scope}`)}</span><span>{t(row.configured ? 'vault.configured' : 'vault.notConfigured')}</span></div>
         </div>
-        <div className="vault-actions">
+        {!row.read_only && <div className="vault-actions">
           <button className="btn btn-secondary" type="button" onClick={() => open(row, false)}>{t('vault.replace')}</button>
           <button className="btn btn-ghost" type="button" onClick={() => open(row, true)}>{t('vault.remove')}</button>
-        </div>
+        </div>}
       </article>)}
     </div>
     <Modal open={!!editing} onClose={close} title={t(editing?.remove ? 'vault.removeTitle' : 'vault.replaceTitle')} ariaLabel={t(editing?.remove ? 'vault.removeTitle' : 'vault.replaceTitle')}>
       {editing && <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <p className="vault-dialog-name">{editing.row.name}</p>
-        {editing.remove ? <p>{effect(editing.row.removal)}</p> : <>
+        {editing.remove ? <p>{editing.row.kind === 'bot' ? t('vault.removeOwnCredential') : effect(editing.row.removal, editing.row.bots.length)}</p> : <>
           <p>{t('vault.secureInput')}</p>
           {editing.row.fields.map((field, index) => <label className="vault-field" key={field.key} htmlFor={`vault-secret-${index}`}>
             {editing.row.fields.length === 1 ? t('vault.credential') : fieldLabel(field)}
             <input id={`vault-secret-${index}`} className="input" type="password" autoComplete="new-password"
-              maxLength={['mcp', 'company_mcp'].includes(editing.row.kind) ? 16384 : undefined}
+              maxLength={editing.row.kind === 'mcp' ? 16384 : undefined}
               required disabled={busy} value={values[field.key] || ''}
               onChange={(event) => setValues((current) => ({ ...current, [field.key]: event.target.value }))} />
           </label>)}

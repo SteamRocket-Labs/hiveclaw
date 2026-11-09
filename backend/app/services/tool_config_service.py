@@ -40,9 +40,8 @@ def _schema_fields_by_key(config_schema: dict | None) -> dict[str, dict]:
 
 
 def _secret_field_keys(config_schema: dict | None) -> set[str]:
-    """Use the same secret declarations as the existing configuration form."""
-    return {key for key, field in _schema_fields_by_key(config_schema).items()
-        if field.get("type") == "password" or field.get("format") == "password" or field.get("writeOnly")}
+    """Return config keys whose schema field type is ``password`` (i.e. secrets)."""
+    return {key for key, field in _schema_fields_by_key(config_schema).items() if field.get("type") == "password"}
 
 
 def _split_multiline_secret_rows(value: object) -> list[str]:
@@ -234,7 +233,6 @@ async def resolve_tool_config(
     *,
     agent_id: uuid.UUID | None = None,
     db: AsyncSession | None = None,
-    cleared_secret: tuple[str, str] | None = None,
 ) -> dict:
     """Resolve effective tool config with full tenant isolation.
 
@@ -253,7 +251,7 @@ async def resolve_tool_config(
 
             effective_tenant = await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(effective_tenant) as scoped_db:
-            return await resolve_tool_config(tool_name, tenant_id, agent_id=agent_id, db=scoped_db, cleared_secret=cleared_secret)
+            return await resolve_tool_config(tool_name, tenant_id, agent_id=agent_id, db=scoped_db)
 
     # 1. Get base tool
     result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.tenant_id.is_(None)).limit(1))
@@ -288,10 +286,6 @@ async def resolve_tool_config(
         if ttc and ttc.config:
             base_config.update(decrypt_tool_config_secrets(ttc.config, tool.config_schema))
 
-    # Settings can preview an existing slot's explicit clear without writing it.
-    if cleared_secret and cleared_secret[0] == "company":
-        base_config[cleared_secret[1]] = ""
-
     # These providers historically read environment defaults in their handlers.
     # Resolve them before employee overrides so endpoint changes also withhold them.
     fallback = {"firecrawl_search": "FIRECRAWL_API_KEY", "firecrawl_fetch": "FIRECRAWL_API_KEY",
@@ -317,8 +311,6 @@ async def resolve_tool_config(
             )
         )
         agent_config = at_r.scalar_one_or_none()
-        if cleared_secret and cleared_secret[0] == "bot":
-            agent_config = {**(agent_config or {}), cleared_secret[1]: ""}
         if agent_config:
             agent_config = decrypt_tool_config_secrets(agent_config, tool.config_schema)
             fields = _schema_fields_by_key(tool.config_schema)

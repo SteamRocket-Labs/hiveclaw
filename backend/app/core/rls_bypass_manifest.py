@@ -884,7 +884,11 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # machine_runtime_authority, shared_group_authority and workspace_resource_authority
 # changed (16 removed / 21 added); the 122 callsites are identical. No new bypass
 # scope, authorization, or callsite.
-RLS_BYPASS_SCOPES_SHA256 = "1eb32d2e39c0c35d9caeb747323fa6f1f6a43271673d10f72bd74b9eace307cd"
+# Artifact publication reuses only an exactly tenant-pinned source transaction;
+# privileged callers use a separate tenant-scoped source session. The existing
+# bypass callsites and query shapes are unchanged; only the publication source
+# and its containing module have new reviewed digests.
+RLS_BYPASS_SCOPES_SHA256 = "291adc878c14daf6e29b3cb8be93610b44775227336385e5f276c2d9c11e09b7"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

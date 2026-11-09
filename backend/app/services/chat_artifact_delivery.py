@@ -9,7 +9,7 @@ import os
 import shutil
 import stat
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -1250,8 +1250,20 @@ async def create_chat_artifacts_for_message(
     )
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
-    # Validate in the publication transaction. A failed source query rolls back
-    # only its file's savepoint, preserving the other files' cards.
+    from app.database import _RLS_TENANT_INFO_KEY, tenant_scoped_session
+
+    @asynccontextmanager
+    async def source_validation_scope():
+        # Only an explicitly pinned tenant transaction can carry source reads.
+        # Privileged workers keep their publication transaction, but never pass
+        # its BYPASS scope to a source reader.
+        if db.info.get(_RLS_TENANT_INFO_KEY) == str(tenant_id):
+            async with db.begin_nested():
+                yield db
+        else:
+            async with tenant_scoped_session(tenant_id) as source_db, source_db.begin_nested():
+                yield source_db
+
     parts: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     session_uuid = uuid.UUID(str(session_id))
@@ -1436,9 +1448,9 @@ async def create_chat_artifacts_for_message(
                 if native_artifact is not None:
                     try:
                         with group_source_read(batch_inputs=True):
-                            async with db.begin_nested():
+                            async with source_validation_scope() as source_db:
                                 await validate_artifact_content_receipt(
-                                    db,
+                                    source_db,
                                     tenant_id,
                                     authority_user,
                                     native_artifact,
@@ -1535,15 +1547,15 @@ async def create_chat_artifacts_for_message(
             )
             try:
                 with group_source_read(batch_inputs=True):
-                    async with db.begin_nested():
+                    async with source_validation_scope() as source_db:
                         source_receipt = receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None
                         if runtime_principal is not None:
                             await validate_runtime_workspace_receipt(
-                                db, tenant_id, runtime_principal, source_receipt, candidate["content_hash"]
+                                source_db, tenant_id, runtime_principal, source_receipt, candidate["content_hash"]
                             )
                         else:
                             await validate_published_workspace_receipt(
-                                db, tenant_id, authority_user, source_receipt, candidate["content_hash"]
+                                source_db, tenant_id, authority_user, source_receipt, candidate["content_hash"]
                             )
             except ContentInputReceiptError as exc:
                 record_source_error(path, exc)
@@ -1604,9 +1616,9 @@ async def create_chat_artifacts_for_message(
             if isinstance(db, AsyncSession):
                 try:
                     with group_source_read(batch_inputs=True):
-                        async with db.begin_nested():
+                        async with source_validation_scope() as source_db:
                             await validate_artifact_content_receipt(
-                                db, tenant_id, authority_user, existing, runtime_principal=runtime_principal
+                                source_db, tenant_id, authority_user, existing, runtime_principal=runtime_principal
                             )
                 except ContentInputReceiptError as exc:
                     record_source_error(path, exc)

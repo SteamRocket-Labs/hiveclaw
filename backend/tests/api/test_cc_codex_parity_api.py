@@ -1461,8 +1461,10 @@ async def test_goals_api_creates_session_goal(monkeypatch):
         db=db,
     )
 
-    # The goal row and its typed transcript evidence are both persisted.
-    assert db.flushes == 2
+    # The goal row and its typed transcript evidence are both persisted, then
+    # D9s (df3b9977) flushes once more so redaction notices and the
+    # server-updated timestamp are current before the response projection.
+    assert db.flushes == 3
     stored = db.added[0]
     assert stored.agent_id == agent_id
     assert stored.chat_session_id == session_id

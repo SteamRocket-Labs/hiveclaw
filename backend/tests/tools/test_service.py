@@ -3256,10 +3256,13 @@ async def test_tool_runtime_service_timeout_returns_structured_error():
     assert payload["error_class"] == "timeout"
     assert payload["retryable"] is False
     assert payload["provider"] == "runtime"
-    assert payload["actionable_hint"] == (
+    assert payload["diagnostic_hint"] == (
         "The execution outcome is unknown. Inspect the original tool's state or read back its output "
         "before requesting another effect."
     )
+    assert payload["message"] == "操作超过 60 秒没有完成，结果未知。"
+    assert payload["timeout_seconds"] == 60
+    assert payload["actionable_hint"] == "先查看原操作的状态或已有结果，再决定是否重试。"
 
 
 @pytest.mark.asyncio
@@ -3364,7 +3367,9 @@ async def test_tool_runtime_service_exception_returns_structured_error():
     assert payload["error_class"] == "tool_execution_error"
     assert payload["retryable"] is False
     assert payload["provider"] == "runtime"
-    assert full_error in payload["message"]
+    assert full_error in payload["diagnostic_message"]
+    assert payload["message"] == "操作未能完成，结果尚未确认。"
+    assert payload["actionable_hint"] == "请查看已有结果后再决定下一步。"
 
 
 @pytest.mark.asyncio

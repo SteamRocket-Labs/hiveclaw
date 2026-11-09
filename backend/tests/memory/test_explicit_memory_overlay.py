@@ -182,6 +182,7 @@ async def test_search_and_load_memory_include_active_explicit_overlay(
     import re
 
     from app.tools.handlers.memory import load_memory, save_memory, search_memory
+    from app.memory.explicit_overlay import search_explicit_overlay_entries
 
     agent_id = uuid.uuid4()
     _allow_overlay_writes(monkeypatch)
@@ -197,17 +198,19 @@ async def test_search_and_load_memory_include_active_explicit_overlay(
         )
         search_result = await search_memory(agent_id, {"query": "红灯测试", "scope": "facts"})
 
-        assert "## Explicit Memory Overlay" in search_result
-        assert "explicit_overlay" in search_result
+        assert "## 你要求记住的内容" in search_result
+        facts = search_explicit_overlay_entries(tmp_path, agent_id, "红灯测试")
+        assert len(facts) == 1 and facts[0]["source_type"] == "explicit_overlay"
         assert "红灯测试先锁边界" in search_result
         match = re.search(r"id=(explicit_[a-zA-Z0-9_-]+)", search_result)
         assert match
+        assert facts[0]["id"] == match.group(1)
 
         loaded = load_memory(agent_id, {"ids": [match.group(1)]})
 
-    assert "## Loaded Explicit Memory Overlay" in loaded
+    assert "## 读取到的记忆\n## 你要求记住的内容" in loaded
     assert "用户要求所有整改用红灯测试先锁边界" in loaded
-    assert "source=memory/explicit/" in loaded
+    assert facts[0]["source"] == f"memory/explicit/entries/{match.group(1)}.md"
 
 
 @pytest.mark.asyncio

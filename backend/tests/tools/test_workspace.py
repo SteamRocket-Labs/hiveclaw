@@ -280,13 +280,18 @@ def test_load_skill_allows_only_matching_session_extension_overlay(tmp_path):
 @pytest.mark.asyncio
 async def test_upload_image_rejects_sibling_prefix_escape(monkeypatch, tmp_path):
     from app.services.agent_tool_domains import image_upload
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope
 
     agent_id = uuid4()
+    scope = WorkspaceAuthorityScope(agent_id=agent_id, user_id=uuid4(), root_session_id=None,
+        allowed_paths=frozenset(), operator_view=False, authority_source="test",
+        collection_actions=frozenset({"deliver"}))
     ws = tmp_path / "11111111-1111-1111-1111-111111111111"
     ws.mkdir()
     sibling = tmp_path / f"{ws.name}-evil"
     sibling.mkdir()
     (sibling / "secret.png").write_bytes(b"png")
+    uploads = []
 
     class _FakeResponse:
         status_code = 201
@@ -305,6 +310,7 @@ async def test_upload_image_rejects_sibling_prefix_escape(monkeypatch, tmp_path)
             return False
 
         async def post(self, *args, **kwargs):
+            uploads.append((args, kwargs))
             return _FakeResponse()
 
     async def fake_resolve_tool_config(_tool_name, *, agent_id=None):
@@ -319,10 +325,12 @@ async def test_upload_image_rejects_sibling_prefix_escape(monkeypatch, tmp_path)
         agent_id,
         ws,
         {"file_path": f"../{ws.name}-evil/secret.png"},
+        authority_scope=scope,
     )
 
-    assert "Access denied" in result
+    assert result == f"❌ ../{ws.name}-evil/secret.png cannot be uploaded. Use a file under workspace/ that you may send."
     assert "cdn.example" not in result
+    assert uploads == []
 
 
 @pytest.mark.asyncio

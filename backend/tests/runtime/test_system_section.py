@@ -145,7 +145,9 @@ class TestContextCompression:
         assert "60 minutes" in prompt_text
 
     def test_session_logs_recoverable(self, prompt_text: str) -> None:
-        assert "logs/" in prompt_text
+        assert "memory/t0/sessions/.../events.jsonl" in prompt_text
+        assert "`source.md` as the readable Markdown/XML projection" in prompt_text
+        assert "logs/" not in prompt_text
 
 
 class TestTrustHierarchy:

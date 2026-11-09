@@ -337,9 +337,15 @@ class TestLegacyToolDomainConfigReaders:
         assert calls == [("send_email", agent_id)]
 
     async def test_image_upload_uses_central_resolver_before_upload(self, monkeypatch, tmp_path) -> None:
+        from app.services.workspace_resource_authority import WorkspaceAuthorityScope
+
         agent_id = uuid.uuid4()
-        image_path = tmp_path / "image.png"
+        image_path = tmp_path / "workspace/image.png"
+        image_path.parent.mkdir()
         image_path.write_bytes(b"png")
+        scope = WorkspaceAuthorityScope(agent_id=agent_id, user_id=uuid.uuid4(), root_session_id=None,
+            allowed_paths=frozenset({"workspace/image.png"}), operator_view=False, authority_source="test",
+            action_permissions=frozenset({("workspace/image.png", "deliver")}))
         calls: list[tuple[str, uuid.UUID | None]] = []
 
         async def fake_resolve_tool_config(tool_name, tenant_id=None, *, agent_id=None, db=None):
@@ -371,7 +377,7 @@ class TestLegacyToolDomainConfigReaders:
 
         from app.services.agent_tool_domains.image_upload import _upload_image
 
-        result = await _upload_image(agent_id, tmp_path, {"file_path": "image.png"})
+        result = await _upload_image(agent_id, tmp_path, {"file_path": "workspace/image.png"}, authority_scope=scope)
 
         assert "https://img.example.test/image.png" in result
         assert calls == [("upload_image", agent_id)]

@@ -120,9 +120,10 @@ async def test_each_native_source_filters_authority_before_the_requested_result_
     assert len(recall_results[-1]) == 1
     assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in result and "UNKNOWN_PRIVATE_EVIDENCE" not in result
     assert "OWN_PRIVATE_EVIDENCE" not in result and "OWN_PRIVATE_EVIDENCE_TAIL" not in result
-    availability = json.loads(result.split("## Memory Availability\n", 1)[1])
+    availability = json.loads(result.split("## 可用情况\n", 1)[1])
     assert availability == {"schema": "hive.explicit_memory_availability.v1", "status": "partial",
-        "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}]}
+        "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}],
+        "message": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"}
 
 
 @pytest.mark.parametrize("case", ["shared_worker", "shared_worker_all", "shared_identity_missing", "outage", "during_read", "during_source_change", "caller_identity"])
@@ -233,6 +234,7 @@ async def test_past_session_recall_never_reingests_the_current_work(
     assert body not in recalled, recalled
     assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in past and "UNKNOWN_PRIVATE_EVIDENCE" not in past
     assert "OWN_PRIVATE_EVIDENCE" not in past and "OWN_PRIVATE_EVIDENCE_TAIL" not in past
-    availability = json.loads(past.split("## Memory Availability\n", 1)[1])
+    availability = json.loads(past.split("## 可用情况\n", 1)[1])
     assert availability == {"schema": "hive.explicit_memory_availability.v1", "status": "partial",
-        "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}]}
+        "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}],
+        "message": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"}

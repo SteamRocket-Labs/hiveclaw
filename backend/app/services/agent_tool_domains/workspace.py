@@ -1685,7 +1685,8 @@ def _grep_search(
                         try:
                             while line := proc.stdout.readline(TOOL_OUTPUT_BYTES + 1):
                                 _, _, match = line.decode("utf-8", errors="replace").partition(":")
-                                matches.append(f"- {rel_path}:{match.rstrip(chr(10))}")
+                                match = match.rstrip("\r\n")
+                                matches.append(f"- {rel_path}:{match}")
                                 match_count += 1
                                 if len(line) > TOOL_OUTPUT_BYTES and not line.endswith(b"\n"):
                                     matches.cut()

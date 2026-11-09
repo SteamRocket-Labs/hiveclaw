@@ -66,3 +66,15 @@ def test_recall_assembly_stops_before_building_a_huge_transcript():
     result = "\n".join(_transcript_lines_from_messages(messages()))
     assert len(result.encode()) <= 65_536
     assert "请缩小范围后继续查找" in result
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_small_grep_keeps_crlf_normalization(tmp_path, monkeypatch, native):
+    from app.services.agent_tool_domains import workspace
+
+    if not native:
+        monkeypatch.setattr(workspace.shutil, "which", lambda _name: None)
+    (tmp_path / "small.txt").write_bytes(b"match one\r\nmatch two\r\n")
+    assert workspace._grep_search(tmp_path, "match") == (
+        "🔎 Grep results for 'match' (2 match(es)):\n- small.txt:1:match one\n- small.txt:2:match two"
+    )

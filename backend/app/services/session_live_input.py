@@ -660,7 +660,7 @@ def _human_input_payload(
         "bound_round_id": row.bound_round_id,
         "rolled_over_to_turn_id": row.rolled_over_to_turn_id,
         "admission_state": admission_state,
-        "reason_code": reason_code or (dispatch_receipt or {}).get("reason_code") or (dispatch_receipt or {}).get("code"),
+        "reason_code": reason_code,
         "dispatch_status": dispatch_status,
         "replayed": accepted.replayed,
         "run": run,

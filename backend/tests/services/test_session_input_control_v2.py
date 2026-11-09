@@ -327,8 +327,8 @@ async def test_new_start_turn_waits_for_previous_terminal_boundary_sidecars(owne
     assert [run.id for run in successor_runs] == [expected_run_id]
 
 
-async def test_dead_letter_terminal_boundary_holds_input_until_redrive_delivery(owner_sessionmaker) -> None:
-    """An unchanged dead letter is quiescent, but status changes wake dispatch."""
+async def test_dead_letter_terminal_boundary_rejects_input_even_after_redrive_delivery(owner_sessionmaker) -> None:
+    """A dead letter rejects held input; later delivery requires a fresh attempt."""
 
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
@@ -342,6 +342,8 @@ async def test_dead_letter_terminal_boundary_holds_input_until_redrive_delivery(
     from app.services.session_input_dispatch import recover_admitted_session_inputs_once
     from app.services.session_live_input import submit_live_human_input
 
+    # R8a round 2 B1 replaces indefinite dead-letter holding with terminal
+    # rejection. Redriving the old boundary must not revive a rejected input.
     tenant_id, user_id, agent_id, session_id, previous_run_id = await _seed_session(
         owner_sessionmaker,
         active_run=True,
@@ -427,9 +429,11 @@ async def test_dead_letter_terminal_boundary_holds_input_until_redrive_delivery(
             select(SessionInputAdmission).where(SessionInputAdmission.input_id == next_input_id)
         )
         assert admission is not None
-        assert (admission.dispatch_receipt_json or {})["terminal_boundary_status"] == "dead_letter"
+        assert (admission.dispatch_receipt_json or {})["reason_code"] == "terminal_boundary_dead_letter"
+        assert admission.dispatch_receipt_json["kind"] == "rejected"
+        assert admission.dispatch_receipt_json["retryable"] is False
 
-    assert first_dead_letter == {"claimed": 1, "dispatched": 0, "deferred": 1, "retried": 0}
+    assert first_dead_letter == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
     assert repeated_dead_letter == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
     assert repeated_dead_letter_again == repeated_dead_letter
 
@@ -464,9 +468,9 @@ async def test_dead_letter_terminal_boundary_holds_input_until_redrive_delivery(
             or 0
         )
         assert admission is not None
-        assert (admission.dispatch_receipt_json or {})["terminal_boundary_status"] == "pending"
+        assert (admission.dispatch_receipt_json or {})["reason_code"] == "terminal_boundary_dead_letter"
 
-    assert redriven_pending == {"claimed": 1, "dispatched": 0, "deferred": 1, "retried": 0}
+    assert redriven_pending == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
     assert repeated_pending == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
     assert successor_count == 0
 
@@ -516,12 +520,22 @@ async def test_dead_letter_terminal_boundary_holds_input_until_redrive_delivery(
             ).scalars()
         )
 
-    expected_run_id = uuid.uuid5(next_input_id, "session-v2-runtime-run")
-    assert delivered == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+    assert delivered == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
     assert replay == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
     assert admission is not None and admission.dispatch_state == "dispatched"
-    assert row is not None and row.target_run_id == expected_run_id
-    assert [run.id for run in successor_runs] == [expected_run_id]
+    assert row is not None and row.status == "rejected" and row.target_run_id is None
+    assert successor_runs == []
+    # A fresh member attempt after delivery still starts exactly one run.
+    fresh_input_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        fresh = await submit_live_human_input(db=db, agent=await db.get(Agent, agent_id),
+            user=await db.get(User, user_id), session=await db.get(ChatSession, session_id),
+            content="Try again after delivery", source="terminal-boundary-retry",
+            input_id=fresh_input_id, idempotency_key=f"terminal-boundary-retry:{fresh_input_id}")
+        assert uuid.UUID(fresh["run"]["run_id"]) == uuid.uuid5(fresh_input_id, "session-v2-runtime-run")
+        assert await db.scalar(select(func.count(RuntimeTask.id)).where(
+            RuntimeTask.tenant_id == tenant_id, RuntimeTask.parent_session_id == str(session_id),
+            RuntimeTask.id != previous_run_id)) == 1
 
 
 async def test_new_start_turn_waits_when_terminal_boundary_row_is_missing(owner_sessionmaker) -> None:

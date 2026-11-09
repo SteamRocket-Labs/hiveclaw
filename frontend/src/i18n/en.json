@@ -2473,7 +2473,6 @@
       "deactivatedNotice": "This digital employee is deactivated. Its files and conversations are kept.",
       "sendCancelled": "Not sent: sending was cancelled.",
       "sendUnconfirmed": "Could not confirm whether this message was saved.",
-      "sendPending": "This message has not started processing yet. Please retry shortly.",
       "sendRefused": "Not sent: this message could not be accepted.",
       "sendFailed": "Message not sent. Try again.",
       "mySessions": "My Conversations",

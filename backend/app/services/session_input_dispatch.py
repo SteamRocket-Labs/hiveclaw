@@ -143,6 +143,13 @@ async def _terminal_boundary_dispatch_hold(
     )
     if boundary is None:
         return None
+    if boundary.status == "dead_letter":
+        from app.services.session_human_input import _reject_admitted_input
+
+        rejected = await _reject_admitted_input(db, authority=authority, row=row, command=command,
+            reason_code="terminal_boundary_dead_letter")
+        return _json_receipt({"kind": "rejected", **asdict(rejected), "retryable": False,
+            "message": "上一轮任务没有正常结束，这段对话暂时无法继续。请新建对话后再试。"})
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.services.runtime_control_bus import _T0_TOO_LARGE_ERROR_PREFIX
 
@@ -843,7 +850,7 @@ def _admitted_input_candidate_statement(
             RuntimeTerminalBoundaryOutbox.tenant_id == SessionInputAdmission.tenant_id,
             func.replace(RuntimeTerminalBoundaryOutbox.session_id, "-", "")
             == func.replace(cast(SessionInputAdmission.session_id, String), "-", ""),
-            RuntimeTerminalBoundaryOutbox.status != "delivered",
+            RuntimeTerminalBoundaryOutbox.status.in_(("pending", "processing")),
             RuntimeTerminalBoundaryOutbox.status == receipt_boundary_status,
             RuntimeTerminalBoundaryOutbox.id == receipt_boundary_uuid,
         )

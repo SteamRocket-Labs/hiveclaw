@@ -62,7 +62,10 @@ async def test_post_compact_message_starts_or_exposes_why_it_cannot_start(owner_
             assert persisted.target_run_id != turn.run_id
             if hold_boundary:
                 assert receipt["run"] is None
-                assert receipt["reason_code"] == "terminal_boundary_ack_pending", receipt
+                # Round 2 B2/F2 consumes dispatch.kind/code directly: this
+                # accepted queue must not be projected as a top-level refusal.
+                assert receipt["dispatch"]["kind"] == "deferred"
+                assert receipt["dispatch"]["code"] == "terminal_boundary_ack_pending", receipt
             else:
                 assert receipt["run"]["run_id"]
                 assert (await db.get(RuntimeTask, uuid.UUID(receipt["run"]["run_id"]))).status == "pending"

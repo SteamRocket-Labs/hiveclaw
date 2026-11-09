@@ -6,6 +6,7 @@ import type { ChatTranscriptEventPayload } from '../agent-detail/chatRuntime';
 import { hydrateSessionTranscriptEvents } from '../agent-detail/sessionEventConsumer';
 import type { SessionCompatibilityEvent, SessionEventV2 } from './sessionEventStore';
 import { buildThreadTimeline } from './timelineModel';
+import { normalizeThreadItemPayload } from './threadItemReducer';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (_: string, fallback: string) => fallback }) }));
 afterEach(() => { cleanup(); window.sessionStorage.clear(); vi.useRealTimers(); });
@@ -17,8 +18,8 @@ function event(sequence: number, kind: string, lifecycle: string, minutes: numbe
     schema: 'hive.session_event', schema_version: 2, event_id: `event-${sequence}`, sequence,
     tenant_id: 'tenant', item_id: kind === 'run' ? runId! : `item-${sequence}`, item_kind: kind,
     kind: `${kind}.${lifecycle}`, lifecycle, payload_schema: `hive.session.payload.${kind}.${lifecycle}.v2`,
-    scope: runId ? { level: kind === 'assistant_commentary' ? 'round' : 'run', session_id: 'session', thread_id: 'session',
-      turn_id: `turn-${runId}`, run_id: runId, ...(kind === 'assistant_commentary' ? { round_id: `round-${runId}` } : {}) }
+    scope: runId ? { level: ['assistant_commentary', 'assistant_text', 'tool_call', 'tool_result', 'event'].includes(kind) ? 'round' : 'run', session_id: 'session', thread_id: 'session',
+      turn_id: `turn-${runId}`, run_id: runId, ...(['assistant_commentary', 'assistant_text', 'tool_call', 'tool_result', 'event'].includes(kind) ? { round_id: `round-${runId}` } : {}) }
       : { level: 'session', session_id: 'session', thread_id: 'session' },
     actor: { type: 'runtime' }, visibility: { audience: 'direct_user' }, payload,
     ...(runId ? { run_id: runId } : {}), occurred_at: at(minutes), persisted_at: at(minutes),
@@ -62,6 +63,10 @@ it('uses terminal timestamps rather than late step times or a stale running poll
   expect(model.cells.some(cell => cell.kind === 'boundary' && cell.message.content === 'Preparing the report.')).toBe(true);
   const delivery = { id: 'late-file', role: 'tool_call' as const, content: '', toolName: 'write_file',
     toolStatus: 'done' as const, eventRuntimeTaskId: 'run-1', timestamp: at(14),
+    // Real compatibility deliveries retain their transcript sequence. F1
+    // orders terminal boundaries by that sequence, never by wall time.
+    threadItem: normalizeThreadItemPayload({ id: 'late-file', sequence: 5, eventType: 'tool_call',
+      tool_name: 'write_file', runtime_task_id: 'run-1', created_at: at(14) })!,
     artifacts: [{ id: 'report', name: 'report.md', path: 'workspace/report.md' }] };
   const withDelivery = build(events, { messages: [...messages(events), delivery] });
   expect(runs(withDelivery)[0].timeline).toEqual(runs(model)[0].timeline);
@@ -78,7 +83,7 @@ it('keeps a late delegated result after stop without opening a phantom run', () 
 });
 
 it('takes a delegated session header and duration from its terminal runtime row', () => {
-  const model = build([user(1), work(2)], { activeSession: { id: 'session', read_only: true, runtime_task_id: 'run-1' },
+  const model = build([user(1), work(2)], { activeSession: { id: 'session', session_kind: 'delegation_run', read_only: true, runtime_task_id: 'run-1' },
     runtimePhase: 'thinking', sessionWorkbench: { runtime_tasks: [{ id: 'run-1', task_type: 'delegation',
       status: 'failed', started_at: at(0), completed_at: at(5) }] } });
   expect(model.header.status).toBe('failed');
@@ -90,7 +95,7 @@ it('takes a delegated session header and duration from its terminal runtime row'
     event_id: 'old-thinking', sequence: 1, session_id: 'session', tenant_id: 'tenant',
     legacy_event_type: 'thinking', legacy_item_type: 'reasoning', legacy_item_status: 'running',
     payload: { content: 'Working', metadata: { status: 'running' } }, occurred_at: at(1) } as SessionCompatibilityEvent;
-  const historical = build([legacy], { activeSession: { id: 'session', read_only: true, runtime_task_id: 'run-1' },
+  const historical = build([legacy], { activeSession: { id: 'session', session_kind: 'delegation_run', read_only: true, runtime_task_id: 'run-1' },
     runtimePhase: 'thinking', sessionWorkbench: { runtime_tasks: [{ id: 'run-1', task_type: 'delegation',
       status: 'failed', started_at: at(0), completed_at: at(5) }] } });
   expect(historical.header.status).toBe('failed');

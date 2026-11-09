@@ -1,4 +1,3 @@
-import { isSameSessionRunId } from './chatRuntime';
 
 export interface RuntimeBudgetState {
   schema: 'hive.runtime_budget_binding.v1';
@@ -51,13 +50,14 @@ export function submittedSessionRunState(value: unknown): ProjectedSessionRunSta
     ? sessionRunStateFromPayload(record) : null;
 }
 
-export function submittedSessionInputIssue(value: unknown, activeRunId?: string | null): 'refused' | 'pending' | null {
+export function submittedSessionInputIssue(value: unknown): 'refused' | 'queued' | null {
   const record = asRecord(value);
   if (record?.schema !== 'hive.human_input_receipt') return null;
   const dispatch = asRecord(record.dispatch);
   if (['rejected', 'cancelled', 'needs_reconciliation'].includes(String(record.admission_state))
     || ['rejected', 'cancelled', 'needs_reconciliation'].includes(String(record.status))
-    || dispatch?.kind === 'rejected') return 'refused';
+    || dispatch?.kind === 'rejected' || dispatch?.kind === 'refused') return 'refused';
   if (submittedSessionRunState(value) || !dispatch) return null;
-  return dispatch.kind === 'mailbox' && isSameSessionRunId(String(record.target_run_id || ''), activeRunId) ? null : 'pending';
+  return dispatch.kind === 'successor'
+    || (dispatch.kind === 'deferred' && dispatch.code === 'terminal_boundary_ack_pending') ? 'queued' : null;
 }

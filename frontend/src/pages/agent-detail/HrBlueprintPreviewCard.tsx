@@ -130,7 +130,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const viewerId = useAuthStore((state) => state.user?.id);
   const queryKey = ['hr-creation-draft', agentId, preview.blueprintId, viewerId] as const;
   const canLoad = Boolean(agentId && preview.blueprintId);
-  const { data: draft } = useQuery({
+  const { data: draft, isError } = useQuery({
     queryKey,
     queryFn: () => hrCreationApi.get(agentId!, preview.blueprintId!),
     enabled: canLoad,
@@ -149,7 +149,9 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const canonicalPreview = draft && Object.keys(draft.blueprint || {}).length > 0
     ? parsePreviewAgentBlueprintResult({ status: 'preview', ...draft }) || preview
     : preview;
-  const statusLabel = status ? blueprintStatusLabel(status, t) : t('common.loading');
+  const statusLabel = status ? blueprintStatusLabel(status, t)
+    : !canLoad || isError ? t('agent.chat.toolResults.statusUnavailable', 'Status unavailable')
+      : t('common.loading');
   const scopeLabel = permissionScopeLabel(canonicalPreview.permissionScope, t);
   const reviewRiskLabel = riskLabel(canonicalPreview.riskClass, t);
   const provisioningSteps = draft?.provisioning_steps || [];

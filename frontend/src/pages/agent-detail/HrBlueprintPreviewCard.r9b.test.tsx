@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -25,10 +25,10 @@ const pendingDraft: HrCreationDraft = {
 };
 const preview = parsePreviewAgentBlueprintResult({ status: 'preview', ...pendingDraft })!;
 
-function mount(snapshot = preview) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function mount(snapshot = preview, props: { agentId?: string } = { agentId: 'source' }) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 0 } } });
   const view = render(<MemoryRouter><QueryClientProvider client={client}>
-    <HrBlueprintPreviewCard agentId="source" preview={snapshot} onSendMessage={vi.fn()} />
+    <HrBlueprintPreviewCard agentId={props.agentId} preview={snapshot} onSendMessage={vi.fn()} />
   </QueryClientProvider></MemoryRouter>);
   return { ...view, client };
 }
@@ -77,4 +77,42 @@ it('keeps a settled preview visible without confirmation actions during loading'
   expect(screen.getAllByText('已创建').length).toBeGreaterThan(0);
   expect(screen.queryByText('等待你确认')).toBeNull();
   expect(screen.queryByRole('button', { name: '确认并创建' })).toBeNull();
+});
+
+it.each(['blueprint', 'agent'])('shows unavailable without actions when the %s ID is missing', (missing) => {
+  mount(missing === 'blueprint' ? { ...preview, blueprintId: null } : preview,
+    missing === 'agent' ? {} : { agentId: 'source' });
+
+  expect(screen.getByText('状态暂不可用')).toBeTruthy();
+  expect(screen.queryByText('加载中...')).toBeNull();
+  expect(screen.queryByText('等待你确认')).toBeNull();
+  expect(screen.queryAllByRole('button')).toHaveLength(0);
+  expect(api.get).not.toHaveBeenCalled();
+});
+
+it.each([preview, { ...preview, status: 'failed', authorizationMode: 'policy_direct' }])(
+  'shows unavailable without actions after the GET retry fails for $status / $authorizationMode',
+  async (snapshot) => {
+    api.get.mockRejectedValue(new Error('status request failed'));
+    mount(snapshot);
+
+    expect(await screen.findByText('状态暂不可用')).toBeTruthy();
+    expect(screen.queryByText('加载中...')).toBeNull();
+    expect(screen.queryByText('等待你确认')).toBeNull();
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+    expect(api.get).toHaveBeenCalledTimes(2);
+  },
+);
+
+it.each([
+  ['completed', '已创建'], ['rejected', '已拒绝'], ['superseded', '已有新版'], ['expired', '已过期'],
+])('keeps the settled %s label after a failed GET', async (status, label) => {
+  api.get.mockRejectedValue(new Error('status request failed'));
+  const { client, container } = mount({ ...preview, status });
+  await waitFor(() => expect(client.isFetching()).toBe(0));
+
+  expect(container.querySelector('.hr-blueprint-status')?.textContent).toBe(label);
+  expect(screen.queryByText('状态暂不可用')).toBeNull();
+  expect(screen.queryByText('加载中...')).toBeNull();
+  expect(screen.queryAllByRole('button')).toHaveLength(0);
 });

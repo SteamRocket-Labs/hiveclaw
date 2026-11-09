@@ -6,6 +6,7 @@
  */
 
 import { ApiError } from './errors';
+import i18n from 'i18next';
 
 const API_BASE = '/api';
 export interface RequestOptions {
@@ -37,6 +38,7 @@ function handleUnauthorized(): never {
 }
 
 async function parseErrorDetail(res: Response): Promise<{ message: string; data: unknown }> {
+  const fallback = i18n.t(res.status >= 500 ? 'common.serviceUnavailable' : 'common.requestFailed');
   try {
     const body = await res.json();
     const raw = body.detail;
@@ -48,12 +50,21 @@ async function parseErrorDetail(res: Response): Promise<{ message: string; data:
       return { message, data: raw };
     }
     if (raw && typeof raw === 'object') {
-      const message = typeof raw.message === 'string' ? raw.message : `HTTP ${res.status}`;
+      const message = typeof raw.message === 'string' ? raw.message : fallback;
       return { message, data: raw };
     }
-    return { message: raw || `HTTP ${res.status}`, data: raw };
+    return { message: raw || fallback, data: raw };
   } catch (parseErr) {
-    return { message: `HTTP ${res.status}`, data: { parseError: String(parseErr) } };
+    return { message: fallback, data: { parseError: String(parseErr) } };
+  }
+}
+
+async function fetchResponse(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    if (error instanceof TypeError) throw new ApiError(0, i18n.t('common.networkFailed'), error);
+    throw error;
   }
 }
 
@@ -71,7 +82,7 @@ export async function request<T>(
     ...authHeaders(),
   };
 
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetchResponse(`${API_BASE}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -99,7 +110,7 @@ export const del = <T = void>(path: string, options?: RequestOptions) => request
  * Blob download helper for CSV/file exports that still need auth + unified errors.
  */
 export async function getBlob(path: string, options?: RequestOptions): Promise<Blob> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetchResponse(`${API_BASE}${path}`, {
     method: 'GET',
     headers: authHeaders(),
     signal: options?.signal,
@@ -130,7 +141,7 @@ export async function upload<T = unknown>(
     }
   }
 
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetchResponse(`${API_BASE}${path}`, {
     method: 'POST',
     headers: authHeaders(),
     body: formData,

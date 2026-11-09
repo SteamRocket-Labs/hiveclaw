@@ -838,6 +838,38 @@ it('reuses the same attempt after a network failure with no response', async () 
   expect(mocks.startSessionRun.mock.calls[1][2].input_id).toBe(firstId);
 });
 
+it.each(['thinking', 'phase', 'tool_call'].flatMap(type => [[type, undefined], [type, 'accepted-run']]))(
+  'keeps an accepted %s frame when its POST later returns 504, run id: %s', async (type, run_id) => {
+    const request = deferred<any>();
+    mocks.startSessionRun.mockReturnValue(request.promise);
+    await composeOrdinaryMessage();
+    let sending!: Promise<unknown>;
+    act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+    const frame = type === 'thinking' ? { type, content: 'Checking the report.', run_id }
+      : type === 'phase' ? { type, phase: 'thinking', run_id }
+        : { type, name: 'run_command', id: 'accepted-tool', status: 'running', args: {}, run_id };
+    await act(async () => { receiveLiveMessage(frame); });
+    const phase = mocks.chatProps.runtimePhase;
+    expect(['thinking', 'tool_running']).toContain(phase);
+    await act(async () => { request.reject(new ApiError(504, 'Gateway timeout')); await sending; });
+    expect(mocks.chatProps.runtimePhase).toBe(phase);
+    expect(mocks.chatProps.isWaiting || mocks.chatProps.isStreaming).toBe(true);
+    expect(mocks.chatProps.chatMessages.find((message: any) => message.role === 'user')).toMatchObject({
+      sendState: 'failed', retrySend: expect.any(Function),
+    });
+  },
+);
+
+it.each([undefined, 'accepted-run'])('shows a run that arrives after the 504, run id: %s', async run_id => {
+  mocks.startSessionRun.mockRejectedValue(new ApiError(504, 'Gateway timeout'));
+  await composeOrdinaryMessage();
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(mocks.chatProps.chatMessages.at(-1).sendState).toBe('failed');
+  await act(async () => { receiveLiveMessage({ type: 'thinking', content: 'The server accepted this run.', run_id }); });
+  expect(mocks.chatProps.runtimePhase).toBe('thinking');
+  expect(mocks.chatProps.isWaiting || mocks.chatProps.isStreaming).toBe(true);
+});
+
 
 it('keeps attachments on a refusal and resends their original bytes', async () => {
   mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: 'rejected', run: null });

@@ -46,13 +46,14 @@ describe('AgentBusinessTasksSection', () => {
     queryData.plans = [];
   });
 
-  it('has one dedicated assignment tab inside Conversation & Tasks', () => {
+  it('keeps assignments in the D11 work section of the three bot-detail groups', () => {
     expect(AGENT_DETAIL_TABS).toContain('tasks');
-    expect(AGENT_WORKBENCH_AREAS.find((area) => area.id === 'conversation')?.tabs).toEqual([
-      'chat',
-      'tasks',
-      'aware',
+    expect(AGENT_WORKBENCH_AREAS.map(({ id, primaryTab, tabs }) => ({ id, primaryTab, tabs }))).toEqual([
+      { id: 'capabilities', primaryTab: 'extensions', tabs: ['status', 'extensions', 'workflows', 'workspace'] },
+      { id: 'work', primaryTab: 'tasks', tabs: ['chat', 'tasks', 'aware', 'activityLog', 'evolution'] },
+      { id: 'rules', primaryTab: 'knowledge', tabs: ['knowledge', 'approvals', 'settings', 'a2a'] },
     ]);
+    expect(AGENT_WORKBENCH_AREAS.filter(area => area.tabs.includes('tasks'))).toHaveLength(1);
   });
 
   it('builds a hash-bindable create plan and persists crash-recovery metadata', () => {

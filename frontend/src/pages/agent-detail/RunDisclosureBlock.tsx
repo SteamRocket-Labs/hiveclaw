@@ -170,7 +170,7 @@ type ExecDetails = {
   duration_ms?: number;
 };
 
-function asExecDetails(details: unknown, kind?: RunStepKind): ExecDetails | null {
+function asExecDetails(details: unknown, kind: RunStepKind, t: TFunction): ExecDetails | null {
   if (!details || typeof details !== 'object') return null;
   const record = details as Record<string, unknown>;
   const hasExecShape =
@@ -179,7 +179,7 @@ function asExecDetails(details: unknown, kind?: RunStepKind): ExecDetails | null
     const args = record.args && typeof record.args === 'object'
       ? record.args as Record<string, unknown>
       : {};
-    const command = typeof args.cmd === 'string'
+    let command = typeof args.cmd === 'string'
       ? args.cmd
       : typeof args.command === 'string'
         ? args.command
@@ -190,7 +190,20 @@ function asExecDetails(details: unknown, kind?: RunStepKind): ExecDetails | null
         ? record.rawResult
         : undefined;
     if (!command && !output) return null;
-    return { command, output };
+    // Translate only the execution renderer's envelope, never command stdout.
+    const outputHeader = '📤 Output:\n';
+    const commandHeader = '💻 Command: ';
+    let result = output;
+    if (result?.startsWith(commandHeader)) {
+      const boundary = result.indexOf(`\n\n${outputHeader}`);
+      if (boundary >= 0) {
+        command ||= result.slice(commandHeader.length, boundary);
+        result = result.slice(boundary + 2);
+      }
+    }
+    const displayOutput = result?.startsWith(outputHeader)
+      ? `${t('agent.chat.disclosure.commandOutput', 'Output:')}\n${result.slice(outputHeader.length)}` : result;
+    return { command, output: displayOutput };
   }
   if (!hasExecShape) return null;
   return {
@@ -232,7 +245,7 @@ function ExecOutput({ exec }: { exec: ExecDetails }) {
         <>
           <pre className="exec-pre">
             {head.join('\n')}
-            {clipped > 0 && <span className="exec-clip">{`\n… ${clipped} lines …\n`}</span>}
+            {clipped > 0 && <span className="exec-clip">{'\n'}{t('agent.chat.disclosure.clippedLines', '… {{count}} lines …', { count: clipped })}{'\n'}</span>}
             {tail.length > 0 && tail.join('\n')}
           </pre>
           {clipped > 0 && (
@@ -251,7 +264,7 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   const failure = toolFailureForDisplay(step.details, t, step.status);
   if (failure) return <p>{failure}</p>;
-  const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind) : null;
+  const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind, t) : null;
   if (exec) return <ExecOutput exec={exec} />;
   if (step.kind === 'tool' || step.kind === 'file' || step.kind === 'search' || typeof step.details !== 'string') {
     const result = typeof step.details === 'string' ? step.details : (step.details as { result?: unknown } | null)?.result;
@@ -365,19 +378,17 @@ function toolNameOf(step: RunStepSnapshot): string | null {
 
 function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
   if (step.titleIsLocalized) return step.title;
+  if (step.kind === 'reasoning' && step.title === 'Thinking' && step.status !== 'running' && step.status !== 'blocked') {
+    return t('agent.chat.disclosure.thought', 'Thought');
+  }
   if (step.kind === 'permission' && step.title === 'permission_resolved') {
     return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
   }
   return localizedToolName(toolNameOf(step), t, step.title);
 }
 
-/**
- * A row that names nothing is not a row on the default layer (B2 r2): a
- * generic-class title with no summary and no known action adds no
- * information. The step still counts in the "{{count}} steps" total and
- * stays reachable in the opened tool history with a localized label.
- */
-function isNamelessStep(step: RunStepSnapshot): boolean {
+// Keep generic tool steps in history; their shared mapping supplies the label.
+function isGenericToolStep(step: RunStepSnapshot): boolean {
   return (step.title === 'Tool call' || step.title === 'Runtime event')
     && !step.summary
     && !approvalActionFor(toolNameOf(step));
@@ -417,7 +428,7 @@ function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
 function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
-  const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind) : null;
+  const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind, t) : null;
   const hasDetails = step.details != null;
   const row = (
     <>
@@ -462,19 +473,14 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
 
 function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
   const { t } = useTranslation();
-  // The one display decision (isNamelessStep) decides the label: the summary
-  // names the work the member can recognize. A group whose every step names
-  // nothing keeps no label of its own — its "…" affordance carries nothing
-  // on the default layer; the "{{count}} steps" header already counts them.
-  const named = steps.filter((step) => !isNamelessStep(step));
+  const genericTitle = localizedToolName(null, t);
+  const named = steps.filter((step) => localizedToolTitle(step, t) !== genericTitle);
   const status = toolGroupStatus(steps);
   const currentStep = [...steps].reverse().find((step) => step.status === 'running') || steps[steps.length - 1];
   const label = named.length === 0
-    ? '…'
+    ? t('agent.chat.disclosure.otherAction', 'Other action')
     : status === 'running'
-      ? t('agent.chat.disclosure.toolRunning', 'Using {{tool}}', { tool: toolStepLabel(
-        [...named].reverse().find((step) => step.status === 'running') || named[named.length - 1], t,
-      ) })
+      ? t('agent.chat.disclosure.toolRunning', 'Using {{tool}}', { tool: toolStepLabel(currentStep, t) })
       : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', {
         tools: Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · '),
       });
@@ -554,11 +560,8 @@ export default function RunDisclosureBlock({
   }
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
-  // Nameless steps fold into the count and into the tool history instead of
-  // owning rows: nothing that names nothing renders on the default layer,
-  // and every step stays reachable once the history opens (B2 r3).
   const renderItems = groupRunSteps(visibleSteps.map((step) => (
-    isNamelessStep(step) ? { ...step, presentation: 'tool_history' as const } : step
+    isGenericToolStep(step) ? { ...step, presentation: 'tool_history' as const } : step
   )));
 
   return (

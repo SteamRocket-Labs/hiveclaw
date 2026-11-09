@@ -147,9 +147,19 @@ export default function Login() {
                 }
                 return;
             }
+            if (err instanceof TypeError || err instanceof ApiError && err.status === 0) {
+                setError(t('auth.serverUnreachable', 'Unable to reach server. Please check if the service is running and try again.'));
+                return;
+            }
+            if (err instanceof ApiError && err.status >= 500 && (
+                err.data == null || typeof err.data === 'object' && 'parseError' in err.data
+            )) {
+                setError(t('auth.serverStarting', 'Service is starting up or experiencing issues. Please try again in a few seconds.'));
+                return;
+            }
             const msg = err.message || '';
             // Server-returned error messages (e.g. disabled company, invalid credentials)
-            if (msg && msg !== 'Failed to fetch' && !msg.includes('NetworkError') && !msg.includes('ERR_CONNECTION')) {
+            if (msg) {
                 // Translate known error messages
                 if (msg === 'Public registration is closed. Sign in with an existing account or SSO.') {
                     setError(t('auth.registrationClosed'));
@@ -163,8 +173,6 @@ export default function Login() {
                     setError(t('auth.invalidCredentials', 'Invalid username or password.'));
                 } else if (msg.includes('Account is disabled')) {
                     setError(t('auth.accountDisabled', 'Your account has been disabled.'));
-                } else if (msg.includes('500') || msg.includes('Internal Server Error')) {
-                    setError(t('auth.serverStarting', 'Service is starting up or experiencing issues. Please try again in a few seconds.'));
                 } else {
                     setError(msg);
                 }

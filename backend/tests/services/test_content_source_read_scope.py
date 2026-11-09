@@ -147,3 +147,62 @@ async def test_disclosure_expiring_during_validation_cannot_cache_the_late_succe
     release.set()
     await child
     assert calls == 2
+
+
+@pytest.mark.parametrize("batch_inputs", [None, False, True])
+async def test_top_level_read_reuses_successes_without_replacing_an_outer_scope(source_read, monkeypatch, batch_inputs):
+    receipts, tenant, source = source_read
+    db, reader = _Reader(), _Reader()
+    checked, scopes = [], []
+
+    async def authorize(_db, _tenant, dependencies, **_kwargs):
+        checked.extend(dependencies)
+        scopes.append(receipts._DISCLOSURE_SOURCE_VALIDATIONS.get())
+
+    monkeypatch.setattr(receipts, "_validate_input_dependency_batch", authorize)
+    with nullcontext() if batch_inputs is None else receipts.group_source_read(batch_inputs=batch_inputs):
+        outer = receipts._DISCLOSURE_SOURCE_VALIDATIONS.get()
+        await receipts._validate_input_dependencies(db, tenant, [source, source], user=reader)
+        assert checked == [source]
+        assert scopes[0] is not None and scopes[0].batch_inputs is (batch_inputs is True)
+        if outer is not None:
+            assert scopes[0] is outer
+        assert receipts._DISCLOSURE_SOURCE_VALIDATIONS.get() is outer
+        await receipts._validate_input_dependencies(db, tenant, [source], user=reader)
+        assert checked == ([source, source] if outer is None else [source])
+    assert receipts._DISCLOSURE_SOURCE_VALIDATIONS.get() is None
+
+
+async def test_project_reader_success_is_reused_only_inside_project_reader(source_read, monkeypatch):
+    from app.services import project_context
+
+    receipts, tenant, source = source_read
+    db, reader, request = _Reader(), _Reader(), object()
+    principal = ("principal",)
+    project = {
+        "source_kind": "project_resource",
+        "source_id": str(uuid.uuid4()),
+        "source_version": "p" * 64,
+    }
+    checked = []
+
+    async def authorize(_db, _tenant, dependencies, **context):
+        for dependency in dependencies:
+            if dependency == project:
+                with project_context.project_source_reader(tenant, principal):
+                    await receipts._validate_input_dependencies(db, tenant, [source, source], **context)
+                    assert checked == [True]
+            else:
+                allowed = project_context.project_source_read_allowed(tenant, principal)
+                checked.append(allowed)
+                if not allowed:
+                    raise receipts.ContentInputReceiptError(
+                        "content_source_access_denied", "The workspace source belongs to another employee.", 403
+                    )
+
+    monkeypatch.setattr(receipts, "_validate_input_dependency_batch", authorize)
+    with pytest.raises(receipts.ContentInputReceiptError) as direct:
+        await receipts._validate_input_dependencies(db, tenant, [project, source], user=reader, runtime_request=request)
+    assert direct.value.code == "content_source_access_denied"
+    assert direct.value.status_code == 403
+    assert checked == [True, False]

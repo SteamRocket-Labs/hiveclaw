@@ -1,0 +1,17 @@
+.vault-page { max-width: 880px; margin: 0 auto; padding: 0 24px 32px; }
+.vault-intro { color: var(--text-secondary); margin: 12px 0 28px; }
+.vault-list { border-top: 1px solid var(--border-subtle); }
+.vault-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 22px 0; border-bottom: 1px solid var(--border-subtle); }
+.vault-row-copy { min-width: 0; }
+.vault-row h2 { font-size: 15px; font-weight: 600; margin: 0 0 8px; overflow-wrap: anywhere; }
+.vault-row p { margin: 0 0 8px; color: var(--text-secondary); font-size: 14px; overflow-wrap: anywhere; }
+.vault-facts { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--text-tertiary); font-size: 12px; }
+.vault-actions, .vault-dialog-actions { display: flex; flex-shrink: 0; gap: 8px; }
+.vault-dialog-actions { justify-content: flex-end; margin-top: 24px; }
+.vault-dialog-name { color: var(--text-primary); font-weight: 600; }
+.vault-field { display: grid; gap: 8px; margin: 20px 0 12px; }
+@media (max-width: 520px) {
+  .vault-page { padding: 0 16px 24px; }
+  .vault-row { align-items: flex-start; flex-direction: column; gap: 12px; padding: 20px 0; }
+  .vault-actions { align-self: flex-end; }
+}

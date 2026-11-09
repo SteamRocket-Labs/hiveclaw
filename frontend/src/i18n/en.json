@@ -6303,5 +6303,41 @@
     "noMemory": "Nothing you asked it to remember yet.",
     "botFailed": "Could not read work for {{name}}. Try again later.",
     "onRequest": "When a request arrives"
+  },
+  "vault": {
+    "title": "Vault",
+    "description": "Manage existing credentials used by you and your digital employees. Saved values are never displayed or returned.",
+    "empty": "No saved credentials yet. Your digital employee will ask in the conversation when one is needed.",
+    "replace": "Replace",
+    "remove": "Remove",
+    "replaceTitle": "Replace credential",
+    "removeTitle": "Remove credential",
+    "credential": "Credential",
+    "configured": "Configured",
+    "notConfigured": "Not configured",
+    "unassigned": "No digital employee assigned yet",
+    "secureInput": "The new value is saved directly and stays out of the conversation.",
+    "saved": "Credential replaced.",
+    "failed": "Unable to complete this. Please try again.",
+    "reviewRequired": "Work that selected this account needs its account choice confirmed again.",
+    "labels": {
+      "token": "Access token",
+      "apiKey": "API Key",
+      "password": "Password",
+      "username": "Username",
+      "appSecret": "App secret"
+    },
+    "scope": {
+      "personal": "My account",
+      "bot": "Only this digital employee",
+      "company": "Company shared"
+    },
+    "removal": {
+      "company": "After removal, new work will use company or system defaults.",
+      "configuration": "Work that needs this credential will ask you to configure it again.",
+      "companySingle": "After removal, this digital employee will use company or system defaults.",
+      "companyMultiple": "After removal, these digital employees will use company or system defaults."
+    },
+    "removeOwnCredential": "Remove this digital employee’s own credential. Future use will follow available company or system defaults or ask you to configure it again."
   }
 }

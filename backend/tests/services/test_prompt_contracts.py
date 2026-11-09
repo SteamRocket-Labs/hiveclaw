@@ -183,12 +183,13 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "Do NOT save one-off notes, transient state, or raw transcripts as skills" in tools["save_skill"]
     assert "Durable user corrections belong in `save_memory`" in tools["save_skill"]
     assert "operational notes and evidence belong in workspace files" in tools["save_skill"]
-    # J: tool_search now discovers imported MCP server tools (the discouraging
-    # "do NOT browse admin-only MCP" framing was removed); only NEW server
-    # install/import still routes through the explicit MCP flow.
+    # J: discovery includes imported MCP server tools. R9a round 2 narrows NEW
+    # server installation to the administrator flow: the old unconditional
+    # install/import expectation sent members around a missing connection.
     assert "imported MCP server tools" in tools["tool_search"]
     assert "become callable" in tools["tool_search"]
-    assert "For installing or importing a NEW MCP server, use the explicit MCP resource tools" in tools["tool_search"]
+    assert "For administrator-requested installation or import of a NEW MCP server, use the explicit MCP resource tools" in tools["tool_search"]
+    assert "Never use installation to resolve a member's missing connection" in tools["tool_search"]
     assert "only when those tools are explicitly available to this agent" in tools["tool_search"]
     assert "Return skill slugs" in tools["search_clawhub"]
 

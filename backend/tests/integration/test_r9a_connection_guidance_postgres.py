@@ -4,9 +4,10 @@ import json
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models.channel_config import ChannelConfig
+from app.models.email_account import EmailAccount
 from app.models.mcp_server import MCPServer
 from app.models.tenant_channel_config import TenantChannelConfig
 from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
@@ -28,11 +29,14 @@ async def test_member_request_only_claims_verified_connections_and_respects_answ
     s = app_work
     foreign = await _seed_run(owner_sessionmaker, tmp_path / "foreign")
     async with owner_sessionmaker() as db:
+        if connection != "none":
+            db.add_all([
+                ChannelConfig(agent_id=s["agent_id"], tenant_id=s["tenant_id"], channel_type="feishu",
+                    is_configured=connection == "employee", app_id="employee-app", app_secret="local-secret"),
+                ChannelConfig(agent_id=s["agent_id"], tenant_id=s["tenant_id"], channel_type="dingtalk",
+                    is_configured=False),
+            ])
         db.add_all([
-            ChannelConfig(agent_id=s["agent_id"], tenant_id=s["tenant_id"], channel_type="feishu",
-                is_configured=connection == "employee", app_id="employee-app", app_secret="local-secret"),
-            ChannelConfig(agent_id=s["agent_id"], tenant_id=s["tenant_id"], channel_type="dingtalk",
-                is_configured=False),
             TenantChannelConfig(tenant_id=s["tenant_id"], channel_type="feishu",
                 is_active=connection == "company", app_id="company-app", app_secret="local-secret"),
             TenantChannelConfig(tenant_id=s["tenant_id"], channel_type="dingtalk",
@@ -42,6 +46,11 @@ async def test_member_request_only_claims_verified_connections_and_respects_answ
                 is_active=True, app_id="foreign-app", app_secret="foreign-secret"),
         ])
         await db.commit()
+        assert await db.scalar(select(func.count()).select_from(EmailAccount).where(
+            EmailAccount.tenant_id == s["tenant_id"])) == 0
+        if connection == "none":
+            assert await db.scalar(select(func.count()).select_from(ChannelConfig).where(
+                ChannelConfig.tenant_id == s["tenant_id"])) == 0
 
     client = ScriptedLLMClient([{"content": "我是你的助理，可以帮你分析问题和整理资料。"}])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
@@ -70,9 +79,36 @@ async def test_member_request_only_claims_verified_connections_and_respects_answ
     assert "email" not in channels
     assert "with a full toolkit" not in prompt
     assert any(message["role"] == "user" and "用一句话" in str(message["content"]) for message in request["messages"])
-    # Catalog presence is deliberately not treated as a connection: these
-    # schemas may remain discoverable so the existing setup flow stays usable.
-    assert "ask_user_question" in {tool["function"]["name"] for tool in request["tools"]}
+    # R9a round 2: a correct channel subsection must not mask contradictory
+    # instructions elsewhere in the compiled prefix or the actual CORE schemas.
+    normalized = " ".join(prompt.split())
+    methodology = normalized.split("<work_methodology>", 1)[1].split("</work_methodology>", 1)[0]
+    assert "Use only channels confirmed by Channel Integrations, and email only with verified mailbox access for this member" in methodology
+    platform = normalized.split("<platform_integration>", 1)[1].split("</platform_integration>", 1)[0]
+    assert "Feishu/email only with a verified channel or mailbox connection for this member" in platform
+    governance = normalized.split("<tool_governance>", 1)[1].split("</tool_governance>", 1)[0]
+    assert "feishu/email only with a verified channel or mailbox connection for this member" in governance
+    tools_section = normalized.split("## Using Your Tools", 1)[1]
+    assert "feishu/email only with a verified channel or mailbox connection for this member" in tools_section
+    assert "Use Feishu, email, or web messaging as appropriate" not in prompt
+    core = {tool["function"]["name"]: tool["function"]["description"] for tool in request["tools"]}
+    # Presence is not connection evidence; preserve the real callable surface.
+    assert {"ask_user_question", "send_channel_message", "send_channel_file", "tool_search"} <= core.keys()
+    assert "only for a configured channel confirmed by Channel Integrations" in core["send_channel_message"]
+    assert "send_feishu_message only when Feishu is configured" in core["send_channel_message"]
+    assert "only through a connected channel confirmed by Channel Integrations" in core["send_channel_file"]
+    assert "For administrator-requested installation or import" in core["tool_search"]
+    assert "Never use installation to resolve a member's missing connection" in core["tool_search"]
+    assert "Use an already-present, connected tool directly; do not offer configuration" in normalized
+
+
+def _account_action(result, name, actions):
+    row = next(line for line in result.splitlines() if line.startswith(f"- {name} | mcp_server_id:"))
+    if " | connect_if_account_needed: " in row:
+        return json.loads(row.split(" | connect_if_account_needed: ", 1)[1])
+    # Read round 1's emitted bytes too: its missing questions must reach the
+    # real runtime unchanged in the c08b93a5 red run, without test-side repair.
+    return next(item["connect_action"] for item in actions["account_required"] if item["name"] == name)
 
 
 @pytest.mark.parametrize("connection", ["absent", "registered", "connected"])
@@ -115,25 +151,41 @@ async def test_discovery_returns_connection_steps_and_preserves_connected_execut
     assert "not connected" in result
     assert "Do not probe browser sessions, email or importable integrations as workarounds" in result
     if connection == "absent":
-        assert actions["account_required"] == [{"name": "Calendar", "connect_action": {
-            "tool": "ask_user_question", "arguments": {"configuration": {"mcp_server_id": str(calendar_id)}}}}]
+        # Round 1 incorrectly labelled every registered app account_required.
+        # Registration alone establishes neither a missing account nor access.
+        assert "account_required" not in actions
+        assert _account_action(result, "Calendar", actions) == {"tool": "ask_user_question", "arguments": {
+            "questions": [{"question": "<Write a connection question in the member's language>", "options": []}],
+            "configuration": {"mcp_server_id": str(calendar_id)}}}
         assert "GitHub personal" not in result
         assert "MCP" not in result
         assert "import_mcp_server" not in result
         return
 
-    action = next(item["connect_action"] for item in actions["account_required"] if item["name"] == "GitHub")
-    assert action == {"tool": "ask_user_question", "arguments": {"configuration": {"mcp_server_id": str(server_id)}}}
+    action = _account_action(result, "GitHub", actions)
+    assert action["tool"] == "ask_user_question"
+    assert action["arguments"]["configuration"] == {"mcp_server_id": str(server_id)}
     if connection == "registered":
         import app.runtime.invoker as invoker
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.services.session_user_question import question_payload
         from app.services.web_chat_runtime import execute_web_chat_run
+        from app.tools.handlers.plan_mode import ask_user_question
+        from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
-        arguments = {**action["arguments"],
-            "questions": [{"question": "请连接 GitHub，之后我会继续查看通知。", "options": []}]}
+        # Execute the emitted call verbatim, filling only its question text.
+        # Do not synthesize missing questions: that hid round 1's missing card.
+        arguments = action["arguments"]
+        if arguments.get("questions"):
+            arguments["questions"][0]["question"] = "请连接 GitHub，之后我会继续查看通知。"
+        handler_result = json.loads(await ask_user_question(ToolExecutionRequest(
+            tool_name=action["tool"], arguments=arguments, context=ToolExecutionContext(
+                agent_id=s["agent_id"], user_id=s["user_id"], tenant_id=str(s["tenant_id"]),
+                workspace=s["agent_root"], session_id=str(s["session_id"]), runtime_task_id=str(s["run_id"]),
+            ))))
         client = ScriptedLLMClient([{"tool_calls": [{"id": "connect-github", "type": "function", "function": {
-            "name": action["tool"], "arguments": json.dumps(arguments)}}], "finish_reason": "tool_calls"}])
+            "name": action["tool"], "arguments": json.dumps(arguments)}}], "finish_reason": "tool_calls"},
+            {"content": "请连接后继续。"}])
         monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
         token = set_runtime_task_fence(task_id=s["run_id"], worker_id="kernel-worker-1", claim_version=1)
         try:
@@ -143,12 +195,19 @@ async def test_discovery_returns_connection_steps_and_preserves_connected_execut
         async with owner_sessionmaker() as db:
             event = await db.scalar(select(ChatTranscriptEvent).where(
                 ChatTranscriptEvent.session_id == s["session_id"], ChatTranscriptEvent.item_kind == "user_question"))
-            assert event is not None
+            tool_results = list(await db.scalars(select(ChatTranscriptEvent.content).where(
+                ChatTranscriptEvent.session_id == s["session_id"], ChatTranscriptEvent.item_kind == "tool_result")))
+            assert event is not None, {"handler_result": handler_result, "tool_results": tool_results}
+            assert handler_result["status"] == "awaiting_user_clarification"
             payload = question_payload(event)
-            assert payload["configuration_request"]["mcp_server_id"] == str(server_id)
+            assert payload["questions"][0]["question"] == arguments["questions"][0]["question"]
+            assert payload["configuration_request"] == {"mcp_server_id": str(server_id), "target_agent_id": str(s["agent_id"])}
             assert payload["requested_by_user_id"] == str(s["user_id"])
         return
 
+    # A configured company token already works: remove the old assertion that
+    # put it under account_required, which encoded the defect rather than policy.
+    assert "account_required" not in actions
     received = []
 
     class Transport:

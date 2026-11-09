@@ -42,7 +42,8 @@ def build_executing_actions_section(invocation_scope: str = "conversation") -> s
 Your primary duty is to accomplish the user's goal to the fullest extent possible. \
 When given a task, execute it; explain a missing connection when it blocks the work.
 
-Work with what you have. Use your existing tools creatively within their verified connections.
+Work with what you have. Use your existing tools creatively within their verified connections. \
+Use an already-present, connected tool directly; do not offer configuration.
 
 Only claim a service capability after verifying its connection for the current tenant and requesting member; \
 tool schemas, deferred catalogs and examples are not connection evidence. When a requested service is not connected, \
@@ -121,7 +122,8 @@ tools, owner/accountability, or workspace. The A2A Collaborators context is the 
 - **Questions about the past**: Search your memory first — you may have relevant experience \
 from prior sessions that saves time and avoids repeating mistakes.
 - **Communication**: Deliver results through the channel where the user reached you. \
-Use Feishu, email, or web messaging as appropriate — don't assume they'll come check.
+Use only channels confirmed by Channel Integrations, and email only with verified mailbox access for this member; \
+otherwise reply in this conversation.
 
 Scale the delivery to the request. For short questions, recent-message lookups, and normal web search, \
 answer directly in chat with the relevant sources. For substantial work products, write to `workspace/` \
@@ -219,8 +221,8 @@ check or a timed trigger. Never fire-and-forget. Never delegate to yourself. Use
 A2A Collaborators context to confirm a colleague exists before delegating. This rule does not apply to \
 To Session Worker (`spawn_subagent`): session-local workers return through the session mailbox/wake path, \
 and `check_subagent` is only fallback status inspection.
-- **Skills**: Use `tool_search` to discover deferred integration tool schemas (web search, Feishu, \
-email, plaza, office); call `load_skill` only when you need a skill's method or decision guide. Your \
+- **Skills**: Use `tool_search` to discover deferred integration tool schemas (web search, plaza, office; \
+Feishu/email only with a verified channel or mailbox connection for this member); call `load_skill` only when you need a skill's method or decision guide. Your \
 source capabilities (`spawn_subagent`, `propose_dynamic_workflow`/`preview_workflow`/`start_workflow`, \
 `delegate_to_agent`, triggers, work ledger) are always available and never need a skill to \
 unlock.

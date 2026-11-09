@@ -1848,19 +1848,14 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
                 "when": "The requested service is absent from company_applications.",
                 "connect_action": {"location": "company connections", "actor": "administrator"},
             },
-            "account_required": [{"name": app["name"], "connect_action": {
-                "tool": "ask_user_question", "arguments": {
-                    "configuration": {"mcp_server_id": app["mcp_server_id"]},
-                },
-            }} for app in company_applications],
         }, ensure_ascii=False)])
         lines.append(
             "company_applications is the complete list of company-registered apps, not a list of personal accounts. "
             "If the requested app is absent, it is not connected: say so in one plain sentence in the member's language "
             "and offer its connect_action. Do not probe browser sessions, email or importable integrations as workarounds. "
             "Do not install or create a company connection. "
-            "If the app is registered but needs the member's account, use ask_user_question with configuration.mcp_server_id "
-            "from its connect_action to show the existing personal-account connection card, adding a question in the member's language. "
+            "Only if a registered app needs the member's account, copy its connect_if_account_needed call with configuration.mcp_server_id "
+            "to show the existing connection card, replacing only the question text with the member's language. "
             "Registration alone does not mean the member is connected. Never ask for credentials in chat or name internal mechanisms to the member."
         )
     else:

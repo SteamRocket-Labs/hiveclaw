@@ -967,11 +967,14 @@ def _memory_availability(content, issues):
         return content
     import json
 
+    message = "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"
+    if any(issue.get("code") == "session_recall_evidence_unavailable" for issue in issues):
+        message += "部分较早的对话暂时无法读取，相关内容未用于本次回忆。"
     return (
         content
         + "\n\n## 可用情况\n"
         + json.dumps({"schema": "hive.explicit_memory_availability.v1", "status": "partial", "issues": issues,
-            "message": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"}, ensure_ascii=False)
+            "message": message}, ensure_ascii=False)
     )
 
 
@@ -1206,6 +1209,7 @@ async def search_memory(
                 )
                 if execution_context is not None
                 else None,
+                issue_observer=issues,
             )
             if recalled and execution_context is not None:
                 # A session ACL proves its reader, not the producer and upstream

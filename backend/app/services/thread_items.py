@@ -478,6 +478,9 @@ def _merged_data(metadata: dict[str, Any], parts: list[dict[str, Any]]) -> dict[
         invocation_id = payload.get("invocation_id")
         if isinstance(invocation_id, str) and invocation_id and "tool_call_id" not in data:
             data["tool_call_id"] = invocation_id
+        for key in ("retry_safe", "retryable", "failure_code", "delivery_state"):
+            if key in payload and key not in data:
+                data[key] = payload[key]
     permission = data.get("permission_request")
     if isinstance(permission, dict):
         data = {**data, **permission}
@@ -794,7 +797,8 @@ def _user_summary(
         code = _text(data.get("code") or data.get("error_code") or data.get("failure_code"))
         if event_type == "runtime_failure" and code == "auth_or_permission":
             return "模型服务的身份验证或权限检查失败。请联系管理员检查 API Key 和模型访问权限，修复后再重试。"
-        if bool(data.get("retryable")):
+        # Unknown delivery may already have reached the provider, so never promise a safe retry.
+        if bool(data.get("retryable")) and data.get("delivery_state") != "unknown":
             return "连接或服务暂时不可用，本次任务可以安全重试。"
         return "任务遇到问题，已停止继续执行。"
     return "运行状态已更新。"
@@ -819,7 +823,7 @@ def _user_action(
             "impact": "可能产生不可逆影响" if destructive else "可撤销或只读操作",
             "details": _safe_argument_details(data.get("arguments")),
         }
-    if item_type == "error" and bool(data.get("retryable")):
+    if item_type == "error" and bool(data.get("retry_safe", data.get("retryable"))):
         return {
             "kind": "retry_turn",
             "label": "重试本轮",

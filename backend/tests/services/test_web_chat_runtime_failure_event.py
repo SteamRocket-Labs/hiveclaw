@@ -184,6 +184,7 @@ async def test_missing_model_pre_invocation_persists_canonical_terminal_event(
         assert payload == {
             "status": "failed",
             "terminal_reason": "provider_error",
+            "retry_safe": False,
             "retryable": False,
             "requires_user_decision": True,
             "content": "",

@@ -1141,6 +1141,7 @@ class AgentDelegationResult:
     # exposed through to_dict()/to_json() to the parent Agent.
     response_complete_payload: dict[str, Any] | None = None
     question_provider_request_id: str | None = None
+    failure_metadata: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """P1-W3-2: structured representation for parent agents that need
@@ -1178,6 +1179,7 @@ class AgentDelegationResult:
             "depth_limited": self.depth_limited,
             "failed": self.failed,
             "child_invocation": child_invocation,
+            **(self.failure_metadata or {}),
         }
 
     def to_json(self) -> str:
@@ -2283,6 +2285,10 @@ async def _delegate_after_cycle_check(
             ),
             failed=terminal_failed,
             terminal_reason=terminal_reason_value,
+            failure_metadata=({"error_code": result.failure_code,
+                "retryable": bool(getattr(result, "failure_retryable", False)),
+                "delivery_state": getattr(result, "failure_delivery_state", None)}
+                if getattr(result, "failure_code", None) else None),
             question_provider_request_id=(
                 canonical_runtime.active_provider_request_id
                 if canonical_runtime is not None
@@ -2370,6 +2376,7 @@ async def _delegate_after_cycle_check(
         "timed_out": delegation_result.timed_out,
         "depth_limited": delegation_result.depth_limited,
         "terminal_reason": delegation_result.terminal_reason,
+        **(delegation_result.failure_metadata or {}),
     }
     final_parts = []
     if publish_final and not delegation_result.failed:
@@ -2975,6 +2982,13 @@ async def _wake_parent_session_from_delegation_completion(
         # creating a second, independent parent-model continuation.
         delivery_mode = "session_projection"
 
+    from app.models.runtime_task import RuntimeTask
+
+    failure_metadata = {}
+    if status == "failed":
+        task = await db.get(RuntimeTask, uuid.UUID(task_id))
+        failure_metadata = {key: value for key, value in (getattr(task, "metadata_json", None) or {}).items()
+            if key in {"error_code", "retryable", "delivery_state"}}
     return await enqueue_completion_notification(
         db,
         CompletionNotification(
@@ -2998,6 +3012,7 @@ async def _wake_parent_session_from_delegation_completion(
                 "to_agent": str(request.target.id),
                 "to_agent_name": getattr(request.target, "name", None),
                 "depth": request.depth,
+                **failure_metadata,
                 **({"budget_run_id": str(request.budget_run_id)} if request.budget_run_id else {}),
             },
         ),
@@ -3144,6 +3159,7 @@ def _spawn_async_delegation_task(
                             "timed_out": delegation_result.timed_out,
                             "depth_limited": delegation_result.depth_limited,
                             "terminal_reason": delegation_result.terminal_reason,
+                            **(delegation_result.failure_metadata or {}),
                             "response_complete_payload": delegation_result.response_complete_payload,
                             "response_projection_error": (
                                 "transcript_commit_fenced"

@@ -597,6 +597,36 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                     "这次对话暂时无法确认访问范围，请重试。", 503) from exc
             _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
 
+    # Defer non-tool rows within a group, but never cross into the next group.
+    wire_messages = wire_request["messages"]
+    if len(messages) != len(wire_messages):
+        return
+    order, notices, pending = [], [], set()
+    for index, message in enumerate(wire_messages):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            order.extend(notices)
+            notices = []
+            pending = {call.get("id") for call in message["tool_calls"]}
+            order.append(index)
+            continue
+        if pending and message.get("role") != "tool":
+            notices.append(index)
+            continue
+        order.append(index)
+        if message.get("role") == "tool":
+            pending.discard(message.get("tool_call_id"))
+        if not pending:
+            order.extend(notices)
+            notices = []
+    order.extend(notices)
+    if order != list(range(len(wire_messages))):
+        messages[:] = [messages[index] for index in order]
+        wire_messages[:] = [wire_messages[index] for index in order]
+        positions = {old: new for new, old in enumerate(order)}
+        for entry in input_bindings["messages"]:
+            entry["message_index"] = positions[entry["message_index"]]
+        input_bindings["messages"].sort(key=lambda entry: entry["message_index"])
+
 
 async def prepare_model_request(
     db: AsyncSession,

@@ -680,6 +680,7 @@ async def _invoke_and_close(state: _InvocationState) -> AgentInvocationResult:
         response_complete_payload=getattr(result, "response_complete_payload", None),
         failure_code=getattr(result, "failure_code", None),
         failure_delivery_state=getattr(result, "failure_delivery_state", None),
+        failure_retryable=bool(getattr(result, "failure_retryable", False)),
         failure_requires_user_decision=bool(getattr(result, "failure_requires_user_decision", False)),
     )
 

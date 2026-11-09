@@ -66,7 +66,7 @@ def test_non_402_typed_status_does_not_become_quota() -> None:
     assert rate_limited.kind == "rate_limited"
 
 
-def test_minimax_token_plan_limit_is_quota_without_changing_delivery_facts() -> None:
+def test_minimax_token_plan_quota_keeps_body_classification_and_delivery_facts() -> None:
     from app.kernel.engine import _humanize_llm_error
     from app.services.llm_client import LLMError
     from app.services.llm_error_policy import should_surface_without_model_fallback
@@ -81,9 +81,13 @@ def test_minimax_token_plan_limit_is_quota_without_changing_delivery_facts() -> 
 
         classification = classify_llm_error(error)
 
+        # Round 2 restores the base Token Plan outcome: a typed rate-limit
+        # status must retain the body's account-quota explanation.
         assert classification.kind == "quota_exhausted"
+        assert classification.retryable is False
         assert classification.requires_user_decision is True
         assert should_surface_without_model_fallback(error) is True
         assert "额度已耗尽" in _humanize_llm_error(error)
         assert error.delivery_state == delivery_state
         assert error.http_status == 429
+    assert classify_llm_error(RuntimeError(message)).kind == "quota_exhausted"

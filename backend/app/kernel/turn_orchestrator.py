@@ -914,6 +914,7 @@ def _classified_llm_error_result(
         tokens_used=tokens_used,
         failure_code=classification.kind,
         failure_delivery_state=delivery_state,
+        failure_retryable=classification.retryable,
         failure_requires_user_decision=classification.requires_user_decision,
     )
 

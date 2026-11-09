@@ -1245,11 +1245,10 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
         "requires_user_decision": True,
         "terminal_reason": TerminalReason.PROVIDER_ERROR.value,
         "message": message,
-        # Typed replay-safety from the LLMError delivery classification: a
-        # rejected 402 send is safe for a user retry, while the typed
-        # requires_user_decision fact still forces resolving balance first.
-        # Nothing here authorizes automatic replay.
-        "retryable": True,
+        # R7a separates safe delivery from a retry that can succeed: quota
+        # must be fixed before the same request can help.
+        "retry_safe": True,
+        "retryable": False,
     }
     assert order == ["commit"]
     assert terminal_hooks == []
@@ -1359,6 +1358,7 @@ async def test_retry_safe_typed_rate_limit_failure_payload_is_user_retryable():
         terminal_reason=TerminalReason.PROVIDER_ERROR,
         failure_code="rate_limited",
         failure_delivery_state="rejected",
+        failure_retryable=True,
         failure_requires_user_decision=True,
         model_result_receipt=None,
     )
@@ -1373,6 +1373,7 @@ async def test_retry_safe_typed_rate_limit_failure_payload_is_user_retryable():
     )
 
     assert finalize_calls[0]["failure"]["retryable"] is True
+    assert finalize_calls[0]["failure"]["retry_safe"] is True
     assert finalize_calls[0]["failure"]["delivery_state"] == "rejected"
     assert finalize_calls[0]["failure"]["requires_user_decision"] is True
     assert finalize_calls[0]["failure"]["failure_code"] == "rate_limited"
@@ -1413,6 +1414,7 @@ async def test_untyped_failure_payload_is_not_retryable_and_needs_no_user_decisi
         "requires_user_decision": False,
         "terminal_reason": TerminalReason.TOOL_BUDGET.value,
         "message": message,
+        "retry_safe": False,
         "retryable": False,
     }
 

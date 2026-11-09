@@ -226,6 +226,7 @@ class InvocationResult:
     # downstream layer may re-derive them by scanning natural-language text.
     failure_code: str | None = None
     failure_delivery_state: str | None = None
+    failure_retryable: bool = False
     # Typed user-decision fact from the same status-first classification
     # (e.g. quota/auth/rate-limit require the user to act before a retry can
     # succeed).  Replay safety itself is derived from failure_delivery_state.

@@ -175,6 +175,59 @@ async def test_legacy_workflow_inline_inputs_stop_before_session_or_model_dispat
 
 
 @pytest.mark.asyncio
+async def test_provider_bad_request_is_not_retryable_in_native_delegation(monkeypatch):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from app.agents import orchestrator
+    from app.kernel.contracts import TerminalReason
+
+    target = SimpleNamespace(id=uuid4(), name="Worker", role_description="Helpful", tenant_id=uuid4())
+    owner_id, child_session = uuid4(), str(uuid4())
+    monkeypatch.setattr(orchestrator, "invoke_agent", AsyncMock(return_value=SimpleNamespace(
+        content="Check the request configuration before trying again.", terminal_reason=TerminalReason.PROVIDER_ERROR,
+        failure_code="provider_bad_request", failure_retryable=False, failure_delivery_state="rejected")))
+    monkeypatch.setattr(orchestrator, "_ensure_peer_delegation_session", AsyncMock(return_value=True))
+    @asynccontextmanager
+    async def session_scope(*args, **kwargs):
+        yield SimpleNamespace(commit=AsyncMock())
+
+    monkeypatch.setattr("app.database.tenant_scoped_session", session_scope)
+    monkeypatch.setattr("app.services.chat_transcript.append_session_event", AsyncMock(return_value=SimpleNamespace(
+        message_id=None, transcript_event=SimpleNamespace(parts_json=None, metadata_json={}))))
+    request = orchestrator.AgentDelegationRequest(target=target, target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "Inspect this"}], owner_id=owner_id,
+        session_id=child_session, **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id=child_session))
+    result = await orchestrator._delegate(request)
+    payload = result.to_dict()
+    assert payload["status"] == "failed"
+    assert payload["error_code"] == "provider_bad_request"
+    assert payload["retryable"] is False
+
+    # The async worker must persist those same facts before the canonical
+    # completion producer publishes the child's result to the parent.
+    updates = []
+    async def update(_task_id, **kwargs):
+        updates.append(kwargs)
+        return True
+
+    monkeypatch.setattr(orchestrator, "_delegate", AsyncMock(return_value=result))
+    monkeypatch.setattr(orchestrator, "update_runtime_task_record", update)
+    monkeypatch.setattr(orchestrator, "_persist_delegation_terminal_evidence", AsyncMock())
+    monkeypatch.setattr(orchestrator, "_settle_delegation_budget", AsyncMock())
+    monkeypatch.setattr(orchestrator, "_release_delegation_coordination_lease", AsyncMock())
+    task_id = str(uuid4())
+    orchestrator._spawn_async_delegation_task(task_id=task_id, request=request, trace_id="r7a")
+    state = orchestrator._async_tasks[task_id]
+    try:
+        await state.task
+        terminal = next(item for item in updates if item.get("status") == "failed")
+        assert terminal["metadata_json"]["error_code"] == "provider_bad_request"
+        assert terminal["metadata_json"]["retryable"] is False
+    finally:
+        orchestrator._async_tasks.pop(task_id, None)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("with_artifact_inputs", [False, True])
 async def test_delegate_to_agent_builds_runtime_request(monkeypatch, with_artifact_inputs):
     from app.agents.orchestrator import delegate_to_agent

@@ -1306,11 +1306,13 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         if "native_empty_read_receipt" in metadata:
             receipts.append(("native_empty_read_receipt", load_native_empty_read_evidence))
         if not receipts:
-            return _unique_dependencies(dependencies), False
+            if invocation.tool_name not in {"list_files", "fs_list", "glob_search"}:
+                return _unique_dependencies(dependencies), False
+            receipts.append(("native_directory_read_receipt", load_native_directory_read_evidence))
         try:
             for key, loader in receipts:
-                pointer = metadata[key]
-                if not isinstance(pointer, dict) or pointer.get("status") != "verified":
+                pointer = metadata.get(key)
+                if key in metadata and (not isinstance(pointer, dict) or pointer.get("status") != "verified"):
                     return _unique_dependencies(dependencies), False
                 bound = await loader(
                     db,
@@ -1319,9 +1321,9 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
                     model_result=model,
                     arguments=arguments,
                     content_hash=payload["content_hash"],
-                    capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")},
+                    capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")} if pointer else None,
                 )
-                if bound != pointer:
+                if bound.get("status") != "verified" or pointer is not None and bound != pointer:
                     return _unique_dependencies(dependencies), False
             return _unique_dependencies(dependencies), inherited_complete
         except (ContentInputReceiptError, ValueError, TypeError):

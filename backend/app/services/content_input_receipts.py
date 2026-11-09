@@ -2885,6 +2885,20 @@ async def _load_native_read_evidence(
     )
     kind = channel_name.replace("-", "_")
     label = "clock" if clock else "denied" if denial else "directory" if directory else "empty"
+    if capture is None and directory and invocation.permission_state == "approved":
+        # Permission-resume settlement omitted the pointer, but the native
+        # producer retained its exact observation. Ordinary missing tags stay unbound.
+        ids = (await db.scalars(select(InvocationSpan.id).where(
+            InvocationSpan.tenant_id == invocation.tenant_id,
+            InvocationSpan.agent_id == agent_id,
+            InvocationSpan.runtime_task_id == invocation.run_id,
+            InvocationSpan.session_id == str(invocation.session_id),
+            InvocationSpan.span_id == f"{channel_name}:{invocation.id}",
+            InvocationSpan.span_type == kind,
+            InvocationSpan.status == "captured",
+        ).limit(2))).all()
+        if len(ids) == 1:
+            capture = {"status": "captured", "receipt_ref": f"{channel_name}:{ids[0]}"}
     if not isinstance(capture, dict) or capture.get("status") != "captured":
         return {"status": "unavailable", "reason_code": f"{kind}_capture_unavailable"}
     try:

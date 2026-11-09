@@ -894,7 +894,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Bridge updates bind event and tenant; legacy backfill counts bind tenant, agent and session.
 # Lfix8 changes only runtime_control_bus's module source: its combined bridge/projection
 # UPDATE binds the locked event and tenant, while bypass enumeration still returns only tenant/session/event locators.
-RLS_BYPASS_SCOPES_SHA256 = "cbd45be306ff61804a1d9a505a5ae45ed703a1e4a3742018ceab5b92db34e4ea"
+# Native directory recovery uses only approved invocation captures; the 122
+# bypass callsites and the reviewed entry count (790) remain unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "2562235b6691fb05c7e62a15a9dc43722bf3e2be329cbe40f73ad6d70d035455"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

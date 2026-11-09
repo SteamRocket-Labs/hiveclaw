@@ -1170,20 +1170,29 @@ async def validate_runtime_return_dependency(db, tenant_id, dependency, *, user,
 
 
 def runtime_result_denial_bound(*, invocation, payload, content):
-    """Bind only an observed native no-data denial, never the denied target's bytes or authority."""
+    """Bind native no-data feedback, never the target's bytes or authority."""
     from app.tools.handlers.context_resources import _RUNTIME_RESULT_REF_RE
 
     try:
         body = json.loads(content)
         arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
-        return (
+        settled = (
             invocation.tool_name == "read_runtime_result"
             and invocation.effect_state == "effect_committed"
             and payload.get("outcome") == "success"
             and payload.get("content_or_error_ref") == invocation.receipt_ref
             == f"tool-frame:{payload.get('content_hash')}"
             and isinstance(body, dict)
-            and set(body) == {"schema", "status", "reason_code", "result_ref", "retryable", "recovery_action"}
+            and body.get("result_ref") == arguments.get("result_ref")
+            and _RUNTIME_RESULT_REF_RE.fullmatch(body.get("result_ref", "")) is not None
+        )
+        if not settled:
+            return False
+        if body.get("retryable") is True and body == {"schema": "hive.runtime_result_page.v1", "status": "not_found",
+            "result_ref": arguments["result_ref"], "retryable": True}:
+            return True  # Native absence feedback contains no result body or source grant.
+        return (
+            set(body) == {"schema", "status", "reason_code", "result_ref", "retryable", "recovery_action"}
             and body["schema"] == "hive.runtime_result_page.v1"
             and (
                 (body["status"] == "source_access_denied"
@@ -1193,8 +1202,6 @@ def runtime_result_denial_bound(*, invocation, payload, content):
                     and isinstance(body["retryable"], bool))
             )
             and body["recovery_action"] == "reconcile_result_sources"
-            and body["result_ref"] == arguments.get("result_ref")
-            and _RUNTIME_RESULT_REF_RE.fullmatch(body["result_ref"]) is not None
         )
     except (ValueError, TypeError):
         return False

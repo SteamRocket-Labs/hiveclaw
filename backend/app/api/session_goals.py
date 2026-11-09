@@ -202,6 +202,7 @@ async def start_session_goal(
     agent = decision.agent
     protected = await redact_runtime_ingress_payload(
         db, tenant_id=agent.tenant_id, agent_id=agent.id, source_channel="web",
+        requester_user_id=current_user.id,
         payload=body.model_dump(),
     )
     body = body.model_copy(update={key: value for key, value in protected.value.items() if key in type(body).model_fields})
@@ -307,13 +308,10 @@ async def start_session_goal(
                 metadata["last_goal_run_id"] = run_id
                 metadata["last_goal_run_status"] = str((run or {}).get("status") or "running")
                 goal.metadata_json = metadata
-                await db.flush()
-                # updated_at carries onupdate=func.now(), so the flush above
-                # expires it; reload explicitly before the synchronous
-                # projection read or it would perform implicit IO
-                # (MissingGreenlet → HTTP 500 after the goal row and run were
-                # already created).
-                await db.refresh(goal)
+    # Redaction notices update metadata even when no run starts. Reload the
+    # server-updated timestamp before the synchronous response projection.
+    await db.flush()
+    await db.refresh(goal)
     return {**build_session_goal_projection(goal), "run": run, "input": input_receipt}
 
 

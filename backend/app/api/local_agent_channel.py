@@ -530,6 +530,7 @@ async def create_current_user_local_agent_channel_message(
     try:
         protected = await redact_runtime_ingress_payload(db, tenant_id=current_user.tenant_id,
             agent_id=_session.get("agent_id"), source_channel="web",
+            requester_user_id=current_user.id,
             payload={"content": body.content, "attachments": body.attachments,
                      "extra_metadata": {key: value for key, value in body.metadata.items() if key != "pasted_credential_notice"}})
     except RuntimeIngressSecretBoundaryUnavailable as exc:

@@ -12,7 +12,7 @@ from tests.services.test_pasted_secret_policy_r2 import assert_no_fragments
 
 @pytest.mark.parametrize("kind,content,secret", list(positive_cases()), ids=[x[0] for x in positive_cases()])
 async def test_review_positive_has_no_six_character_fragment(kind, content, secret):
-    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, source_channel="web", payload={"content": content})
+    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, requester_user_id=None, source_channel="web", payload={"content": content})
     assert_no_fragments(out.value, secret)
     assert out.value["extra_metadata"]["pasted_credential_notice"] is True
     if kind in {"amp", "semicolon", "paren", "comma_pw", "brace", "colon_pw", "pg_at", "pg_at_grok", "bearer_comma"}:
@@ -26,40 +26,40 @@ async def test_review_positive_has_no_six_character_fragment(kind, content, secr
 @pytest.mark.parametrize("kind,content", list(negative_cases()), ids=[x[0] for x in negative_cases()])
 async def test_review_negative_is_byte_identical(kind, content):
     payload = {"content": content, "display_content": content, "parts": [{"type": "text", "text": content}]}
-    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, source_channel="web", payload=payload)
+    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, requester_user_id=None, source_channel="web", payload=payload)
     assert out.value == payload, kind
 
 
 @pytest.mark.parametrize("field", ["message", "subject", "description", "request", "completion_summary", "context", "tags"])
 async def test_every_member_string_leaf_is_scanned(field):
     value = [KEY, {"unlisted_nested_text": KEY}] if field in {"tags", "context"} else KEY
-    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, source_channel="web", payload={"arguments": {field: value}})
+    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, requester_user_id=None, source_channel="web", payload={"arguments": {field: value}})
     assert_no_fragments(out.value, KEY)
 
 
 @pytest.mark.parametrize("field", ["id", "agent_id", "type", "kind", "mode", "permission_mode", "idempotency_key", "source", "channel", "status", "cron", "interval", "at"])
 async def test_structural_leaves_and_list_items_are_byte_identical(field):
     payload = {field: [KEY]}
-    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, source_channel="web", payload=payload)
+    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, requester_user_id=None, source_channel="web", payload=payload)
     assert out.value == payload
 
 
 @pytest.mark.parametrize("channel", ["feishu", "dingtalk", "wecom", "slack", "telegram", "discord", "microsoft_teams", "wechat_personal"])
 async def test_server_channel_has_base_behavior(channel):
     payload = {"content": KEY}
-    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, source_channel=channel, source="web", payload=payload)
+    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, requester_user_id=None, source_channel=channel, source="web", payload=payload)
     assert out.value == payload
 
 
 @pytest.mark.parametrize("source", ["a2a", "task_notification", "plan_mode_handoff", "agent_session_mailbox"])
 async def test_system_sources_have_base_behavior(source):
     payload = {"content": KEY}
-    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, source_channel="web", source=source, payload=payload)
+    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, requester_user_id=None, source_channel="web", source=source, payload=payload)
     assert out.value == payload
 
 
 async def test_payload_source_cannot_disable_web_policy():
-    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, source_channel="web", source="web", payload={"content": KEY, "extra_metadata": {"source": "agent_session_mailbox"}})
+    out = await redact_runtime_ingress_payload(None, tenant_id=None, agent_id=None, requester_user_id=None, source_channel="web", source="web", payload={"content": KEY, "extra_metadata": {"source": "agent_session_mailbox"}})
     assert_no_fragments(out.value, KEY)
 
 
@@ -78,7 +78,7 @@ async def test_non_text_payload_does_not_load_secret_inventory(monkeypatch):
     monkeypatch.setattr("app.services.credential_boundary_loader.load_runtime_ingress_secret_boundary", unavailable)
     async with AsyncSession() as db:
         payload = {"arguments": {"id": "123", "mode": "plan", "minutes": 5, "enabled": True}}
-        out = await redact_runtime_ingress_payload(db, tenant_id=uuid4(), agent_id=uuid4(), source_channel="web", payload=payload)
+        out = await redact_runtime_ingress_payload(db, tenant_id=uuid4(), agent_id=uuid4(), requester_user_id=None, source_channel="web", payload=payload)
         assert out.value == payload
 
 

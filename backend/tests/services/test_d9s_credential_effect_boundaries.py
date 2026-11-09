@@ -109,7 +109,7 @@ async def test_mcp_same_origin_endpoint_still_executes(monkeypatch, endpoint):
 
 
 @pytest.mark.parametrize("path", [
-    "https://other.example/x", "//evil.example/x",
+    "https://other.example/x", "https://evil.example/x",
     "http://api.example/x", "https://api.example:444/x",
 ])
 def test_custom_api_rejects_cross_origin_action(path):

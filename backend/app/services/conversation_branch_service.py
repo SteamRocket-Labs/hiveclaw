@@ -443,6 +443,7 @@ async def create_conversation_branch(
     try:
         protected_title = await redact_runtime_ingress_payload(
             db, tenant_id=tenant_id, agent_id=agent.id, source_channel="web", payload={"title": title},
+            requester_user_id=user.id,
         )
     except RuntimeIngressSecretBoundaryUnavailable as exc:
         raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc

@@ -206,7 +206,8 @@ async def revise_unbound_human_input(
         db,
         tenant_id=authority.tenant_id,
         agent_id=authority.agent_id,
-        requester_user_id=authority.principal_id if authority.principal_type == "user" else None,
+        requester_user_id=getattr(user, "id", None) or (
+            authority.principal_id if authority.principal_type == "user" else None),
         source_channel="web",
         reply_target=session.delivery_target_json,
         payload={"parts": shape_human_input_parts(content_parts)},

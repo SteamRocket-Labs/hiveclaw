@@ -548,6 +548,7 @@ async def call_agent_llm(
                 db,
                 tenant_id=agent.tenant_id,
                 agent_id=agent.id,
+                requester_user_id=None,
                 payload={"user_text": user_text},
             )
         except RuntimeIngressSecretBoundaryUnavailable as exc:

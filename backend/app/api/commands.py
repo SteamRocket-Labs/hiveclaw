@@ -1435,6 +1435,7 @@ async def execute_agent_command(
     try:
         protected = await redact_runtime_ingress_payload(
             db, tenant_id=getattr(agent, "tenant_id", None), agent_id=agent.id, source_channel="web",
+            requester_user_id=current_user.id,
             payload={"arguments": body.arguments},
         )
     except RuntimeIngressSecretBoundaryUnavailable as exc:

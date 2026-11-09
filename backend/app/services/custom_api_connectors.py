@@ -14,7 +14,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, quote_plus, urljoin, urlparse
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -22,6 +22,8 @@ from sqlalchemy import select
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.models.tool import AgentTool, Tool
+from app.services.exact_secret_boundary import ExactSecretBoundary
+from app.services.http_origin import http_origin
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.tool_config_service import resolve_tool_config
 from app.tools.result_envelope import classify_http_status, render_tool_error
@@ -267,12 +269,12 @@ def prepare_custom_api_request(
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise CustomApiConnectorError("custom API method must be GET, POST, PUT, PATCH, or DELETE")
     path = str(_render_template(str(action.get("path") or "/"), arguments, path_context=True))
-    url = urljoin(base_url + "/", path if path.startswith("//") else path.lstrip("/"))
-    origins = [
-        (part.scheme, part.hostname, part.port if part.port is not None else (443 if part.scheme == "https" else 80))
-        for part in (urlparse(base_url), urlparse(url))
-    ]
-    if origins[0] != origins[1]:
+    url = urljoin(base_url + "/", path.lstrip("/"))
+    try:
+        same_origin = http_origin(base_url) == http_origin(url)
+    except ValueError as exc:
+        raise CustomApiConnectorError("连接地址端口无效，请管理员检查应用连接设置。") from exc
+    if not same_origin:
         raise CustomApiConnectorError("连接地址与配置不一致，请管理员检查应用连接设置。")
     headers = {str(k): str(_render_template(v, arguments)) for k, v in dict(action.get("headers") or {}).items()}
     params = {str(k): _render_template(v, arguments) for k, v in dict(action.get("query") or {}).items()}
@@ -302,9 +304,10 @@ def prepare_custom_api_request(
             raise CustomApiConnectorError("custom API basic credentials are not configured")
         encoded = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
         headers["Authorization"] = f"Basic {encoded}"
-        secret_values.add(f"Basic {encoded}")
+        secret_values.update((encoded, f"Basic {encoded}"))
     elif scheme != "none":
         raise CustomApiConnectorError("Unsupported custom API auth scheme")
+    secret_values.update(form for value in tuple(secret_values) for form in (quote(value, safe=""), quote_plus(value)))
     timeout_seconds = float(action.get("timeout_seconds") or 30.0)
     timeout_seconds = min(max(timeout_seconds, 1.0), 120.0)
     audit_params = {k: ("[secret]" if v in secret_values else v) for k, v in params.items()}
@@ -329,7 +332,7 @@ def prepare_custom_api_request(
     )
 
 
-def _governed_custom_api_error(tool_name: str, exc: Exception) -> str:
+def _governed_custom_api_error(tool_name: str, exc: Exception, *, boundary: ExactSecretBoundary) -> str:
     from app.services.governed_egress import GovernedEgressError
 
     if isinstance(exc, GovernedEgressError):
@@ -349,7 +352,7 @@ def _governed_custom_api_error(tool_name: str, exc: Exception) -> str:
         return render_tool_error(
             tool_name=tool_name,
             error_class=error_class,
-            message=f"{tool_name} blocked: {exc.reason}",
+            message=f"{tool_name} blocked: {boundary.redact_text(exc.reason).text}",
             provider="custom_api",
             retryable=retryable,
             actionable_hint=hint,
@@ -357,7 +360,7 @@ def _governed_custom_api_error(tool_name: str, exc: Exception) -> str:
     return render_tool_error(
         tool_name=tool_name,
         error_class="custom_api_request_error",
-        message=f"{tool_name} request failed: {exc}",
+        message=f"{tool_name} request failed: {boundary.redact_text(str(exc)).text}",
         provider="custom_api",
         retryable=True,
         actionable_hint="Check the connector URL, allowlist, network route, and request template.",
@@ -367,6 +370,7 @@ def _governed_custom_api_error(tool_name: str, exc: Exception) -> str:
 async def execute_prepared_custom_api_request(tool_name: str, prepared: PreparedCustomApiRequest) -> str:
     from app.services.governed_egress import EgressLimits, GovernedEgressError, request_governed_http
 
+    boundary = ExactSecretBoundary.from_pairs((f"custom-api://{tool_name}", value) for value in prepared.secret_values)
     try:
         response = await request_governed_http(
             prepared.method,
@@ -379,10 +383,15 @@ async def execute_prepared_custom_api_request(tool_name: str, prepared: Prepared
             limits=EgressLimits(total_timeout_seconds=prepared.timeout_seconds),
         )
     except GovernedEgressError as exc:
-        return _governed_custom_api_error(tool_name, exc)
+        return _governed_custom_api_error(tool_name, exc, boundary=boundary)
     except Exception as exc:
-        return _governed_custom_api_error(tool_name, exc)
-    body = response.text
+        return _governed_custom_api_error(tool_name, exc, boundary=boundary)
+    body = boundary.redact_text(response.text).text
+    if "application/json" in response.headers.get("content-type", ""):
+        try:
+            body = json.dumps(boundary.redact_payload(response.json()), ensure_ascii=False, indent=2)
+        except Exception:
+            pass
     if response.status_code >= 400:
         error_class, retryable = classify_http_status(response.status_code)
         return render_tool_error(
@@ -394,12 +403,6 @@ async def execute_prepared_custom_api_request(tool_name: str, prepared: Prepared
             retryable=retryable,
             actionable_hint="Check connector credentials, endpoint path, and action arguments.",
         )
-    content_type = response.headers.get("content-type", "")
-    if "application/json" in content_type:
-        try:
-            body = json.dumps(response.json(), ensure_ascii=False, indent=2)
-        except Exception:
-            body = response.text
     return f"Custom API `{tool_name}` HTTP {response.status_code}\n\n{body}"
 
 

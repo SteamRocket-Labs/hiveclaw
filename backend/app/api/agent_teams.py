@@ -736,6 +736,7 @@ async def message_agent_team_member(
     try:
         protected = await redact_runtime_ingress_payload(db, tenant_id=agent.tenant_id,
             agent_id=agent.id, source_channel="web",
+            requester_user_id=current_user.id,
             payload={"message": body.message, "display_content": body.display_content})
     except RuntimeIngressSecretBoundaryUnavailable as exc:
         raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc

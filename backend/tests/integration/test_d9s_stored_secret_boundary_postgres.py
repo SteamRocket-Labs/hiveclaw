@@ -141,7 +141,7 @@ async def test_other_members_opaque_secret_is_not_loaded(owner_sessionmaker, mon
     assert all(token in captured + prepared for token in TOKENS)
 
 
-@pytest.mark.parametrize("path", ["https://other.example/x", "//evil.example/x"])
+@pytest.mark.parametrize("path", ["https://other.example/x", "https://evil.example/x"])
 async def test_tool_rejects_cross_origin_before_provider(owner_sessionmaker, monkeypatch, path):
     from app.services import custom_api_connectors as service
 

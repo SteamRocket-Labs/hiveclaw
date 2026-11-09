@@ -218,7 +218,7 @@ async def load_requester_exact_secret_boundary(
     *,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID | None,
-    requester_user_id: uuid.UUID | None = None,
+    requester_user_id: uuid.UUID | None,
 ) -> ExactSecretBoundary:
     """Supplement the existing inventory with only this requester's stored secrets."""
     boundary = await load_exact_secret_boundary(db, tenant_id=tenant_id, agent_id=agent_id)
@@ -231,7 +231,7 @@ async def load_requester_exact_secret_boundary(
 
     pairs: list[tuple[str, str]] = []
     for account_type, source_kind, secret_keys in (
-        (CustomApiAccount, "custom-api-account", ("api_key", "bearer_token", "basic_username", "basic_password")),
+        (CustomApiAccount, "custom-api-account", ("api_key", "bearer_token", "basic_password")),
         (EmailAccount, "email-account", ("auth_code",)),
     ):
         accounts = (await db.execute(select(account_type).where(
@@ -268,7 +268,7 @@ async def load_runtime_ingress_secret_boundary(
     *,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID | None,
-    requester_user_id: uuid.UUID | None = None,
+    requester_user_id: uuid.UUID | None,
     reply_target: dict[str, Any] | None = None,
 ) -> ExactSecretBoundary:
     """Load the exact tenant inventory plus the current typed reply target."""
@@ -295,7 +295,7 @@ async def redact_runtime_ingress_payload(
     *,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID | None,
-    requester_user_id: uuid.UUID | None = None,
+    requester_user_id: uuid.UUID | None,
     payload: Any,
     reply_target: dict[str, Any] | None = None,
     source_channel: str | None = None,

@@ -473,10 +473,5 @@ async def test_custom_api_connector(
         )
     except CustomApiConnectorError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-    from app.services.exact_secret_boundary import ExactSecretBoundary
-
     result = await execute_prepared_custom_api_request(tool.name, prepared)
-    boundary = ExactSecretBoundary.from_pairs(
-        (f"custom-api-test://{tool.id}", value) for value in prepared.secret_values
-    )
-    return boundary.redact_payload({"ok": "<tool_error>" not in str(result), "result": str(result)})
+    return {"ok": "<tool_error>" not in str(result), "result": str(result)}

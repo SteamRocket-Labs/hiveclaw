@@ -14,7 +14,8 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from loguru import logger
 
-from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key
+from app.services.http_origin import http_origin
+from app.services.mcp_authz import MCPAuthzError, MCPOriginMismatchError, assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key
 from app.tools.result_envelope import render_tool_error
 
 
@@ -44,6 +45,10 @@ class MCPClient:
         if self._session_id:
             h["Mcp-Session-Id"] = self._session_id
         return h
+
+    async def _scope_authorization(self, request: httpx.Request) -> None:
+        if http_origin(request.url) != http_origin(self.server_url):
+            request.headers.pop("Authorization", None)
 
     def _parse_response(self, resp: httpx.Response) -> dict:
         """Parse response — handles both JSON and SSE (text/event-stream) formats."""
@@ -106,7 +111,8 @@ class MCPClient:
 
     async def _streamable_request(self, method: str, params: dict | None = None) -> dict:
         """Send a JSON-RPC request via Streamable HTTP transport."""
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True,
+                event_hooks={"request": [self._scope_authorization]}) as client:
             if not self._session_id:
                 await self._streamable_initialize(client)
 
@@ -123,16 +129,11 @@ class MCPClient:
         configured = urlparse(self.server_url)
         url = urljoin(f"{configured.scheme}://{configured.netloc}/", data)
         try:
-            target = urlparse(url)
-            origins = [
-                (part.scheme, part.hostname, part.port if part.port is not None else (443 if part.scheme == "https" else 80))
-                for part in (configured, target)
-            ]
-            if origins[0] == origins[1]:
+            if http_origin(self.server_url) == http_origin(url):
                 return url
         except ValueError:
             pass
-        raise MCPAuthzError("连接地址与配置不一致，请管理员检查应用连接设置。")
+        raise MCPOriginMismatchError("连接地址与配置不一致，请管理员检查应用连接设置。")
 
     async def _sse_connect(self) -> str:
         """Connect to SSE endpoint (GET /sse) and extract the messages URL.
@@ -150,7 +151,8 @@ class MCPClient:
         messages_url = None
         event_type = ""
 
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True,
+                event_hooks={"request": [self._scope_authorization]}) as client:
             async with client.stream("GET", sse_url, headers=headers) as resp:
                 if resp.status_code != 200:
                     raise Exception(f"SSE connect failed: HTTP {resp.status_code}")
@@ -194,7 +196,8 @@ class MCPClient:
 
         timeout = 60 if method == "tools/call" else 30
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True,
+                event_hooks={"request": [self._scope_authorization]}) as client:
             # Open the SSE stream
             async with client.stream("GET", sse_url, headers=headers_sse) as sse_resp:
                 if sse_resp.status_code != 200:

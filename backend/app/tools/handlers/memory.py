@@ -941,7 +941,7 @@ def _render_memory_fact(content, entry_id, *, source="", timestamp=""):
     return "\n".join(lines)
 
 
-async def _scoped_explicit_entries(agent_id, execution_context, *, ids=None, issue_observer=None):
+async def _scoped_explicit_entries(agent_id, execution_context, *, ids=None, issue_observer=None, output_byte_limit=None):
     from app.config import get_settings
     from app.memory.explicit_overlay import load_explicit_overlay_entries, load_explicit_overlay_entries_by_ids
     from app.services.explicit_memory_authority import authorized_explicit_entries
@@ -949,7 +949,7 @@ async def _scoped_explicit_entries(agent_id, execution_context, *, ids=None, iss
 
     root = Path(get_settings().AGENT_DATA_DIR)
     entries = (
-        load_explicit_overlay_entries(root, agent_id)
+        load_explicit_overlay_entries(root, agent_id, **({"output_byte_limit": output_byte_limit} if output_byte_limit is not None else {}))
         if ids is None
         else load_explicit_overlay_entries_by_ids(root, agent_id, ids)
     )
@@ -1100,7 +1100,7 @@ async def search_memory(
     from pathlib import Path
 
     from app.config import get_settings
-    from app.tools.output_limits import ToolOutputBuffer, bound_tool_output
+    from app.tools.output_limits import TOOL_OUTPUT_BYTES, ToolOutputBuffer, bound_tool_output
 
     if set(arguments) - {"query", "scope", "limit", "date_from", "date_to"}:
         return json.dumps(
@@ -1143,7 +1143,8 @@ async def search_memory(
         authorized_entries = None
         if execution_context is not None:
             try:
-                overlay_pairs = await _scoped_explicit_entries(agent_id, execution_context, issue_observer=issues)
+                overlay_pairs = await _scoped_explicit_entries(agent_id, execution_context,
+                    issue_observer=issues, output_byte_limit=TOOL_OUTPUT_BYTES)
                 authorized_entries = [entry for entry, _receipt in overlay_pairs]
             except Exception as exc:
                 return await _record_memory_error("search_memory", agent_id, arguments, execution_context, exc)
@@ -1152,19 +1153,20 @@ async def search_memory(
             agent_id,
             query,
             limit=limit,
+            output_byte_limit=TOOL_OUTPUT_BYTES,
             **({"authorized_entries": authorized_entries} if execution_context is not None else {}),
         )
         overlay_facts, overlay_cut = _bounded_visible_memory_facts(overlay_facts)
 
         from app.memory.plane_read import search_plane_facts
 
-        facts = search_plane_facts(
+        facts = [] if overlay_cut else search_plane_facts(
             Path(settings.AGENT_DATA_DIR),
             agent_id,
             query,
             limit=limit,
         )
-        backend_facts = await _search_semantic_backend_facts(
+        backend_facts = [] if overlay_cut else await _search_semantic_backend_facts(
             agent_id,
             tenant_id=tenant_id,
             query=query,

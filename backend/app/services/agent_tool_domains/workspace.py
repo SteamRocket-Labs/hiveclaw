@@ -1678,7 +1678,7 @@ def _grep_search(
             for offset in range(0, len(paths), 32):
                 if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
                     break
-                with ExitStack() as inputs, tempfile.TemporaryFile() as errors:
+                with ExitStack() as inputs, tempfile.TemporaryFile() as errors, tempfile.TemporaryFile() as output:
                     descriptors = {}
                     for rel_path in paths[offset : offset + 32]:
                         source = inputs.enter_context(tempfile.TemporaryFile())
@@ -1688,34 +1688,38 @@ def _grep_search(
                     if explicit_limit is not None:
                         command.extend(("--max-count", str(explicit_limit)))
                     command.extend(("--", pattern, *descriptors))
-                    batch_matches, batch_bytes, stopped_early = [], matches.size, False
-                    with subprocess.Popen(command, pass_fds=tuple(fd for _, fd in descriptors.values()), stdout=subprocess.PIPE, stderr=errors) as proc:
-                        try:
-                            while line := proc.stdout.readline(TOOL_OUTPUT_BYTES + 1):
-                                descriptor, _, match = line.decode("utf-8", errors="replace").partition(":")
-                                if descriptor not in descriptors:
-                                    continue
-                                match = match.rstrip("\r\n")
-                                batch_matches.append((descriptors[descriptor][0], int(match.partition(":")[0]), match))
-                                batch_bytes += len(line)
-                                if batch_bytes > TOOL_OUTPUT_BYTES:
-                                    stopped_early = True
+                    proc = subprocess.run(command, pass_fds=tuple(fd for _, fd in descriptors.values()),
+                        stdout=output, stderr=errors, check=False)
+                    if proc.returncode not in (0, 1):
+                        errors.seek(0)
+                        error = errors.read(TOOL_OUTPUT_BYTES).decode("utf-8", errors="replace")
+                        return _workspace_error(tool_name, "operation_failed", f"Grep search failed: {error.strip()}", retryable=True)
+                    per_file = {rel: ToolOutputBuffer() for rel, _fd in descriptors.values()}
+                    output.seek(0)
+                    while line := output.readline(TOOL_OUTPUT_BYTES + 1):
+                        descriptor, _, match = line.decode("utf-8", errors="replace").partition(":")
+                        if descriptor in descriptors:
+                            buffer = per_file[descriptors[descriptor][0]]
+                            match = match.rstrip("\r\n")
+                            buffer.append(f"- {descriptors[descriptor][0]}:{match}")
+                            if len(line) > TOOL_OUTPUT_BYTES and not line.endswith(b"\n"):
+                                buffer.cut()
+                        if len(line) > TOOL_OUTPUT_BYTES and not line.endswith(b"\n"):
+                            while tail := output.readline(TOOL_OUTPUT_BYTES):
+                                if tail.endswith(b"\n"):
                                     break
-                        finally:
-                            proc.stdout.close()
-                            if stopped_early and proc.poll() is None:
-                                proc.terminate()
-                            proc.wait()
-                        if not stopped_early and proc.returncode not in (0, 1):
-                            errors.seek(0)
-                            error = errors.read(TOOL_OUTPUT_BYTES).decode("utf-8", errors="replace")
-                            return _workspace_error(tool_name, "operation_failed", f"Grep search failed: {error.strip()}", retryable=True)
-                    for rel_path, _line_number, match in sorted(batch_matches):
-                        matches.append(f"- {rel_path}:{match}")
+                    batch_matches = []
+                    for rel_path, buffer in per_file.items():
+                        prefix = f"- {rel_path}:"
+                        for rendered in (buffer.text().split("\n") if buffer.truncated else buffer.parts):
+                            if rendered.startswith(prefix):
+                                batch_matches.append((rel_path, int(rendered[len(prefix):].partition(":")[0]), rendered))
+                    for rel_path, _line_number, rendered in sorted(batch_matches):
+                        matches.append(rendered)
                         match_count += 1
                         if matches.truncated or explicit_limit is not None and match_count >= explicit_limit:
                             break
-                    if stopped_early:
+                    if (explicit_limit is None or match_count < explicit_limit) and any(buffer.truncated for buffer in per_file.values()):
                         matches.cut()
         else:
             for rel_path in paths:

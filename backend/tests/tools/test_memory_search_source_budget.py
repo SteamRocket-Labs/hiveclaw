@@ -81,7 +81,7 @@ async def test_single_huge_memory_entry_streams_with_original_source_hash(tmp_pa
     assert row.source_sha256 == digest.hexdigest()
 
 
-async def test_entry_cut_is_reported_after_ranking_and_limit_without_hiding_other_sources(tmp_path, monkeypatch):
+async def test_unmatched_entry_does_not_add_a_false_cut_notice_or_hide_other_sources(tmp_path, monkeypatch):
     from app.tools.handlers import memory
 
     agent = uuid4()
@@ -98,4 +98,4 @@ async def test_entry_cut_is_reported_after_ranking_and_limit_without_hiding_othe
     result = await memory.search_memory(agent, {"query": "生日", "scope": "facts", "limit": 1})
     assert "生日是五月二十日" in result
     assert "BACKEND_FACT" in result
-    assert result.endswith("结果过大，只保留了前面部分。")
+    assert "结果过大，只保留了前面部分。" not in result

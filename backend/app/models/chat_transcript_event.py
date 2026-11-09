@@ -93,13 +93,20 @@ class _TranscriptText(TypeDecorator):
     impl = Text
     cache_ok = True
 
+    def coerce_compared_value(self, op, value):
+        return self.impl.coerce_compared_value(op, value)
+
     def column_expression(self, column):
+        # DISTINCT/GROUP BY content are unsupported; labelled/coalesced selects bypass the gate.
         return _ToolTextRead(column)
 
 
 class _TranscriptMetadata(TypeDecorator):
     impl = JSONB
     cache_ok = True
+
+    def coerce_compared_value(self, op, value):
+        return self.impl.coerce_compared_value(op, value)
 
     def column_expression(self, column):
         return _ToolMetadataRead(column) if getattr(column, "name", None) == "metadata_json" else column

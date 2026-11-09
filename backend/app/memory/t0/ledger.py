@@ -26,6 +26,7 @@ from app.config import get_settings
 from app.memory.form_lint import lint_memory_form
 from app.services.knowledge_provenance import enrich_knowledge_event_metadata
 from app.services.privacy_layer import PrivacyLayer, PrivacyStore, canonicalize_sensitivity, max_sensitivity
+from app.tools.output_limits import TOOL_OUTPUT_BYTES, bound_tool_output
 
 try:  # pragma: no cover - Windows fallback; production/dev targets are Unix.
     import fcntl
@@ -40,12 +41,14 @@ SOURCE_FILENAME = "source.md"
 EVENTS_FILENAME = "events.jsonl"
 INDEX_FILENAME = "index.json"
 _EVENT_BLOCK_RE = re.compile(r"<t0_event\b.*?</t0_event>", re.DOTALL)
+# Raw text and its metadata copy can each expand sixfold in a JSONL envelope.
+_MAX_EVENT_RECORD_BYTES = 16 * TOOL_OUTPUT_BYTES
 
 
 class T0LedgerIntegrityError(ValueError):
     def __init__(self, code: str):
         self.code = code
-        self.retryable = True
+        self.retryable = code != "t0_record_too_large"
         super().__init__(f"{code}: T0 history is unavailable. Restore or reconcile the original ledger before retrying.")
 
 
@@ -171,6 +174,12 @@ def append_t0_session_event(
         content=content,
         metadata=event_metadata,
     )
+    tool_result = event_type in {"tool_result", "tool_result.completed"} or (role == "tool" and event_type != "tool_call")
+    if tool_result:
+        content = bound_tool_output(content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, sort_keys=True))
+        payload = event_metadata.get("v2_payload")
+        if isinstance(payload, dict) and isinstance(payload.get("content"), str):
+            event_metadata = {**event_metadata, "v2_payload": {**payload, "content": bound_tool_output(payload["content"])}}
     incoming_runtime_task_id = _canonical_runtime_task_id(
         runtime_task_id or _metadata_text(event_metadata, "runtime_task_id") or None
     )
@@ -186,6 +195,8 @@ def append_t0_session_event(
     jsonl_path = session_dir / _segment_events_path(segment)
     event_id = _new_event_id()
     sanitized_content, detected_sensitivity, form_warnings = _sanitize_t0_content(content)
+    if tool_result:
+        sanitized_content = bound_tool_output(sanitized_content)
     declared_sensitivity = event_metadata.get("content_sensitivity")
     try:
         sensitivity = (
@@ -657,14 +668,24 @@ def _read_jsonl_events_reverse(*, path, segment, session_dir, agent_id, session_
     try:
         with path.open("rb") as stream:
             position = end = stream.seek(0, os.SEEK_END)
-            buffered = b""
+            buffered = bytearray()
             while position:
-                size = min(position, 8192)
+                size = min(position, 64 * 1024)
                 position -= size
                 stream.seek(position)
-                lines = (stream.read(size) + buffered).splitlines(keepends=True)
-                buffered = lines.pop(0) if position else b""
+                buffered[:0] = stream.read(size)
+                # Grow a partial line in place; repeated bytes concatenation retains huge allocations.
+                if position and buffered.find(b"\n", 0, size) < 0:
+                    if len(buffered) > _MAX_EVENT_RECORD_BYTES:
+                        raise T0LedgerIntegrityError("t0_record_too_large")
+                    continue
+                lines = buffered.splitlines(keepends=True)
+                buffered = lines.pop(0) if position else bytearray()
+                if len(buffered) > _MAX_EVENT_RECORD_BYTES:
+                    raise T0LedgerIntegrityError("t0_record_too_large")
                 for raw in reversed(lines):
+                    if len(raw) > _MAX_EVENT_RECORD_BYTES:
+                        raise T0LedgerIntegrityError("t0_record_too_large")
                     end -= len(raw)
                     if not raw.strip():
                         continue
@@ -1211,12 +1232,45 @@ def _render_event_block(
     )
 
 
+def _source_event_blocks(path):
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        pending = ""
+        in_event = False
+        parts, size = [], 0
+        closing = "</t0_event>"
+        while chunk := stream.read(64 * 1024):
+            pending += chunk
+            while True:
+                if not in_event:
+                    start = re.search(r"<t0_event\b", pending)
+                    if start is None:
+                        pending = pending[-9:]
+                        break
+                    pending = pending[start.start():]
+                    in_event = True
+                end = pending.find(closing)
+                if end < 0:
+                    # Retain only a possible closing-tag prefix between reads.
+                    part, pending = pending[:-len(closing) + 1], pending[-len(closing) + 1:]
+                    parts.append(part)
+                    size += len(part.encode("utf-8"))
+                    if size > _MAX_EVENT_RECORD_BYTES:
+                        raise T0LedgerIntegrityError("t0_record_too_large")
+                    break
+                end += len(closing)
+                part = pending[:end]
+                if size + len(part.encode("utf-8")) > _MAX_EVENT_RECORD_BYTES:
+                    raise T0LedgerIntegrityError("t0_record_too_large")
+                yield "".join(parts) + part
+                pending, in_event = pending[end:], False
+                parts, size = [], 0
+
+
 def _parse_events_from_source(*, path: Path, segment_id: str) -> list[T0SessionEvent]:
-    text = path.read_text(encoding="utf-8", errors="replace")
     parsed: list[T0SessionEvent] = []
-    for match in _EVENT_BLOCK_RE.finditer(text):
+    for block in _source_event_blocks(path):
         try:
-            node = ET.fromstring(match.group(0))
+            node = ET.fromstring(block)
         except ET.ParseError:
             continue
         attrs = dict(node.attrib)
@@ -1252,12 +1306,30 @@ def _parse_events_from_source(*, path: Path, segment_id: str) -> list[T0SessionE
     return parsed
 
 
+def read_t0_evidence_file(path: Path) -> str:
+    """Keep ordinary T3 evidence exact, rejecting oversized records before full-file loading."""
+    try:
+        if path.suffix == ".jsonl":
+            with path.open("rb") as stream:
+                while line := stream.readline(_MAX_EVENT_RECORD_BYTES + 1):
+                    if len(line) > _MAX_EVENT_RECORD_BYTES:
+                        raise T0LedgerIntegrityError("t0_record_too_large")
+        else:
+            for _block in _source_event_blocks(path):
+                pass
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def _parse_events_from_jsonl(*, path: Path, segment_id: str, source_path: Path, agent_id, session_id) -> list[T0SessionEvent]:
     parsed: list[T0SessionEvent] = []
     offset = 0
     try:
         with path.open("rb") as fh:
-            for raw_line in fh:
+            while raw_line := fh.readline(_MAX_EVENT_RECORD_BYTES + 1):
+                if len(raw_line) > _MAX_EVENT_RECORD_BYTES:
+                    raise T0LedgerIntegrityError("t0_record_too_large")
                 byte_length = len(raw_line)
                 if not raw_line.strip():
                     offset += byte_length

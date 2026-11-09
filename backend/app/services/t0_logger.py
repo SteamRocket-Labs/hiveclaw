@@ -43,7 +43,7 @@ from sqlalchemy import String, cast, func, select
 from app.config import get_settings
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.memory.form_lint import lint_memory_form
-from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_events, seal_t0_session_segment
+from app.memory.t0.ledger import T0LedgerIntegrityError, append_t0_session_event, replay_t0_session_events, seal_t0_session_segment
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -886,9 +886,11 @@ async def backfill_recent_chat_logs(
 
             for session in sessions:
                 session_key = str(session.id)
-                existing_t0 = bool(
-                    replay_t0_session_events(agent_id=agent_id, session_id=session_key, data_root=data_root)
-                )
+                try:
+                    existing_t0 = bool(replay_t0_session_events(agent_id=agent_id, session_id=session_key, data_root=data_root))
+                except T0LedgerIntegrityError as exc:
+                    logger.warning("T0 backfill skipped unavailable session %s: %s", session_key, exc.code)
+                    continue
                 transcript_stmt = (
                     select(ChatTranscriptEvent.id)
                     .where(
@@ -1129,13 +1131,16 @@ async def backfill_missing_chat_transcript_t0(
                 tenant_id = _uuid_or_none(row[2])
                 if tenant_id is None:
                     continue
-                existing_t0 = bool(
-                    replay_t0_session_events(agent_id=agent_id, session_id=str(session_id), data_root=data_root)
-                )
+                try:
+                    existing_t0 = bool(replay_t0_session_events(agent_id=agent_id, session_id=str(session_id), data_root=data_root))
+                except T0LedgerIntegrityError as exc:
+                    logger.warning("T0 backfill skipped unavailable session %s: %s", session_id, exc.code)
+                    continue
                 transcript_count = int(
                     (
                         await bypass_db.execute(
                             select(func.count(ChatTranscriptEvent.id)).where(
+                                ChatTranscriptEvent.tenant_id == tenant_id,
                                 ChatTranscriptEvent.agent_id == agent_id,
                                 ChatTranscriptEvent.session_id == session_id,
                             )

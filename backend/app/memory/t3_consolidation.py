@@ -17,6 +17,7 @@ from typing import Any
 
 from app.memory.explicit_overlay import ExplicitMemoryOverlayEntry, load_explicit_overlay_entries
 from app.memory.md_store import ensure_t3_layout, memory_dir
+from app.memory.t0.ledger import T0LedgerIntegrityError, read_t0_evidence_file
 from app.memory.t3_platform_gate import PROFILE_PLANE_TARGETS, file_sha256
 
 # Dynamic knowledge-plane targets are pattern-shaped, so the allowed-target
@@ -422,8 +423,13 @@ def _load_t0_evidence(
         segment_dir = root / str(agent_id) / "memory" / "t0" / "sessions" / session_id / "segments" / segment_id
         source_path = segment_dir / "source.md"
         events_path = segment_dir / "events.jsonl"
-        source_md = _read_optional(source_path)
-        events_jsonl = _read_optional(events_path)
+        try:
+            source_md = read_t0_evidence_file(source_path) if source_path.exists() else ""
+            events_jsonl = read_t0_evidence_file(events_path) if events_path.exists() else ""
+        except T0LedgerIntegrityError as exc:
+            evidence.append({"ref": source_ref, "available": False, "unavailable_reason": exc.code,
+                "source_md": "", "events_jsonl": ""})
+            continue
         available = bool(source_md.strip()) and bool(events_jsonl.strip())
         item = {
             "ref": source_ref,

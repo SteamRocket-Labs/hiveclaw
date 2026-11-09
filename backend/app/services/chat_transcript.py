@@ -311,6 +311,13 @@ async def append_session_event(
         content=content_text,
         metadata=metadata,
     )
+    if event_type in {"tool_result", "tool_result.completed"}:
+        from app.tools.output_limits import bound_tool_output
+
+        content_text = bound_tool_output(content_text)
+        payload = event_input_metadata.get("v2_payload")
+        if isinstance(payload, dict) and isinstance(payload.get("content"), str):
+            event_input_metadata = {**event_input_metadata, "v2_payload": {**payload, "content": bound_tool_output(payload["content"])}}
     if event_type == "assistant_message" and isinstance(db, AsyncSession):
         inherited_provenance = await load_transcript_knowledge_provenance(
             db,

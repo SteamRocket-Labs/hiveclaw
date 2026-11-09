@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 import inspect
 import json
@@ -340,7 +341,7 @@ def glob_search(
         adapter="workspace_args",
     )
 )
-def grep_search(
+async def grep_search(
     workspace: Path,
     arguments: dict,
     tenant_id: str | None = None,
@@ -349,7 +350,7 @@ def grep_search(
 ) -> str:
     from app.services.agent_tool_domains.workspace import _grep_search
 
-    return _grep_search(
+    return await asyncio.to_thread(_grep_search,
         workspace,
         arguments.get("pattern", ""),
         arguments.get("root", ""),

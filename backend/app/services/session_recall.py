@@ -16,6 +16,7 @@ from app.database import tenant_scoped_session
 from app.memory.t0.ledger import T0LedgerIntegrityError, replay_t0_session_events
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.tools.output_limits import bound_tool_output
 
 _FALLBACK_HEADLINE = "回顾到与查询相关的历史会话"
 _EXCLUDED_CHANNELS = {"agent", "heartbeat", "trigger", "task", "dream"}
@@ -155,6 +156,8 @@ def _transcript_lines_from_body(body: str) -> list[str]:
 def _transcript_lines_from_messages(messages: list[tuple[str, str]]) -> list[str]:
     lines: list[str] = []
     for role, content in messages:
+        if role == "tool":
+            content = bound_tool_output(content or "")
         cleaned = re.sub(r"\s+", " ", (content or "").strip())
         if not cleaned:
             continue
@@ -666,7 +669,9 @@ async def search_session_history(
     except SessionRecallError:
         raise
     except T0LedgerIntegrityError as exc:
-        raise SessionRecallError("session_recall_evidence_unavailable",
-            f"T0 history failed integrity verification ({exc.code}). Restore or reconcile the original ledger before retrying.") from exc
+        error = SessionRecallError("session_recall_evidence_unavailable",
+            f"T0 history failed integrity verification ({exc.code}). Restore or reconcile the original ledger before retrying.")
+        error.retryable = exc.retryable
+        raise error from exc
     except Exception as exc:
         raise SessionRecallError("session_recall_authority_unavailable", "Session recall authority or evidence is temporarily unavailable. Retry later.") from exc

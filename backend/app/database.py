@@ -16,6 +16,7 @@ from sqlalchemy import JSON, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Session as SyncSession
+from sqlalchemy.types import TypeDecorator
 
 from app.config import get_settings
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError
@@ -132,6 +133,8 @@ def _compiled_bind_types(context: Any) -> tuple[list[Any], dict[str, Any]]:
 
 
 def _repair_dbapi_value(value: Any, bind_type: Any) -> tuple[Any, int]:
+    if isinstance(bind_type, TypeDecorator):
+        bind_type = bind_type.impl
     if isinstance(bind_type, JSON) and isinstance(value, str):
         if POSTGRES_NUL_ESCAPE not in value:
             return value, 0

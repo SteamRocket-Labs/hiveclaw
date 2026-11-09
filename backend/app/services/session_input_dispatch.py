@@ -100,6 +100,8 @@ async def _terminal_boundary_dispatch_hold(
     *,
     admission: SessionInputAdmission,
     row: SessionTurnInput,
+    command: SessionCommand,
+    authority: AuthenticatedSessionAuthority,
     agent: Agent,
     session: ChatSession,
 ) -> dict[str, Any] | None:
@@ -141,6 +143,21 @@ async def _terminal_boundary_dispatch_hold(
     )
     if boundary is None:
         return None
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.runtime_control_bus import _T0_TOO_LARGE_ERROR_PREFIX
+
+    unavailable = await db.scalar(select(ChatTranscriptEvent.id).where(
+        ChatTranscriptEvent.tenant_id == admission.tenant_id,
+        ChatTranscriptEvent.session_id == session.id,
+        ChatTranscriptEvent.projection_error.startswith(_T0_TOO_LARGE_ERROR_PREFIX),
+    ).limit(1))
+    if unavailable is not None:
+        from app.services.session_human_input import _reject_admitted_input
+
+        rejected = await _reject_admitted_input(db, authority=authority, row=row, command=command,
+            reason_code="session_recall_evidence_unavailable")
+        return _json_receipt({"kind": "rejected", **asdict(rejected), "retryable": False,
+            "message": "这段对话的内容不完整，请新建对话后重试。"})
     return {
         "kind": "deferred",
         "status": "waiting_for_terminal_boundary_ack",
@@ -450,6 +467,7 @@ async def _start_fifo_successor_if_ready(
     admission: SessionInputAdmission,
     row: SessionTurnInput,
     command: SessionCommand,
+    authority: AuthenticatedSessionAuthority,
     agent: Agent,
     user: Any,
     session: ChatSession,
@@ -459,6 +477,8 @@ async def _start_fifo_successor_if_ready(
         db,
         admission=admission,
         row=row,
+        command=command,
+        authority=authority,
         agent=agent,
         session=session,
     )
@@ -587,11 +607,13 @@ async def _dispatch_one(
             db,
             admission=admission,
             row=row,
+            command=command,
+            authority=authority,
             agent=agent,
             session=session,
         )
         if terminal_boundary_hold is not None:
-            return terminal_boundary_hold, True
+            return terminal_boundary_hold, terminal_boundary_hold.get("kind") == "deferred"
         try:
             return (
                 await _start_input_runtime(
@@ -649,6 +671,7 @@ async def _dispatch_one(
                     admission=admission,
                     row=row,
                     command=command,
+                    authority=authority,
                     agent=agent,
                     user=user,
                     session=session,

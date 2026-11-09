@@ -22,9 +22,94 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql.functions import FunctionElement
+from sqlalchemy.types import TypeDecorator
 
 from app.database import Base
+from app.tools.output_limits import TOOL_OUTPUT_BYTES, TOOL_OUTPUT_TRUNCATION
+
+
+class _ToolTextRead(FunctionElement):
+    type = Text()
+    inherit_cache = True
+
+
+class _ToolMetadataRead(FunctionElement):
+    type = JSONB()
+    inherit_cache = True
+
+
+@compiles(_ToolTextRead)
+@compiles(_ToolMetadataRead)
+def _plain_transcript_column(element, compiler, **kw):
+    return compiler.process(next(iter(element.clauses)), **kw)
+
+
+def _tool_text_prefix_sql(value, compiler):
+    marker = compiler.render_literal_value(TOOL_OUTPUT_TRUNCATION, Text())
+    budget = TOOL_OUTPUT_BYTES - len(TOOL_OUTPUT_TRUNCATION.encode("utf-8"))
+    # Trim at the last complete UTF-8 character, inspecting at most one bounded prefix.
+    return (f"(SELECT convert_from(substring(b FROM 1 FOR CASE "
+        f"WHEN octet_length(b) < {budget} THEN octet_length(b) "
+        f"WHEN get_byte(b, {budget - 1}) >= 192 THEN {budget - 1} "
+        f"WHEN get_byte(b, {budget - 2}) >= 224 THEN {budget - 2} "
+        f"WHEN get_byte(b, {budget - 3}) >= 240 THEN {budget - 3} ELSE {budget} END), 'UTF8') || {marker} "
+        f"FROM (SELECT substring(convert_to(left({value}, {budget}), 'UTF8') FROM 1 FOR {budget}) AS b OFFSET 0) AS prefix)")
+
+
+def _tool_read_gate(column, compiler, **kw):
+    columns = getattr(getattr(column, "table", None), "c", None)
+    if columns is None or "event_type" not in columns or "content" not in columns:
+        return None
+    kind = compiler.process(columns.event_type, **kw)
+    content = compiler.process(columns.content, **kw)
+    return f"{kind} IN ('tool_result', 'tool_result.completed') AND octet_length({content}) > {TOOL_OUTPUT_BYTES}"
+
+
+@compiles(_ToolTextRead, "postgresql")
+def _bounded_tool_text(element, compiler, **kw):
+    column = next(iter(element.clauses))
+    value = compiler.process(column, **kw)
+    gate = _tool_read_gate(column, compiler, **kw)
+    return f"CASE WHEN {gate} THEN {_tool_text_prefix_sql(value, compiler)} ELSE {value} END" if gate else value
+
+
+@compiles(_ToolMetadataRead, "postgresql")
+def _bounded_tool_metadata(element, compiler, **kw):
+    column = next(iter(element.clauses))
+    value = compiler.process(column, **kw)
+    gate = _tool_read_gate(column, compiler, **kw)
+    if not gate:
+        return value
+    content = f"({value} #>> '{{v2_payload,content}}')"
+    # Replace only the duplicated raw text; retain authority, model projection and all other metadata.
+    return (f"CASE WHEN {gate} THEN "
+        f"jsonb_set({value}, '{{v2_payload,content}}', coalesce(to_jsonb({_tool_text_prefix_sql(content, compiler)}), 'null'::jsonb), false) ELSE {value} END")
+
+
+class _TranscriptText(TypeDecorator):
+    impl = Text
+    cache_ok = True
+
+    def coerce_compared_value(self, op, value):
+        return self.impl.coerce_compared_value(op, value)
+
+    def column_expression(self, column):
+        # DISTINCT/GROUP BY content are unsupported; labelled/coalesced selects bypass the gate.
+        return _ToolTextRead(column)
+
+
+class _TranscriptMetadata(TypeDecorator):
+    impl = JSONB
+    cache_ok = True
+
+    def coerce_compared_value(self, op, value):
+        return self.impl.coerce_compared_value(op, value)
+
+    def column_expression(self, column):
+        return _ToolMetadataRead(column) if getattr(column, "name", None) == "metadata_json" else column
 
 
 class ChatTranscriptEvent(Base):
@@ -125,9 +210,9 @@ class ChatTranscriptEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     visibility_scope: Mapped[str] = mapped_column(String(64), nullable=False, default="direct_user")
     listed_surface: Mapped[str] = mapped_column(String(64), nullable=False, default="chat")
-    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content: Mapped[str | None] = mapped_column(_TranscriptText(), nullable=True)
     parts_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(_TranscriptMetadata(), nullable=True)
     projection_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", server_default=text("'pending'"), index=True
     )

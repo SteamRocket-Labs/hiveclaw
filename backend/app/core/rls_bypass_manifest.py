@@ -890,7 +890,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # privileged callers use a separate tenant-scoped source session. The existing
 # bypass callsites and query shapes are unchanged; only the publication source
 # and its containing module have new reviewed digests.
-RLS_BYPASS_SCOPES_SHA256 = "65e4b4e1fddd354dbf3a3a8010a1a741867319199a92ce2b1df34b38757bd9f5"
+# Bounded tool evidence: 15 changed entries in eight modules, with the same 122 callsites.
+# Bridge updates bind event and tenant; legacy backfill counts bind tenant, agent and session.
+RLS_BYPASS_SCOPES_SHA256 = "d46fe00960de13c17e9f18899b7d8da271648d0c23bfab40b3a2ffa030f04493"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

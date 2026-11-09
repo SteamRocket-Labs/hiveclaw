@@ -22,6 +22,7 @@ RUNTIME_CONTROL_CHANNEL = "hive:runtime:control"
 RUNTIME_CONTROL_RECONNECT_SECONDS = 2.0
 RUNTIME_CONTROL_PUBLISH_TIMEOUT_SECONDS = 2.0
 TRANSCRIPT_PROJECTION_SWEEP_SECONDS = 5.0
+_T0_TOO_LARGE_ERROR_PREFIX = "T0LedgerIntegrityError: t0_record_too_large:"
 _TRANSCRIPT_PROJECTION_WAKE: asyncio.Event | None = None
 SESSION_LIFECYCLE_MESSAGE_LIMIT = 100
 _STATE: dict[str, Any] = {
@@ -433,6 +434,24 @@ async def _is_settled_question_followup(db: AsyncSession, *, transcript_event: A
         and _uuid_or_none(receipt.get("t0_boundary_id")) is not None)
 
 
+async def _merge_transcript_bridge_metadata(db, event, metadata):
+    if not isinstance(db, AsyncSession):
+        event.metadata_json = metadata
+        return
+    from sqlalchemy import func, text, update
+    from sqlalchemy.orm.attributes import set_committed_value
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    # The read projection may contain a bounded head of historical raw output.
+    # Merge only bridge bookkeeping in SQL; never write that head over stored evidence.
+    patch = {key: value for key, value in metadata.items() if key.startswith("t0_bridge_")}
+    await db.execute(update(ChatTranscriptEvent).where(ChatTranscriptEvent.id == event.id,
+        ChatTranscriptEvent.tenant_id == event.tenant_id).values(
+            metadata_json=func.coalesce(ChatTranscriptEvent.metadata_json, text("'{}'::jsonb")).op("||")(patch)
+        ).execution_options(synchronize_session=False))
+    set_committed_value(event, "metadata_json", metadata)
+
+
 async def bridge_transcript_event_to_t0(
     *,
     transcript_event_id: str | Any,
@@ -485,6 +504,8 @@ async def bridge_transcript_event_to_t0(
                 else:
                     transcript_event = _batch_event
                 if transcript_event is not None:
+                    if str(getattr(transcript_event, "projection_error", None) or "").startswith(_T0_TOO_LARGE_ERROR_PREFIX):
+                        return False
                     metadata = dict(transcript_event.metadata_json or {})
                     if (
                         metadata.get("t0_bridge_relayed_at")
@@ -627,7 +648,7 @@ async def bridge_transcript_event_to_t0(
                                     "t0_bridge_attempts": transcript_event.projection_attempts,
                                 }
                             )
-                            transcript_event.metadata_json = metadata
+                            await _merge_transcript_bridge_metadata(db, transcript_event, metadata)
                             _STATE["last_error"] = projection_error
                             projection_failed = True
                         else:
@@ -641,7 +662,7 @@ async def bridge_transcript_event_to_t0(
                                     "t0_bridge_sequence": t0_sequence,
                                 }
                             )
-                            transcript_event.metadata_json = metadata
+                            await _merge_transcript_bridge_metadata(db, transcript_event, metadata)
                             transcript_event.projection_status = "projected"
                             transcript_event.projection_error = None
                             transcript_event.projected_at = datetime.now(timezone.utc)
@@ -709,6 +730,8 @@ async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts:
                 select(ChatTranscriptEvent.id, ChatTranscriptEvent.tenant_id, ChatTranscriptEvent.session_id)
                 .where(
                     ChatTranscriptEvent.projection_status.in_(statuses),
+                    (ChatTranscriptEvent.projection_error.is_(None)
+                        | ~ChatTranscriptEvent.projection_error.startswith(_T0_TOO_LARGE_ERROR_PREFIX)),
                     no_earlier_unfinished,
                     *([ChatTranscriptEvent.projection_attempts < max(1, int(max_attempts))] if max_attempts is not None else []),
                     *([ChatTranscriptEvent.session_id == session_id] if session_id is not None else []),

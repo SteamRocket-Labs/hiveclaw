@@ -207,12 +207,52 @@ def explicit_overlay_dir(data_root: Path, agent_id: uuid.UUID | str) -> Path:
     return Path(data_root) / str(agent_id) / "memory" / "explicit"
 
 
+def _read_bounded_entry(reader, byte_limit):
+    from app.tools.output_limits import TOOL_OUTPUT_TRUNCATION
+
+    digest = hashlib.sha256()
+    start, end = b"<normalized_memory>", b"</normalized_memory>"
+    pending = b""
+    captured = bytearray()
+    body_bytes = 0
+    started = ended = False
+    while block := reader.read(64 * 1024):
+        digest.update(block)
+        if ended:
+            continue
+        pending += block
+        if not started:
+            offset = pending.find(start)
+            if offset < 0:
+                pending = pending[-len(start) + 1:]
+                continue
+            pending = pending[offset + len(start):]
+            started = True
+        offset = pending.find(end)
+        if offset >= 0:
+            part = pending[:offset]
+            ended = True
+            pending = b""
+        else:
+            part, pending = pending[:-len(end) + 1], pending[-len(end) + 1:]
+        body_bytes += len(part)
+        captured.extend(part[:max(0, byte_limit + 1 - len(captured))])
+    if not ended:
+        return "", digest.hexdigest()
+    content = re.sub(r"\s+", " ", captured.decode("utf-8", errors="replace").strip())
+    if body_bytes > byte_limit:
+        budget = byte_limit - len(TOOL_OUTPUT_TRUNCATION.encode("utf-8"))
+        content = content.encode("utf-8")[:budget].decode("utf-8", errors="ignore") + TOOL_OUTPUT_TRUNCATION
+    return content, digest.hexdigest()
+
+
 def load_explicit_overlay_entries(
     data_root: Path,
     agent_id: uuid.UUID | str,
     *,
     transaction: AgentAssetTransaction | None = None,
     source_observer=None,
+    output_byte_limit: int | None = None,
 ) -> list[ExplicitMemoryOverlayEntry]:
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
@@ -254,9 +294,13 @@ def load_explicit_overlay_entries(
             continue
         try:
             with open_workspace_file(agent_root, f"memory/explicit/entries/{entry_id}.md") as reader:
-                body = reader.read()
-            with io.TextIOWrapper(io.BytesIO(body), encoding="utf-8", errors="replace") as reader:
-                content = _extract_tag(reader.read(), "normalized_memory")
+                if output_byte_limit is None:
+                    body = reader.read()
+                    with io.TextIOWrapper(io.BytesIO(body), encoding="utf-8", errors="replace") as text_reader:
+                        content = _extract_tag(text_reader.read(), "normalized_memory")
+                    source_hash = hashlib.sha256(body).hexdigest()
+                else:
+                    content, source_hash = _read_bounded_entry(reader, output_byte_limit)
         except (OSError, ValueError, WorkspaceAuthorityError):
             logger.warning("Explicit memory entry could not be read safely: %s", entry_id)
             continue
@@ -273,7 +317,7 @@ def load_explicit_overlay_entries(
                 path=path,
                 created_at=metadata.get("created_at", ""),
                 metadata=metadata,
-                source_sha256=hashlib.sha256(body).hexdigest(),
+                source_sha256=source_hash,
             )
         )
     return entries
@@ -298,10 +342,12 @@ def search_explicit_overlay_entries(
     limit: int | None = None,
     source_observer=None,
     authorized_entries=None,
+    output_byte_limit: int | None = None,
 ) -> list[dict]:
     needle = (query or "").strip()
     manifest_sources = []
     entries = [entry for entry in (authorized_entries if authorized_entries is not None else load_explicit_overlay_entries(data_root, agent_id,
+        **({"output_byte_limit": output_byte_limit} if output_byte_limit is not None else {}),
         source_observer=lambda path, digest: manifest_sources.append({"source_kind": "agent_memory_file",
             "source_id": f"{agent_id}\n{path}", "source_version": digest}))) if entry.status == "active"]
     scored = [
@@ -594,7 +640,7 @@ def _simple_score(query: str, content: str) -> float:
 def _term_set(text: str) -> set[str]:
     lowered = (text or "").lower()
     tokens = {token for token in re.split(r"\W+", lowered) if token}
-    cjk = {lowered[i : i + 2] for i in range(max(0, len(lowered) - 1)) if "\u4e00" <= lowered[i] <= "\u9fff"}
+    cjk = set(re.findall(r"(?=([\u4e00-\u9fff].))", lowered, flags=re.DOTALL))
     return tokens | cjk
 
 

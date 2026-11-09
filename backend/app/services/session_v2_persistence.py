@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
@@ -1375,6 +1375,12 @@ async def append_session_events(
     )
     rows: list[ChatTranscriptEvent] = []
     for sequence, draft in zip(allocation.sequences, drafts, strict=True):
+        if draft.item_kind == "tool_result" and isinstance(draft.payload.get("content"), str):
+            from app.tools.output_limits import bound_tool_output
+
+            content = bound_tool_output(draft.payload["content"])
+            if content != draft.payload["content"]:
+                draft = replace(draft, payload={**draft.payload, "content": content})
         scope = dict(draft.scope)
         if str(scope.get("session_id") or "") != str(session_uuid):
             raise ValueError("event scope session does not match append authority")

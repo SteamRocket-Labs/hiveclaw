@@ -263,7 +263,7 @@ def _memory_authority_error(tool_name, error):
         message="暂时无法确认这份记忆是否可用，或这次修改是否已保存。",
         provider="explicit_memory",
         http_status=status,
-        retryable=status == 503,
+        retryable=status == 503 and (integrity_error is None or integrity_error.retryable),
         actionable_hint=hint,
         extra={
             "reason_code": code,
@@ -941,7 +941,7 @@ def _render_memory_fact(content, entry_id, *, source="", timestamp=""):
     return "\n".join(lines)
 
 
-async def _scoped_explicit_entries(agent_id, execution_context, *, ids=None, issue_observer=None):
+async def _scoped_explicit_entries(agent_id, execution_context, *, ids=None, issue_observer=None, output_byte_limit=None):
     from app.config import get_settings
     from app.memory.explicit_overlay import load_explicit_overlay_entries, load_explicit_overlay_entries_by_ids
     from app.services.explicit_memory_authority import authorized_explicit_entries
@@ -949,7 +949,7 @@ async def _scoped_explicit_entries(agent_id, execution_context, *, ids=None, iss
 
     root = Path(get_settings().AGENT_DATA_DIR)
     entries = (
-        load_explicit_overlay_entries(root, agent_id)
+        load_explicit_overlay_entries(root, agent_id, **({"output_byte_limit": output_byte_limit} if output_byte_limit is not None else {}))
         if ids is None
         else load_explicit_overlay_entries_by_ids(root, agent_id, ids)
     )
@@ -1100,6 +1100,7 @@ async def search_memory(
     from pathlib import Path
 
     from app.config import get_settings
+    from app.tools.output_limits import TOOL_OUTPUT_BYTES, ToolOutputBuffer, bound_tool_output
 
     if set(arguments) - {"query", "scope", "limit", "date_from", "date_to"}:
         return json.dumps(
@@ -1126,7 +1127,7 @@ async def search_memory(
             return "[Error] limit must be a positive integer when provided."
     date_from = (arguments.get("date_from") or "").strip() or None
     date_to = (arguments.get("date_to") or "").strip() or None
-    results: list[str] = []
+    results = ToolOutputBuffer()
     overlay_pairs = []
     overlay_facts = []
     team_pairs = []
@@ -1142,7 +1143,8 @@ async def search_memory(
         authorized_entries = None
         if execution_context is not None:
             try:
-                overlay_pairs = await _scoped_explicit_entries(agent_id, execution_context, issue_observer=issues)
+                overlay_pairs = await _scoped_explicit_entries(agent_id, execution_context,
+                    issue_observer=issues, output_byte_limit=TOOL_OUTPUT_BYTES)
                 authorized_entries = [entry for entry, _receipt in overlay_pairs]
             except Exception as exc:
                 return await _record_memory_error("search_memory", agent_id, arguments, execution_context, exc)
@@ -1151,6 +1153,7 @@ async def search_memory(
             agent_id,
             query,
             limit=limit,
+            output_byte_limit=TOOL_OUTPUT_BYTES,
             **({"authorized_entries": authorized_entries} if execution_context is not None else {}),
         )
         overlay_facts = [fact for fact in overlay_facts if _memory_fact_visible(fact)]
@@ -1183,10 +1186,8 @@ async def search_memory(
         if facts:
             unbound.append("legacy_memory_sources")
             results.append("## 相关记忆")
-            for f in facts:
-                entry_id = f.get("id", "")
-                content = f.get("content") or f.get("preview", "")
-                results.append(_render_memory_fact(content, entry_id, source=f.get("source", ""), timestamp=f.get("timestamp", "")))
+            results.extend(_render_memory_fact(f.get("content") or f.get("preview", ""), f.get("id", ""),
+                source=f.get("source", ""), timestamp=f.get("timestamp", "")) for f in facts)
 
     # --- Cross-session recall ---
     if scope in ("sessions", "all"):
@@ -1217,14 +1218,22 @@ async def search_memory(
                 unbound.append("session_recall_sources")
                 results.append("## 相关对话")
                 for hit in recalled:
+                    if results.truncated:
+                        break
                     ts = hit.get("started_at", "?")
                     headline = hit.get("headline", "past session")
                     results.append(f"- {headline}（{ts}）")
                     complete_transcript = (hit.get("transcript") or "").strip()
                     if complete_transcript:
+                        remaining = TOOL_OUTPUT_BYTES - results.size
+                        if (len(complete_transcript) > remaining
+                            or len(complete_transcript.encode("utf-8")) + 4 * (complete_transcript.count("\n") + 1) + 24 > remaining):
+                            window = hit.get("transcript_window") or "\n".join(hit.get("context_snippets") or hit.get("snippets") or [])
+                            if window:
+                                results.append("  Matching context:")
+                                results.extend(f"    {line}" for line in window.splitlines())
                         results.append("  Complete transcript:")
-                        for line in complete_transcript.splitlines():
-                            results.append(f"    {line}")
+                        results.extend(f"    {line}" for line in complete_transcript.splitlines())
                     else:
                         # Legacy/degraded hits may lack a canonical transcript.
                         # In that case expose every available evidence projection.
@@ -1237,20 +1246,13 @@ async def search_memory(
                         evidence_lines = hit.get("evidence_lines") or []
                         if evidence_lines:
                             results.append("  Evidence:")
-                            for line in evidence_lines:
-                                cleaned = line.strip()
-                                if cleaned:
-                                    results.append(f"    {cleaned}")
+                            results.extend(f"    {line.strip()}" for line in evidence_lines if line.strip())
                         transcript_window = (hit.get("transcript_window") or "").strip()
                         if transcript_window:
                             results.append("  Context:")
-                            for line in transcript_window.splitlines():
-                                cleaned = line.strip()
-                                if cleaned:
-                                    results.append(f"    {cleaned}")
+                            results.extend(f"    {line.strip()}" for line in transcript_window.splitlines() if line.strip())
                         display_snippets = hit.get("context_snippets") or hit.get("snippets", [])
-                        for snippet in display_snippets:
-                            results.append(f"  - {snippet}")
+                        results.extend(f"  - {snippet}" for snippet in display_snippets)
         except SessionRecallError as exc:
             if scope == "sessions" and execution_context is not None:
                 return await _record_memory_error("search_memory", agent_id, arguments, execution_context, exc)
@@ -1309,16 +1311,16 @@ async def search_memory(
             if limit is not None:
                 team_pairs = team_pairs[:limit]
             if team_pairs:
-                results.append("## 团队记忆\n" + "\n".join(render_entry(entry) for entry, _receipt in team_pairs))
+                results.append("## 团队记忆")
+                results.extend(render_entry(entry) for entry, _receipt in team_pairs)
         except Exception:
             issues.append({"status": "unavailable", "code": "team_memory_source_unavailable"})
-    overlay_lines = []
+    overlay_lines = ToolOutputBuffer()
     if overlay_facts:
         overlay_lines.append("## 你要求记住的内容")
-        for fact in overlay_facts:
-            entry_id = fact["id"]
-            overlay_lines.append(_render_memory_fact(fact.get('content') or fact.get('preview', ''), entry_id))
-    results = [*overlay_lines, *results]
+        overlay_lines.extend(_render_memory_fact(fact.get('content') or fact.get('preview', ''), fact["id"]) for fact in overlay_facts)
+    overlay_lines.extend(results)
+    results = overlay_lines
     if not results:
         content = (
             f"没有找到与“{query}”匹配的记忆。这只是本次查询未命中，不代表相关记忆不存在。"
@@ -1327,8 +1329,9 @@ async def search_memory(
         )
 
     else:
-        content = "\n".join(results)
-    content = _memory_availability(content, issues)
+        content = results.text()
+    notice = _memory_availability("", issues)
+    content = bound_tool_output(content, byte_limit=TOOL_OUTPUT_BYTES - len(notice.encode("utf-8"))) + notice
     if execution_context is not None:
         used_ids = {fact["id"] for fact in overlay_facts}
         return await _record_memory_output(

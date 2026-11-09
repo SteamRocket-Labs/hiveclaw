@@ -3,11 +3,15 @@
 import React from 'react';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import { useAuthStore } from '../../stores';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import en from '../../i18n/en.json';
 import zh from '../../i18n/zh.json';
 import type { RuntimeWorkLedgerView } from '../../api/domains/autonomy';
+import type { AgentChatMessage, ChatTranscriptEventPayload } from './chatRuntime';
+import { consumeSessionEnvelope, hydrateSessionTranscriptEvents, projectSessionEventStoreToMessages } from './sessionEventConsumer';
+import { createSessionEventStore, type SessionEventV2 } from '../session-workbench/sessionEventStore';
+import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
 
 const noticeLocale = vi.hoisted(() => ({ language: 'en' }));
 
@@ -458,6 +462,49 @@ beforeEach(() => {
 });
 
 afterEach(cleanup);
+
+it.each(['live', 'history'] as const)('renders delivery-safe retry actions with transient copy on %s cards', (source) => {
+  const payloads = [
+    { failure_code: 'provider_bad_request', delivery_state: 'rejected', retry_safe: true, retryable: false },
+    { failure_code: 'timeout', delivery_state: 'unknown', retry_safe: false, retryable: true },
+    { failure_code: 'unknown', retryable: true },
+  ];
+  const events = payloads.map((payload, index): SessionEventV2 => ({
+    schema: 'hive.session_event', schema_version: 2, event_id: `failure-${index}`, sequence: index + 1,
+    tenant_id: 'company', item_id: `failure-${index}`, item_kind: 'runtime_failure',
+    kind: 'runtime_failure.recorded', lifecycle: 'recorded',
+    scope: { level: 'run', session_id: 'retry-session', thread_id: 'retry-session', turn_id: `turn-${index}`, run_id: `run-${index}` },
+    payload_schema: 'hive.session.payload.runtime_failure.recorded.v2', actor: { type: 'runtime' },
+    visibility: { audience: 'direct_user' }, payload: { ...payload, terminal_reason: 'provider_error' },
+    occurred_at: '2026-11-09T00:00:00Z', persisted_at: '2026-11-09T00:00:00Z',
+  }));
+  const transcript = events as unknown as ChatTranscriptEventPayload[];
+  let store = createSessionEventStore();
+  for (const event of transcript) store = consumeSessionEnvelope(event, store, 0).store!;
+  const cards = source === 'live' ? projectSessionEventStoreToMessages(store)
+    : hydrateSessionTranscriptEvents(transcript).messages;
+  const input: AgentChatMessage = { id: 'retry-input', transcriptEventId: 'retry-input', role: 'user', content: 'Please finish this task' };
+  const messages = [input, ...cards];
+  const base = props('', false, 'retry-session');
+  const branch = vi.fn();
+  render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'use' }}
+    currentUser={{ id: 'member', tenant_id: 'company' }}
+    activeSession={{ ...base.activeSession, user_id: 'member', read_only: false, is_current_user_session: true, operator_view: false }}
+    historyMsgs={[]} chatMessages={messages}
+    chatMessagesSessionId="retry-session" onBranchMessage={branch} />);
+  const [rejected, unknown, legacy] = cards.map(card => screen.getByText(card.content)
+    .closest('.session-tui-render-cell') as HTMLElement);
+  expect(within(rejected).queryByTestId('thread-item-retry-turn')).not.toBeNull();
+  expect(rejected.textContent).toContain('The model service could not finish this task. Check the configuration before retrying.');
+  expect(rejected.textContent).not.toContain('can be retried safely');
+  expect(within(unknown).queryByTestId('thread-item-retry-turn')).toBeNull();
+  expect(within(legacy).queryByTestId('thread-item-retry-turn')).not.toBeNull();
+  expect(legacy.textContent).toContain('can be retried safely');
+  fireEvent.click(within(rejected).getByTestId('thread-item-retry-turn'));
+  expect(branch).toHaveBeenCalledWith(input, 'edit', input.content);
+  expect(normalizeThreadItemPayload({ event_type: 'runtime_failure', retryable: true })?.user_action)
+    .toMatchObject({ kind: 'retry_turn' });
+});
 
 it.each([
   { item: 'ordinary employee with the reserved name', name: '__system_hr__', agent_class: 'internal_tenant', label: '__system_hr__' },

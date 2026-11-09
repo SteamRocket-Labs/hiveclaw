@@ -478,6 +478,9 @@ def _merged_data(metadata: dict[str, Any], parts: list[dict[str, Any]]) -> dict[
         invocation_id = payload.get("invocation_id")
         if isinstance(invocation_id, str) and invocation_id and "tool_call_id" not in data:
             data["tool_call_id"] = invocation_id
+        for key in ("retry_safe", "retryable", "failure_code", "delivery_state"):
+            if key in payload and key not in data:
+                data[key] = payload[key]
     permission = data.get("permission_request")
     if isinstance(permission, dict):
         data = {**data, **permission}

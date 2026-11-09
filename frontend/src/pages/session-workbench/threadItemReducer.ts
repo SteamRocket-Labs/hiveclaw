@@ -337,7 +337,9 @@ export function normalizeThreadItemPayload(value: unknown): ThreadItem | null {
     evidence_refs: asRecords(payload.evidence_refs || data.evidence_refs),
     audience,
     user_summary: userSummary,
-    user_action: isRecord(payload.user_action) ? payload.user_action : null,
+    user_action: isRecord(payload.user_action) ? payload.user_action
+      : itemType === 'error' && boolean('retry_safe' in data ? data.retry_safe : data.retryable)
+        ? { kind: 'retry_turn', label: 'Retry turn' } : null,
     operator_details: isRecord(payload.operator_details) ? payload.operator_details : null,
     item_data: legacyItemData(itemType, eventType, data),
   } as ThreadItem;

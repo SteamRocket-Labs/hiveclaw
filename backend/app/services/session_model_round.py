@@ -597,17 +597,21 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                     "这次对话暂时无法确认访问范围，请重试。", 503) from exc
             _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
 
-    # Keep every non-tool row after the last reply of a pending tool group.
+    # Defer non-tool rows within a group, but never cross into the next group.
     wire_messages = wire_request["messages"]
     if len(messages) != len(wire_messages):
         return
     order, notices, pending = [], [], set()
     for index, message in enumerate(wire_messages):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            order.extend(notices)
+            notices = []
+            pending = {call.get("id") for call in message["tool_calls"]}
+            order.append(index)
+            continue
         if pending and message.get("role") != "tool":
             notices.append(index)
             continue
-        if message.get("role") == "assistant":
-            pending = {call["id"] for call in message.get("tool_calls") or []}
         order.append(index)
         if message.get("role") == "tool":
             pending.discard(message.get("tool_call_id"))

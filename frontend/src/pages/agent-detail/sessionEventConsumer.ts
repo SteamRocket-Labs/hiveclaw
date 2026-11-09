@@ -455,6 +455,7 @@ function projectCanonicalItem(
     const failureCode = typeof item.payload.failure_code === 'string' ? item.payload.failure_code : null;
     const failureReason = typeof item.payload.terminal_reason === 'string' ? item.payload.terminal_reason : null;
     const failureRetryable = item.payload.retryable === true;
+    const failureRetrySafe = 'retry_safe' in item.payload ? item.payload.retry_safe === true : failureRetryable;
     const deliveryState = typeof item.payload.delivery_state === 'string' ? item.payload.delivery_state : null;
     const failureMessage = runtimeFailurePresentation(failureCode, failureRetryable, deliveryState).fallback;
     const scope = item.scope;
@@ -477,6 +478,7 @@ function projectCanonicalItem(
       content: failureMessage,
       audience: 'user',
       user_summary: failureMessage,
+      user_action: failureRetrySafe ? { kind: 'retry_turn', label: 'Retry turn' } : null,
       metadata: { delivery_state: deliveryState },
       item_type: 'error',
       item_data: {

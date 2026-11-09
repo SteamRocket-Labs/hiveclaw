@@ -93,8 +93,9 @@ async def _recover_read_artifact_selection(db: AsyncSession, *, task: RuntimeTas
     parts = [*writes.values(), *parts]
     by_path = {part["path"]: part for part in metadata.get("artifacts") or []}
     by_path.update({part["path"]: part for part in parts})
+    metadata["declared_artifact_paths"] = paths
     if parts:
-        metadata.update({"declared_artifact_paths": paths, "artifacts": list(by_path.values()),
+        metadata.update({"artifacts": list(by_path.values()),
             "artifact_paths": list(by_path), "artifact_ids": [part["artifact_id"] for part in by_path.values()],
             "artifact_attachment_policy": "model_declared_verified_read_or_write"})
     metadata["rejected_artifact_paths"] = list(dict.fromkeys([

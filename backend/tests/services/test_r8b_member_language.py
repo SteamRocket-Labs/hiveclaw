@@ -60,7 +60,7 @@ async def test_timeout_is_produced_in_chinese_with_typed_failure_facts(monkeypat
     assert result.failed and result.timed_out and result.to_dict()["status"] == "timed_out"
 
 
-async def test_delegated_session_title_is_chinese_and_instruction_bytes_are_preserved(monkeypatch):
+async def test_delegated_session_title_uses_the_localizer_prefix_and_preserves_instruction_bytes(monkeypatch):
     from app.agents.orchestrator import AgentDelegationRequest, _ensure_peer_delegation_session
     from app.models.chat_session import ChatSession
     from tests.agents.test_orchestrator import _a2a_authority_kwargs
@@ -83,7 +83,8 @@ async def test_delegated_session_title_is_chinese_and_instruction_bytes_are_pres
         **_a2a_authority_kwargs(target=target, owner_id=owner, session_id=session_id))
     assert await _ensure_peer_delegation_session(request, state="running")
     session = next(row for row in added if isinstance(row, ChatSession))
-    assert session.title == "委派：周报助手"
+    # Round 1 stored Chinese here; keep the canonical prefix so each UI locale can render it.
+    assert session.title == "Delegation: 周报助手"
     assert events[0]["content"] == instruction
 
 

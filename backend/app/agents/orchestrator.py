@@ -2506,7 +2506,7 @@ async def _ensure_peer_delegation_session(
                 parent_session_id=parent_session_id,
                 root_session_id=parent_session_id or session_id,
                 runtime_task_id=runtime_task_id,
-                title=instruction[:200] if human_first_task else f"委派：{getattr(request.target, 'name', '数字员工')}"[:200],
+                title=instruction[:200] if human_first_task else f"Delegation: {getattr(request.target, 'name', 'Agent')}"[:200],
                 transcript_metadata_json={},
             )
             db.add(session)

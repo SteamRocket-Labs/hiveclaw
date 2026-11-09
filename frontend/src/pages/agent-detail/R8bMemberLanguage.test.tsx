@@ -8,6 +8,7 @@ import en from '../../i18n/en.json';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
 import { AssistantMessageBody } from './CanonicalCardAssistantSupplement';
+import { sessionTitleForUser } from '../session-workbench/sessionTitlePresentation';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: i18n.t.bind(i18n), i18n }) }));
 vi.mock('@tanstack/react-query', () => ({ useQuery: () => ({ data: [
@@ -22,6 +23,20 @@ beforeAll(async () => { await i18n.init({ lng: 'zh', fallbackLng: 'en', resource
   zh: { translation: zh }, en: { translation: en },
 }, interpolation: { escapeValue: false } }); });
 afterEach(async () => { cleanup(); await i18n.changeLanguage('zh'); });
+
+it.each([
+  { session_kind: 'delegation_run', runtime_source: 'delegation' },
+  { session_kind: 'delegation_run' },
+  { runtime_source: 'delegation' },
+])('localizes a stored delegation title in both UI languages: %j', async metadata => {
+  const session = { title: 'Delegation: My Assistant', ...metadata };
+  const title = () => sessionTitleForUser(session, i18n.t('agent.chat.session'),
+    i18n.t('agent.chat.delegation'), i18n.t('assistant.title'));
+  expect(title()).toBe('委派：我的助理');
+  await i18n.changeLanguage('en');
+  expect(title()).toBe('Delegation: My Assistant');
+  expect(session.title).toBe('Delegation: My Assistant');
+});
 
 const recall = { schema: 'hive.session_recall_error.v1', status: 'unavailable', code: 'session_recall_evidence_unavailable',
   retryable: false, message: '暂时无法读取这部分历史对话，请稍后重试。',

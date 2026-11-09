@@ -62,3 +62,36 @@ async def test_attachment_notice_ignores_mentions_but_reports_missing_declaratio
         final = next(e for e in events if e.item_kind == "assistant_final")
         assert final.metadata_json["v2_payload"]["artifact_refs"] == [str(artifact.id)]
         assert task.metadata_json["rejected_artifact_paths"] == rejected
+
+
+async def test_recovery_seal_reports_a_declared_deliverable_without_artifact_rows(owner_sessionmaker):
+    from app.models.chat_artifact import ChatArtifact
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.services.session_model_round import commit_model_response
+    from app.services.session_terminal_outcome import commit_terminal_outcome, prepare_and_seal_run_outcome
+
+    tenant, agent, session_id, run, turn = await _seed(owner_sessionmaker)
+    missing = "workspace/missing.md"
+    async with owner_sessionmaker() as db:
+        request, _ = await _prepare(db, tenant_id=tenant, agent_id=agent, session_id=session_id, run_id=run, turn_id=turn)
+        seal = await commit_model_response(db, tenant_id=tenant, agent_id=agent, session_id=session_id,
+            run_id=run, turn_id=turn, round_index=1, provider_request_id=request,
+            response={"content": f"报告已完成。\nDELIVERABLE: {missing}", "tool_calls": [], "finish_reason": "stop", "usage": {}})
+        task = await db.get(RuntimeTask, run)
+        assert "artifact_selection_result_id" not in task.metadata_json
+        assert await db.scalar(select(ChatArtifact.id).where(ChatArtifact.runtime_task_id == run)) is None
+
+        outcome = await prepare_and_seal_run_outcome(db, tenant_id=tenant, agent_id=agent, session_id=session_id,
+            run_id=run, turn_id=turn, terminal_result_id=UUID(seal["result_id"]), recovery=True)
+        await commit_terminal_outcome(db, tenant_id=tenant, agent_id=agent, session_id=session_id,
+            run_id=run, outcome_id=outcome.id)
+        await db.commit()
+
+        events = list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == run)))
+        assert [e.content for e in events if e.item_kind == "assistant_commentary"] == ["部分文件未能附在这条回复中。"]
+        final = next(e for e in events if e.item_kind == "assistant_final")
+        assert final.metadata_json["v2_payload"]["artifact_refs"] == []
+        assert task.metadata_json["declared_artifact_paths"] == [missing]
+        assert task.metadata_json["rejected_artifact_paths"] == [missing]
+        assert task.metadata_json["artifact_selection_result_id"] == seal["result_id"]

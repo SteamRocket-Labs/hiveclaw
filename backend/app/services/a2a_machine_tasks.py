@@ -424,7 +424,8 @@ async def _protect_machine_ingress(db, context, immutable, bearer_secret):
     from app.services.exact_secret_boundary import ExactSecretBoundary
 
     try:
-        inventory = await load_runtime_ingress_secret_boundary(db, tenant_id=context.tenant_id, agent_id=context.agent_id)
+        inventory = await load_runtime_ingress_secret_boundary(db, tenant_id=context.tenant_id, agent_id=context.agent_id,
+            requester_user_id=None)
     except RuntimeIngressSecretBoundaryUnavailable as exc:
         raise A2AError(-32603, 'Task ingress credential boundary is unavailable') from exc
     boundary = ExactSecretBoundary.combine(inventory, ExactSecretBoundary.from_pairs([

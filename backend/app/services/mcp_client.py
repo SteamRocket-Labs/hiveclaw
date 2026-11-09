@@ -9,12 +9,13 @@ Reference: https://modelcontextprotocol.io/docs
 """
 
 import json
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from loguru import logger
 
-from app.services.mcp_authz import assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key
+from app.services.http_origin import http_origin
+from app.services.mcp_authz import MCPAuthzError, MCPOriginMismatchError, assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key
 from app.tools.result_envelope import render_tool_error
 
 
@@ -44,6 +45,10 @@ class MCPClient:
         if self._session_id:
             h["Mcp-Session-Id"] = self._session_id
         return h
+
+    async def _scope_authorization(self, request: httpx.Request) -> None:
+        if http_origin(request.url) != http_origin(self.server_url):
+            request.headers.pop("Authorization", None)
 
     def _parse_response(self, resp: httpx.Response) -> dict:
         """Parse response — handles both JSON and SSE (text/event-stream) formats."""
@@ -106,7 +111,8 @@ class MCPClient:
 
     async def _streamable_request(self, method: str, params: dict | None = None) -> dict:
         """Send a JSON-RPC request via Streamable HTTP transport."""
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True,
+                event_hooks={"request": [self._scope_authorization]}) as client:
             if not self._session_id:
                 await self._streamable_initialize(client)
 
@@ -119,6 +125,16 @@ class MCPClient:
 
     # ── SSE Transport ────────────────────────────────────────────
 
+    def _sse_endpoint_url(self, data: str) -> str:
+        configured = urlparse(self.server_url)
+        url = urljoin(f"{configured.scheme}://{configured.netloc}/", data)
+        try:
+            if http_origin(self.server_url) == http_origin(url):
+                return url
+        except ValueError:
+            pass
+        raise MCPOriginMismatchError("连接地址与配置不一致，请管理员检查应用连接设置。")
+
     async def _sse_connect(self) -> str:
         """Connect to SSE endpoint (GET /sse) and extract the messages URL.
 
@@ -127,16 +143,16 @@ class MCPClient:
         # Determine SSE URL: if server_url ends with /sse use it directly,
         # otherwise append /sse
         sse_url = self.server_url if self.server_url.endswith("/sse") else f"{self.server_url}/sse"
-        parsed = urlparse(sse_url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
 
         headers = {"Accept": "text/event-stream"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         messages_url = None
+        event_type = ""
 
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True,
+                event_hooks={"request": [self._scope_authorization]}) as client:
             async with client.stream("GET", sse_url, headers=headers) as resp:
                 if resp.status_code != 200:
                     raise Exception(f"SSE connect failed: HTTP {resp.status_code}")
@@ -150,10 +166,7 @@ class MCPClient:
                         data = line[5:].strip()
                         if event_type == "endpoint" and data:
                             # data is typically a relative URL like /messages?sessionId=xxx
-                            if data.startswith("http"):
-                                messages_url = data
-                            else:
-                                messages_url = base_url + data
+                            messages_url = self._sse_endpoint_url(data)
                             break
                     elif line == "":
                         # Empty line = end of SSE event block
@@ -172,8 +185,6 @@ class MCPClient:
         """
         # Connect to SSE to get the messages endpoint
         sse_url = self.server_url if self.server_url.endswith("/sse") else f"{self.server_url}/sse"
-        parsed = urlparse(sse_url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
 
         headers_sse = {"Accept": "text/event-stream"}
         headers_post = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
@@ -185,7 +196,8 @@ class MCPClient:
 
         timeout = 60 if method == "tools/call" else 30
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True,
+                event_hooks={"request": [self._scope_authorization]}) as client:
             # Open the SSE stream
             async with client.stream("GET", sse_url, headers=headers_sse) as sse_resp:
                 if sse_resp.status_code != 200:
@@ -203,10 +215,7 @@ class MCPClient:
                     elif line.startswith("data:"):
                         data = line[5:].strip()
                         if event_type == "endpoint" and data:
-                            if data.startswith("http"):
-                                messages_url = data
-                            else:
-                                messages_url = base_url + data
+                            messages_url = self._sse_endpoint_url(data)
                             break
 
                 if not messages_url:
@@ -291,8 +300,11 @@ class MCPClient:
             result = await self._sse_request(method, params)
             self._transport = "sse"
             return result
+        except MCPAuthzError:
+            raise
         except Exception as sse_err:
-            raise Exception(f"Both transports failed. Streamable HTTP: {streamable_err}; SSE: {sse_err}")
+            hint = " 请管理员使用 https:// 地址配置连接。" if urlparse(self.server_url).scheme == "http" else ""
+            raise Exception(f"Both transports failed. Streamable HTTP: {streamable_err}; SSE: {sse_err}{hint}")
 
     # ── Public API ───────────────────────────────────────────────
 

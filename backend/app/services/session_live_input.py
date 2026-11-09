@@ -184,6 +184,7 @@ async def submit_live_human_input(
             db,
             tenant_id=agent.tenant_id,
             agent_id=agent.id,
+            requester_user_id=user.id,
             reply_target=getattr(session, "delivery_target_json", None),
             source_channel=source_channel,
             source=source,

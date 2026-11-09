@@ -206,7 +206,7 @@ async def test_member_can_remember_own_request_with_incomplete_ambient_context(
         for capability in ("agent.memory.write", "agent.memory.read"):
             db.add(CapabilityPolicy(tenant_id=n.tenant, capability=capability, allowed=True, requires_approval=False))
         protected = await redact_runtime_ingress_payload(db, tenant_id=n.tenant, agent_id=n.agent,
-            source_channel="web", payload={"content": command})
+            requester_user_id=None, source_channel="web", payload={"content": command})
         command = protected.value["content"]
         if pasted_key:
             assert key not in command and "[REDACTED_SECRET]" in command

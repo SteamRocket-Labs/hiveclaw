@@ -1380,6 +1380,7 @@ async def create_session(
     try:
         protected_title = await redact_runtime_ingress_payload(
             db, tenant_id=getattr(agent, "tenant_id", getattr(current_user, "tenant_id", None)), agent_id=agent_id, source_channel="web", payload={"title": body.title},
+            requester_user_id=current_user.id,
         )
     except RuntimeIngressSecretBoundaryUnavailable as exc:
         raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc
@@ -1443,6 +1444,7 @@ async def rename_session(
     try:
         protected_title = await redact_runtime_ingress_payload(
             db, tenant_id=session.tenant_id, agent_id=agent_id, source_channel="web", payload={"title": body.title},
+            requester_user_id=current_user.id,
         )
     except RuntimeIngressSecretBoundaryUnavailable as exc:
         raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc
@@ -1688,6 +1690,7 @@ async def create_session_run(
         try:
             protected_title = await redact_runtime_ingress_payload(
                 db, tenant_id=tenant_id, agent_id=agent_id, source_channel="web", payload={"title": body.title},
+                requester_user_id=current_user.id,
             )
         except RuntimeIngressSecretBoundaryUnavailable as exc:
             raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc

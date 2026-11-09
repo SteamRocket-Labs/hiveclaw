@@ -1969,8 +1969,9 @@ async def _load_invocation_secret_boundary(
     *,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
+    requester_user_id: uuid.UUID | None = None,
 ):
-    from app.services.credential_boundary_loader import load_exact_secret_boundary
+    from app.services.credential_boundary_loader import load_requester_exact_secret_boundary
 
     async with tenant_scoped_session(
         tenant_id,
@@ -1978,8 +1979,9 @@ async def _load_invocation_secret_boundary(
         require_tenant=True,
         source="invocation_credential_authority",
     ) as db:
-        return await load_exact_secret_boundary(
+        return await load_requester_exact_secret_boundary(
             db,
             tenant_id=tenant_id,
             agent_id=agent_id,
+            requester_user_id=requester_user_id,
         )

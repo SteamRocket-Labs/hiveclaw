@@ -75,7 +75,7 @@ async def test_web_goal_protects_objective_and_continuation_copies(owner_session
         assert_no_fragments(await stored_rows(db, session.id, agent.id), KEY)
         goal = await db.scalar(select(AgentSessionGoal).where(AgentSessionGoal.chat_session_id == session.id))
         # A previously stored objective can still reach the continuation writer.
-        # Keep the old row intact; only the newly written prompt must be safe.
+        # Continuation protects both the stored objective and the new prompt.
         goal.objective = KEY
         async def capture(**kwargs):
             assert_no_fragments(kwargs["content"], KEY)
@@ -83,6 +83,7 @@ async def test_web_goal_protects_objective_and_continuation_copies(owner_session
             return {"run_id": str(uuid4()), "ok": True}
         monkeypatch.setattr("app.services.goal_continuation_service._submit_goal_runtime_input", capture)
         await continue_session_goal(db=db, agent=agent, user=user, session=session, goal=goal)
+        assert goal.objective == "[REDACTED_SECRET]"
         await db.rollback()
 
 

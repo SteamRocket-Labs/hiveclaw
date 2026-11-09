@@ -668,11 +668,12 @@ async def test_invoke_agent_loads_tenant_secret_boundary_before_tool_event(monke
     runtime_events: list[dict] = []
     loader_calls: list[dict] = []
 
-    async def fake_loader(*, tenant_id, agent_id):
+    async def fake_loader(*, tenant_id, agent_id, requester_user_id):
         loader_calls.append(
             {
                 "tenant_id": tenant_id,
                 "agent_id": agent_id,
+                "requester_user_id": requester_user_id,
             }
         )
         return ExactSecretBoundary.from_pairs(((source_ref, active_secret),))
@@ -695,6 +696,7 @@ async def test_invoke_agent_loads_tenant_secret_boundary_before_tool_event(monke
     )
     monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
 
+    requester_user_id = uuid4()
     result = await invoke_agent(
         AgentInvocationRequest(
             model=SimpleNamespace(
@@ -709,13 +711,14 @@ async def test_invoke_agent_loads_tenant_secret_boundary_before_tool_event(monke
             agent_name="Agent",
             role_description="desc",
             agent_id=agent_id,
-            user_id=uuid4(),
+            user_id=requester_user_id,
             on_tool_call=tool_events.append,
             on_event=runtime_events.append,
         )
     )
 
-    assert loader_calls == [{"tenant_id": tenant_id, "agent_id": agent_id}]
+    assert loader_calls == [{"tenant_id": tenant_id, "agent_id": agent_id,
+        "requester_user_id": requester_user_id}]
     assert result.content == "clean final"
     assert tool_events == [
         {

@@ -31,6 +31,10 @@ class MCPAuthzError(ValueError):
     """Raised when MCP auth material violates Hive's authz policy."""
 
 
+class MCPOriginMismatchError(MCPAuthzError):
+    """An announced MCP endpoint differs from the configured credential origin."""
+
+
 class MCPStoredCredentialRequired(MCPAuthzError):
     """A stored MCP credential has no current scoped assignment."""
 

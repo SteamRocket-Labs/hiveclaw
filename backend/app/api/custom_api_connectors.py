@@ -474,4 +474,4 @@ async def test_custom_api_connector(
     except CustomApiConnectorError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     result = await execute_prepared_custom_api_request(tool.name, prepared)
-    return {"ok": not str(result).startswith("<tool_error>"), "result": str(result)}
+    return {"ok": "<tool_error>" not in str(result), "result": str(result)}

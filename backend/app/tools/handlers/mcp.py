@@ -32,7 +32,7 @@ def _available_mcp_tools(tenant_id):
 
 
 def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
-    from app.services.mcp_authz import MCPStoredCredentialRequired
+    from app.services.mcp_authz import MCPOriginMismatchError, MCPStoredCredentialRequired
 
     if isinstance(exc, MCPStoredCredentialRequired):
         return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
@@ -45,6 +45,7 @@ def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
         provider="mcp",
         retryable=False,
         actionable_hint=(
+            "请管理员检查应用连接地址。" if isinstance(exc, MCPOriginMismatchError) else
             "Use an HTTP/SSE MCP endpoint in cloud core, or enable the Local Bridge / coding plugin "
             "for stdio, WebSocket, SDK, or local IPC transports."
         ),

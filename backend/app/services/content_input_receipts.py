@@ -2243,6 +2243,11 @@ async def validate_runtime_workspace_receipt(db, tenant_id, principal, receipt, 
 
 async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, runtime_principal=None):
     """Recheck the captured version's sources without borrowing a later version's audience."""
+    with group_source_read(batch_inputs=True):
+        await _validate_artifact_content_receipt(db, tenant_id, user, artifact, runtime_principal=runtime_principal)
+
+
+async def _validate_artifact_content_receipt(db, tenant_id, user, artifact, *, runtime_principal):
     snapshot = artifact.snapshot_json or {}
     try:
         receipt_id = uuid.UUID(snapshot["content_input_receipt_id"])
@@ -2262,6 +2267,10 @@ async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, ru
         raise ContentInputReceiptError(
             "workspace_content_unverified", "The artifact's source receipt does not match its captured bytes."
         )
+    sources = [{"source_kind": "workspace_artifact", "source_id": str(receipt.id)}]
+    if snapshot.get("selection_model_result_id") is not None:
+        sources.append({"source_kind": "session_model_result", "source_id": snapshot["selection_model_result_id"]})
+    await _preload_execution_sources(db, tenant_id, sources)
     if runtime_principal is not None:
         await _runtime_input_actor(db, tenant_id, runtime_principal)
     if snapshot.get("selection_model_result_id") is not None:

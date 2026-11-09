@@ -9,12 +9,12 @@ Reference: https://modelcontextprotocol.io/docs
 """
 
 import json
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from loguru import logger
 
-from app.services.mcp_authz import assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key
+from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key
 from app.tools.result_envelope import render_tool_error
 
 
@@ -119,6 +119,21 @@ class MCPClient:
 
     # ── SSE Transport ────────────────────────────────────────────
 
+    def _sse_endpoint_url(self, data: str) -> str:
+        configured = urlparse(self.server_url)
+        url = urljoin(f"{configured.scheme}://{configured.netloc}/", data)
+        try:
+            target = urlparse(url)
+            origins = [
+                (part.scheme, part.hostname, part.port if part.port is not None else (443 if part.scheme == "https" else 80))
+                for part in (configured, target)
+            ]
+            if origins[0] == origins[1]:
+                return url
+        except ValueError:
+            pass
+        raise MCPAuthzError("连接地址与配置不一致，请管理员检查应用连接设置。")
+
     async def _sse_connect(self) -> str:
         """Connect to SSE endpoint (GET /sse) and extract the messages URL.
 
@@ -127,14 +142,13 @@ class MCPClient:
         # Determine SSE URL: if server_url ends with /sse use it directly,
         # otherwise append /sse
         sse_url = self.server_url if self.server_url.endswith("/sse") else f"{self.server_url}/sse"
-        parsed = urlparse(sse_url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
 
         headers = {"Accept": "text/event-stream"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         messages_url = None
+        event_type = ""
 
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             async with client.stream("GET", sse_url, headers=headers) as resp:
@@ -150,10 +164,7 @@ class MCPClient:
                         data = line[5:].strip()
                         if event_type == "endpoint" and data:
                             # data is typically a relative URL like /messages?sessionId=xxx
-                            if data.startswith("http"):
-                                messages_url = data
-                            else:
-                                messages_url = base_url + data
+                            messages_url = self._sse_endpoint_url(data)
                             break
                     elif line == "":
                         # Empty line = end of SSE event block
@@ -172,8 +183,6 @@ class MCPClient:
         """
         # Connect to SSE to get the messages endpoint
         sse_url = self.server_url if self.server_url.endswith("/sse") else f"{self.server_url}/sse"
-        parsed = urlparse(sse_url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
 
         headers_sse = {"Accept": "text/event-stream"}
         headers_post = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
@@ -203,10 +212,7 @@ class MCPClient:
                     elif line.startswith("data:"):
                         data = line[5:].strip()
                         if event_type == "endpoint" and data:
-                            if data.startswith("http"):
-                                messages_url = data
-                            else:
-                                messages_url = base_url + data
+                            messages_url = self._sse_endpoint_url(data)
                             break
 
                 if not messages_url:
@@ -291,6 +297,8 @@ class MCPClient:
             result = await self._sse_request(method, params)
             self._transport = "sse"
             return result
+        except MCPAuthzError:
+            raise
         except Exception as sse_err:
             raise Exception(f"Both transports failed. Streamable HTTP: {streamable_err}; SSE: {sse_err}")
 

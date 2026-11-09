@@ -213,20 +213,72 @@ async def load_exact_secret_boundary(
     )
 
 
+async def load_requester_exact_secret_boundary(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID | None,
+    requester_user_id: uuid.UUID | None = None,
+) -> ExactSecretBoundary:
+    """Supplement the existing inventory with only this requester's stored secrets."""
+    boundary = await load_exact_secret_boundary(db, tenant_id=tenant_id, agent_id=agent_id)
+    if requester_user_id is None:
+        return boundary
+    from app.models.custom_api_account import CustomApiAccount
+    from app.models.email_account import EmailAccount
+    from app.models.mcp_server import MCPServer
+    from app.services.mcp_oauth import decrypt_token_set, decrypt_value
+
+    pairs: list[tuple[str, str]] = []
+    for account_type, source_kind, secret_keys in (
+        (CustomApiAccount, "custom-api-account", ("api_key", "bearer_token", "basic_username", "basic_password")),
+        (EmailAccount, "email-account", ("auth_code",)),
+    ):
+        accounts = (await db.execute(select(account_type).where(
+            account_type.tenant_id == tenant_id,
+            account_type.owner_user_id == requester_user_id,
+        ))).scalars().all()
+        for account in accounts:
+            pairs.extend((f"{source_kind}://{account.id}/{key}", value)
+                for key in secret_keys
+                if isinstance(value := (account.config or {}).get(key), str) and value)
+    servers = (await db.execute(select(MCPServer).where(
+        MCPServer.tenant_id == tenant_id,
+        MCPServer.owner_user_id == requester_user_id,
+        MCPServer.parent_server_id.is_not(None),
+    ))).scalars().all()
+    for server in servers:
+        oauth = dict((server.config_json or {}).get("oauth") or {})
+        token = decrypt_token_set(oauth.get("token"))
+        if token is not None:
+            pairs.extend((f"mcp-server://{server.id}/oauth/{key}", value)
+                for key in ("access_token", "refresh_token") if (value := getattr(token, key)))
+        for path, config, key in (
+            ("client_secret", oauth, "client_secret"),
+            ("pkce_verifier", dict(oauth.get("pending") or {}), "verifier"),
+            ("pending_client_secret", dict(oauth.get("pending") or {}), "client_secret"),
+        ):
+            if value := decrypt_value(config.get(key)):
+                pairs.append((f"mcp-server://{server.id}/oauth/{path}", value))
+    return ExactSecretBoundary.combine(boundary, ExactSecretBoundary.from_pairs(pairs))
+
+
 async def load_runtime_ingress_secret_boundary(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID | None,
+    requester_user_id: uuid.UUID | None = None,
     reply_target: dict[str, Any] | None = None,
 ) -> ExactSecretBoundary:
     """Load the exact tenant inventory plus the current typed reply target."""
 
     try:
-        tenant_boundary = await load_exact_secret_boundary(
+        tenant_boundary = await load_requester_exact_secret_boundary(
             db,
             tenant_id=tenant_id,
             agent_id=agent_id,
+            requester_user_id=requester_user_id,
         )
         return ExactSecretBoundary.combine(
             tenant_boundary,
@@ -243,6 +295,7 @@ async def redact_runtime_ingress_payload(
     *,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID | None,
+    requester_user_id: uuid.UUID | None = None,
     payload: Any,
     reply_target: dict[str, Any] | None = None,
     source_channel: str | None = None,
@@ -271,6 +324,7 @@ async def redact_runtime_ingress_payload(
             db,
             tenant_id=tenant_id,
             agent_id=agent_id,
+            requester_user_id=requester_user_id,
             reply_target=reply_target,
         )
         redaction = boundary.redact_payload_with_evidence(payload)

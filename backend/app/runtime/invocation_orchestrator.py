@@ -138,6 +138,7 @@ async def _assemble_invocation_state(
             tenant_secret_boundary = await ports.load_secret_boundary(
                 tenant_id=request.tenant_id,
                 agent_id=request.agent_id,
+                requester_user_id=request.user_id,
             )
         except Exception as exc:
             ports.logger.error(

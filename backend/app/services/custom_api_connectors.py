@@ -267,7 +267,13 @@ def prepare_custom_api_request(
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise CustomApiConnectorError("custom API method must be GET, POST, PUT, PATCH, or DELETE")
     path = str(_render_template(str(action.get("path") or "/"), arguments, path_context=True))
-    url = urljoin(base_url + "/", path.lstrip("/"))
+    url = urljoin(base_url + "/", path if path.startswith("//") else path.lstrip("/"))
+    origins = [
+        (part.scheme, part.hostname, part.port if part.port is not None else (443 if part.scheme == "https" else 80))
+        for part in (urlparse(base_url), urlparse(url))
+    ]
+    if origins[0] != origins[1]:
+        raise CustomApiConnectorError("连接地址与配置不一致，请管理员检查应用连接设置。")
     headers = {str(k): str(_render_template(v, arguments)) for k, v in dict(action.get("headers") or {}).items()}
     params = {str(k): _render_template(v, arguments) for k, v in dict(action.get("query") or {}).items()}
     json_body = _render_template(action.get("body"), arguments) if action.get("body") is not None else None

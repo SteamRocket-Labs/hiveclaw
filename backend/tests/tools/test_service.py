@@ -126,7 +126,7 @@ async def test_exact_session_scope_prefixes_paths_and_denies_escape_or_tool_wide
     assert widening_stop.value["extra"]["reason_code"] == "exact_session_tool_scope_denied"
 
 
-def test_exact_session_filesystem_handlers_reject_symlink_escape(tmp_path: Path):
+async def test_exact_session_filesystem_handlers_reject_symlink_escape(tmp_path: Path):
     from app.tools.handlers.filesystem import edit_file, glob_search, grep_search, read_file, write_file
 
     root = "workspace/p08-j4/attempt-1/coding"
@@ -167,7 +167,7 @@ def test_exact_session_filesystem_handlers_reject_symlink_escape(tmp_path: Path)
             {"root": f"{root}/escape", "pattern": "*.txt"},
             permission_profile=profile,
         ),
-        grep_search(
+        await grep_search(
             workspace,
             {"root": f"{root}/escape", "pattern": "secret"},
             permission_profile=profile,
@@ -185,6 +185,24 @@ def test_exact_session_filesystem_handlers_reject_symlink_escape(tmp_path: Path)
         assert "Access denied" in str(read_file(workspace, {"path": path}, permission_profile=profile))
     assert secret.read_text(encoding="utf-8") == "outside secret"
     assert not (outside / "new.txt").exists()
+
+
+async def test_registered_fs_read_grep_returns_real_match_text(tmp_path, monkeypatch):
+    from app.services import agent_tools
+    from app.tools.runtime import ToolExecutionContext
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "record.txt").write_text("ordinary text\nregistered NEEDLE match\n", encoding="utf-8")
+    context = ToolExecutionContext(agent_id=uuid4(), user_id=uuid4(), tenant_id=None, workspace=tmp_path)
+    service = agent_tools._get_tool_runtime_service()
+    monkeypatch.setattr(service, "asset_ref_resolver", lambda **_kwargs: ())
+
+    result = await agent_tools._execute_tool_inner(
+        "fs_read", {"mode": "grep", "path": "workspace", "pattern": "NEEDLE"}, context,
+    )
+
+    assert result == "🔎 Grep results for 'NEEDLE' (1 match(es)):\n- workspace/record.txt:2:registered NEEDLE match"
 
 
 @pytest.mark.asyncio

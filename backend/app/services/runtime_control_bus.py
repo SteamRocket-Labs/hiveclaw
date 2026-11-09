@@ -445,10 +445,17 @@ async def _merge_transcript_bridge_metadata(db, event, metadata):
     # The read projection may contain a bounded head of historical raw output.
     # Merge only bridge bookkeeping in SQL; never write that head over stored evidence.
     patch = {key: value for key, value in metadata.items() if key.startswith("t0_bridge_")}
-    await db.execute(update(ChatTranscriptEvent).where(ChatTranscriptEvent.id == event.id,
-        ChatTranscriptEvent.tenant_id == event.tenant_id).values(
-            metadata_json=func.coalesce(ChatTranscriptEvent.metadata_json, text("'{}'::jsonb")).op("||")(patch)
-        ).execution_options(synchronize_session=False))
+    projection = {key: getattr(event, key) for key in (
+        "projection_status", "projection_attempts", "projection_error", "projected_at")}
+    # Persist this locked tenant event's projection and bridge keys in one statement.
+    with db.no_autoflush:
+        await db.execute(update(ChatTranscriptEvent).where(ChatTranscriptEvent.id == event.id,
+            ChatTranscriptEvent.tenant_id == event.tenant_id).values(
+                metadata_json=func.coalesce(ChatTranscriptEvent.metadata_json, text("'{}'::jsonb")).op("||")(patch),
+                **projection,
+            ).execution_options(synchronize_session=False))
+    for key, value in projection.items():
+        set_committed_value(event, key, value)
     set_committed_value(event, "metadata_json", metadata)
 
 
@@ -662,10 +669,10 @@ async def bridge_transcript_event_to_t0(
                                     "t0_bridge_sequence": t0_sequence,
                                 }
                             )
-                            await _merge_transcript_bridge_metadata(db, transcript_event, metadata)
                             transcript_event.projection_status = "projected"
                             transcript_event.projection_error = None
                             transcript_event.projected_at = datetime.now(timezone.utc)
+                            await _merge_transcript_bridge_metadata(db, transcript_event, metadata)
                             return True
 
         if projection_failed and attempt >= attempts - 1:

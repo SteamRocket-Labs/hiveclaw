@@ -135,7 +135,7 @@ INTERNAL_FILES = (
 
 
 @pytest.mark.parametrize("path", INTERNAL_FILES)
-def test_file_tools_hide_platform_memory_records_but_keep_user_files(tmp_path, path):
+async def test_file_tools_hide_platform_memory_records_but_keep_user_files(tmp_path, path):
     from app.tools.handlers.filesystem import fs_list, fs_read, read_file, glob_search, grep_search
 
     internal = tmp_path / path
@@ -160,9 +160,9 @@ def test_file_tools_hide_platform_memory_records_but_keep_user_files(tmp_path, p
     globbed = str(glob_search(tmp_path, {"pattern": "**/*"}))
     assert path not in globbed
     assert all(normal in globbed for normal in normal_paths)
-    assert "PLATFORM_PIPELINE_NEEDLE" not in str(grep_search(tmp_path, {"pattern": "NEEDLE"}))
-    assert "USER_WORK_NEEDLE" in str(grep_search(tmp_path, {"pattern": "NEEDLE"}))
-    assert payload(fs_read(tmp_path, {"mode": "grep", "path": path, "pattern": "NEEDLE"}))['ok'] is False
+    assert "PLATFORM_PIPELINE_NEEDLE" not in str(await grep_search(tmp_path, {"pattern": "NEEDLE"}))
+    assert "USER_WORK_NEEDLE" in str(await grep_search(tmp_path, {"pattern": "NEEDLE"}))
+    assert payload(await fs_read(tmp_path, {"mode": "grep", "path": path, "pattern": "NEEDLE"}))['ok'] is False
     alias = tmp_path / "pipeline-alias"
     alias.symlink_to(internal)
     assert payload(fs_read(tmp_path, {"path": "pipeline-alias"}))['ok'] is False

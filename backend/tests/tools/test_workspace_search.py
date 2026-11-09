@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+
 import pytest
 
 
@@ -15,11 +17,10 @@ def test_grep_search_terminates_rg_options_before_untrusted_pattern(monkeypatch,
     def fake_run(command, **kwargs):
         captured["command"] = command
         captured["kwargs"] = kwargs
+        kwargs["stdout"].write(f"{command[-1]}:1:--files\n".encode())
         return workspace.subprocess.CompletedProcess(
             command,
             0,
-            stdout=f"{command[-1]}:1:--files\n",
-            stderr="",
         )
 
     monkeypatch.setattr(workspace.shutil, "which", lambda name: "/usr/bin/rg" if name == "rg" else None)
@@ -39,7 +40,12 @@ def test_grep_search_terminates_rg_options_before_untrusted_pattern(monkeypatch,
     ]
     descriptor = captured["kwargs"]["pass_fds"]
     assert len(descriptor) == 1 and captured["command"][-1] == f"/dev/fd/{descriptor[0]}"
-    assert captured["kwargs"] == {"pass_fds": descriptor, "capture_output": True, "text": True, "check": False}
+    assert captured["kwargs"] == {
+        "pass_fds": descriptor, "stdout": captured["kwargs"]["stdout"],
+        "stderr": captured["kwargs"]["stderr"], "check": False,
+    }
+    assert isinstance(captured["kwargs"]["stdout"], io.IOBase)
+    assert isinstance(captured["kwargs"]["stderr"], io.IOBase)
     assert "workspace/record.txt:1:--files" in result
 
 

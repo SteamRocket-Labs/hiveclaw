@@ -896,7 +896,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # UPDATE binds the locked event and tenant, while bypass enumeration still returns only tenant/session/event locators.
 # Land12 (R7a) adds 23 module-source lines for tool-result group ordering and retry_safe;
 # no entry removed, no bypass scope, predicate or callsite changed (still 122 callsites).
-RLS_BYPASS_SCOPES_SHA256 = "9e7510d9c0aeeca219ea61e970d3d765f24afaf038199f42b6d8742436d1e63e"
+# Native directory recovery uses only approved invocation captures; the 122
+# bypass callsites and the reviewed entry count (790) remain unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "1e515de32991ae49fe96bce66fcd461ec49f11d4e93a772b546d0784896d60d0"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

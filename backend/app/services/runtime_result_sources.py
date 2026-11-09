@@ -294,6 +294,8 @@ async def load_canonical_result_sources(db, result_object):
         return await _load_creation_result_sources(db, result_object)
     if result_object.source_kind == "approval":
         return await _load_company_result_sources(db, result_object)
+    if result_object.source_kind == "a2a_continuation":
+        return await _load_continuation_result_sources(db, result_object)
     if result_object.source_kind != "a2a_delegation":
         return False  # Legacy/non-model results retain unknown dependency coverage.
     try:
@@ -342,6 +344,10 @@ async def load_canonical_result_sources(db, result_object):
     else:
         statement = statement.where(SessionModelResult.round_committed_event_id == spec.terminal_event.id)
     model = await db.scalar(statement)
+    return await _canonical_result_inputs(db, result_object, task, model)
+
+
+async def _canonical_result_inputs(db, result_object, task, model):
     dependencies, complete = _model_dependencies(model) if model else ([], False)
     if not complete or task.status != "completed":
         raise ContentInputReceiptError(
@@ -409,6 +415,65 @@ async def load_canonical_result_sources(db, result_object):
             "runtime_result_sources_unbound", "The result's input source inventory is invalid.", 503
         )
     return task, dependencies, receipt_ids
+
+
+async def _load_continuation_result_sources(db, result):
+    """Reuse the child's durable delegation route and committed Web terminal."""
+    from types import SimpleNamespace
+    from app.models.chat_session import ChatSession
+    from app.models.session_v2 import SessionRunOutcome
+    from app.services.session_v2_persistence import _validate_a2a_delegation_peer_binding
+    from app.services.web_terminal_boundary_processor import build_web_terminal_boundary_binding
+    from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanonicalMismatch
+    from app.services.runtime_result_store import encode_runtime_result_payload, runtime_result_object_id
+
+    try:
+        task = await db.get(RuntimeTask, uuid.UUID(result.source_run_id), populate_existing=True)
+        if (task is None or task.tenant_id != result.tenant_id or task.task_type != "a2a_continuation"
+            or task.status != "completed" or task.child_agent_id != task.parent_agent_id
+            or task.child_session_id != task.parent_session_id):
+            return None
+        child = await db.get(ChatSession, uuid.UUID(task.child_session_id), populate_existing=True)
+        agent = await db.get(Agent, task.child_agent_id, populate_existing=True)
+        if child is None or agent is None:
+            return None
+        requester, delegation = await _validate_a2a_delegation_peer_binding(db, session=child, agent=agent,
+            peer_agent_id=child.peer_agent_id, delegation_runtime_task_id=child.runtime_task_id)
+        if (task.root_user_id != requester.id
+            or not await runtime_result_publication_bound(db, result=result, agent_id=delegation.parent_agent_id,
+                session_id=uuid.UUID(delegation.parent_session_id), user_id=requester.id)):
+            return None
+        outcome = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.tenant_id == task.tenant_id,
+            SessionRunOutcome.run_id == task.id, SessionRunOutcome.session_id == child.id,
+            SessionRunOutcome.state == "terminal_committed"))
+        if outcome is None:
+            return None
+        binding = await build_web_terminal_boundary_binding(db, tenant_id=task.tenant_id, runtime_task_id=task.id,
+            agent_id=agent.id, session_id=child.id, event_kind="turn_stop", terminal_status="completed",
+            authority_ref="session_run_outcome", authority_id=outcome.id)
+        model = await db.get(SessionModelResult, uuid.UUID(binding["terminal_result_id"]), populate_existing=True)
+        summary = model.seal_json["semantic_content"]
+        # The publisher replaces the task summary with a result reference and
+        # appends these three navigation fields after encoding the answer.
+        metadata = {key: value for key, value in (task.metadata_json or {}).items()
+            if key not in {"runtime_result_ref", "runtime_result_sha256", "runtime_result_size_bytes"}}
+        if (result.id != runtime_result_object_id(
+            tenant_id=task.tenant_id, source_kind="a2a_continuation", source_run_id=str(task.id), sha256=result.sha256)
+            or not any(bytes(result.payload_bytes) == encode_runtime_result_payload(summary=summary.strip(),
+                artifacts=list(metadata.get("artifacts") or []), metadata=extra).payload_bytes
+                for extra in (metadata, {**metadata, "reconciled_from_terminal_runtime_task": True}))):
+            return None
+        # Continuation tasks execute on the child; source validation consumes
+        # the original delegation's return route without mutating either row.
+        published = SimpleNamespace(**{key: getattr(task, key) for key in (
+            "id", "tenant_id", "status", "child_agent_id", "child_session_id", "root_user_id",
+            "root_runtime_task_id", "machine_credential_id", "root_external_principal_id", "prompt")},
+            parent_agent_id=delegation.parent_agent_id, parent_session_id=delegation.parent_session_id,
+            result_summary=summary.strip())
+        return await _canonical_result_inputs(db, result, published, model)
+    except (ContentInputReceiptError, TerminalBoundaryCanonicalMismatch, PermissionError,
+        ValueError, TypeError, KeyError, AttributeError):
+        return None
 
 
 async def _load_creation_result_sources(db, result):
@@ -819,7 +884,7 @@ async def _validate_runtime_result_sources(db, request, result_object, *, user=N
         # Recheck creating-model inputs before the original work consumes seed facts or its user's bound answers.
         await _validate_input_dependencies(db, task.tenant_id, original[0], user=user, runtime_request=request)
     owned_return = False
-    if not first_task and result_object.source_kind == "a2a_delegation" and requester.id == task.root_user_id:
+    if not first_task and result_object.source_kind in {"a2a_delegation", "a2a_continuation"} and requester.id == task.root_user_id:
         from app.models.chat_session import ChatSession
 
         child = await db.get(Agent, task.child_agent_id, populate_existing=True)
@@ -1170,20 +1235,29 @@ async def validate_runtime_return_dependency(db, tenant_id, dependency, *, user,
 
 
 def runtime_result_denial_bound(*, invocation, payload, content):
-    """Bind only an observed native no-data denial, never the denied target's bytes or authority."""
+    """Bind native no-data feedback, never the target's bytes or authority."""
     from app.tools.handlers.context_resources import _RUNTIME_RESULT_REF_RE
 
     try:
         body = json.loads(content)
         arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
-        return (
+        settled = (
             invocation.tool_name == "read_runtime_result"
             and invocation.effect_state == "effect_committed"
             and payload.get("outcome") == "success"
             and payload.get("content_or_error_ref") == invocation.receipt_ref
             == f"tool-frame:{payload.get('content_hash')}"
             and isinstance(body, dict)
-            and set(body) == {"schema", "status", "reason_code", "result_ref", "retryable", "recovery_action"}
+            and body.get("result_ref") == arguments.get("result_ref")
+            and _RUNTIME_RESULT_REF_RE.fullmatch(body.get("result_ref", "")) is not None
+        )
+        if not settled:
+            return False
+        if body.get("retryable") is True and body == {"schema": "hive.runtime_result_page.v1", "status": "not_found",
+            "result_ref": arguments["result_ref"], "retryable": True}:
+            return True  # Native absence feedback contains no result body or source grant.
+        return (
+            set(body) == {"schema", "status", "reason_code", "result_ref", "retryable", "recovery_action"}
             and body["schema"] == "hive.runtime_result_page.v1"
             and (
                 (body["status"] == "source_access_denied"
@@ -1193,8 +1267,6 @@ def runtime_result_denial_bound(*, invocation, payload, content):
                     and isinstance(body["retryable"], bool))
             )
             and body["recovery_action"] == "reconcile_result_sources"
-            and body["result_ref"] == arguments.get("result_ref")
-            and _RUNTIME_RESULT_REF_RE.fullmatch(body["result_ref"]) is not None
         )
     except (ValueError, TypeError):
         return False
@@ -1225,24 +1297,38 @@ async def runtime_result_tool_sources(db, *, agent_id, invocation, content):
         text = bytes(result.payload_bytes).decode(result.encoding or "utf-8")
         if body.get("offset") != offset or body.get("content") != text[offset : offset + limit]:
             return None
-        if body.get("dependency_coverage") != {"complete": True}:
+        if body.get("dependency_coverage") != {"complete": True} or result.source_kind == "a2a_continuation":
             # A compiler gap is recoverable only from the original native producer and publication.
-            if body.get("schema") != "hive.runtime_result_page.v1" or body.get("dependency_coverage") != {
-                "complete": False
-            }:
-                return None
-            canonical = await load_canonical_result_sources(db, result)
-            if not canonical:
-                return None
-            task, _dependencies, _receipts = canonical
-            if (
-                task.parent_agent_id != agent_id
-                or uuid.UUID(task.parent_session_id) != invocation.session_id
-                or not await runtime_result_publication_bound(
-                    db, result=result, agent_id=agent_id, session_id=invocation.session_id, user_id=task.root_user_id
-                )
+            if body.get("schema") != "hive.runtime_result_page.v1" or body.get("dependency_coverage") not in (
+                {"complete": False}, {"complete": True}
             ):
                 return None
+            if result.source_kind == "a2a_continuation":
+                from app.core.source_read_purpose import source_recipient_read
+                from app.models.chat_session import ChatSession
+                from app.models.user import User
+
+                current = await db.get(RuntimeTask, invocation.run_id, populate_existing=True)
+                session = await db.get(ChatSession, invocation.session_id, populate_existing=True)
+                user = await db.get(User, current.root_user_id) if current is not None and current.root_user_id else None
+                if user is None or session is None:
+                    return None
+                with source_recipient_read(session_id=session.id, user_id=user.id):
+                    if not await validate_runtime_result_sources(db, None, result, user=user, session=session):
+                        return None
+            else:
+                canonical = await load_canonical_result_sources(db, result)
+                if not canonical:
+                    return None
+                task, _dependencies, _receipts = canonical
+                if (
+                    task.parent_agent_id != agent_id
+                    or uuid.UUID(task.parent_session_id) != invocation.session_id
+                    or not await runtime_result_publication_bound(
+                        db, result=result, agent_id=agent_id, session_id=invocation.session_id, user_id=task.root_user_id
+                    )
+                ):
+                    return None
         return {
             "source_kind": "runtime_result",
             "source_id": f"{agent_id}\n{invocation.session_id}\n{result.id}",

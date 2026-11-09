@@ -542,6 +542,38 @@ async def install_registry_skill_with_sources(db, *, workspace, agent, skill, ac
         return result
 
 
+async def platform_file_read_source(db, *, agent_id, invocation, content):
+    """Recover only an exact original platform file from an old empty capture."""
+    from app.config import get_settings
+    from app.services.managed_capability_guard import sanitize_managed_credential_guidance
+    from app.services.workspace_resource_authority import open_workspace_file, WorkspaceAuthorityError
+    from app.services.agent_tool_domains.workspace import _is_skill_instruction_file
+    from app.tools.handlers.filesystem import _working_copy_read_result
+
+    if invocation.tool_name != "read_file" or invocation.effect_state != "effect_committed":
+        return None
+    arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
+    path = arguments.get("path")
+    if not isinstance(path, str) or not path.startswith("skills/"):
+        return None
+    selected = (await _platform_skill_sources(db, invocation.tenant_id, agent_id, source_path=path)).get(path)
+    if selected is None:
+        return None
+    root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    try:
+        with open_workspace_file(root, path) as reader:
+            raw = reader.read()
+        rendered = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        if _is_skill_instruction_file(root, root / path):
+            rendered = sanitize_managed_credential_guidance(rendered)
+        if hashlib.sha256(raw).hexdigest() == selected[1] and str(_working_copy_read_result(rendered)) == content:
+            return {"source_kind": "agent_platform_skill_file", "source_id": f"{agent_id}\n{path}\n{selected[0]}",
+                "source_version": selected[1]}
+    except (OSError, UnicodeError, WorkspaceAuthorityError):
+        pass
+    return None
+
+
 async def validate_skill_file_dependency(db, tenant_id, dependency, *, user, runtime_request):
     from fastapi import HTTPException
     from app.config import get_settings

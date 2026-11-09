@@ -249,6 +249,10 @@ async def record_task_read(request, content, *, capture=None):
                     observations.append(
                         {"task_id": str(task.id), "record_hash": _hash(record), "observed_at": observed[1]}
                     )
+                if call.tool_name == "check_async_task" and body.get("result") is None and body.get("receipt") is None:
+                    # This exact authorized SQL observation contains only task
+                    # status/coordinates, not the instruction or result body.
+                    continue
                 current = await _task_sources(db, observed[0] if observed else task, session.id)
                 if current is None:
                     unbound.append("task_read_sources_unbound")

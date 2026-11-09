@@ -93,8 +93,9 @@ async def _recover_read_artifact_selection(db: AsyncSession, *, task: RuntimeTas
     parts = [*writes.values(), *parts]
     by_path = {part["path"]: part for part in metadata.get("artifacts") or []}
     by_path.update({part["path"]: part for part in parts})
+    metadata["declared_artifact_paths"] = paths
     if parts:
-        metadata.update({"declared_artifact_paths": paths, "artifacts": list(by_path.values()),
+        metadata.update({"artifacts": list(by_path.values()),
             "artifact_paths": list(by_path), "artifact_ids": [part["artifact_id"] for part in by_path.values()],
             "artifact_attachment_policy": "model_declared_verified_read_or_write"})
     metadata["rejected_artifact_paths"] = list(dict.fromkeys([
@@ -609,12 +610,15 @@ async def commit_terminal_outcome(
         raise TerminalOutcomeNeedsReconciliation("terminal source block hash mismatch")
     turn_id = outcome.turn_id
     semantic_content = str(result.seal_json.get("semantic_content") or "")
+    metadata = task.metadata_json or {}
+    unattached_deliverables = (set(metadata.get("declared_artifact_paths") or [])
+        & set(metadata.get("rejected_artifact_paths") or [])) - {part["path"] for part in artifact_parts}
     attachment_notice = "部分文件未能附在这条回复中。"
     notices = [SessionEventDraft(
         item_id=uuid.uuid5(outcome.id, "unattached-files"), item_kind="assistant_commentary", lifecycle="completed",
         scope=_round_scope(session_id, turn_id, run_id, result.round_id), actor={"type": "runtime"},
         payload={"content": attachment_notice}, content_hash=_sha256(attachment_notice),
-    )] if (task.metadata_json or {}).get("rejected_artifact_paths") else []
+    )] if unattached_deliverables else []
     events = await append_session_events(
         db,
         tenant_id=tenant_id,

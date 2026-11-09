@@ -118,10 +118,11 @@ export function sessionTitleForUser(
 ): string {
   const source = recordValue(session);
   let rawTitle = String(source.title || source.name || '').trim() || fallback;
-  if (source.session_kind === 'agent_chat' || source.runtime_source === 'delegation_run') {
+  if (source.session_kind === 'agent_chat' || source.runtime_source === 'delegation_run'
+    || source.session_kind === 'delegation_run' || source.runtime_source === 'delegation') {
     const legacyPrefix = rawTitle.startsWith('Delegation: ');
     const names = legacyPrefix ? rawTitle.slice('Delegation: '.length) : rawTitle;
-    rawTitle = (legacyPrefix ? `${delegationLabel}：` : '')
+    rawTitle = (legacyPrefix ? `${delegationLabel}${delegationLabel === 'Delegation' ? ': ' : '：'}` : '')
       + names.split(' ↔ ').map((name) => assistantNameForDisplay(name, assistantLabel)).join(' ↔ ');
   }
   if (!hasSessionBranchIdentity(source)) {

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 DELEGATION_BRIEF_CONTRACT = (
     "Goal / Context / Known facts / Constraints / Evidence needed / Output / Stop condition. "
+    "Write the brief and its headings in the member's language, using localized public employee names (the Chinese UI calls the built-in My Assistant 我的助理); keep internal identifiers out of public prose. "
     "Use this structure for delegated work so the worker can run independently, return a useful "
     "digest, and stop at the right boundary. Do not ask the worker to infer missing scope silently; "
     "name assumptions or ask the parent/user before delegating if the ambiguity changes the outcome. "

@@ -2687,7 +2687,12 @@
           "commands": "执行 {{count}} 条命令",
           "commands_one": "执行 {{count}} 条命令",
           "commands_other": "执行 {{count}} 条命令"
-        }
+        },
+        "elapsedSeconds": "{{seconds}} 秒",
+        "elapsedMinutes": "{{minutes}} 分钟",
+        "elapsedMinutesSeconds": "{{minutes}} 分 {{seconds}} 秒",
+        "memoryUnavailable": "暂时无法读取这部分历史对话，请稍后重试。",
+        "memoryPartial": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"
       },
       "artifacts": {
         "viewSource": "查看源码",
@@ -2869,7 +2874,43 @@
         "running": "执行中",
         "loading": "正在加载命令...",
         "invalid": "无效的 slash 命令。",
-        "failed": "命令执行失败"
+        "failed": "命令执行失败",
+        "description": {
+          "plan": "先制定计划，再开始执行。",
+          "resume": "继续之前的对话。",
+          "rewind": "回到之前的一轮对话。",
+          "branch": "从这里新建一个分支对话。",
+          "turn_steer": "向正在处理的任务补充要求。",
+          "clear": "清理当前上下文，保留对话记录。",
+          "compact": "整理对话上下文，保留重要信息。",
+          "team_create": "创建协作小组。",
+          "task_create": "添加任务或委派工作。",
+          "goal_start": "设定目标并继续推进。",
+          "schedule_create": "安排定时任务。",
+          "schedule_once": "安排一次性任务。",
+          "loop": "在这段对话中定期执行任务。",
+          "mcp": "查看或使用已连接的应用。",
+          "permissions": "查看或调整当前对话的操作权限。",
+          "skill": "查看或使用已安装的技能。",
+          "agent": "选择临时助手协助处理任务。",
+          "workflow": "查看或创建工作流程。",
+          "usage": "查看当前用量。",
+          "context": "查看当前对话使用的资料。"
+        },
+        "category": {
+          "plan": "计划",
+          "session": "对话",
+          "team": "协作",
+          "task": "任务",
+          "goal": "目标",
+          "schedule": "定时任务",
+          "mcp": "应用",
+          "governance": "权限",
+          "skill": "技能",
+          "agent": "助手",
+          "workflow": "流程",
+          "diagnostic": "用量与资料"
+        }
       },
       "slashCommands": {
         "title": "命令",

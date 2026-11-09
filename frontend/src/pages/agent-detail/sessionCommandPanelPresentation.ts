@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 import type { AgentPermissions } from '../../api/domains/agents';
-import type { SessionContextUsage } from '../../api/domains/ccParity';
+import type { CommandIndexEntry, SessionContextUsage } from '../../api/domains/ccParity';
 import type {
   SessionCommandCheckpoint, SessionCommandControlState, SessionCommandControlType, SessionPermissionMode,
 } from './AgentChatSection';
@@ -15,6 +15,16 @@ export interface ReadOnlySessionCommandPanelProps {
   };
   agentPermissions?: AgentPermissions | null;
   sessionPermissionMode?: SessionPermissionMode;
+}
+
+export function commandCategoryForDisplay(command: CommandIndexEntry, t: TFunction): string {
+  return t(`agent.chat.commands.category.${command.category}`, t('agent.chat.commands.open', 'Commands'));
+}
+
+export function commandDescriptionForDisplay(command: CommandIndexEntry, t: TFunction): string {
+  return t(`agent.chat.commands.description.${command.canonical_name || command.name}`,
+    command.source === 'builtin' || command.source === 'diagnostic'
+      ? commandCategoryForDisplay(command, t) : command.description || commandCategoryForDisplay(command, t));
 }
 
 function record(value: unknown): Record<string, unknown> {

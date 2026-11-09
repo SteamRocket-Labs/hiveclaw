@@ -70,6 +70,20 @@ async def test_legacy_file_does_not_block_csv_report_or_next_edit(
 
     n = native_workspace
     from app.models.capability_policy import CapabilityPolicy
+    from app.kernel.engine import _normalize_tool_result_for_llm
+
+    # Omitted source paths belong to the model projection; the member receipt
+    # now carries the Chinese explanation without those internal paths.
+    execute = type(n.service).execute
+    calculation_results = []
+
+    async def observe_execution(service, tool_name, *args, **kwargs):
+        result = await execute(service, tool_name, *args, **kwargs)
+        if service is n.service and tool_name == "execute_code":
+            calculation_results.append(_normalize_tool_result_for_llm(result))
+        return result
+
+    n.monkeypatch.setattr(type(n.service), "execute", observe_execution)
 
     async with owner_sessionmaker() as db:
         db.add(CapabilityPolicy(tenant_id=n.tenant, capability="workspace.code.execute",
@@ -93,7 +107,8 @@ async def test_legacy_file_does_not_block_csv_report_or_next_edit(
         "language": "python", "code": "import csv\nprint(sum(int(r['sales']) for r in csv.DictReader(open(" + repr(csv_path.removeprefix("workspace/")) + "))))"},
         session=session, run=run, command="Compute total sales from the uploaded CSV", include_history=True)
     assert any(line.strip() == "42" for line in output.splitlines()), output
-    calculation_output = output
+    calculation_output = calculation_results[-1]
+    assert "部分文件暂时无法读取" in output and legacy_path not in output, output
     path, body = "workspace/sales-analysis.md", "# Sales report\nTotal sales: 42\n"
     output, _ = await memory_call(n, app_user_sessionmaker, "write_file", {"path": path, "content": body},
         session=session, run=run, command=f"Write and deliver {path}", include_history=True)

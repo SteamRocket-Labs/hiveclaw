@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 
 import { ccParityApi, type CommandIndexEntry } from '../../api/domains/ccParity';
 import { filterCommandIndex } from './CommandPalette';
+import { commandCategoryForDisplay, commandDescriptionForDisplay } from './sessionCommandPanelPresentation';
 import { slashCommandQuery } from './slashCommand';
 
 interface SlashCommandMenuProps {
@@ -126,10 +127,10 @@ export default function SlashCommandMenu({
                     fontSize: '12px',
                   }}
                 >
-                  {command.description || command.category}
+                  {commandDescriptionForDisplay(command, t)}
                 </span>
                 <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', textTransform: 'uppercase' }}>
-                  {command.category}
+                  {commandCategoryForDisplay(command, t)}
                 </span>
               </span>
             </button>

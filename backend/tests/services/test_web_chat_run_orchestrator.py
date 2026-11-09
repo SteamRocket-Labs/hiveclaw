@@ -1247,6 +1247,7 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
         "message": message,
         # R7a separates safe delivery from a retry that can succeed: quota
         # must be fixed before the same request can help.
+        "retry_safe": True,
         "retryable": False,
     }
     assert order == ["commit"]
@@ -1372,6 +1373,7 @@ async def test_retry_safe_typed_rate_limit_failure_payload_is_user_retryable():
     )
 
     assert finalize_calls[0]["failure"]["retryable"] is True
+    assert finalize_calls[0]["failure"]["retry_safe"] is True
     assert finalize_calls[0]["failure"]["delivery_state"] == "rejected"
     assert finalize_calls[0]["failure"]["requires_user_decision"] is True
     assert finalize_calls[0]["failure"]["failure_code"] == "rate_limited"
@@ -1412,6 +1414,7 @@ async def test_untyped_failure_payload_is_not_retryable_and_needs_no_user_decisi
         "requires_user_decision": False,
         "terminal_reason": TerminalReason.TOOL_BUDGET.value,
         "message": message,
+        "retry_safe": False,
         "retryable": False,
     }
 

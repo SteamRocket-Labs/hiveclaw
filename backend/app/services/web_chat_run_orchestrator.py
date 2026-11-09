@@ -1634,6 +1634,7 @@ def _terminal_failure_payload(result: Any, status: str, metadata: dict[str, Any]
         "requires_user_decision": requires_user_decision,
         "terminal_reason": metadata.get("terminal_reason"),
         "message": message or None,
+        "retry_safe": delivery_state == "rejected",
         "retryable": bool(getattr(result, "failure_retryable", False)),
     }
 

@@ -819,7 +819,7 @@ def _user_action(
             "impact": "可能产生不可逆影响" if destructive else "可撤销或只读操作",
             "details": _safe_argument_details(data.get("arguments")),
         }
-    if item_type == "error" and bool(data.get("retryable")):
+    if item_type == "error" and bool(data.get("retry_safe", data.get("retryable"))):
         return {
             "kind": "retry_turn",
             "label": "重试本轮",

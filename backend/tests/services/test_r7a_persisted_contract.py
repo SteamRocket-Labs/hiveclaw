@@ -144,6 +144,7 @@ async def test_delegated_provider_400_is_recorded_and_read_by_parent_as_not_retr
         event = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == run,
             ChatTranscriptEvent.event_type == "runtime_failure.recorded"))
         assert event.metadata_json["v2_payload"]["retryable"] is False
+        assert event.metadata_json["v2_payload"]["retry_safe"] is True
         assert event.metadata_json["v2_payload"]["failure_code"] == "provider_bad_request"
         outbox = await db.get(RuntimeNotificationOutbox, outbox_id)
         assert outbox.terminal_status == "failed"

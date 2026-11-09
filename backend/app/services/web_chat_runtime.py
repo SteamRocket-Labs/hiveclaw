@@ -4470,6 +4470,7 @@ async def _append_web_chat_runtime_failure_event(
     payload: dict[str, Any] = {
         "status": status,
         "terminal_reason": str(failure.get("terminal_reason") or status),
+        "retry_safe": failure.get("delivery_state") == "rejected",
         "retryable": bool(failure.get("retryable")),
         "requires_user_decision": bool(failure.get("requires_user_decision")),
         "content": message,
@@ -4517,6 +4518,7 @@ def _runtime_failure_payload_from_terminal_metadata(
         "requires_user_decision": bool(metadata.get("requires_user_decision")),
         "terminal_reason": str(metadata.get("terminal_reason") or "failed"),
         "message": "",
+        "retry_safe": metadata.get("delivery_state") == "rejected",
         "retryable": bool(metadata.get("retryable")),
     }
 

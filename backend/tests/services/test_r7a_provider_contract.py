@@ -148,11 +148,13 @@ async def test_kernel_request_preserves_tool_groups_after_withholding(monkeypatc
 @pytest.mark.parametrize("status,kind,retryable", [(400, "provider_bad_request", False),
     (429, "rate_limited", True), (500, "unknown", True), (503, "unknown", True), (408, "timeout", True),
     (401, "auth_or_permission", False), (403, "auth_or_permission", False),
-    (404, "model_not_found", False), (402, "quota_exhausted", False), (529, "rate_limited", True)])
-def test_typed_status_precedes_misleading_error_text(status, kind, retryable):
+    (404, "unknown", False), (402, "quota_exhausted", False), (529, "rate_limited", True)])
+def test_typed_status_ignores_bare_numbers_in_provider_body(status, kind, retryable):
     from app.services.llm_error_policy import classify_llm_error
 
-    classification = classify_llm_error(LLMError("HTTP 400: quota exhausted; timeout; rate limit",
+    # Round 2 preserves semantic body matches; only bare status numbers are
+    # ignored when a typed status exists. An opaque 404 is not a missing model.
+    classification = classify_llm_error(LLMError("opaque failure references 400 401 403 404 429 529",
         delivery_state="rejected", http_status=status))
     assert classification.kind == kind
     assert classification.retryable is retryable

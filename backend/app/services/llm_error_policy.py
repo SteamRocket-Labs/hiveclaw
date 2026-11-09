@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Literal
 
 
@@ -31,8 +30,8 @@ class LLMErrorClassification:
 def classify_llm_error(exc: Exception) -> LLMErrorClassification:
     """Classify model-provider failures without hiding account/config state.
 
-    A typed HTTP status owns the classification; provider text is a fallback
-    only when that status is unavailable. Retryability is separate from delivery.
+    Preserve provider body explanations, but never let body text promote a
+    deterministic typed rejection into a transient failure. Delivery is separate.
     """
     if getattr(exc, "http_status", None) == 402:
         return LLMErrorClassification(
@@ -41,10 +40,11 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
             requires_user_decision=True,
         )
     status = getattr(exc, "http_status", None)
-    msg = str(exc) if status is None else ""
+    msg = str(exc)
     lower = msg.lower()
+    transient = status is None or not 400 <= status < 500 or status in {408, 429}
 
-    if (
+    if status != 400 and (
         "insufficient balance" in lower
         or "insufficient_balance" in lower
         or "balance is insufficient" in lower
@@ -57,7 +57,7 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
             requires_user_decision=True,
         )
 
-    if (
+    if status != 400 and (
         "quota" in lower
         or "insufficient_quota" in lower
         or "quotaexhausted" in lower
@@ -71,7 +71,7 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
             requires_user_decision=True,
         )
 
-    if status == 529 or "529" in msg or "overloaded" in lower:
+    if status == 529 or (transient and ((status is None and "529" in msg) or "overloaded" in lower)):
         return LLMErrorClassification(
             kind="rate_limited",
             user_message="[LLM Error] AI 模型服务方暂时过载，已重试仍失败，请稍后重试。",
@@ -81,11 +81,13 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
 
     if (
         status == 429
-        or "429" in msg
-        or "too many requests" in lower
-        or "rate_limit" in lower
-        or "rate limit" in lower
-        or "速率限制" in msg
+        or (transient and (
+            (status is None and "429" in msg)
+            or "too many requests" in lower
+            or "rate_limit" in lower
+            or "rate limit" in lower
+            or "速率限制" in msg
+        ))
     ):
         return LLMErrorClassification(
             kind="rate_limited",
@@ -108,13 +110,12 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
         )
 
     if (
-        status == 404
-        or "model not exist" in lower
+        "model not exist" in lower
         or "model_not_found" in lower
         or "model not found" in lower
         or "model does not exist" in lower
         or ("the model" in lower and "does not exist" in lower)
-        or "404" in msg
+        or (status is None and "404" in msg)
     ):
         return LLMErrorClassification(
             kind="model_not_found",
@@ -124,8 +125,7 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
 
     if (
         status in {401, 403}
-        or "401" in msg
-        or "403" in msg
+        or (status is None and ("401" in msg or "403" in msg))
         or "authentication" in lower
         or "unauthorized" in lower
         or "invalid api key" in lower
@@ -137,21 +137,21 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
             requires_user_decision=True,
         )
 
-    if status == 400 or "400" in msg or "bad request" in lower or "invalid_request" in lower:
+    if status == 400 or (status is None and "400" in msg) or "bad request" in lower or "invalid_request" in lower:
         return LLMErrorClassification(
             kind="provider_bad_request",
             user_message="[LLM Error] AI 模型供应商拒绝了当前请求，请检查模型名称、参数或消息格式。",
             requires_user_decision=True,
         )
 
-    if status == 408 or "timeout" in lower or "timed out" in lower:
+    if status == 408 or (transient and ("timeout" in lower or "timed out" in lower)):
         return LLMErrorClassification(
             kind="timeout",
             user_message="[LLM Error] AI 模型服务方响应超时，请稍后重试。",
             retryable=True,
         )
 
-    if "connection" in lower or "connect" in lower:
+    if transient and ("connection" in lower or "connect" in lower):
         return LLMErrorClassification(
             kind="connection",
             user_message="[LLM Error] 连接 AI 模型服务方失败，请稍后重试。",
@@ -160,9 +160,8 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
 
     return LLMErrorClassification(
         kind="unknown",
-        user_message="[LLM Error] AI 模型调用异常，请稍后重试。" + (f"({msg})" if msg else ""),
-        retryable=bool((status is not None and 500 <= status < 600)
-            or (status is None and re.search(r"\bHTTP\s+5\d\d\b", msg, re.IGNORECASE))),
+        user_message=f"[LLM Error] AI 模型调用异常，请稍后重试。({msg})",
+        retryable=(500 <= status < 600 if status is not None else getattr(exc, "delivery_state", None) == "rejected"),
     )
 
 

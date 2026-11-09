@@ -32,7 +32,10 @@ def test_history_failure_recovers_nested_facts_without_overriding_top_level():
         assert item["item_data"]["code"] == payload["failure_code"]
         assert item["item_data"]["retryable"] is payload["retryable"]
         assert ((item.get("user_action") or {}).get("kind") == "retry_turn") is retry
-        assert ("可以安全重试" in item["user_summary"]) is payload["retryable"]
+        # Final-round review: unknown delivery may already have reached the provider,
+        # so the copy promises a safe retry only for transient failures with known delivery.
+        assert ("可以安全重试" in item["user_summary"]) is (
+            payload["retryable"] and payload.get("delivery_state") != "unknown")
         member = build_thread_item(row, audience="user")
         assert member.get("user_action") == item.get("user_action")
         # History recovery must retain the existing public-code disclosure rule.

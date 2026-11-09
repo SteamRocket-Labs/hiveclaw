@@ -797,7 +797,8 @@ def _user_summary(
         code = _text(data.get("code") or data.get("error_code") or data.get("failure_code"))
         if event_type == "runtime_failure" and code == "auth_or_permission":
             return "模型服务的身份验证或权限检查失败。请联系管理员检查 API Key 和模型访问权限，修复后再重试。"
-        if bool(data.get("retryable")):
+        # Unknown delivery may already have reached the provider, so never promise a safe retry.
+        if bool(data.get("retryable")) and data.get("delivery_state") != "unknown":
             return "连接或服务暂时不可用，本次任务可以安全重试。"
         return "任务遇到问题，已停止继续执行。"
     return "运行状态已更新。"

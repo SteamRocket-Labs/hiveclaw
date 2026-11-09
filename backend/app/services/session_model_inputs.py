@@ -609,6 +609,73 @@ async def _expired_permission_result_bound(db, *, invocation, event, content):
     )
 
 
+def _body_free_tool_feedback_bound(*, invocation, event, model, payload, content):
+    """Recognize exact native feedback bytes, never an arbitrary failed read."""
+    from types import SimpleNamespace
+
+    if (model is None or event.result_id != model.id or event.content_hash != _hash(content)
+        or payload.get("content_or_error_ref") != invocation.receipt_ref):
+        return False
+    if invocation.effect_state == "prepared_not_started" and payload.get("outcome") == "aborted":
+        try:
+            return (invocation.receipt_ref == f"session-permission-batch-abort:{invocation.provider_tool_use_id}"
+                and json.loads(content) == {"schema": "hive.tool_batch_abort.v1", "status": "aborted",
+                    "reason_code": "session_permission_batch_suspended_before_sibling_start", "retryable": True,
+                    "provider_tool_use_id": invocation.provider_tool_use_id})
+        except (ValueError, TypeError):
+            return False
+    if (invocation.effect_state != "failed" or payload.get("outcome") != "failed"
+        or invocation.receipt_ref != f"tool-frame:{_hash(content)}"):
+        return False
+    tool = invocation.tool_name
+    arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
+    candidates = []
+    if tool in {"read_file", "edit_file"}:
+        from app.services.agent_tool_domains.workspace import _workspace_error
+
+        candidates.append(_workspace_error(tool, "not_found", f"File not found: {arguments.get('path')}",
+            actionable_hint=("Check the path or use glob_search/list_files to discover the correct file first."
+                if tool == "read_file" else None)))
+        candidates.extend(_workspace_error(tool, "auth_or_permission", message) for message in (
+            "Access denied for this resource owner.", "Access denied for this path."))
+        if tool == "edit_file":
+            candidates.append(_workspace_error(tool, "bad_arguments",
+                f"Could not find the target text in {arguments.get('path')}.",
+                actionable_hint="Read the file first and provide a unique exact old_text match."))
+    if tool == "check_async_task":
+        from app.services.agent_tool_domains.messaging import _normalize_messaging_result
+
+        candidates.extend(_normalize_messaging_result(tool, message) for message in (
+            "❌ RuntimeTask not found", "❌ This task does not belong to the current agent",
+            "❌ Please provide exactly one of task_id or message_id"))
+    try:
+        _prefix, marker, encoded = content.rpartition("<tool_error>")
+        body = json.loads(encoded.removesuffix("</tool_error>")) if marker else {}
+        if tool in {"browser_manage", "browser_observe"} and body.get("reason_code") in {
+            "browser_device_not_configured", "browser_runtime_frame_unavailable", "browser_arguments_invalid",
+            "browser_state_unavailable", "browser_revision_conflict",
+        } and body.get("effect") in {"not_started", "unknown"}:
+            from app.services.browser_control import BrowserControlError
+            from app.tools.handlers.browser import _error
+
+            revision, epoch = body.get("current_revision"), body.get("current_epoch")
+            if body["reason_code"] != "browser_revision_conflict" or (
+                type(revision) is int and type(epoch) is int and revision >= 0 and epoch >= 0
+            ):
+                candidates.append(str(_error(SimpleNamespace(tool_name=tool), BrowserControlError(
+                    body["reason_code"], 503, effect=body["effect"], current_revision=revision, current_epoch=epoch))))
+        if tool == "reconcile_memory_write" and body.get("reason_code") == "explicit_memory_operation_required":
+            from app.services.content_input_receipts import ContentInputReceiptError
+            from app.tools.handlers.memory import _memory_authority_error
+
+            candidates.append(_memory_authority_error(tool, ContentInputReceiptError(
+                "explicit_memory_operation_required", "Choose a retained operation before retrying or cancelling.")))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    # Reconstruction checks the entire envelope, including every diagnostic field.
+    return content in candidates
+
+
 async def permission_abort_result_bound(db, *, invocation, event, content):
     """Prove a native approved call stopped before its durable effect fence."""
     from app.models.runtime_task import RuntimeTask
@@ -902,6 +969,8 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             "source_version": tool_result_source_hash(payload),
         },
     ]
+    if _body_free_tool_feedback_bound(invocation=invocation, event=event, model=model, payload=payload, content=content):
+        return _unique_dependencies(dependencies), inherited_complete
     # A runtime refusal contains no read source; retain its settled feedback.
     if (invocation.effect_state == "prepared_not_started" and payload.get("outcome") in {"denied", "unavailable"}
         and payload.get("content_or_error_ref") == invocation.receipt_ref
@@ -1349,7 +1418,12 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
                     return _unique_dependencies([*dependencies, *bound["sources"]]), inherited_complete and (
                         bound == pointer and not bound["unbound"] and bool(bound["sources"])
                     )
-                # A verified empty Skill inventory carries no source leaf.
+                # Older additional reads omitted platform files from their inventory.
+                from app.services.skill_source_receipts import platform_file_read_source
+
+                source = await platform_file_read_source(db, agent_id=agent_id, invocation=invocation, content=content)
+                if source is not None:
+                    return _unique_dependencies([*dependencies, source]), inherited_complete
             except (ContentInputReceiptError, ValueError, TypeError, AttributeError):
                 return _unique_dependencies(dependencies), False
     if invocation.tool_name in {"load_skill", "run_skill_tool", "tool_search"}:

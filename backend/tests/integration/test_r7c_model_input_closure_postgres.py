@@ -310,3 +310,340 @@ async def test_owned_child_status_does_not_import_its_unknown_instruction(
         assert marker not in wire
         if tool == "check_async_task":
             assert value in [message.get("content") for message in snapshot["wire_request"]["messages"]]
+
+
+async def _round2_call(n, db_factory, tool, arguments, *, result_projection=None):
+    from app.kernel.engine import _tool_execution_evidence
+    from app.services.session_tool_runtime import mark_tool_effect_started
+    from app.services.web_chat_runtime import _persist_tool_call
+    from tests.integration.test_m1g24_workspace_artifact_authority_postgres import _admitted_write_messages, _prepare_write
+
+    async with db_factory() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        call, _, turn = await _prepare_write(db, n, tool_name=tool, arguments=arguments,
+            messages=await _admitted_write_messages(db, n))
+    trace = {}
+    async def start(payload):
+        async with db_factory() as db:
+            await pin_rls_tenant_context(db, n.tenant)
+            await mark_tool_effect_started(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
+                invocation_id=call.id, effective_arguments=payload["arguments"])
+            await db.commit()
+    raw = await n.service.execute(tool, arguments, agent_id=n.agent, user_id=n.user,
+        session_id=str(n.session), runtime_task_id=str(n.run), turn_id=turn,
+        tool_call_id=call.provider_tool_use_id, emit_runtime_hooks=False, trace_metadata_sink=trace,
+        pre_effect_callback=start)
+    value = str(raw)
+    if result_projection is not None:
+        from app.services.session_model_inputs import _hash
+        value = result_projection(value)
+        trace["tool_execution_frame"] = {**trace["tool_execution_frame"], "output_hash": _hash(value)}
+    await _persist_tool_call(agent_id=n.agent, user_id=n.user, session_id=str(n.session), data={
+        "name": tool, "args": arguments, "status": "done", "result": value,
+        "tool_call_id": call.provider_tool_use_id, "provider_request_id": call.provider_request_id,
+        "runtime_task_id": str(n.run), "tool_execution_evidence": _tool_execution_evidence(
+            tool_name=tool, tool_args=arguments, trace_metadata=trace, machine_status="settled")})
+    return call, value, turn
+
+
+async def _round2_request(db, n, call, turn, *, messages=None, source_index=None):
+    from app.kernel.engine import _dicts_to_llm_messages
+    from app.services.session_model_round import prepare_model_request
+    from app.services.session_semantic_history import load_session_semantic_history
+    from app.services.web_chat_runtime import conversation_from_history_messages
+
+    if messages is None:
+        history = await load_session_semantic_history(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session)
+        messages = _dicts_to_llm_messages(conversation_from_history_messages(history.messages))
+    request = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
+        run_id=n.run, turn_id=turn, round_index=2, messages=messages, tools=[], provider="local",
+        model="synthetic-no-provider")
+    row = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
+    snapshot = row.model_request_snapshot_json
+    entry = (snapshot["input_bindings"]["messages"][source_index] if source_index is not None else
+        next(item for item in snapshot["input_bindings"]["messages"]
+            if item.get("source_ref") == f"session-tool-result:{call.id}"))
+    return entry, snapshot["wire_request"]
+
+
+@pytest.mark.parametrize("tool,arguments", [
+    ("browser_manage", {"action": "start", "expected_revision": 0, "expected_epoch": 0}),
+    ("browser_observe", {}),
+    ("edit_file", {"path": "workspace/r7c-edit.md", "old_text": "MISSING", "new_text": "NEW"}),
+    ("read_file", {"path": "workspace/r7c-missing.md"}),
+    ("reconcile_memory_write", {"action": "retry"}),
+    ("check_async_task", {"task_id": "00000000-0000-0000-0000-000000000001"}),
+])
+async def test_round2_native_failed_feedback_reaches_next_request(
+    native_workspace, app_user_sessionmaker, tool, arguments,  # noqa: F811
+):
+    from app.models.capability_policy import CapabilityPolicy
+    from app.models.session_v2 import SessionToolInvocation
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.session_semantic_history import _event_payload
+    from tests.integration.test_m1g28_runtime_source_reads_postgres import _create
+
+    n = native_workspace
+    await _create(n, "workspace/r7c-edit.md", "AUTHORIZED_EDIT_INPUT")
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        for capability in ("workspace.file.read", "agent.memory.write", "computer.browser.control", "computer.browser.read"):
+            db.add(CapabilityPolicy(tenant_id=n.tenant, capability=capability, allowed=True, requires_approval=False))
+        await db.commit()
+    call, value, turn = await _round2_call(n, app_user_sessionmaker, tool, arguments)
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        invocation = await db.get(SessionToolInvocation, call.id)
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        if tool == "read_file":
+            # Production's older settlement retained the unavailable workspace
+            # pointer, before the native no-body denial pointer was forwarded.
+            metadata = {"workspace_input_receipt": {"status": "unavailable",
+                "reason_code": "workspace_input_capture_unavailable"}}
+            event.metadata_json = {**event.metadata_json, "v2_payload": {
+                **_event_payload(event), "metadata": metadata}}
+            await db.commit()
+        assert invocation.effect_state == "failed", (value, invocation.effect_state)
+        assert _event_payload(event)["outcome"] == "failed", value
+        entry, wire = await _round2_request(db, n, call, turn)
+        assert entry["status"] == "bound", json.dumps({"entry": entry, "value": value,
+            "metadata": _event_payload(event).get("metadata")}, ensure_ascii=False)
+        assert value in [message.get("content") for message in wire["messages"]]
+
+
+@pytest.mark.parametrize("tool", ["list_files", "task_list"])
+@pytest.mark.parametrize("extra_body", [False, True])
+async def test_round2_unstarted_batch_abort_is_body_free(
+    native_workspace, app_user_sessionmaker, tool, extra_body,  # noqa: F811
+):
+    from app.services.session_tool_runtime import complete_tool_invocation
+    from tests.integration.test_m1g24_workspace_artifact_authority_postgres import _admitted_write_messages, _prepare_write
+
+    n = native_workspace
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        call, _, turn = await _prepare_write(db, n, tool_name=tool, arguments={},
+            messages=await _admitted_write_messages(db, n))
+        body = {"schema": "hive.tool_batch_abort.v1", "status": "aborted",
+            "reason_code": "session_permission_batch_suspended_before_sibling_start", "retryable": True,
+            "provider_tool_use_id": call.provider_tool_use_id}
+        if extra_body:
+            body["partial_read"] = "R7C_UNVERIFIED_PARTIAL_READ"
+        value = json.dumps(body, sort_keys=True, separators=(",", ":"))
+        await complete_tool_invocation(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
+            invocation_id=call.id, provider_result_content=value, execution_evidence={
+                "schema": "hive.tool_execution_evidence.v1", "status": "aborted", "retryable": True,
+                "pre_effect_fence_ref": f"session-permission-batch-abort:{call.provider_tool_use_id}",
+                "tool_decision": None, "execution_frame": None}, effective_arguments={})
+        await db.commit()
+        assert call.effect_state == "prepared_not_started" and call.permission_state == "not_required"
+        entry, wire = await _round2_request(db, n, call, turn)
+        assert entry["status"] == ("withheld" if extra_body else "bound"), entry
+        assert "R7C_UNVERIFIED_PARTIAL_READ" not in json.dumps(wire)
+
+
+@pytest.mark.parametrize("alteration", [None, "changed_bytes", "missing_proof"])
+async def test_round2_platform_skill_read_keeps_existing_source_binding(
+    native_workspace, app_user_sessionmaker, alteration,  # noqa: F811
+):
+    from pathlib import Path
+    from app.models.capability_policy import CapabilityPolicy
+    from app.models.session_v2 import SessionToolInvocation
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.session_semantic_history import _event_payload
+
+    n = native_workspace
+    path = "skills/mcp-installer/SKILL.md"
+    target = n.root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes((Path(__file__).resolve().parents[2] / "agent_template" / path).read_bytes())
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        db.add(CapabilityPolicy(tenant_id=n.tenant, capability="workspace.file.read", allowed=True, requires_approval=False))
+        await db.commit()
+    call, value, turn = await _round2_call(n, app_user_sessionmaker, "read_file", {"path": path})
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        invocation = await db.get(SessionToolInvocation, call.id)
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        pointer = _event_payload(event)["metadata"]["skill_input_receipt"]
+        assert invocation.effect_state == "effect_committed", value
+        assert pointer["status"] == "verified", pointer
+        if alteration == "changed_bytes":
+            target.write_text("R7C_CHANGED_SKILL_BYTES")
+        if alteration == "missing_proof":
+            from uuid import UUID
+            proof = await db.get(InvocationSpan, UUID(pointer["evidence_ref"].split(":", 1)[1]))
+            await db.delete(proof)
+            await db.commit()
+        entry, wire = await _round2_request(db, n, call, turn)
+        assert entry["status"] == ("withheld" if alteration else "bound"), (entry, pointer)
+        assert (value in [message.get("content") for message in wire["messages"]]) is (not alteration)
+
+
+@pytest.mark.parametrize("alteration", [None, "other_member", "other_agent", "unpublished", "unknown_input", "unreadable_input"])
+@pytest.mark.parametrize("historical_page", [False, True])
+async def test_round2_published_child_continuation_is_bound_only_to_its_parent(
+    native_workspace, app_user_sessionmaker, owner_sessionmaker, alteration, historical_page,  # noqa: F811
+):
+    from types import SimpleNamespace
+    from uuid import uuid4
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_result import RuntimeResultObject
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.services.llm_client import LLMMessage
+    from app.services.session_model_round import prepare_model_request, commit_model_response
+    from app.services.session_terminal_outcome import prepare_and_seal_run_outcome, commit_terminal_outcome
+
+    n = native_workspace
+    child_agent, child_session, delegated_run, continuation = (uuid4() for _ in range(4))
+    marker = "R7C_CANONICAL_CHILD_CONTINUATION_ANSWER"
+    async with owner_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        db.add(Agent(id=child_agent, tenant_id=n.tenant, name="Continuation worker", creator_id=n.user,
+            owner_user_id=n.user, sponsor_user_id=n.user))
+        await db.flush()
+        db.add(RuntimeTask(id=delegated_run, tenant_id=n.tenant, task_type="delegation", status="completed",
+            parent_agent_id=n.agent, child_agent_id=child_agent, parent_session_id=str(n.session),
+            child_session_id=str(child_session), root_user_id=n.user, root_session_id=str(n.session),
+            root_runtime_task_id=n.run, delegation_chain_json=[str(n.agent)], prompt="Original delegated work"))
+        await db.flush()
+        db.add(ChatSession(id=child_session, tenant_id=n.tenant, agent_id=child_agent, user_id=n.user,
+            source_channel="agent", session_kind="delegation_run", actor_type="agent", runtime_source="delegation",
+            peer_agent_id=n.agent, parent_session_id=n.session, root_session_id=n.session,
+            runtime_task_id=delegated_run, audience_kind="private"))
+        await db.flush()
+        db.add(RuntimeTask(id=continuation, tenant_id=n.tenant, task_type="a2a_continuation", status="running",
+            parent_agent_id=child_agent, child_agent_id=child_agent, parent_session_id=str(child_session),
+            child_session_id=str(child_session), root_user_id=n.user, root_session_id=str(n.session),
+            root_runtime_task_id=continuation, delegation_chain_json=[str(n.agent)], prompt="Continue the delegated work",
+            metadata_json={"turn_id": f"turn-{continuation.hex}"}))
+        await db.flush()
+        from app.services.runtime_root_ledger import register_runtime_task_root_item, RuntimeRootIntentSpec
+        await register_runtime_task_root_item(db, task=await db.get(RuntimeTask, continuation),
+            intent=RuntimeRootIntentSpec(intent_key=f"continuation:{continuation}", work_type="a2a_continuation",
+                target_ref=str(child_session)))
+        await db.commit()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        turn = f"turn-{continuation.hex}"
+        from app.runtime.context_candidates import ContextMessageOrigin
+        guidance = "Complete the requested delegated work using authorized sources."
+        context = LLMMessage(role="system", content=guidance, context_origin=ContextMessageOrigin.capture(
+            kind="frozen_prompt", role="system", content=guidance, unbound=()))
+        request = await prepare_model_request(db, tenant_id=n.tenant, agent_id=child_agent, session_id=child_session,
+            run_id=continuation, turn_id=turn, round_index=1, messages=[context], tools=[], provider="local",
+            model="synthetic-no-provider")
+        await commit_model_response(db, tenant_id=n.tenant, agent_id=child_agent, session_id=child_session,
+            run_id=continuation, turn_id=turn, round_index=1, provider_request_id=request,
+            response={"content": marker, "finish_reason": "stop"})
+        model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
+        assert model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] is True
+        outcome = await prepare_and_seal_run_outcome(db, tenant_id=n.tenant, agent_id=child_agent,
+            session_id=child_session, run_id=continuation, turn_id=turn, terminal_result_id=model.id)
+        await commit_terminal_outcome(db, tenant_id=n.tenant, agent_id=child_agent, session_id=child_session,
+            run_id=continuation, outcome_id=outcome.id)
+        from app.services.web_chat_runtime import _apply_terminal_task_update_and_settle
+        task = await db.get(RuntimeTask, continuation)
+        await _apply_terminal_task_update_and_settle(db, task, status="completed", result_summary=marker,
+            metadata_json=dict(task.metadata_json or {}), terminal_source="session_terminal_outcome.commit")
+        await db.commit()
+        result = await db.scalar(select(RuntimeResultObject).where(RuntimeResultObject.source_run_id == str(continuation)))
+        assert result is not None and result.source_kind == "a2a_continuation"
+        publication = await db.scalar(select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.result_object_id == result.id))
+        assert publication.parent_agent_id == n.agent and publication.parent_session_id == n.session
+        assert publication.parent_user_id == n.user
+        ref = publication.result_ref
+    def old_page(value):
+        return json.dumps({**json.loads(value), "dependency_coverage": {"complete": False}})
+    call, value, turn = await _round2_call(n, app_user_sessionmaker, "read_runtime_result", {"result_ref": ref},
+        result_projection=old_page if historical_page else None)
+    assert json.loads(value)["status"] == "ok" and marker in value, value
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        if alteration == "unpublished":
+            await db.delete(await db.get(RuntimeNotificationOutbox, publication.id))
+        if alteration in {"unknown_input", "unreadable_input"}:
+            from app.services.session_model_inputs import _hash
+            child_model = await db.get(SessionModelResult, model.id)
+            bindings = child_model.model_request_snapshot_json["input_bindings"]
+            if alteration == "unreadable_input":
+                import hashlib
+                from app.models.organization_identity import ContentInputReceipt
+                receipt = ContentInputReceipt(id=uuid4(), tenant_id=n.tenant, carrier_kind="workspace_artifact",
+                    carrier_ref=f"{n.agent}\n{n.path}", revision=1,
+                    content_sha256=hashlib.sha256(n.target.read_bytes()).hexdigest(), dependencies_json=[])
+                db.add(receipt)
+                bindings = {**bindings, "dependencies": [{"source_kind": "workspace_artifact",
+                    "source_id": str(receipt.id), "source_version": receipt.content_sha256}]}
+            snapshot = {**child_model.model_request_snapshot_json, "input_bindings": {
+                **bindings, "dependency_coverage": {"complete": alteration != "unknown_input"}}}
+            child_model.model_request_snapshot_json, child_model.model_request_hash = snapshot, _hash(snapshot)
+        await db.commit()
+        reader, messages = n, None
+        if alteration in {"other_member", "other_agent"}:
+            agent = n.agent
+            if alteration == "other_agent":
+                agent = uuid4()
+                async with owner_sessionmaker() as owner:
+                    owner.add(Agent(id=agent, tenant_id=n.tenant, name="Other reader", creator_id=n.user, owner_user_id=n.user))
+                    await owner.commit()
+            session, run = uuid4(), uuid4()
+            user = n.foreign if alteration == "other_member" else n.user
+            if alteration == "other_member":
+                from app.models.security_audit import ResourcePermission
+                async with owner_sessionmaker() as owner:
+                    owner.add(ResourcePermission(tenant_id=n.tenant, principal_type="user", principal_id=user,
+                        resource_type="agent", resource_id=agent, actions=["execute"], effect="allow"))
+                    await owner.commit()
+            db.add(ChatSession(id=session, tenant_id=n.tenant, agent_id=agent, user_id=user, audience_kind="private"))
+            await db.flush()
+            db.add(RuntimeTask(id=run, tenant_id=n.tenant, task_type="web_chat_turn", status="running",
+                parent_agent_id=agent, child_agent_id=agent, parent_session_id=str(session), child_session_id=str(session),
+                root_user_id=user, root_session_id=str(session), root_runtime_task_id=run,
+                prompt="Inspect my own work", metadata_json={"turn_id": f"turn-{run.hex}"}))
+            await db.commit()
+            reader = SimpleNamespace(**{**vars(n), "agent": agent, "user": user, "session": session, "run": run})
+            original_page = value
+            call, value, turn = await _round2_call(reader, app_user_sessionmaker, "read_runtime_result",
+                {"result_ref": ref}, result_projection=lambda _value: original_page)
+        entry, wire = await _round2_request(db, reader, call, turn, messages=messages,
+            source_index=0 if messages is not None else None)
+        assert entry["status"] == ("withheld" if alteration else "bound"), entry
+        assert (marker in json.dumps(wire)) is (not alteration)
+
+
+@pytest.mark.parametrize("tool,arguments", [
+    ("edit_file", {"path": "workspace/r7c-missing.md", "old_text": "OLD", "new_text": "NEW"}),
+    ("read_file", {"path": "workspace/r7c-missing.md"}),
+    ("browser_observe", {}),
+])
+@pytest.mark.parametrize("shape", ["extra_field", "diagnostic_bytes"])
+async def test_round2_failed_feedback_with_possible_read_bytes_stays_withheld(
+    native_workspace, app_user_sessionmaker, tool, arguments, shape,  # noqa: F811
+):
+    from app.models.capability_policy import CapabilityPolicy
+    from app.tools.result_envelope import render_tool_error
+
+    n = native_workspace
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        for capability in ("workspace.file.read", "computer.browser.read"):
+            db.add(CapabilityPolicy(tenant_id=n.tenant, capability=capability, allowed=True, requires_approval=False))
+        await db.commit()
+    marker = "R7C_UNVERIFIED_PARTIAL_READ"
+    def partial(value):
+        if shape == "extra_field":
+            prefix, encoded = value.split("<tool_error>", 1)
+            body = json.loads(encoded.removesuffix("</tool_error>"))
+            return prefix + "<tool_error>" + json.dumps({**body, "partial_content": marker}) + "</tool_error>"
+        return render_tool_error(tool_name=tool, error_class="operation_failed", provider="workspace",
+            message=f"Read failed after receiving {marker}")
+    call, value, turn = await _round2_call(n, app_user_sessionmaker, tool, arguments, result_projection=partial)
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        entry, wire = await _round2_request(db, n, call, turn)
+        assert entry["status"] == "withheld", entry
+        assert marker not in json.dumps(wire)

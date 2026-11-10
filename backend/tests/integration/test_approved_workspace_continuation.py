@@ -59,7 +59,8 @@ async def test_owned_file_written_read_searched_and_edited_across_turns(native_w
             tool_call_id=str(uuid.uuid4()), emit_runtime_hooks=False))
 
     result = await execute("write_file", {"path": path, "content": "Sales total: 42\n"}, "turn-one")
-    assert "Written" in result, result
+    # R11g: write_file returns a member receipt; model-visible text is unchanged
+    assert result == "已写入文件「current-sales.md」。", result
     for turn, old, new in (("turn-one", "42", "43"), ("turn-two", "43", "44")):
         result = await execute(reader, {"path": path}, turn)
         assert f"Sales total: {old}" in result, result

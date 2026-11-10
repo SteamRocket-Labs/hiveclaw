@@ -1004,6 +1004,7 @@ function AgentChatSection({
   const normalizedActiveRunStatus = String(activeRunStatus || '').trim().toLowerCase();
   const unfinishedRunStatus = ['created', 'pending', 'queued', 'running', 'started', 'in_progress', 'resuming',
     'waiting', 'waiting_user', 'suspended', 'resumable'].includes(normalizedActiveRunStatus);
+  const hasUnfinishedRun = Boolean(activeRunId?.trim()) && unfinishedRunStatus;
   const rewindUnavailableReason = isStreaming
     || isWaiting
     || unfinishedRunStatus
@@ -1395,6 +1396,7 @@ function AgentChatSection({
       activeRunStatus: null,
       runtimePhase,
     });
+    const boundaryMessageIndexes = new Set(model.cells.filter(cell => cell.kind === 'boundary').map(cell => cell.index));
 
     model.cells.forEach((cell) => {
       if (cell.kind === 'user_turn') {
@@ -1419,7 +1421,7 @@ function AgentChatSection({
                 ? `${activeSessionId}:${cell.runId || cell.timeline.startedAt}`
                 : null}
             />
-            {cell.sourceMessages.map((entry) => (
+            {cell.sourceMessages.filter(entry => !boundaryMessageIndexes.has(entry.index)).map((entry) => (
               entry.message.role === 'event'
                 ? renderEventMessage(entry.message, entry.index)
                 : isInlineToolCardMessage(entry.message)
@@ -2244,7 +2246,8 @@ function AgentChatSection({
                 goalModeRequested={goalModeRequested}
                 uploading={uploading}
                 uploadProgress={uploadProgress}
-                running={['running', 'streaming', 'waiting'].includes(threadTimelineModel.header.status)}
+                running={(isStreaming || isWaiting || hasUnfinishedRun)
+                  && ['running', 'streaming', 'waiting'].includes(threadTimelineModel.header.status)}
                 onChange={onSetChatInput}
                 onPaste={onHandlePaste}
                 onSubmit={sendFromComposer}

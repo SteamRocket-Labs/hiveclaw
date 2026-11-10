@@ -101,18 +101,19 @@ def observe_native_directory_read(tool_name, content, *, outcome):
 
 
 class _DisclosureSourceValidations:
-    def __init__(self, *, batch_inputs=False):
+    def __init__(self, *, batch_inputs=False, cache_authority=True):
         self.active = True
         self.batch_inputs = batch_inputs
+        self.cache_authority = cache_authority
         self.verified = {}
         self.actors = {}
         self.inputs = {}
 
 
 @contextmanager
-def group_source_read(*, batch_inputs=False):
+def group_source_read(*, batch_inputs=False, cache_authority=True):
     """Reuse successful exact source checks only inside one reader disclosure."""
-    scope = _DisclosureSourceValidations(batch_inputs=batch_inputs)
+    scope = _DisclosureSourceValidations(batch_inputs=batch_inputs, cache_authority=cache_authority)
     token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
         yield
@@ -131,9 +132,10 @@ class ContentInputReceiptError(ValueError):
         self.status_code = status_code
 
 
-def _preflight_inputs(db):
+def _preflight_inputs(db, *, authority=False):
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is not None and scope.active and scope.batch_inputs:
+    if (scope is not None and scope.active and scope.batch_inputs
+        and (not authority or scope.cache_authority)):
         return scope.inputs.setdefault(db.get_transaction(), {})
     return None
 
@@ -393,6 +395,9 @@ async def _validate_input_dependencies(
             None if scope.batch_inputs else active_workspace_receipts,
             source_key,
         )
+        # A nested source already verified for this reader is not re-walked.
+        # Its group membership is as of its first walk in this round, as on
+        # A2a's tool path; disabling authority caches does not change that limit.
         if (
             not scope.active
             or transaction is None
@@ -1471,7 +1476,7 @@ async def _authorize_session_input_source(
 ):
     from app.core.source_read_purpose import current_source_recipient
 
-    cached = _preflight_inputs(db)
+    cached = _preflight_inputs(db, authority=True)
     key = ("session_authority", tenant_id, session.id, id(user), id(runtime_request),
         delegated_user_command, current_source_recipient())
     if cached is not None and key in cached:
@@ -1665,7 +1670,7 @@ async def _runtime_input_actor(db, tenant_id, request):
     from app.core.source_read_purpose import current_source_recipient
 
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is None or not scope.active or not scope.batch_inputs:
+    if scope is None or not scope.active or not scope.batch_inputs or not scope.cache_authority:
         return await _resolve_runtime_input_actor(db, tenant_id, request)
     key = (db.get_transaction(), tenant_id, id(request), current_source_recipient())
     if key in scope.actors:

@@ -95,7 +95,7 @@ def _principal_binding_method(config):
 async def require_current_group_member(db, *, session, user=None, principal=None):
     from app.services.content_input_receipts import _preflight_inputs
 
-    rows = _preflight_inputs(db)
+    rows = _preflight_inputs(db, authority=True)
     key = ("group_member", session.tenant_id, session.agent_id, session.audience_kind, session.source_channel,
         session.group_installation_ref, session.group_subject_id, session.user_id, session.external_principal_id,
         getattr(user, "id", None), getattr(user, "tenant_id", None), getattr(user, "is_active", None),

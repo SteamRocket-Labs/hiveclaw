@@ -123,14 +123,13 @@ async def test_stop_bookkeeping_delivers_boundary_and_next_start_turn(
     cancelled = [e for e in events if e.item_kind == "run" and e.lifecycle == "cancelled"]
     assert len(cancelled) == 2
     bookkeeping = [e for e in events if e.item_kind == "recovery_action"]
-    # The reader now excludes transport bookkeeping for both existing and new
-    # rows, so the writer retains the same transport witness before/after stop.
-    assert len(bookkeeping) == 1
-    assert bookkeeping[0].command_id is not None
     if late:
-        assert bookkeeping[0].sequence > cancelled[-1].sequence
+        # Round 2's "exactly one row" expectation was the defect: a late
+        # run-scoped witness reopens T0 after its terminal segment is sealed.
+        assert bookkeeping == []
     else:
         assert len(bookkeeping) == 1
+        assert bookkeeping[0].command_id is not None
         assert bookkeeping[0].sequence < cancelled[0].sequence
     next_turn = await _start(owner_sessionmaker, **ids)
     assert next_turn["admission_state"] == "admitted"
@@ -140,6 +139,84 @@ async def test_stop_bookkeeping_delivers_boundary_and_next_start_turn(
     async with owner_sessionmaker() as db:
         assert (await db.get(RuntimeTask, next_run_id)).status == "pending"
     print("NEXT_START_TURN", "dispatched")
+
+
+async def test_late_cancel_after_t0_seal_projects_next_turn_and_delivers_boundary(
+    owner_sessionmaker, monkeypatch,
+):
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.services import runtime_control_bus, web_chat_runtime as runtime
+    from app.services.session_control_input import _record_cancel_signal_delivery_attempt
+
+    factory = owner_sessionmaker
+    tenant_id, run_id, ids, _ = await _stopped_turn(factory, monkeypatch, late=False)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=factory)
+    processor = WebTerminalBoundaryProcessor(session_factory=factory)
+    worker_id = "r8c-t0-boundary"
+    item, = await service.claim_batch(tenant_id=tenant_id, worker_id=worker_id, task_types=("web_chat_turn",))
+    assert await service.process_terminal_boundary(
+        item=item, worker_id=worker_id, canonical_validator=processor.validate, process_callback=processor,
+    )
+    sealed = replay_t0_session_events(agent_id=ids["agent_id"], session_id=ids["session_id"])
+    assert sealed[-1].event_type == "segment_boundary"
+    assert UUID(sealed[-1].runtime_task_id) == run_id
+    async with factory() as db:
+        assert (await db.get(RuntimeTerminalBoundaryOutbox, item.id)).status == "delivered"
+        control = await db.scalar(select(SessionControlInput).where(SessionControlInput.expected_run_id == run_id))
+        # The signal callback resumes only after the canonical boundary sealed.
+        await _record_cancel_signal_delivery_attempt(
+            db, control_id=control.id, command_id=control.command_id, attempt_version=2,
+            worker_id="r8c-late-cancel", delivery_state="delivered", local_delivered=True,
+            cross_process_delivered=True, retryable=False, error_class=None,
+        )
+        await db.commit()
+        task = await db.get(RuntimeTask, run_id)
+        assert task.status == "killed"
+        assert task.metadata_json["cancel_signal_delivery"]["attempt_id"] == f"cancel-signal-delivery:{control.id}:2"
+        assert control.recovery_owner is None
+
+    # Exercise the production poll batch, including any late recorder row.
+    await runtime_control_bus.sweep_pending_transcript_t0_bridges(session_id=ids["session_id"])
+    next_turn = await _start(factory, **ids)
+    assert next_turn["admission_state"] == "admitted"
+    assert next_turn["run"] is not None
+    next_run_id = UUID(next_turn["run"]["run_id"])
+    assert next_run_id != run_id
+    # No provider is configured: the real worker materializes this member turn
+    # and commits its typed model-unavailable terminal outcome without a call.
+    await runtime.execute_web_chat_run(next_run_id)
+    await runtime_control_bus.sweep_pending_transcript_t0_bridges(session_id=ids["session_id"])
+    async with factory() as db:
+        task = await db.get(RuntimeTask, next_run_id)
+        assert task.status == "failed"
+        assert task.metadata_json["error_code"] == "llm_model_missing"
+        events = list(await db.scalars(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.session_id == ids["session_id"], ChatTranscriptEvent.run_id == next_run_id,
+        ).order_by(ChatTranscriptEvent.sequence)))
+        assert events
+        projections = [(event.sequence, event.projection_status, event.projection_error) for event in events]
+        print("NEXT_T0_PROJECTIONS", projections)
+        assert all(event.projection_status == "projected" and event.projection_error is None for event in events), projections
+
+    successor, = await service.claim_batch(tenant_id=tenant_id, worker_id=worker_id, task_types=("web_chat_turn",))
+    assert successor.runtime_task_id == next_run_id
+    assert await service.process_terminal_boundary(
+        item=successor, worker_id=worker_id, canonical_validator=processor.validate, process_callback=processor,
+    )
+    async with factory() as db:
+        boundary = await db.get(RuntimeTerminalBoundaryOutbox, successor.id)
+        assert boundary.status == "delivered"
+        assert boundary.last_error is None
+    projected = replay_t0_session_events(agent_id=ids["agent_id"], session_id=ids["session_id"])
+    next_events = [event for event in projected if event.runtime_task_id and UUID(event.runtime_task_id) == next_run_id]
+    assert next_events
+    assert next_events[-1].event_type == "segment_boundary"
+    assert next_events[-1].segment_id != sealed[-1].segment_id
+    # Session-v2 drafts link to T0 through the bridge's stored event receipt.
+    assert {event.metadata_json["t0_bridge_event_id"] for event in events} <= {
+        event.event_id for event in next_events
+    }
+    print("NEXT_T0_BOUNDARY", "delivered; successor events projected in their own sealed segment")
 
 
 @pytest.mark.parametrize("divergence", ["content", "terminal-status", "foreign-event"])

@@ -118,6 +118,10 @@ async def test_parent_memory_is_attested_only_for_exact_same_member_instruction(
         added = []
         receipt_reads = 0
 
+        def get_transaction(self):
+            # An idle AsyncSession returns None, so every dependency is revalidated.
+            return None
+
         async def get(self, kind, key, **kwargs):
             if kind is RuntimeTask:
                 return child if key == child_run else parent

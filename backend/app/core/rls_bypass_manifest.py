@@ -901,7 +901,11 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land13 (R7b, R7c, R7e, R8b) versus land12: 27 module-source lines added and 5 removed
 # (tenant-pinned InvocationSpan select for approved directory captures, the single
 # validation read scope, recovery-seal declared paths); still 122 callsites, no scope change.
-RLS_BYPASS_SCOPES_SHA256 = "b3fdb3173c86848b7c772241800313717ce4fa7bc1ef755f616523bc6c718ad7"
+# Land14 (R8a, R8c, R9a, R9b) versus land13: 35 module-source lines added and 6 removed
+# (dead-letter rejection and pending/processing hold in session dispatch, terminal cancel
+# bookkeeping guard and session-scoped late Stop, frontier exclusion of cancel-signal
+# recovery_action rows, withholding-notice origin); still 122 callsites, no scope change.
+RLS_BYPASS_SCOPES_SHA256 = "5913fbc40a7e6a121451be14a244878f84e766a9ec2ffb1a53cd6951c4ee3931"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

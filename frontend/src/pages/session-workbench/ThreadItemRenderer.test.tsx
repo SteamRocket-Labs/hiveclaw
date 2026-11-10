@@ -29,6 +29,8 @@ vi.mock('react-i18next', () => ({
 import type { ThreadItem, ThreadItemType } from '../../api/domains/threadItems.generated';
 import { ThreadItemInspector } from './ThreadItemInspector';
 import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from './ThreadItemRenderer';
+import { compatibilityProjectionEvent } from '../agent-detail/sessionEventConsumer';
+import { normalizeThreadItemPayload } from './threadItemReducer';
 
 const DATA_BY_TYPE: Record<ThreadItemType, Record<string, unknown>> = {
   user_message: {},
@@ -401,6 +403,36 @@ describe('ThreadItemRenderer', () => {
     expect(markup).toContain('Technical details are available only in Operator View.');
     expect(markup).not.toContain('provider_timeout');
     expect(markup).not.toContain('item-error');
+  });
+
+  it.each([{}, { manual: true },
+    { reason: 'prompt_too_long_retry', strategy: 'full_compress' },
+    { reason: 'prompt_too_long_retry', strategy: 'round_group' },
+  ])('hides compatibility compaction from members and keeps the operator card: %j', metadata => {
+    const envelope = {
+      schema: 'hive.session_event_compatibility' as const, schema_version: 1 as const,
+      compatibility_status: 'needs_reconciliation' as const, reason: 'insufficient_legacy_scope',
+      event_id: 'compact-event', sequence: 1, session_id: 'session-1',
+      legacy_event_type: 'session_compact', legacy_item_kind: 'context_compaction',
+      payload: { legacy_run_id: 'run-1', content: 'Private compaction summary',
+        metadata: { item_type: 'context_compaction', original_message_count: 120, ...metadata } },
+    };
+    const memberItem = normalizeThreadItemPayload(compatibilityProjectionEvent(envelope))!;
+    expect(memberItem.item_type).toBe('context_compaction');
+    expect(memberItem.run_id).toBe('run-1');
+    expect(memberItem.turn_id).toBeNull();
+    expect(memberItem.user_summary).toBeTruthy();
+    expect(shouldRenderThreadItemInConversation(memberItem, false)).toBe(false);
+    const markup = renderToStaticMarkup(<>{shouldRenderThreadItemInConversation(memberItem, false)
+      && <ThreadItemRenderer item={memberItem} />}</>);
+    expect(markup).toBe('');
+
+    const operatorItem = normalizeThreadItemPayload(compatibilityProjectionEvent({ ...envelope, audience: 'operator' }))!;
+    expect(shouldRenderThreadItemInConversation(operatorItem, true)).toBe(true);
+    const operatorMarkup = renderToStaticMarkup(<ThreadItemRenderer item={operatorItem} />);
+    expect(operatorMarkup).toContain('thread-item-card thread-item-context_compaction');
+    expect(operatorMarkup).toContain(operatorItem.user_summary);
+    expect(operatorItem.metadata!.original_message_count).toBe(120);
   });
 
   it('keeps runtime mechanics in the status surface while preserving user actions in conversation', () => {

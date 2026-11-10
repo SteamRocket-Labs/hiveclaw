@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { ApiError } from '../api/core';
 import { ccParityApi } from '../api/domains/ccParity';
+import ArtifactContinuation from './agent-detail/ArtifactContinuation';
 import { StructuredToolResultBody } from './agent-detail/StructuredToolResult';
 import zh from '../i18n/zh.json';
 
@@ -35,12 +36,19 @@ const mocks = vi.hoisted(() => ({
   deleteSession: vi.fn(),
   upload: vi.fn(),
   activeSessionRun: null as null | { run_id: string; status: string },
+  activeRunObservedAt: 1,
   chatProps: null as any,
   answerQuestion: vi.fn(),
   questionControl: false,
   transport: null as any,
   language: 'en',
+  messageStore: null as ReturnType<typeof import('./agent-detail/sessionMessageStore').createSessionMessageStore> | null,
 }));
+
+vi.mock('./agent-detail/sessionMessageStore', async importOriginal => {
+  const actual = await importOriginal<typeof import('./agent-detail/sessionMessageStore')>();
+  return { ...actual, createSessionMessageStore: () => (mocks.messageStore = actual.createSessionMessageStore()) };
+});
 
 vi.mock('../api/core/upload-progress', () => ({ uploadFileWithProgress: (...args: unknown[]) => ({ promise: mocks.upload(...args) }) }));
 
@@ -84,7 +92,7 @@ vi.mock('@tanstack/react-query', () => ({
       };
     }
     if (options.queryKey[0] === 'chat-active-run' && options.enabled) {
-      return { data: mocks.activeSessionRun, dataUpdatedAt: 1, isLoading: false, error: null };
+      return { data: mocks.activeSessionRun, dataUpdatedAt: mocks.activeRunObservedAt, isLoading: false, error: null };
     }
     return {
       data: undefined,
@@ -253,8 +261,10 @@ beforeEach(() => {
   mocks.cancelSessionRun.mockReset();
   mocks.deleteSession.mockReset();
   mocks.activeSessionRun = null;
+  mocks.activeRunObservedAt = 1;
   mocks.questionControl = false;
   mocks.language = 'en';
+  mocks.messageStore = null;
 });
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -1038,6 +1048,236 @@ it('keeps attachments on a refusal and resends their original bytes', async () =
   expect(nextInput.content).toBe(originalInput.content);
   expect(nextInput.attachments).toEqual(originalInput.attachments);
   expect(mocks.chatProps.attachedFiles).toEqual([]);
+});
+
+it('keeps synchronous compact visible when polling finds no run after the absence grace', async () => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/compact');
+  let sending!: Promise<unknown>;
+  act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1));
+  expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running');
+  const now = Date.now();
+  vi.spyOn(Date, 'now').mockReturnValue(now + 60_000);
+  mocks.activeRunObservedAt += 1;
+  await act(async () => { mocks.chatProps.onSetChatInput('Next request'); });
+  expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running');
+  await act(async () => {
+    request.resolve({ ok: true, command: 'compact', result: { message: '上下文已压缩。' } });
+    await sending;
+  });
+  expect(mocks.chatProps.chatInput).toBe('Next request');
+  expect(mocks.chatProps.isWaiting || mocks.chatProps.isStreaming).toBe(false);
+});
+
+const compactRefusalResults = {
+  'unsettled-history': { ok: false, action: 'unavailable', ui_action: { type: 'toast', level: 'error',
+    message: 'Compaction is unavailable: canonical session history could not be verified. Context was not changed.' } },
+  'no-messages': { ok: false, action: 'not_supported', ui_action: { type: 'toast', level: 'warning',
+    message: 'No session messages are available to compact.' } },
+  'empty-summary': { ok: false, action: 'not_supported', ui_action: { type: 'toast', level: 'warning',
+    message: 'Compaction summary model is unavailable; context was not changed.' } },
+};
+
+it.each(['success', 'http', 'network', 'unsettled-history', 'no-messages', 'empty-summary'] as const)('clears compact on send and keeps progress through the %s response', async outcome => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/compact');
+  let sending!: Promise<unknown>;
+  act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1));
+  expect(mocks.chatProps.chatInput).toBe('');
+  expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running');
+  await act(async () => { mocks.chatProps.onSetChatInput('继续处理下一件事'); });
+  expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running');
+  await act(async () => {
+    if (outcome === 'http') request.reject(new ApiError(504, 'HTTP 504 Gateway Timeout'));
+    else if (outcome === 'network') request.reject(new ApiError(0, 'Failed to fetch'));
+    else request.resolve({ ok: true, command: 'compact', result: outcome === 'success'
+      ? { ok: true, action: 'compacted_context_installed', message: '上下文已压缩。' }
+      : compactRefusalResults[outcome] });
+    await sending;
+  });
+  if (outcome !== 'success') {
+    const failure = mocks.chatProps.chatMessages.find((message: any) => message.eventType === 'runtime_action_failed');
+    expect(failure.content).toBe(outcome === 'network' ? zh.common.networkFailed : outcome === 'http' ? zh.common.serviceUnavailable : zh.common.requestFailed);
+    expect(mocks.messageStore!.getSnapshot(mocks.chatProps.activeSession.id).filter(message => message.content === failure.content)).toHaveLength(1);
+    expect(mocks.chatProps.chatMessages.some((message: any) => message.content === '上下文已压缩。')).toBe(false);
+    expect(screen.queryByText('上下文已压缩。')).toBeNull();
+    expect(document.querySelector('.agent-detail-upload-toast')).toBeNull();
+    expect(mocks.chatProps.runtimePhase).toBe('failed');
+    expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('failed');
+    expect(document.body.textContent).not.toMatch(/504|Gateway|Failed to fetch|Summary model|Compaction|No session messages/);
+  } else {
+    expect(mocks.chatProps.chatMessages.filter((message: any) => message.role === 'assistant'
+      && message.content === '上下文已压缩。')).toHaveLength(1);
+    expect(screen.getByText('上下文已压缩。')).toBeTruthy();
+  }
+  expect(mocks.chatProps.chatInput).toBe('继续处理下一件事');
+  expect(mocks.chatProps.isWaiting).toBe(false);
+  expect((screen.getByTestId('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
+});
+
+it('keeps the compacting composer editable without Stop or another send until the response', async () => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/compact');
+  let first!: Promise<unknown>;
+  let second!: Promise<unknown>;
+  act(() => {
+    first = mocks.chatProps.onSendChatMsg();
+    second = mocks.chatProps.onSendChatMsg();
+  });
+  await waitFor(() => expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1));
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
+  const input = screen.getByTestId('session-composer-input') as HTMLTextAreaElement;
+  const send = screen.getByTestId('session-composer-send') as HTMLButtonElement;
+  expect(input.disabled).toBe(false);
+  fireEvent.change(input, { target: { value: 'Keep the next draft' } });
+  expect(send.disabled).toBe(true);
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+  fireEvent.change(input, { target: { value: '/compact' } });
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1);
+  fireEvent.change(input, { target: { value: 'Keep the next draft' } });
+  await act(async () => {
+    request.resolve({ ok: true, command: 'compact', result: { action: 'compacted_context_installed',
+      message: '上下文已压缩。', ui_action: { type: 'install_compacted_context', message: '上下文已压缩。' } } });
+    await Promise.all([first, second]);
+  });
+  expect(input.value).toBe('Keep the next draft');
+  expect(send.disabled).toBe(false);
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
+});
+
+it.each(['success', 'http', 'unsettled-history', 'no-messages', 'empty-summary'] as const)('writes the %s compact outcome to its session until transcript reload', async outcome => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/compact');
+  const compactingSession = mocks.chatProps.activeSession;
+  const otherSession = { ...compactingSession, id: 'other-session', title: 'Other conversation' };
+  mocks.listSessions.mockResolvedValue([compactingSession, otherSession]);
+  let sending!: Promise<unknown>;
+  act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1));
+  mocks.sessionId = otherSession.id;
+  await act(async () => { await mocks.chatProps.onSelectSession(otherSession); });
+  await waitFor(() => expect(mocks.chatProps.activeSession.id).toBe(otherSession.id));
+  const input = screen.getByTestId('session-composer-input') as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: 'Work in the other conversation' } });
+  expect((screen.getByTestId('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
+  mocks.startSessionRun.mockResolvedValue({ run_id: 'other-run', status: 'running' });
+  mocks.activeSessionRun = { run_id: 'other-run', status: 'running' };
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(mocks.startSessionRun).toHaveBeenCalledExactlyOnceWith('agent-1', otherSession.id,
+    expect.objectContaining({ content: 'Work in the other conversation' }));
+  const otherPhase = mocks.chatProps.runtimePhase;
+  expect(otherPhase).not.toBe('compacting');
+  fireEvent.change(input, { target: { value: 'Keep the other draft' } });
+  await act(async () => {
+    if (outcome === 'http') request.reject(new ApiError(504, 'HTTP 504 Gateway Timeout'));
+    else if (outcome === 'success') request.resolve({ ok: true, command: 'compact', result: {
+      action: 'compacted_context_installed',
+      ui_action: { type: 'install_compacted_context', message: '上下文已压缩。' },
+    } });
+    else request.resolve({ ok: true, command: 'compact', result: compactRefusalResults[outcome] });
+    await sending;
+  });
+  expect(mocks.chatProps.activeSession.id).toBe(otherSession.id);
+  expect(mocks.chatProps.runtimePhase).toBe(otherPhase);
+  expect(mocks.chatProps.chatMessages.some((m: any) => m.eventType === 'runtime_action_failed')).toBe(false);
+  expect(screen.queryByText('上下文已压缩。')).toBeNull();
+  expect(input.value).toBe('Keep the other draft');
+  const expected = outcome === 'success' ? '上下文已压缩。'
+    : outcome === 'http' ? zh.common.serviceUnavailable : zh.common.requestFailed;
+  expect(mocks.messageStore!.getSnapshot(compactingSession.id).filter(m => m.content === expected)).toHaveLength(1);
+  expect(mocks.messageStore!.getSnapshot(otherSession.id).some(m => m.content === expected)).toBe(false);
+  mocks.activeSessionRun = null;
+  mocks.sessionId = compactingSession.id;
+  const transcript = deferred<any[]>();
+  mocks.getSessionTranscript.mockReturnValue(transcript.promise);
+  let selecting!: Promise<unknown>;
+  act(() => { selecting = mocks.chatProps.onSelectSession(compactingSession); });
+  await waitFor(() => expect(mocks.chatProps.activeSession.id).toBe(compactingSession.id));
+  const storedTranscript = outcome === 'http' ? [] : [{
+    event_id: 'prior-reply', id: 'prior-reply', session_id: compactingSession.id, sequence: 1,
+    event_type: 'assistant_message', role: 'assistant', content: 'Earlier completed work',
+  }];
+  await act(async () => { transcript.resolve(storedTranscript); await selecting; });
+  expect(mocks.chatProps.chatMessages.some((m: any) => m.content === expected)).toBe(false);
+  expect(mocks.messageStore!.getSnapshot(compactingSession.id).some(m => m.content === expected)).toBe(false);
+  expect(screen.queryByText(expected)).toBeNull();
+  expect(mocks.chatProps.chatMessages.some((m: any) => m.eventType === 'runtime_action_failed')).toBe(false);
+  if (storedTranscript.length) expect(screen.getByText('Earlier completed work')).toBeTruthy();
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Retry later' } });
+  expect((screen.getByTestId('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
+});
+
+it.each(['artifact', 'command-panel'])('blocks %s continuation only for the compacting session', async source => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/compact');
+  const compactingSession = mocks.chatProps.activeSession;
+  let sending!: Promise<unknown>;
+  act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1));
+  const continuation = source === 'artifact' ? render(<ArtifactContinuation
+    artifact={{ name: 'report.md', path: 'workspace/report.md' }} workspaceAgentId="agent-1" blocked={false}
+    context={{ sessionId: compactingSession.id, send: mocks.chatProps.onSendMessage }} />) : null;
+  if (continuation) {
+    const draft = screen.getByLabelText(zh.agent.chat.artifacts.continueLabel) as HTMLTextAreaElement;
+    fireEvent.change(draft, { target: { value: 'Continue the work' } });
+    fireEvent.click(screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }));
+    await waitFor(() => expect(screen.queryByText(zh.agent.chat.artifacts.continuing)).toBeNull());
+    expect(draft.value).toBe('Continue the work');
+    expect(screen.getByRole('alert').textContent).toBe('正在压缩上下文，完成后再继续。');
+    expect(screen.queryByText(zh.agent.chat.artifacts.continueRecorded)).toBeNull();
+  } else {
+    // Command-panel Continue uses the same callback without original-work options.
+    await act(async () => { await expect(mocks.chatProps.onSendMessage('Continue the work'))
+      .rejects.toThrow('正在压缩上下文，完成后再继续。'); });
+  }
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+
+  const otherSession = { ...compactingSession, id: 'other-session', title: 'Other conversation' };
+  mocks.listSessions.mockResolvedValue([compactingSession, otherSession]);
+  mocks.sessionId = otherSession.id;
+  await act(async () => { await mocks.chatProps.onSelectSession(otherSession); });
+  mocks.startSessionRun.mockResolvedValue({ run_id: 'other-run', status: 'running' });
+  if (continuation) {
+    continuation.rerender(<ArtifactContinuation key={otherSession.id}
+      artifact={{ name: 'report.md', path: 'workspace/report.md' }} workspaceAgentId="agent-1" blocked={false}
+      context={{ sessionId: otherSession.id, send: mocks.chatProps.onSendMessage }} />);
+    const draft = screen.getByLabelText(zh.agent.chat.artifacts.continueLabel) as HTMLTextAreaElement;
+    fireEvent.change(draft, { target: { value: 'Continue the other work' } });
+    fireEvent.click(screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }));
+    await screen.findByText(zh.agent.chat.artifacts.continueRecorded);
+    expect(draft.value).toBe('');
+  } else {
+    await act(async () => { await mocks.chatProps.onSendMessage('Continue the other work'); });
+  }
+  expect(mocks.startSessionRun).toHaveBeenCalledExactlyOnceWith('agent-1', otherSession.id,
+    expect.objectContaining({ content: 'Continue the other work' }));
+  await act(async () => {
+    request.resolve({ ok: true, command: 'compact', result: { message: '上下文已压缩。' } });
+    await sending;
+  });
 });
 
 it.each([true, false])('clears slash input only after its existing success result: %s', async success => {

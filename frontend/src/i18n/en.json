@@ -2877,6 +2877,8 @@
         "loading": "Loading commands...",
         "invalid": "Invalid slash command.",
         "failed": "Failed to run command",
+        "compactSucceeded": "Context compacted.",
+        "compactInProgress": "Context is being compacted. Continue when it finishes.",
         "description": {
           "plan": "Plan before starting work.",
           "resume": "Continue a previous conversation.",

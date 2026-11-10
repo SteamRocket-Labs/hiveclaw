@@ -1477,6 +1477,8 @@ function AgentDetailInner() {
     // derived views kept in sync through syncActivePhase — never set directly
     // on lifecycle paths anymore.
     const [activePhase, setActivePhase] = useState<RuntimePhase>('idle');
+    const compactingSessionsRef = useRef(new Set<SessionRuntimeKey>());
+    const [compactingSessions, setCompactingSessions] = useState<ReadonlySet<SessionRuntimeKey>>(compactingSessionsRef.current);
     const syncActivePhase = (phase: RuntimePhase) => {
         setActivePhase(phase);
         const derived = phaseUi(phase);
@@ -1854,6 +1856,7 @@ function AgentDetailInner() {
     const sendChatMsg = async (options?: SessionMessageOptions, retryMessageId?: string, retrySession?: ChatSession) => {
         let sendSession = retrySession || activeSession;
         if (!id || !sendSession?.id) return;
+        if (compactingSessionsRef.current.has(buildSessionRuntimeKey(id, String(sendSession.id)))) return false;
         if (options?.expectedSessionId && String(sendSession.id) !== options.expectedSessionId) return false;
         const expectedSubject = `${readinessScopeKey}:${currentUser?.role || ''}`;
         const stillOriginalSubject = () => {
@@ -1896,6 +1899,7 @@ function AgentDetailInner() {
                 if (!commandSession?.id) return;
                 const commandSessionId = String(commandSession.id);
                 const activeRuntimeKey = buildSessionRuntimeKey(id, commandSessionId);
+                if (compactingSessionsRef.current.has(activeRuntimeKey)) return false;
                 if (!activeRunStateRef.current[activeRuntimeKey]?.runId) {
                     syncActivePhase('queued');
                     setSessionPhase(activeRuntimeKey, 'queued');
@@ -1910,6 +1914,13 @@ function AgentDetailInner() {
                     timestamp: new Date().toISOString(),
                 })]);
 
+                const isCompact = parsedSlashCommand.name === 'compact';
+                if (isCompact) {
+                    compactingSessionsRef.current.add(activeRuntimeKey);
+                    setCompactingSessions(new Set(compactingSessionsRef.current));
+                    setChatInput('');
+                }
+                let commandFailed = false;
                 let commandStartedRun = false;
                 try {
                     const response = await ccParityApi.executeCommand(id, parsedSlashCommand.name, {
@@ -1917,6 +1928,18 @@ function AgentDetailInner() {
                         session_id: commandSessionId,
                     });
                     const actionResult = commandResultRecord(response);
+                    if (isCompact && (response.ok === false || actionResult?.ok === false)) {
+                        throw new Error('Compaction unavailable');
+                    }
+                    if (isCompact) {
+                        await handleSessionCommandUiAction(response, commandSessionId);
+                        // Local command outcomes are ephemeral: a transcript reload replaces them.
+                        setChatMessagesAfterQueuedForSession(commandSessionId, prev => [
+                            ...prev.filter(message => message.id !== commandMessageId),
+                            parseChatMsg({ role: 'assistant', content: t('agent.chat.commands.compactSucceeded', 'Context compacted.') }),
+                        ]);
+                        return;
+                    }
                     if (getSessionCommandUiAction(response)) {
                         await handleSessionCommandUiAction(response, commandSessionId);
                         setChatInput('');
@@ -1959,12 +1982,24 @@ function AgentDetailInner() {
                     })]);
                     invalidateSessionRuntimeQueries(id, commandSessionId);
                 } catch (err: any) {
-                    const msg = err?.message || t('agent.chat.commands.failed', 'Failed to run command');
-                    setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'command_failed' })]);
+                    commandFailed = true;
+                    const msg = isCompact
+                        ? err instanceof ApiError && err.status === 0
+                            ? t('common.networkFailed', 'Network connection failed. Check your connection and try again.')
+                            : err instanceof ApiError && err.status >= 500
+                                ? t('common.serviceUnavailable', 'The service is not responding. Please try again later.')
+                                : t('common.requestFailed', 'The operation could not be completed. Please try again.')
+                        : err?.message || t('agent.chat.commands.failed', 'Failed to run command');
+                    setChatMessagesAfterQueuedForSession(commandSessionId, prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'command_failed' })]);
                 } finally {
+                    if (isCompact) {
+                        compactingSessionsRef.current.delete(activeRuntimeKey);
+                        setCompactingSessions(new Set(compactingSessionsRef.current));
+                    }
                     if (!commandStartedRun) {
-                        syncActivePhase('idle');
-                        setSessionPhase(activeRuntimeKey, 'idle');
+                        const phase = isCompact && commandFailed ? 'failed' : 'idle';
+                        if (activeSessionIdRef.current === commandSessionId) syncActivePhase(phase);
+                        setSessionPhase(activeRuntimeKey, phase);
                     }
                 }
                 return;
@@ -2126,6 +2161,9 @@ function AgentDetailInner() {
         )) {
             if (expectedSessionId) throw new Error(t('agent.chat.artifacts.originalWorkUnavailable', 'The original work or account changed. Reopen the file in the current work.'));
             return;
+        }
+        if (compactingSessionsRef.current.has(buildSessionRuntimeKey(id, String(activeSession.id)))) {
+            throw new Error(t('agent.chat.commands.compactInProgress', 'Context is being compacted. Continue when it finishes.'));
         }
         const acceptedInputId = options?.inputId || globalThis.crypto.randomUUID();
         const displayContent = options?.displayContent || userMsg;
@@ -2302,6 +2340,7 @@ function AgentDetailInner() {
     useEffect(() => {
         if (!id || !activeSession?.id || !isWritableSession(activeSession)) return;
         const key = buildSessionRuntimeKey(id, String(activeSession.id));
+        if (compactingSessions.has(key)) return;
         if (activeSessionRun && isUnfinishedSessionRun(activeSessionRun)) {
             if (shouldIgnoreObservedActiveRun({
                 key,
@@ -2340,7 +2379,7 @@ function AgentDetailInner() {
             selectSession(activeSession);
             fetchMySessions(true, id);
         }
-    }, [activeSessionRun, activeSessionRunObservedAt, activeSession?.id, id]);
+    }, [activeSessionRun, activeSessionRunObservedAt, activeSession?.id, id, compactingSessions]);
 
     const supportsVision = !!agent?.primary_model_id && llmModels.some(
         (m: any) => m.id === agent.primary_model_id && m.supports_vision
@@ -2350,6 +2389,9 @@ function AgentDetailInner() {
     const currentActiveRunState = id && activeSession?.id
         ? activeRunStateBySession[buildSessionRuntimeKey(id, String(activeSession.id))] || null
         : null;
+
+    const compactInProgress = Boolean(id && activeSession?.id
+        && compactingSessions.has(buildSessionRuntimeKey(id, String(activeSession.id))));
 
     const runtimeSummary: ChatRuntimeSummary | null = React.useMemo(() => {
         if (!activeSession) return null;
@@ -2647,8 +2689,8 @@ function AgentDetailInner() {
                                     ? t('session.agent_deactivated', 'Deactivated')
                                     : transportNotice || (groupDiscoveryUnavailable
                                     ? t('agent.chat.groupDiscoveryUnavailable', 'Shared group conversations are unavailable. Try refreshing.') : null)}
-                            isWaiting={isWaiting}
-                            runtimePhase={activePhase}
+                            isWaiting={compactInProgress ? false : isWaiting}
+                            runtimePhase={compactInProgress ? 'compacting' : activePhase}
                             terminalTranscriptPending={Boolean(id && activeSession?.id
                                 && terminalTranscriptPendingKeys.has(buildSessionRuntimeKey(id, String(activeSession.id))))}
                             activeRunStatus={currentActiveRunState?.status || null}

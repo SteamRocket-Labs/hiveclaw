@@ -2229,6 +2229,7 @@ function AgentChatSection({
                 fileInputRef={fileInputRef}
                 placeholder={composerPlaceholder}
                 disabled={!canUseComposer || projectSending || attachmentRemovalPending}
+                sendDisabled={runtimePhase === 'compacting'}
                 attachments={attachedFiles}
                 permissionMode={sessionPermissionMode}
                 permissionModeLabel={permissionModeLabel}

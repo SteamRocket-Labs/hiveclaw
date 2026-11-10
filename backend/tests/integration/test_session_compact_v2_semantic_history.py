@@ -567,3 +567,71 @@ async def test_compact_tool_pair_survives_summary_and_projection_consumption(
         consumed = await _apply_active_projection_to_history(db, session, [])
     assert consumed[0]["role"] == "system"
     assert consumed[1:] == (projected[1:] if keep_recent == 2 else [])
+
+
+@pytest.mark.parametrize("failed_phase", ["map_chunk_2_", "reduce_level_1_group_1_"])
+async def test_empty_chunk_summary_keeps_projection_and_writes_no_compact_event(
+    owner_sessionmaker, monkeypatch, failed_phase
+):
+    import asyncio
+    from types import SimpleNamespace
+    from sqlalchemy import select
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services import llm_client, memory_service
+    from app.services.session_command_runtime import SessionCommandContext, execute_session_command
+
+    seed = await _seed(owner_sessionmaker)
+    turn = await _seed_completed_v2_turn(owner_sessionmaker, seed, streamed=False)
+    prior = {"projection_reason": "compact", "summary": "Preserved prior context"}
+    async with owner_sessionmaker() as db:
+        model_result = await db.get(SessionModelResult, turn.result_id)
+        model_result.seal_json = {**model_result.seal_json, "response": {"content": "Full history. " * 2000}}
+        session = await db.get(ChatSession, turn.session_id)
+        session.transcript_metadata_json = {"active_projection": prior}
+        await db.commit()
+
+    phases = []
+
+    class ModelDouble:
+        async def stream(self, *, messages, **kwargs):
+            payload = messages[-1].content
+            phase = payload.split("<compaction_phase>")[1].split("</compaction_phase>")[0]
+            phases.append(phase)
+            await asyncio.sleep(0.01)
+            return SimpleNamespace(
+                content="" if phase.startswith(failed_phase) else "<summary>Covered history.</summary>"
+            )
+
+        async def close(self):
+            pass
+
+    async def config(_tenant_id):
+        return {"provider": "openai", "model": "local-double", "max_input_tokens": 1000}
+
+    monkeypatch.setattr(memory_service, "_get_summary_model_config", config)
+    monkeypatch.setattr(llm_client, "create_llm_client_from_config", lambda _: ModelDouble())
+    async with owner_sessionmaker() as db:
+        result = await execute_session_command(
+            context=SessionCommandContext(
+                db=db,
+                agent=await db.get(Agent, seed[0]),
+                user=await db.get(User, seed[3]),
+                access_level="owner",
+                session_id=str(seed[1]),
+                arguments={},
+            ),
+            command_name="compact",
+        )
+        await db.commit()
+    assert any(phase.startswith(failed_phase) for phase in phases)
+    assert result["ok"] is False
+    assert result["action"] == "not_supported"
+    async with owner_sessionmaker() as db:
+        assert (await db.get(ChatSession, seed[1])).transcript_metadata_json["active_projection"] == prior
+        assert not (
+            await db.scalars(
+                select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.session_id == seed[1], ChatTranscriptEvent.event_type == "session_compact"
+                )
+            )
+        ).all()

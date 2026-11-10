@@ -1,5 +1,6 @@
 """Conversation summarization — model-led, coverage-preserving compaction."""
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -448,6 +449,8 @@ async def _llm_summarize(
     try:
         max_tokens = _resolve_summary_max_tokens(provider, model_name)
 
+        concurrency = asyncio.Semaphore(4)
+
         async def summarize_covered(text: str, coverage_refs: tuple[str, ...], *, phase: str) -> str | None:
             payload = (
                 f"<compaction_phase>{phase}</compaction_phase>\n"
@@ -461,32 +464,37 @@ async def _llm_summarize(
             transport_kwargs = {}
             if http_max_attempts is not None:
                 transport_kwargs["_http_max_attempts"] = http_max_attempts
-            response = await client.stream(
-                messages=[
-                    LLMMessage(role="system", content=_SUMMARIZE_SYSTEM_PROMPT),
-                    LLMMessage(role="user", content=payload),
-                ],
-                max_tokens=max_tokens,
-                temperature=0.3,
-                **transport_kwargs,
-            )
+            async with concurrency:
+                response = await client.stream(
+                    messages=[
+                        LLMMessage(role="system", content=_SUMMARIZE_SYSTEM_PROMPT),
+                        LLMMessage(role="user", content=payload),
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=0.3,
+                    **transport_kwargs,
+                )
             return _extract_summary_from_response(response.content)
 
         if len(chunks) == 1:
             return await summarize_covered(chunks[0].text, chunks[0].coverage_refs, phase="single_pass")
 
-        summary_nodes: list[tuple[str, tuple[str, ...]]] = []
-        all_coverage_refs: list[str] = []
-        for index, chunk in enumerate(chunks, start=1):
-            summary = await summarize_covered(
-                chunk.text,
-                chunk.coverage_refs,
-                phase=f"map_chunk_{index}_of_{len(chunks)}",
-            )
-            if not summary:
-                return None
-            all_coverage_refs.extend(chunk.coverage_refs)
-            summary_nodes.append((summary, chunk.coverage_refs))
+        async def summarize_all(requests):
+            # Wait for every in-flight call before closing their shared client.
+            results = await asyncio.gather(*requests, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            return results
+
+        summaries = await summarize_all(
+            summarize_covered(chunk.text, chunk.coverage_refs, phase=f"map_chunk_{index}_of_{len(chunks)}")
+            for index, chunk in enumerate(chunks, start=1)
+        )
+        if any(not summary for summary in summaries):
+            return None
+        summary_nodes = [(summary, chunk.coverage_refs) for summary, chunk in zip(summaries, chunks, strict=True)]
+        all_coverage_refs = [ref for chunk in chunks for ref in chunk.coverage_refs]
 
         input_budget_chars = max(
             _resolve_summary_input_budget_chars(provider, model_config.get("max_input_tokens")),
@@ -513,11 +521,9 @@ async def _llm_summarize(
                     index += 1
                 grouped.append(group)
 
-            next_nodes: list[tuple[str, tuple[str, ...]]] = []
-            for group_index, group in enumerate(grouped, start=1):
+            async def reduce_group(group_index, group):
                 if len(group) == 1 and len(grouped) > 1:
-                    next_nodes.append(group[0])
-                    continue
+                    return group[0]
                 group_refs = tuple(ref for _text, refs in group for ref in refs)
                 group_text = "\n\n".join(
                     f'<chunk_summary index="{node_index}" coverage={json.dumps(list(refs))}>\n{text}\n</chunk_summary>'
@@ -528,9 +534,13 @@ async def _llm_summarize(
                     group_refs,
                     phase=f"reduce_level_{level}_group_{group_index}_of_{len(grouped)}",
                 )
-                if not reduced:
-                    return None
-                next_nodes.append((reduced, group_refs))
+                return reduced, group_refs
+
+            next_nodes = await summarize_all(
+                reduce_group(group_index, group) for group_index, group in enumerate(grouped, start=1)
+            )
+            if any(not text for text, _refs in next_nodes):
+                return None
             if len(next_nodes) >= len(summary_nodes):
                 logger.error("[Summarizer] hierarchical reducer made no progress at level %d", level)
                 return None

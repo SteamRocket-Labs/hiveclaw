@@ -29,6 +29,8 @@ vi.mock('react-i18next', () => ({
 import type { ThreadItem, ThreadItemType } from '../../api/domains/threadItems.generated';
 import { ThreadItemInspector } from './ThreadItemInspector';
 import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from './ThreadItemRenderer';
+import { compatibilityProjectionEvent } from '../agent-detail/sessionEventConsumer';
+import { normalizeThreadItemPayload } from './threadItemReducer';
 
 const DATA_BY_TYPE: Record<ThreadItemType, Record<string, unknown>> = {
   user_message: {},
@@ -286,22 +288,34 @@ describe('ThreadItemRenderer', () => {
     expect(markup).not.toContain('item-error');
   });
 
-  it('shows members one plain compaction sentence without counts or technical details', () => {
-    const compact = { ...item('context_compaction'), audience: 'user', user_summary: '上下文已压缩。' } as ThreadItem;
-    expect(shouldRenderThreadItemInConversation(compact, false)).toBe(true);
-    expect(renderToStaticMarkup(<ThreadItemRenderer item={compact} />)).toBe('<p>上下文已压缩。</p>');
-  });
+  it.each([{}, { manual: true },
+    { reason: 'prompt_too_long_retry', strategy: 'full_compress' },
+    { reason: 'prompt_too_long_retry', strategy: 'round_group' },
+  ])('hides compatibility compaction from members and keeps the operator card: %j', metadata => {
+    const envelope = {
+      schema: 'hive.session_event_compatibility' as const, schema_version: 1 as const,
+      compatibility_status: 'needs_reconciliation' as const, reason: 'insufficient_legacy_scope',
+      event_id: 'compact-event', sequence: 1, session_id: 'session-1',
+      legacy_event_type: 'session_compact', legacy_item_kind: 'context_compaction',
+      payload: { legacy_run_id: 'run-1', content: 'Private compaction summary',
+        metadata: { item_type: 'context_compaction', original_message_count: 120, ...metadata } },
+    };
+    const memberItem = normalizeThreadItemPayload(compatibilityProjectionEvent(envelope))!;
+    expect(memberItem.item_type).toBe('context_compaction');
+    expect(memberItem.run_id).toBe('run-1');
+    expect(memberItem.turn_id).toBeNull();
+    expect(memberItem.user_summary).toBeTruthy();
+    expect(shouldRenderThreadItemInConversation(memberItem, false)).toBe(false);
+    const markup = renderToStaticMarkup(<>{shouldRenderThreadItemInConversation(memberItem, false)
+      && <ThreadItemRenderer item={memberItem} />}</>);
+    expect(markup).toBe('');
 
-  it('hides automatic compaction with no member summary while preserving the operator card', () => {
-    const compact = { ...item('context_compaction'), audience: 'user', user_summary: '', content: '',
-      metadata: { status: 'succeeded' }, operator_details: null } as ThreadItem;
-    expect(shouldRenderThreadItemInConversation(compact, false)).toBe(false);
-    expect(renderToStaticMarkup(<ThreadItemRenderer item={compact} />)).toBe('');
-    const operatorItem = item('context_compaction');
+    const operatorItem = normalizeThreadItemPayload(compatibilityProjectionEvent({ ...envelope, audience: 'operator' }))!;
     expect(shouldRenderThreadItemInConversation(operatorItem, true)).toBe(true);
-    const markup = renderToStaticMarkup(<ThreadItemRenderer item={operatorItem} />);
-    expect(markup).toContain('thread-item-card thread-item-context_compaction');
-    expect(markup).toContain('context_compaction summary');
+    const operatorMarkup = renderToStaticMarkup(<ThreadItemRenderer item={operatorItem} />);
+    expect(operatorMarkup).toContain('thread-item-card thread-item-context_compaction');
+    expect(operatorMarkup).toContain(operatorItem.user_summary);
+    expect(operatorItem.metadata!.original_message_count).toBe(120);
   });
 
   it('keeps runtime mechanics in the status surface while preserving user actions in conversation', () => {
@@ -313,7 +327,7 @@ describe('ThreadItemRenderer', () => {
 
     expect(shouldRenderThreadItemInConversation(userItem('tool_call'), false)).toBe(false);
     expect(shouldRenderThreadItemInConversation(userItem('workflow_activity'), false)).toBe(false);
-    expect(shouldRenderThreadItemInConversation(userItem('context_compaction'), false)).toBe(true);
+    expect(shouldRenderThreadItemInConversation(userItem('context_compaction'), false)).toBe(false);
     expect(shouldRenderThreadItemInConversation(userItem('event'), false)).toBe(false);
     expect(shouldRenderThreadItemInConversation(userItem('artifact'), false)).toBe(false);
     expect(shouldRenderThreadItemInConversation(userItem('approval_request'), false)).toBe(true);

@@ -785,8 +785,7 @@ function AgentDetailInner() {
                 sessionVisibilityBoundariesRef.current[runtimeKey] = projected.visibilityBoundary;
                 sessionUiStateRef.current[runtimeKey] = projected.ui;
                 syncActivePhase(projected.ui.phase);
-                const { activeProjection } = projected;
-                let preParsed = projected.messages;
+                const { messages: preParsed, activeProjection } = projected;
                 if (activeProjection.checkpointEventId) {
                     if (activeProjection.draftContent) setChatInput(activeProjection.draftContent);
                     if (activeProjection.shouldScrollToProjectionTail && !publishedCanonicalSnapshot) {
@@ -796,10 +795,6 @@ function AgentDetailInner() {
                 publishedCanonicalSnapshot = true;
                 if (writableSession) {
                     setChatMessagesSessionId(sessionId);
-                    preParsed = [
-                        ...preParsed,
-                        ...sessionMessageStore.getSnapshot(sessionId).filter(message => message.eventType === 'runtime_action_failed' && message.threadItem?.metadata?.eventStatus === 'command_failed'),
-                    ];
                     setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed));
                 } else {
                     setHistoryMessagesSessionId(sessionId);
@@ -867,10 +862,6 @@ function AgentDetailInner() {
                     : null;
                 if (writableSession) {
                     setChatMessagesSessionId(sessionId);
-                    preParsed = [
-                        ...preParsed,
-                        ...sessionMessageStore.getSnapshot(sessionId).filter(message => message.eventType === 'runtime_action_failed' && message.threadItem?.metadata?.eventStatus === 'command_failed'),
-                    ];
                     setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed));
                 } else {
                     setHistoryMessagesSessionId(sessionId);
@@ -1940,9 +1931,18 @@ function AgentDetailInner() {
                     if (isCompact && response.ok === false) {
                         throw new Error('Compaction unavailable');
                     }
+                    if (isCompact) {
+                        await handleSessionCommandUiAction(response, commandSessionId);
+                        // Local command outcomes are ephemeral: a transcript reload replaces them.
+                        setChatMessagesAfterQueuedForSession(commandSessionId, prev => [
+                            ...prev.filter(message => message.id !== commandMessageId),
+                            parseChatMsg({ role: 'assistant', content: t('agent.chat.commands.compactSucceeded', 'Context compacted.') }),
+                        ]);
+                        return;
+                    }
                     if (getSessionCommandUiAction(response)) {
                         await handleSessionCommandUiAction(response, commandSessionId);
-                        if (!isCompact) setChatInput('');
+                        setChatInput('');
                         setChatMessagesAfterQueuedForSession(
                             commandSessionId,
                             prev => prev.filter(message => message.id !== commandMessageId),
@@ -1958,14 +1958,14 @@ function AgentDetailInner() {
                             plan_mode_requested: actionResult.plan_mode_requested === true,
                             permission_mode: sessionPermissionMode,
                         });
-                        if (!isCompact) setChatInput('');
+                        setChatInput('');
                         commandStartedRun = true;
                         setPlanModeRequested(false);
                         applySubmittedRun(activeRuntimeKey, run);
                         invalidateSessionRuntimeQueries(id, commandSessionId);
                         return;
                     }
-                    if (!isCompact) setChatInput('');
+                    setChatInput('');
                     if (actionResult?.action === 'open_tab') {
                         const tab = typeof actionResult.tab === 'string' ? actionResult.tab : '';
                         if (tab) selectDetailTab(tab);
@@ -2162,6 +2162,7 @@ function AgentDetailInner() {
             if (expectedSessionId) throw new Error(t('agent.chat.artifacts.originalWorkUnavailable', 'The original work or account changed. Reopen the file in the current work.'));
             return;
         }
+        if (compactingSessionsRef.current.has(buildSessionRuntimeKey(id, String(activeSession.id)))) return;
         const acceptedInputId = options?.inputId || globalThis.crypto.randomUUID();
         const displayContent = options?.displayContent || userMsg;
         try {

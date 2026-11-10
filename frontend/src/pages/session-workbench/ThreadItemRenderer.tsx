@@ -233,7 +233,6 @@ export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorV
   // approval card and the run status already own what the member sees (B2 r2).
   if (item.item_type === 'boundary') return false;
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') return true;
-  if (item.item_type === 'context_compaction') return Boolean(item.user_summary);
   if (USER_CONVERSATION_ITEM_TYPES.has(item.item_type)) return true;
   return Boolean(item.user_action && item.user_action.kind !== 'open_artifact');
 }
@@ -293,10 +292,6 @@ export function ThreadItemRenderer({
     >{JSON.stringify(approvalArguments, null, 2)}</pre>}
     </>
   );
-
-  if (item.item_type === 'context_compaction' && item.audience !== 'operator') {
-    return item.user_summary ? <p>{item.user_summary}</p> : null;
-  }
 
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') {
     // A settled permission decision collapses to one plain line (product

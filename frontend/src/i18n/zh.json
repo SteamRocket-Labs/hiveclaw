@@ -2876,6 +2876,7 @@
         "loading": "正在加载命令...",
         "invalid": "无效的 slash 命令。",
         "failed": "命令执行失败",
+        "compactSucceeded": "上下文已压缩。",
         "description": {
           "plan": "先制定计划，再开始执行。",
           "resume": "继续之前的对话。",

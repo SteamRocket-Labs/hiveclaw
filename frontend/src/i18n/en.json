@@ -2876,6 +2876,7 @@
         "loading": "Loading commands...",
         "invalid": "Invalid slash command.",
         "failed": "Failed to run command",
+        "compactSucceeded": "Context compacted.",
         "description": {
           "plan": "Plan before starting work.",
           "resume": "Continue a previous conversation.",

@@ -66,10 +66,11 @@ async def test_native_disclosure_rechecks_changes_without_repeating_exact_source
         async def observe(*args, **kwargs):
             sources = args[2] if len(args) > 2 else kwargs["dependencies"]
             if kwargs.get("runtime_request") is not None:
-                observed = (
-                    reads if kwargs.get("active_workspace_receipts", frozenset()) == frozenset() else receipt_reads
-                )
-                observed.extend(row for row in sources if row == command)
+                # A source first reached under a receipt is the same reader's
+                # completed source. Count all validations, including that one.
+                reads.extend(row for row in sources if row == command)
+                if kwargs.get("active_workspace_receipts", frozenset()):
+                    receipt_reads.extend(row for row in sources if row == command)
             return await original(*args, **kwargs)
 
         monkeypatch.setattr(receipts, "_validate_input_dependency_batch", observe)

@@ -305,9 +305,6 @@ async def validate_explicit_memory_dependency(db, tenant_id, dependency, *, requ
 
 async def authorize_memory_history(db, *, tenant_id, agent_id, entry_id, request, receipt, active_receipts=frozenset()):
     """Historical evidence retains source ACLs; semantic retirement stops new recall."""
-    from contextlib import nullcontext
-    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
-
     authority = receipt.authority_json
     await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     if (receipt.tenant_id != tenant_id or receipt.carrier_kind != "explicit_memory"
@@ -322,11 +319,7 @@ async def authorize_memory_history(db, *, tenant_id, agent_id, entry_id, request
 
     await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, runtime_request=request,
         active_workspace_receipts=active_receipts | {receipt.id})
-    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    # The model boundary's existing post-walk audience check stays live; it
-    # does not reuse the authority frame of the completed recursive walk.
-    with group_source_read(batch_inputs=True) if scope is not None and not scope.cache_authority else nullcontext():
-        await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
+    await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     latest = await latest_memory_receipt(db, tenant_id, agent_id, entry_id)
     if (latest is None or latest.authority_json.get("state") == "revoked"
         or (latest.authority_json.get("state") == "prepared" and latest.authority_json.get("planned_state") == "revoked")):

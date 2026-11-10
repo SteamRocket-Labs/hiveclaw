@@ -109,13 +109,6 @@ class _DisclosureSourceValidations:
         self.visiting = set()
         self.actors = {}
         self.inputs = {}
-        self.authority_inputs = {}
-
-    def start_source(self):
-        # A2b: each top-level model source resolves authority afresh. Its
-        # recursive walk can reuse that frame and previously finished children.
-        self.actors.clear()
-        self.authority_inputs.clear()
 
 
 @contextmanager
@@ -131,7 +124,6 @@ def group_source_read(*, batch_inputs=False, cache_authority=True):
         scope.visiting.clear()
         scope.actors.clear()
         scope.inputs.clear()
-        scope.authority_inputs.clear()
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
 
 
@@ -144,9 +136,9 @@ class ContentInputReceiptError(ValueError):
 
 def _preflight_inputs(db, *, authority=False):
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is not None and scope.active and scope.batch_inputs:
-        rows = scope.authority_inputs if authority and not scope.cache_authority else scope.inputs
-        return rows.setdefault(db.get_transaction(), {})
+    if (scope is not None and scope.active and scope.batch_inputs
+        and (not authority or scope.cache_authority)):
+        return scope.inputs.setdefault(db.get_transaction(), {})
     return None
 
 
@@ -380,7 +372,7 @@ async def _validate_input_dependencies(
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     context = {"user": user, "runtime_request": runtime_request, "active_workspace_receipts": active_workspace_receipts}
     if scope is None or not scope.active:
-        with group_source_read(batch_inputs=True):
+        with group_source_read():
             return await _validate_input_dependencies(db, tenant_id, dependencies, **context)
     if (
         not isinstance(dependencies, list)
@@ -398,16 +390,22 @@ async def _validate_input_dependencies(
         reader_key = (
             transaction,
             tenant_id,
-            id(user) if runtime_request is None else None,
+            id(user),
             id(runtime_request),
             _SOURCE_READER.get() is not None,
             recipient,
             source_key,
         )
         if reader_key in scope.visiting:
+            if source_key[0] in {
+                "workspace_artifact", "explicit_memory", "team_memory", "project_resource",
+                "trigger_write", "trigger_snapshot", "native_trigger_context",
+            } or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get()):
+                # Let the source's active-chain check preserve its error class.
+                await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+                continue
             raise ContentInputReceiptError(
-                "explicit_memory_source_cycle" if source_key[0] == "explicit_memory" else "content_source_unavailable",
-                "The source dependency chain is cyclic.", 409 if source_key[0] == "explicit_memory" else 503
+                "content_source_unavailable", "The source dependency chain is cyclic.", 503
             )
         # Nested children of a top-level source are cached for the same reader
         # within one round; every top-level model source is walked live.
@@ -415,7 +413,6 @@ async def _validate_input_dependencies(
         if (
             not scope.active
             or transaction is None
-            or (not scope.cache_authority and not scope.visiting)
             or reader_key not in scope.verified
             or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())
         ):
@@ -1510,7 +1507,7 @@ async def _resolve_session_input_source(
     db, tenant_id, session, *, user, runtime_request, delegated_user_command=False
 ):
     from fastapi import HTTPException
-    from app.core.permissions import authorize_loaded_session_access, require_agent_execution_access
+    from app.core.permissions import authorize_session_action, require_agent_execution_access
     from app.core.source_read_purpose import business_inspection_allowed
     from app.models.chat_session import ChatSession
 
@@ -1561,9 +1558,9 @@ async def _resolve_session_input_source(
                 and business_inspection_allowed()
                 and is_scoped_business_admin(requester, resource_tenant_id=session.tenant_id)
             ):
-                agent, access = await _input_agent_access(db, requester, session.agent_id)
-                await authorize_loaded_session_access(db, requester, agent=agent, session=session,
-                    access_level=access, action="read_content_input_source")
+                await authorize_session_action(
+                    db, requester, agent_id=session.agent_id, session_id=session.id, action="read_content_input_source"
+                )
                 return
             await _input_agent_access(db, requester, session.agent_id)
             await require_current_group_member(db, session=session, user=requester)
@@ -1592,9 +1589,9 @@ async def _resolve_session_input_source(
                 )
             if not business_inspection_allowed() and session.user_id != getattr(user, "id", None):
                 raise ValueError("private_session_recipient_mismatch")
-            agent, access = await _input_agent_access(db, user, session.agent_id)
-            await authorize_loaded_session_access(db, user, agent=agent, session=session,
-                access_level=access, action="read_content_input_source")
+            await authorize_session_action(
+                db, user, agent_id=session.agent_id, session_id=session.id, action="read_content_input_source"
+            )
             return
         if session.user_id != requester.id:
             raise ValueError("session_source_actor_mismatch")
@@ -1689,7 +1686,7 @@ async def _runtime_input_actor(db, tenant_id, request):
     from app.core.source_read_purpose import current_source_recipient
 
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is None or not scope.active or not scope.batch_inputs:
+    if scope is None or not scope.active or not scope.batch_inputs or not scope.cache_authority:
         return await _resolve_runtime_input_actor(db, tenant_id, request)
     key = (db.get_transaction(), tenant_id, id(request), current_source_recipient())
     if key in scope.actors:
@@ -1921,7 +1918,7 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
         raise ContentInputReceiptError(
             "content_source_unavailable", "The workspace source binding is invalid.", 503
         ) from exc
-    cached = _preflight_inputs(db, authority=True)
+    cached = _preflight_inputs(db)
     manifest_key = ("manifest", agent_id, path)
     manifest = cached[manifest_key] if cached is not None and manifest_key in cached else await db.scalar(
         select(WorkspaceResourceManifest)
@@ -1932,8 +1929,6 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
         )
         .execution_options(populate_existing=True)
     )
-    if cached is not None:
-        cached[manifest_key] = manifest
     if manifest is None or manifest.authority_state != "owned" or manifest.deleted_at is not None:
         raise ContentInputReceiptError(
             "content_source_access_denied", "The workspace source is unavailable or quarantined.", 403
@@ -2251,7 +2246,7 @@ async def latest_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID
     key = ("latest", "workspace_artifact", workspace_artifact_ref(agent_id, path))
     if rows is not None and key in rows:
         return rows[key]
-    receipt = await db.scalar(
+    return await db.scalar(
         select(ContentInputReceipt)
         .where(
             ContentInputReceipt.tenant_id == tenant_id,
@@ -2262,9 +2257,6 @@ async def latest_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID
         .limit(1)
         .execution_options(populate_existing=True)
     )
-    if rows is not None:
-        rows[key] = receipt
-    return receipt
 
 
 async def validate_browser_workspace_receipt(db, tenant_id, user, agent_id, path, *, full_control):

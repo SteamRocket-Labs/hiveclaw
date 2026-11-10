@@ -19,6 +19,10 @@ from app.services.llm_client import LLMMessage
 from tests.integration.test_artifact_publication_transactions import stage_report
 from tests.integration.test_m1g24_workspace_artifact_authority_postgres import _prepare_write, native_workspace  # noqa: F401
 from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+from tests.integration.test_m4c_explicit_memory_scope_postgres import shared_memory  # noqa: F401
+from tests.integration.test_m4d_group_memory_postgres import group_memory, save_group  # noqa: F401
+from tests.integration.test_m4e_team_memory_authority_postgres import runtime_team  # noqa: F401
+from tests.integration.test_m4f_team_memory_runtime_postgres import readable_team_memory  # noqa: F401
 from tests.services.test_session_semantic_history import _seal_round
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -190,7 +194,8 @@ async def _model(n, app_user_sessionmaker):
             provider="synthetic", model="local-reference")
         row = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
         snapshot = row.model_request_snapshot_json
-        await db.rollback()
+        n.next_model = row.id
+        await db.commit()
         return snapshot
 
 
@@ -345,7 +350,7 @@ async def test_delegated_pre_model_source_graph_statement_work(native_workspace,
     requests, result, row = await _delegated_first_model(n, monkeypatch)
     assert not row["timed_out"] and row["first_request"], (row, result)
     # Two live instruction checks plus fixed child/context assembly: measured
-    # green work is 421..488 statements over these graphs, including cold setup.
+    # Live authority reads retain the same linear bound, including cold setup.
     assert row["statements"] <= 3 * (n.nodes + n.edges) + 400, row
     assert DERIVED in json.dumps(requests) and "COMPANY_SOURCE_MARKER" in json.dumps(requests)
     assert [phase["phase"] for phase in row["phases"]] == [
@@ -424,7 +429,9 @@ async def test_source_graph_statement_work(native_workspace, owner_sessionmaker,
     # One source costs a bounded number of indexed authority/source lookups;
     # edges must not multiply completed descendant walks. Tightened from the
     # measured green numbers, with fixed request overhead.
-    bounds = {"download": 3, "content": 3, "heartbeat_t2": 12, "web_model": 3}
+    # T2 checks every event with live authority: N=4 costs 1097 statements,
+    # below 24 * (14 nodes + 28 edges) + 100. No authority snapshot is needed.
+    bounds = {"download": 3, "content": 3, "heartbeat_t2": 24, "web_model": 3}
     violations = [row for row in rows if row["timed_out"]
         or row["statements"] > bounds[row["path"]] * (n.nodes + n.edges) + 100]
     assert not violations, violations
@@ -445,12 +452,28 @@ async def test_large_graph_deep_source_change_withholds(native_workspace, owner_
         assert result.status_code == 403, result.text
         assert "COMPANY_SOURCE_MARKER" not in result.text
     elif path == "heartbeat_t2":
+        from app.services import content_input_receipts as receipts
+        from app.services.content_input_receipts import ContentInputReceiptError
+
+        denied = []
+        validate = receipts._validate_input_dependencies
+
+        async def observe_denial(*args, **kwargs):
+            try:
+                return await validate(*args, **kwargs)
+            except ContentInputReceiptError as exc:
+                denied.append((exc.code, exc.status_code))
+                raise
+
+        monkeypatch.setattr(receipts, "_validate_input_dependencies", observe_denial)
         result = await asyncio.wait_for(_heartbeat(n), TIMEOUT)
-        assert result is None or DERIVED not in json.dumps(result)
+        assert denied and set(denied) == {("content_source_changed", 403)}, denied
+        assert result is not None and DERIVED not in json.dumps(result), result
     elif path == "web_model":
         result = await asyncio.wait_for(_model(n, app_user_sessionmaker), TIMEOUT)
         assert DERIVED not in json.dumps(result["wire_request"])
-        assert any(row.get("status") == "withheld" for row in result["input_bindings"]["messages"])
+        assert any(row.get("status") == "withheld" and row.get("code") == "content_source_changed"
+            for row in result["input_bindings"]["messages"])
     else:
         result = str(await asyncio.wait_for(n.service.execute("read_file", {"path": n.path},
             agent_id=n.agent, user_id=n.user, session_id=str(n.session), runtime_task_id=str(n.run),
@@ -466,26 +489,46 @@ async def test_large_graph_deep_source_change_withholds(native_workspace, owner_
         for receipt in n.receipts:
             current = await db.get(ContentInputReceipt, receipt.id, populate_existing=True)
             assert current.dependencies_json == receipt.dependencies_json
-        model = await db.get(SessionModelResult, n.model)
-        assert _source(n.receipts[-1]) in model.model_request_snapshot_json["input_bindings"]["dependencies"]
+        if path == "web_model":
+            from app.services.session_model_inputs import load_context_message_origin, _origin_dependencies
+            from app.services.learned_skill_sources import model_source
+
+            # A4d round 5: inspect the newly withheld round's retained origin,
+            # not just the model sealed before the source changed.
+            model = await db.get(SessionModelResult, n.next_model)
+            assert model.round_id == f"{n.run}:round:5"
+            snapshot = model.model_request_snapshot_json
+            withheld = [entry for entry in snapshot["input_bindings"]["messages"] if entry["status"] == "withheld"]
+            assert withheld and DERIVED not in json.dumps(snapshot["wire_request"])
+            old_source = model_source(await db.get(SessionModelResult, n.model))
+            for entry in withheld:
+                origin = await load_context_message_origin(db, tenant_id=n.tenant, agent_id=n.agent,
+                    source_id=uuid.UUID(entry["source_ref"].split(":", 1)[1]), session_id=n.session)
+                assert origin["model_result_id"] == str(model.id)
+                assert old_source in origin["dependencies"]
+                dependencies, complete = await _origin_dependencies(db, tenant_id=n.tenant, agent_id=n.agent,
+                    ref=f"session-model-result:{n.model}")
+                assert complete and _source(n.receipts[-1]) in dependencies
 
 
 @pytest.mark.parametrize("path", ["download", "heartbeat_t2", "web_model"])
-async def test_completed_sources_and_reader_authority_are_checked_once_per_walk(native_workspace,  # noqa: F811
+async def test_sources_are_validated_once_and_authority_checks_stay_live(native_workspace,  # noqa: F811
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, path):
     from app.core import permissions
     from app.core.source_read_purpose import current_source_recipient
     from app.services import content_input_receipts as receipts
 
     n = await _graph(native_workspace, 10, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
-    validations, authority = Counter(), Counter()
+    validations, authority, checks, resolutions = Counter(), Counter(), Counter(), Counter()
     validate, access = receipts._validate_input_dependency_batch, permissions.check_agent_access
+    authorize, resolve = receipts._authorize_session_input_source, receipts._resolve_session_input_source
 
     async def observe_validation(db, tenant, dependencies, **context):
         scope = receipts._DISCLOSURE_SOURCE_VALIDATIONS.get()
         reader = context.get("runtime_request") or context.get("user")
         for source in dependencies:
-            validations[scope, id(reader), current_source_recipient(), tuple(source.values())] += 1
+            identity = tuple(source[key] for key in ("source_kind", "source_id", "source_version"))
+            validations[scope, id(reader), current_source_recipient(), identity] += 1
         return await validate(db, tenant, dependencies, **context)
 
     async def observe_access(db, user, agent, **kwargs):
@@ -494,13 +537,32 @@ async def test_completed_sources_and_reader_authority_are_checked_once_per_walk(
             authority[scope, user.id, agent] += 1
         return await access(db, user, agent, **kwargs)
 
+    def authority_key(db, tenant, session, context):
+        return (receipts._DISCLOSURE_SOURCE_VALIDATIONS.get(), db.get_transaction(), tenant, session.id,
+            id(context.get("user")), id(context.get("runtime_request")))
+
+    async def observe_check(db, tenant, session, **context):
+        checks[authority_key(db, tenant, session, context)] += 1
+        return await authorize(db, tenant, session, **context)
+
+    async def observe_resolution(db, tenant, session, **context):
+        resolutions[authority_key(db, tenant, session, context)] += 1
+        return await resolve(db, tenant, session, **context)
+
     monkeypatch.setattr(receipts, "_validate_input_dependency_batch", observe_validation)
     monkeypatch.setattr(permissions, "check_agent_access", observe_access)
+    monkeypatch.setattr(receipts, "_authorize_session_input_source", observe_check)
+    monkeypatch.setattr(receipts, "_resolve_session_input_source", observe_resolution)
     operation = {"download": lambda: _browser(n, "download"), "heartbeat_t2": lambda: _heartbeat(n),
         "web_model": lambda: _model(n, app_user_sessionmaker)}[path]
     await asyncio.wait_for(operation(), TIMEOUT)
     assert validations and max(validations.values()) == 1, validations
-    assert authority and max(authority.values()) == 1, authority
+    observed = {key[-1] for key in validations if key[-1][0] == "workspace_artifact"}
+    expected = n.receipts[:-1] if path == "download" else n.receipts
+    assert observed == {tuple(_source(receipt).values()) for receipt in expected}
+    # R12a review round 1: authority reads stay live within one request.
+    assert checks and all(resolutions[key] == count for key, count in checks.items()), (checks, resolutions)
+    assert authority and max(authority.values()) > 1, authority
 
 
 @pytest.mark.parametrize("path", ["download", "content", "heartbeat_t2", "web_model", "run_read"])
@@ -511,12 +573,14 @@ async def test_cycle_is_not_hidden_by_completed_dag_siblings(native_workspace, o
 
     n = await _graph(native_workspace, 10, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
     async with owner_sessionmaker() as db:
-        leaf = await db.get(ContentInputReceipt, n.receipts[0].id)
+        # graph-0 completes before graph-1 reaches the back-edge.
+        leaf = await db.get(ContentInputReceipt, n.receipts[1].id)
         leaf.dependencies_json = [_source(n.receipts[-1])]
         await db.commit()
     if path in {"download", "content"}:
         response = await asyncio.wait_for(_browser(n, path), TIMEOUT)
         assert response.status_code == 503 and "COMPANY_SOURCE_MARKER" not in response.text
+        assert response.json()["detail"]["code"] == "content_source_unavailable"
     elif path == "heartbeat_t2":
         with pytest.raises(ContentInputReceiptError) as error:
             await asyncio.wait_for(_heartbeat(n), TIMEOUT)
@@ -524,8 +588,223 @@ async def test_cycle_is_not_hidden_by_completed_dag_siblings(native_workspace, o
     elif path == "web_model":
         snapshot = await asyncio.wait_for(_model(n, app_user_sessionmaker), TIMEOUT)
         assert DERIVED not in json.dumps(snapshot["wire_request"])
+        assert any(entry.get("status") == "withheld" and entry.get("code") == "content_source_unavailable"
+            for entry in snapshot["input_bindings"]["messages"])
     else:
         result = str(await asyncio.wait_for(n.service.execute("read_file", {"path": n.path},
             agent_id=n.agent, user_id=n.user, session_id=str(n.session), runtime_task_id=str(n.run),
             emit_runtime_hooks=False), TIMEOUT))
         assert "COMPANY_SOURCE_MARKER" not in result and "content_source_unavailable" in result
+
+
+async def test_browser_group_memory_membership_is_live_after_dependency_walk(group_memory,  # noqa: F811
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch):
+    from app.core.resource_authority import workspace_resource_id
+    from app.models.organization_identity import ContentInputReceipt
+    from app.models.security_audit import ResourcePermission
+    from app.models.workspace_resource import WorkspaceResourceManifest
+    from app.services import explicit_memory_authority as memory
+
+    g, path = group_memory, "workspace/group-report.md"
+    n = g.n
+    await save_group(g, app_user_sessionmaker)
+    async with owner_sessionmaker() as db:
+        source = memory.source_dependency(await db.get(ContentInputReceipt, g.source_id))
+        await stage_report(db, tenant=n.tenant, agent=n.agent, user=n.foreign, session=n.session,
+            root=n.root, path=path, dependencies=[source])
+        manifest = await db.scalar(select(WorkspaceResourceManifest).where(
+            WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == path))
+        manifest.root_session_id = None
+        db.add(ResourcePermission(tenant_id=n.tenant, principal_type="user", principal_id=n.user,
+            resource_type="workspace_file", resource_id=workspace_resource_id(n.agent, path),
+            actions=["read"], effect="allow", conditions={}))
+        await db.commit()
+    route = f"/agents/{n.agent}/files/content"
+    allowed = await n.client.get(route, params={"path": path})
+    assert allowed.status_code == 200 and allowed.json()["content"] == BODY, allowed.text
+    walk, revoked = memory._validate_input_dependencies, False
+
+    async def revoke_after_walk(db, tenant, dependencies, **context):
+        nonlocal revoked
+        await walk(db, tenant, dependencies, **context)
+        if g.source_id in context.get("active_workspace_receipts", ()) and not revoked:
+            g.members.remove("memory-author")
+            revoked = True
+
+    monkeypatch.setattr(memory, "_validate_input_dependencies", revoke_after_walk)
+    response = await n.client.get(route, params={"path": path})
+    assert revoked
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["code"] == "content_source_access_denied", response.text
+    assert "COMPANY_SOURCE_MARKER" not in response.text
+
+
+async def test_download_manifest_quarantine_is_live_between_copies(native_workspace,  # noqa: F811
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch):
+    from app.models.organization_identity import ContentInputReceipt
+    from app.models.workspace_resource import WorkspaceResourceManifest
+    from app.services import content_input_receipts as receipts
+
+    n = await _graph(native_workspace, 4, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    first = n.receipts[0]
+    async with owner_sessionmaker() as db:
+        copy = ContentInputReceipt(id=uuid.uuid4(), tenant_id=n.tenant, carrier_kind=first.carrier_kind,
+            carrier_ref=first.carrier_ref, revision=first.revision + 1, content_sha256=first.content_sha256,
+            dependencies_json=first.dependencies_json, authority_json=first.authority_json)
+        db.add(copy)
+        (await db.get(ContentInputReceipt, n.receipts[-1].id)).dependencies_json = [_source(first), _source(copy)]
+        await db.commit()
+    allowed = await _browser(n, "download")
+    assert allowed.status_code == 200 and allowed.content == BODY.encode(), allowed.text
+    validate, revoked = receipts._validate_workspace_dependency, False
+    visited = []
+
+    async def quarantine_between_copies(db, tenant, dependency, **context):
+        nonlocal revoked
+        visited.append(dependency["source_id"])
+        await validate(db, tenant, dependency, **context)
+        if dependency == _source(first) and not revoked:
+            async with owner_sessionmaker() as writer:
+                manifest = await writer.scalar(select(WorkspaceResourceManifest).where(
+                    WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == "workspace/graph-0.md"))
+                manifest.authority_state = "quarantined"
+                await writer.commit()
+            revoked = True
+
+    monkeypatch.setattr(receipts, "_validate_workspace_dependency", quarantine_between_copies)
+    response = await _browser(n, "download")
+    assert revoked and visited == [str(first.id), str(copy.id)], visited
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["code"] == "content_source_access_denied", response.text
+    assert "COMPANY_SOURCE_MARKER" not in response.text
+
+
+@pytest.mark.parametrize("kind,code,status", [
+    ("workspace_artifact", "content_source_unavailable", 503),
+    ("explicit_memory", "explicit_memory_source_cycle", 409),
+    ("team_memory", "team_memory_source_unverified", 403),
+    ("project_resource", "project_source_cycle", 503),
+    ("trigger_write", "trigger_context_access_denied", 403),
+    ("trigger_snapshot", "trigger_context_access_denied", 403),
+    ("native_trigger_context", "native_trigger_context_changed", 403),
+])
+async def test_source_back_edge_preserves_each_kind_error(native_workspace, owner_sessionmaker,  # noqa: F811
+    app_user_sessionmaker, monkeypatch, kind, code, status):
+    from app.models.organization_identity import ContentInputReceipt
+    from app.models.user import User
+    from app.services import content_input_receipts as receipts
+    from app.services import native_trigger_context, project_context, trigger_context_sources
+    from app.services.explicit_memory_authority import AUTHORITY_SCHEMA
+
+    n, identity = native_workspace, uuid.uuid4()
+    source = {"source_kind": kind, "source_id": str(identity), "source_version": "f" * 64}
+    async with owner_sessionmaker() as db:
+        if kind in {"workspace_artifact", "explicit_memory", "team_memory"}:
+            db.add(ContentInputReceipt(id=identity, tenant_id=n.tenant, carrier_kind=kind,
+                carrier_ref=f"{n.agent}\ncycle", revision=1, content_sha256=source["source_version"],
+                dependencies_json=[source], authority_json={"schema": AUTHORITY_SCHEMA, "state": "active",
+                    "tenant_id": str(n.tenant), "agent_id": str(n.agent), "audience_kind": "private",
+                    "owner_user_id": str(n.user), "source_session_id": str(n.session)}))
+            await db.commit()
+    batch, entered = receipts._validate_input_dependency_batch, False
+    active = {"project_resource": project_context._ACTIVE_RECEIPTS,
+        "trigger_write": trigger_context_sources._ACTIVE, "trigger_snapshot": trigger_context_sources._ACTIVE,
+        "native_trigger_context": native_trigger_context._ACTIVE}.get(kind)
+
+    async def enter_back_edge(db, tenant, dependencies, **context):
+        nonlocal entered
+        if entered:
+            return await batch(db, tenant, dependencies, **context)
+        entered = True
+        # Isolate the dispatcher boundary at a back-edge. The common walker
+        # establishes visiting; the real kind validator classifies re-entry.
+        token = active.set(active.get() | {identity}) if active is not None else None
+        try:
+            await receipts._validate_input_dependencies(db, tenant, dependencies,
+                **{**context, "active_workspace_receipts": frozenset({identity})})
+        finally:
+            if active is not None:
+                active.reset(token)
+
+    monkeypatch.setattr(receipts, "_validate_input_dependency_batch", enter_back_edge)
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        user = await db.get(User, n.user)
+        with receipts.group_source_read() as scope:
+            with pytest.raises(receipts.ContentInputReceiptError) as denied:
+                await receipts._validate_input_dependencies(db, n.tenant, [source], user=user)
+            assert (denied.value.code, denied.value.status_code) == (code, status)
+            assert not scope.verified and not getattr(scope, "visiting", ())
+
+
+async def test_unclassified_model_cycle_fails_without_recursing_forever(native_workspace,  # noqa: F811
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch):
+    from app.models.organization_identity import ContentInputReceipt
+    from app.models.user import User
+    from app.services.content_input_receipts import ContentInputReceiptError, validate_browser_input_dependencies
+    from app.services.learned_skill_sources import model_source
+
+    n = await _graph(native_workspace, 4, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    async with owner_sessionmaker() as db:
+        model = await db.get(SessionModelResult, n.model)
+        source = model_source(model)
+        (await db.get(ContentInputReceipt, n.receipts[0].id)).dependencies_json = [source]
+        await db.commit()
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        user = await db.get(User, n.user)
+        with pytest.raises(ContentInputReceiptError) as denied:
+            await asyncio.wait_for(validate_browser_input_dependencies(db, n.tenant, user, [source]), TIMEOUT)
+        assert (denied.value.code, denied.value.status_code) == ("content_source_unavailable", 503)
+
+
+async def test_t2_omits_cyclic_team_event_and_keeps_its_sibling(readable_team_memory,  # noqa: F811
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch):
+    from app.memory.t0.ledger import replay_t0_session_events, seal_t0_session_segment
+    from app.services import content_input_receipts as receipts
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.explicit_memory_authority import latest_memory_receipt, source_dependency
+    from app.services.runtime_control_bus import bridge_transcript_event_to_t0
+    from app.services.session_model_round import prepare_model_request
+
+    s, _workspace, receipt = readable_team_memory
+    n = s.n
+    bad, good = "CYCLIC_TEAM_EVENT_MARKER", "SAFE_SIBLING_EVENT_MARKER"
+    team_source = {"source_kind": "team_memory", "source_id": str(receipt.id), "source_version": receipt.content_sha256}
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        private = source_dependency(await latest_memory_receipt(db, n.tenant, n.agent, s.entry_id))
+    for index, content, source in [(10, bad, team_source), (11, good, private)]:
+        async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+            message = LLMMessage(role="system", content=content, context_origin=ContextMessageOrigin.capture(
+                kind="history", role="system", content=content, sources=[source], unbound=()))
+            request = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
+                run_id=n.run, turn_id=f"turn-{n.run.hex}", round_index=index, messages=[message], tools=[],
+                provider="synthetic", model="local-reference")
+            await _seal_round(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session, run_id=n.run,
+                turn_id=f"turn-{n.run.hex}", round_index=index, provider_request_id=request, content=content)
+            model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
+            transcript = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.result_id == model.id,
+                ChatTranscriptEvent.item_kind == "assistant_text"))
+            transcript_id = transcript.id
+            await db.commit()
+        assert await bridge_transcript_event_to_t0(transcript_event_id=transcript_id)
+    assert seal_t0_session_segment(agent_id=n.agent, session_id=n.session, reason="turn_stop")
+    events = replay_t0_session_events(agent_id=n.agent, session_id=n.session, data_root=n.root.parent)
+    n.segment = next(event.segment_id for event in events if event.content == bad)
+    assert next(event.segment_id for event in events if event.content == good) == n.segment
+    before = await _heartbeat(n)
+    assert before is not None and all(marker in json.dumps(before) for marker in (bad, good))
+    async with owner_sessionmaker() as db:
+        (await db.get(type(receipt), receipt.id)).dependencies_json = [team_source]
+        await db.commit()
+    validate, codes = receipts._validate_input_dependencies, []
+
+    async def observe_denial(*args, **kwargs):
+        try:
+            return await validate(*args, **kwargs)
+        except ContentInputReceiptError as exc:
+            codes.append((exc.code, exc.status_code))
+            raise
+
+    monkeypatch.setattr(receipts, "_validate_input_dependencies", observe_denial)
+    result = await _heartbeat(n)
+    assert codes and set(codes) == {("team_memory_source_unverified", 403)}, codes
+    assert result is not None and good in json.dumps(result) and bad not in json.dumps(result), result

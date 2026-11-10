@@ -909,7 +909,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # (one condition and one comment line in session_model_round); still 122 callsites.
 # R10a validates workspace sources at read time and reuses exact no-body refusal proofs.
 # Three source/function entries change; all 122 bypass callsites and grants remain identical.
-RLS_BYPASS_SCOPES_SHA256 = "183947051106232bc5adf295f36a93c2c92c9fc59316a6cfc38b1b1e5124a05c"
+# R10b unifies workspace input readers and preserves bound colleague returns.
+# Two module sources and the directory UUID comparison change; 790 entries and 122 callsites remain.
+RLS_BYPASS_SCOPES_SHA256 = "759ef8cad2de4da89f56c1db833d938ab5abb0115421c374d467df0c25f6cbc0"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

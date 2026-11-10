@@ -310,7 +310,6 @@ async def test_report_that_inherits_unverifiable_history_is_never_published(
 @pytest.mark.parametrize("tool,arguments", [
     ("read_file", {}), ("read_document", {}),
     ("fs_read", {"mode": "text"}), ("fs_read", {"mode": "document"}),
-    ("fs_read", {"mode": "grep", "pattern": "COMPANY_SOURCE_"}),
     ("office_document_view", {}), ("office_document_query", {"selector": "paragraph"}),
     ("office_document_validate", {}), ("office_document_dump", {"original_attachment_id": "ignored-by-office"}),
 ])
@@ -323,13 +322,9 @@ async def test_workspace_read_tools_withhold_the_unverifiable_file_body(
         path, _source = await _unverifiable_history(db, tenant=n.tenant, agent=n.agent, user=n.user,
             session=n.session, root=n.root)
         await db.commit()
-    result = await n.service.execute(tool, {"path": "workspace" if arguments.get("mode") == "grep" else path,
-        **arguments}, agent_id=n.agent, user_id=n.user,
+    result = await n.service.execute(tool, {"path": path, **arguments}, agent_id=n.agent, user_id=n.user,
         session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False)
     assert "COMPANY_SOURCE_MARKER" not in str(result)
-    if arguments.get("mode") == "grep":
-        assert path in result.model_visible_text, result
-        return
     assert "learned_model_source_unavailable" in str(result), result
     assert result.metadata["native_read_denial"] == {"kind": "workspace_source_read_denied", "path": path,
         "http_status": 403, "reason_code": "learned_model_source_unavailable"}

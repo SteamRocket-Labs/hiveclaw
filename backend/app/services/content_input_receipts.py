@@ -1982,22 +1982,28 @@ async def _validate_workspace_receipt_inputs(
 
 
 async def _validate_workspace_tool_input(db, request, receipt):
-    """Read the chain as the reader that publishes this session's output."""
+    """Read the exact workspace carrier as this session's output recipient."""
+    from app.core.source_read_purpose import source_recipient_read
     from app.models.chat_session import ChatSession
 
     tenant_id = uuid.UUID(str(request.context.tenant_id))
     principal, user = await _runtime_input_actor(db, tenant_id, request)
     session = await _input_row(db, ChatSession, uuid.UUID(principal.session_id))
+    dependency = {"source_kind": "workspace_artifact", "source_id": str(receipt.id),
+        "source_version": receipt.content_sha256}
     # Private Web and delegation outputs publish as the session's member;
     # group and machine outputs retain their runtime reader.
     if session.user_id is None or session.audience_kind == "group":
-        await validate_runtime_workspace_receipt(db, tenant_id, request, receipt, receipt.content_sha256)
+        await _validate_workspace_dependency(db, tenant_id, dependency, user=None,
+            runtime_request=request, active_receipts=frozenset())
     else:
-        await validate_published_workspace_receipt(db, tenant_id, user, receipt, receipt.content_sha256)
+        with source_recipient_read(session_id=session.id, user_id=user.id):
+            await _validate_workspace_dependency(db, tenant_id, dependency, user=user,
+                runtime_request=None, active_receipts=frozenset())
 
 
 async def authorize_workspace_execution_inputs(request):
-    """Exclude unprovable personal Web inputs from the execution workspace."""
+    """Exclude unprovable inputs from every run's execution workspace."""
     from dataclasses import replace
     from app.database import tenant_scoped_session
     from app.core.resource_authority import normalize_workspace_resource_path
@@ -2008,8 +2014,7 @@ async def authorize_workspace_execution_inputs(request):
 
     context, scope = request.context, request.context.workspace_authority_scope
     if (request.tool_name not in {"grep_search", "execute_code", "run_command", "run_skill_tool",
-        "office_document_create", "office_document_apply"} and not (request.tool_name == "fs_read"
-        and str(request.arguments.get("mode") or "text").strip().lower() == "grep")) or not isinstance(scope, WorkspaceAuthorityScope):
+        "office_document_create", "office_document_apply"}) or not isinstance(scope, WorkspaceAuthorityScope):
         return
     try:
         paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}
@@ -2037,14 +2042,12 @@ async def authorize_workspace_execution_inputs(request):
                 source_rows = _preflight_inputs(db)
                 if task is not None:
                     source_rows[(RuntimeTask, task.id)] = task
-                if receipt_ids and task is not None and task.task_type == "web_chat_turn":
+                if receipt_ids:
                     await _preload_execution_sources(db, tenant_id, [{"source_kind": "workspace_artifact",
                         "source_id": str(receipt_id)} for receipt_id in receipt_ids.values()], latest_receipts=receipt_ids)
                     receipts = {ref: source_rows.get((ContentInputReceipt, receipt_id)) for ref, receipt_id in receipt_ids.items()}
                 else:
-                    receipts = {row.carrier_ref: row for row in await db.scalars(select(ContentInputReceipt).where(
-                        ContentInputReceipt.tenant_id == tenant_id, ContentInputReceipt.id.in_(receipt_ids.values()))
-                        .execution_options(populate_existing=True))} if receipt_ids else {}
+                    receipts = {}
                 for path in sorted(paths):
                     ref = workspace_artifact_ref(context.agent_id, path)
                     receipt = receipts.get(ref)
@@ -2054,12 +2057,9 @@ async def authorize_workspace_execution_inputs(request):
                         continue
                     if receipt is None and path not in scope.full_control_paths:
                         continue
-                    if receipt is not None and task is not None and task.task_type == "web_chat_turn":
+                    if receipt is not None:
                         try:
-                            await _validate_workspace_dependency(db, tenant_id, {
-                                "source_kind": "workspace_artifact", "source_id": str(receipt.id),
-                                "source_version": receipt.content_sha256,
-                            }, user=None, runtime_request=request, active_receipts=frozenset())
+                            await _validate_workspace_tool_input(db, request, receipt)
                         except ContentInputReceiptError:
                             omitted.add(path)
                             continue
@@ -2097,6 +2097,8 @@ async def authorize_workspace_receipt_read(request):
 
             raw_path = interactive_plan_mode_metadata().get("plan_file_path")
         path = normalize_workspace_resource_path(str(raw_path or ""))
+        if office_read and not path.startswith("workspace/"):
+            return None  # Office only reads workspace documents; keep its own path denial.
         if path == "memory/explicit" or path.startswith("memory/explicit/"):
             from app.services.explicit_memory_authority import authorize_explicit_memory_file_read
 

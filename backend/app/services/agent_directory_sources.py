@@ -76,7 +76,7 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
         or task is None
         or task.root_user_id != user_id
         or agent_id not in {task.parent_agent_id, task.child_agent_id}
-        or str(session_id) not in {task.parent_session_id, task.child_session_id}
+        or session_id not in {uuid.UUID(value) for value in (task.parent_session_id, task.child_session_id) if value}
     ):
         raise _error()
     from fastapi import HTTPException

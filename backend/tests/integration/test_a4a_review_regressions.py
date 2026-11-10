@@ -189,8 +189,7 @@ async def test_revoked_document_cannot_leave_after_working_copy_read(native_work
             invocation_id=outward.id, provider_result_content=str(waiting), execution_evidence=_execution_evidence(trace))
         await db.commit()
         permission_id = outward.permission_item_id
-        grant.revoked_at = datetime.now(timezone.utc)
-        runtime_grant.revoked_at = grant.revoked_at
+        runtime_grant.revoked_at = datetime.now(timezone.utc)
         await db.commit()
         with pytest.raises(ContentInputReceiptError):
             await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name='send_email', arguments={}, context=context), sources)
@@ -207,7 +206,10 @@ async def test_revoked_document_cannot_leave_after_working_copy_read(native_work
         assert event.metadata_json['v2_payload']['outcome'] == 'failed'
 
 
-async def test_agent_only_source_grant_cannot_admit_or_publish_member_working_copy(native_workspace, owner_sessionmaker):  # noqa: F811
+@pytest.mark.parametrize('revoked_member_grant', [False, True])
+async def test_agent_only_source_grant_cannot_admit_or_publish_member_working_copy(
+    native_workspace, owner_sessionmaker, revoked_member_grant,  # noqa: F811
+):
     from datetime import datetime, timedelta, timezone
     from app.models.chat_artifact import ChatArtifact
     from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
@@ -230,10 +232,21 @@ async def test_agent_only_source_grant_cannot_admit_or_publish_member_working_co
         expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
     async with owner_sessionmaker() as db:
         db.add_all([document, grant])
+        if revoked_member_grant:
+            member_grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type='document',
+                resource_id=document.id, document_id=document.id, grantee_type='user', grantee_id=n.user,
+                created_by_user_id=n.foreign, permission='read')
+            db.add(member_grant)
         receipt = await latest_workspace_receipt(db, n.tenant, n.agent, path)
         dependency = {'source_kind': 'knowledge_document', 'source_id': str(document.id), 'source_version': version}
         receipt.dependencies_json = [dependency]
         await db.commit()
+        if revoked_member_grant:
+            admitted = await n.service.execute('read_file', {'path': path}, agent_id=n.agent, user_id=n.user,
+                session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False)
+            assert 'DERIVED_SOURCE_BODY' in str(admitted), admitted
+            member_grant.revoked_at = datetime.now(timezone.utc)
+            await db.commit()
         context = ToolExecutionContext(agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant), workspace=n.root,
             session_id=str(n.session), runtime_task_id=str(n.run))
         # The legacy grant is valid for its runtime reader, but cannot authorize the member's read or publication.

@@ -25,15 +25,14 @@ from app.services.session_model_inputs import _model_dependencies, _stored_depen
 async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids=frozenset()):
     kind, source_id = dependency["source_kind"], dependency["source_id"]
     if kind == "agent_directory_observation":
-        from app.services.agent_directory_sources import owned_directory_source
+        from app.services.agent_directory_sources import _load
 
-        return await owned_directory_source(
-            db,
-            dependency=dependency,
-            agent_id=task.child_agent_id,
-            tenant_id=task.tenant_id,
-            session_id=uuid.UUID(task.child_session_id),
-            user_id=task.root_user_id,
+        row, _proof, _reader = await _load(db, tenant_id=task.tenant_id, dependency=dependency)
+        return (
+            row.agent_id == task.child_agent_id
+            and row.session_id == str(uuid.UUID(task.child_session_id))
+            and row.runtime_task_id == task.id
+            and row.user_id == task.root_user_id
         )
     if kind in {
         "agent_identity",
@@ -93,7 +92,8 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
             and not directory_read
             and not search_read
             and not clock_read
-            and row.tool_name not in {"read_file", "read_document", "fs_read"}
+            and row.tool_name not in {"read_file", "read_document", "fs_read", "office_document_view",
+                "office_document_query", "office_document_validate", "office_document_dump"}
         ):
             return False
         from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -883,16 +883,15 @@ async def _validate_runtime_result_sources(db, request, result_object, *, user=N
             )
         # Recheck creating-model inputs before the original work consumes seed facts or its user's bound answers.
         await _validate_input_dependencies(db, task.tenant_id, original[0], user=user, runtime_request=request)
-    owned_return = False
+    published_return = False
     if not first_task and result_object.source_kind in {"a2a_delegation", "a2a_continuation"} and requester.id == task.root_user_id:
         from app.models.chat_session import ChatSession
 
         child = await db.get(Agent, task.child_agent_id, populate_existing=True)
         original_work = await db.get(ChatSession, reader_session, populate_existing=True)
-        owned_return = (
+        published_return = (
             child is not None
             and child.tenant_id == task.tenant_id
-            and child.owner_user_id == requester.id
             and child.deleted_at is None
             and child.deactivated_at is None
             and original_work is not None
@@ -905,7 +904,7 @@ async def _validate_runtime_result_sources(db, request, result_object, *, user=N
             )
         )
     for dependency in dependencies:
-        published = (first_task or owned_return) and await _published_owned_delegation_input(
+        published = (first_task or published_return) and await _published_owned_delegation_input(
             db, dependency, task, receipt_ids=receipt_ids
         )
         await _validate_input_dependencies(

@@ -348,7 +348,9 @@ async def test_stored_queued_outcome_binds_and_session_can_delegate_again(
 @pytest.mark.parametrize("origin,identity_type", [
     ("trigger", "agent_bot"), ("heartbeat", "agent_bot"), ("web", "agent_bot"),
     ("feishu", "external_principal"), ("feishu", "external_principal_bound"),
-], ids=["trigger", "heartbeat", "native-trigger-web", "external-principal", "bound-channel-member"])
+    (None, "delegated_user"), ("unknown", "delegated_user"), ("subagent", "delegated_user"),
+], ids=["trigger", "heartbeat", "native-trigger-web", "external-principal", "bound-channel-member",
+    "missing-member-entry", "unknown-member-entry", "member-subagent"])
 async def test_unattended_consult_keeps_synchronous_reply_without_plan_required(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, origin, identity_type,
 ):

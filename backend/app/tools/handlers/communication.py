@@ -168,7 +168,8 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, executi
 
     if (
         _is_user_initiated_delegation(get_execution_identity())
-        and getattr(execution_context, "delegation_token", None) is None
+        # This marks the current chat entry, unlike a token that only marks delegation.
+        and getattr(execution_context, "plan_mode_interactive_available", False) is True
     ):
         return await delegate_to_agent(agent_id, arguments, execution_context=execution_context)
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result

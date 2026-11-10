@@ -68,11 +68,14 @@ async def _document(n, db):
         tenant_id=n.tenant, owner_user_id=n.foreign, title="Private document D",
         markdown=f"# Input\nPRIVATE_DOCUMENT_D\n{uuid.uuid4()}\n", source_kind="paste", sensitivity="PL3_sensitive")
     document = await db.get(KnowledgeDocument, imported.document_id)
-    grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",
+    grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",  # R10a reader ruling: agent-only grants no longer admit a member read
+        resource_id=document.id, document_id=document.id, grantee_type="user", grantee_id=n.user,  # R10a reader ruling: agent-only grants no longer admit a member read
+        created_by_user_id=n.foreign, permission="read")  # R10a reader ruling: agent-only grants no longer admit a member read
+    runtime_grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",  # R10a reader ruling: agent-only grants no longer admit a member read
         resource_id=document.id, document_id=document.id, grantee_type="agent", grantee_id=n.agent,
         requester_user_id=n.user, session_id=str(n.session), purpose="interactive_session", permission="read",
         expires_at=datetime.now(timezone.utc) + timedelta(hours=1), sensitivity_ceiling="PL3_sensitive")
-    db.add(grant)
+    db.add_all([grant, runtime_grant])  # R10a reader ruling: agent-only grants no longer admit a member read
     agent = await db.get(Agent, n.agent)
     agent.owner_user_id = n.foreign
     db.add(ResourcePermission(tenant_id=n.tenant, principal_type="user", principal_id=n.user,

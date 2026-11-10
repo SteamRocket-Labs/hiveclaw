@@ -905,7 +905,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # (dead-letter rejection and pending/processing hold in session dispatch, terminal cancel
 # bookkeeping guard and session-scoped late Stop, frontier exclusion of cancel-signal
 # recovery_action rows, withholding-notice origin); still 122 callsites, no scope change.
-RLS_BYPASS_SCOPES_SHA256 = "5913fbc40a7e6a121451be14a244878f84e766a9ec2ffb1a53cd6951c4ee3931"
+# Land14 fixes: the withholding-notice origin attaches only to internal LLMMessage rows
+# (one condition and one comment line in session_model_round); still 122 callsites.
+RLS_BYPASS_SCOPES_SHA256 = "75e0d5c2a3bb21af4471b7923f318263870417f0ddec3f67474b4393d93c43a4"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

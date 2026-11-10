@@ -1928,7 +1928,7 @@ function AgentDetailInner() {
                         session_id: commandSessionId,
                     });
                     const actionResult = commandResultRecord(response);
-                    if (isCompact && response.ok === false) {
+                    if (isCompact && (response.ok === false || actionResult?.ok === false)) {
                         throw new Error('Compaction unavailable');
                     }
                     if (isCompact) {
@@ -2162,7 +2162,9 @@ function AgentDetailInner() {
             if (expectedSessionId) throw new Error(t('agent.chat.artifacts.originalWorkUnavailable', 'The original work or account changed. Reopen the file in the current work.'));
             return;
         }
-        if (compactingSessionsRef.current.has(buildSessionRuntimeKey(id, String(activeSession.id)))) return;
+        if (compactingSessionsRef.current.has(buildSessionRuntimeKey(id, String(activeSession.id)))) {
+            throw new Error(t('agent.chat.commands.compactInProgress', 'Context is being compacted. Continue when it finishes.'));
+        }
         const acceptedInputId = options?.inputId || globalThis.crypto.randomUUID();
         const displayContent = options?.displayContent || userMsg;
         try {

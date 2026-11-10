@@ -19,18 +19,62 @@ from app.models.chat_artifact import ChatArtifact
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
+from app.services import agent_tools, runtime_result_sources
+from app.services.content_input_receipts import ContentInputReceiptError
 from app.services.direct_invocation_terminal_boundary_processor import _validate_response_payload
 from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanonicalMismatch
 from tests.integration import test_m1g49_delegation_instruction_origin_postgres as native_cases
 
 
 async def _exercise_first_task_delivery(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url, *, configured_channel
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url, *, configured_channel,
+    change_channel_before_read=False,
 ):
     original_delegate = orchestrator._delegate
     original_delegate_body = orchestrator._delegate_after_cycle_check
     observed = set()
     configured_agents = set()
+    configured_channel_context = {}
+    changed_channel_reads = []
+
+    async def check_changed_channel_read(tool_name, arguments, **kwargs):
+        if tool_name == "read_runtime_result" and observed and not changed_channel_reads:
+            from app.models.channel_config import ChannelConfig
+
+            async def check_source_denial(*args, **kwargs):
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await original_validate_sources(*args, **kwargs)
+                assert denied.value.status_code == 403
+                assert denied.value.code == "content_source_changed"
+                raise denied.value
+
+            tenant_id = configured_channel_context["tenant_id"]
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, tenant_id)
+                channel = await db.get(ChannelConfig, configured_channel_context["channel_id"])
+                assert channel is not None and channel.is_configured
+                channel_id = channel.id
+                channel.is_configured = False
+                await db.commit()
+            try:
+                with monkeypatch.context() as read_patch:
+                    original_validate_sources = runtime_result_sources.validate_runtime_result_sources
+                    read_patch.setattr(runtime_result_sources, "validate_runtime_result_sources", check_source_denial)
+                    denied = json.loads(str(await original_execute_tool(tool_name, arguments, **kwargs)))
+                assert denied["status"] == "source_access_denied", denied
+                assert denied["reason_code"] == "content_source_changed", denied
+                assert "DELEGATED_REPORT" not in json.dumps(denied)
+                changed_channel_reads.append(denied)
+            finally:
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, tenant_id)
+                    (await db.get(ChannelConfig, channel_id)).is_configured = True
+                    await db.commit()
+        return await original_execute_tool(tool_name, arguments, **kwargs)
+
+    if change_channel_before_read:
+        original_execute_tool = agent_tools.execute_tool
+        monkeypatch.setattr(agent_tools, "execute_tool", check_changed_channel_read)
 
     async def inspect_delivery(request, result):
         tenant_id = request.tenant_id
@@ -154,9 +198,11 @@ async def _exercise_first_task_delivery(
 
             async with app_user_sessionmaker() as db:
                 await pin_rls_tenant_context(db, request.tenant_id)
-                db.add(ChannelConfig(tenant_id=request.tenant_id, agent_id=request.target.id,
-                    channel_type="feishu", is_configured=True))
+                channel = ChannelConfig(tenant_id=request.tenant_id, agent_id=request.target.id,
+                    channel_type="feishu", is_configured=True)
+                db.add(channel)
                 await db.commit()
+                configured_channel_context.update(tenant_id=request.tenant_id, channel_id=channel.id)
             configured_agents.add(request.target.id)
         return await original_delegate_body(request, **kwargs)
 
@@ -197,6 +243,8 @@ async def _exercise_first_task_delivery(
         migrated_pg_url=migrated_pg_url,
     )
     assert len(observed) == 1
+    if change_channel_before_read:
+        assert len(changed_channel_reads) == 1
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -214,4 +262,14 @@ async def test_configured_child_channel_allows_first_task_result_and_sealed_roun
 ):
     await _exercise_first_task_delivery(
         owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url, configured_channel=True
+    )
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_changed_child_channel_denies_parent_result_read(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url
+):
+    await _exercise_first_task_delivery(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url,
+        configured_channel=True, change_channel_before_read=True,
     )

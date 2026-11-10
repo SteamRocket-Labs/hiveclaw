@@ -19,7 +19,7 @@ from app.tools.runtime import ToolExecutionContext
 
 
 async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id,
-    tool_name=("delegate_to_agent", "send_message_to_agent")):
+    tool_name="delegate_to_agent"):
     invocation = (
         await db.scalars(
             select(SessionToolInvocation)
@@ -283,6 +283,7 @@ async def capture_delegation_instruction_origin(context, arguments, *, recipient
                 session_id=session_id,
                 run_id=run_id,
                 call_id=context.tool_call_id,
+                tool_name=("delegate_to_agent", "send_message_to_agent"),
             )
             if parent is None:
                 return None
@@ -541,7 +542,7 @@ async def delegation_tool_result_bound(db, *, tenant_id, agent_id, invocation, c
         _delegation_request_hash,
     )
     from app.models.runtime_task import RuntimeTask
-    from app.services.a2a_outcome import queued_delegation_outcome
+    from app.services.a2a_outcome import LEGACY_QUEUED_DELEGATION_NEXT_ACTION, queued_delegation_outcome
 
     try:
         payload = json.loads(content)
@@ -620,6 +621,10 @@ async def delegation_tool_result_bound(db, *, tenant_id, agent_id, invocation, c
             child_session_id=task.child_session_id,
             arguments=invocation.effective_arguments_json or invocation.provider_arguments_json,
         )
-        return payload == expected.to_payload()
+        expected_payload = expected.to_payload()
+        if payload == expected_payload:
+            return True
+        expected_payload["next_action"] = LEGACY_QUEUED_DELEGATION_NEXT_ACTION
+        return payload == expected_payload
     except (AttributeError, KeyError, TypeError, ValueError):
         return False

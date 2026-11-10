@@ -55,6 +55,9 @@ def test_delegation_tool_descriptions_require_structured_briefs() -> None:
     assert "session_id/child_session_id" in async_description
     assert "Completion automatically returns to this conversation" in async_description
     assert "Do not sleep, poll, or resend to wait" in async_description
+    for description in (sync_description, async_description):
+        assert "Start with the task, without a sender self-introduction. The recipient keeps its own display name and identity." in description
+    assert "Use delegate_to_agent for task delegation" not in send_message_to_agent.meta.parameters["properties"]["msg_type"]["description"]
     assert "Do not ask the worker to infer missing scope silently" in async_description
     assert "cross-workspace artifact contract" in async_description
     async_params = delegate_to_agent.meta.parameters["properties"]

@@ -126,6 +126,7 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
             "Usage:\n"
             "- Use this for colleague consults and clarifications.\n"
             "- Send a precise request so the colleague can answer in one pass.\n"
+            f"- Brief format: {DELEGATION_BRIEF_CONTRACT}\n"
             "- Completion automatically returns to this conversation and resumes you to use the result.\n"
             "- Tell the member in one line that the colleague is working, then end the turn if no independent work remains. Do not sleep, poll, or resend to wait.\n"
             "- The A2A Collaborators context lists governed targets: same-owner agents, public agents, "
@@ -148,7 +149,7 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
                     "enum": ["notify", "consult"],
                     "description": (
                         "Message type: notify (notification) or consult (ask a colleague). Both return immediately. "
-                        "Defaults to notify. Use delegate_to_agent for task delegation, background work, or artifacts."
+                        "Defaults to notify."
                     ),
                 },
             },
@@ -162,7 +163,12 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
     )
 )
 async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
-    return await delegate_to_agent(agent_id, arguments, execution_context=execution_context)
+    if getattr(execution_context, "user_id", None):
+        return await delegate_to_agent(agent_id, arguments, execution_context=execution_context)
+    from app.services.agent_tool_domains.messaging import _normalize_messaging_result
+    from app.services.agent_tools import _send_message_to_agent
+
+    return _normalize_messaging_result("send_message_to_agent", await _send_message_to_agent(agent_id, arguments))
 
 
 # -- delegate_to_agent -------------------------------------------------------
@@ -441,9 +447,9 @@ async def start_hr_agent_handoff(request: ToolExecutionRequest) -> str | ToolCon
         name="check_async_task",
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
-            "Fallback status inspection for asynchronous Agent work. Provide task_id for a cloud RuntimeTask "
-            "or message_id for a Local Agent delegation. Local results are delivered automatically to the "
-            "source session; this tool exposes pending/completed/failed and durable source-delivery status."
+            "Completion automatically returns to the source conversation. Do not poll to wait. "
+            "Use this explicit status tool when the member asks for a status check. Provide task_id for a cloud RuntimeTask "
+            "or message_id for a Local Agent delegation; this tool exposes pending/completed/failed and durable source-delivery status."
         ),
         parameters={
             "type": "object",

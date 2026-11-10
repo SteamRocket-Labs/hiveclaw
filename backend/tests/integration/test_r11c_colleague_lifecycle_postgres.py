@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -17,6 +18,7 @@ from app.models.capability_policy import CapabilityPolicy
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.services.agent_manager import AgentManager
 from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
 from app.services.web_chat_runtime import execute_web_chat_run
@@ -27,6 +29,8 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 COLLEAGUE = "周报助手"
 RESULT = "已核实三点：报表核对完成；发票补录进行中；合同待确认。"
+PREVIOUS_NEXT_ACTION = "Use send_agent_session_message with child_session_id to continue this delegated agent session; use check_async_task only for runtime status."
+CURRENT_NEXT_ACTION = "The colleague is working in the background. Completion automatically returns to this conversation and resumes you to use the result. Tell the member in one line, then end the turn if no independent work remains. Do not sleep, poll, or resend to wait. Use send_agent_session_message only for additional instructions."
 
 
 class PausedClient(ScriptedLLMClient):
@@ -276,3 +280,208 @@ async def test_member_stop_cancels_the_running_colleague_and_preserves_other_run
             if task is not None and not task.done():
                 task.cancel()
         await asyncio.gather(*(task for task in (child_task, parent_task) if task is not None), return_exceptions=True)
+
+
+@pytest.mark.parametrize("stored_next_action", [PREVIOUS_NEXT_ACTION, CURRENT_NEXT_ACTION], ids=["previous", "current"])
+async def test_stored_queued_outcome_binds_and_session_can_delegate_again(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, stored_next_action,
+):
+    from app.models.chat_session import ChatSession
+    from app.models.user import User
+    from app.services import a2a_outcome
+    from app.services.delegation_input_origin import delegation_tool_result_bound
+    from app.services.session_live_input import submit_live_human_input
+    from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+    from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
+
+    seed, parent, _ = await _setup(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        tool="delegate_to_agent")
+    render = a2a_outcome.queued_delegation_outcome
+    emitted = False
+
+    def emit_stored_version(**kwargs):
+        nonlocal emitted
+        outcome = render(**kwargs)
+        if not emitted:
+            emitted = True
+            outcome.payload["next_action"] = stored_next_action
+        return outcome
+
+    monkeypatch.setattr(a2a_outcome, "queued_delegation_outcome", emit_stored_version)
+    await _execute(seed["run_id"], owner_sessionmaker, worker="r11c-history")
+    monkeypatch.setattr(a2a_outcome, "queued_delegation_outcome", render)
+    processor = WebTerminalBoundaryProcessor(session_factory=app_user_sessionmaker)
+    boundaries = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
+        tenant_id=seed["tenant_id"], worker_id="r11c-history-boundary", canonical_validator=processor.validate,
+        process_callback=processor, task_types=("web_chat_turn",))
+    assert boundaries["delivered"] == 1, boundaries
+    content = next(message["content"] for message in parent.requests[1]["messages"] if message["role"] == "tool")
+    assert json.loads(content)["next_action"] == stored_next_action
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        invocation = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == seed["run_id"]))
+        assert await delegation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+            invocation=invocation, content=content)
+        for field, value in (("next_action", "Unrecognized guidance"), ("target_agent_id", str(uuid4()))):
+            tampered = {**json.loads(content), field: value}
+            assert not await delegation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+                invocation=invocation, content=json.dumps(tampered))
+        receipt = await submit_live_human_input(db=db, agent=await db.get(Agent, seed["agent_id"]),
+            session=await db.get(ChatSession, seed["session_id"]), user=await db.get(User, seed["user_id"]),
+            content="请周报助手再核实一次。", source="r11c-history", runtime_metadata={
+                "runtime_budget": {"schema": "hive.runtime_budget_binding.v1", "status": "active", "interactive": True}})
+    (tmp_path / "next-input-receipt.json").write_text(json.dumps(receipt, ensure_ascii=False, default=str))
+    assert receipt["run"] is not None, receipt
+    next_run_id = UUID(receipt["run"]["run_id"])
+    parent.script.extend([_tool("delegate_to_agent", {"agent_name": COLLEAGUE, "message": "请再核实一次业务进展。"}),
+        {"content": "周报助手已收到补充任务。"}])
+    await _execute(next_run_id, owner_sessionmaker, worker="r11c-history-next")
+    async with owner_sessionmaker() as db:
+        child = await db.scalar(select(RuntimeTask).where(RuntimeTask.root_runtime_task_id == next_run_id,
+            RuntimeTask.task_type == "delegation"))
+        assert child is not None
+        models = list((await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == next_run_id))).all())
+        assert models and all(model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for model in models)
+
+
+@pytest.mark.parametrize("origin", ["trigger", "heartbeat"])
+async def test_unattended_consult_keeps_synchronous_reply_without_plan_required(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, origin,
+):
+    from app.tools.handlers.communication import send_message_to_agent
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+    from app.tools.adapters import adapt_and_call
+    from app.services.agent_tool_domains import messaging
+
+    seed, _, child = await _setup(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        tool="send_message_to_agent")
+    child.release.set()
+    context = ToolExecutionContext(agent_id=seed["agent_id"], user_id=None, tenant_id=str(seed["tenant_id"]),
+        workspace=seed["data_root"], origin_channel=origin)
+    invoked = []
+
+    async def colleague_reply(**kwargs):
+        invoked.append(kwargs)
+        return SimpleNamespace(content=RESULT, failed=False)
+
+    monkeypatch.setattr(messaging, "_invoke_agent_message_runtime", colleague_reply)
+    result = await adapt_and_call(send_message_to_agent.meta, send_message_to_agent,
+        ToolExecutionRequest(tool_name="send_message_to_agent", arguments={"agent_name": COLLEAGUE,
+            "message": "请核实三点业务进展。", "msg_type": "consult"}, context=context))
+    (tmp_path / "unattended-result.txt").write_text(result)
+    assert "plan_required" not in result
+    assert RESULT in result, result
+    assert len(invoked) == 1 and invoked[0]["execution_principal"] is None
+    assert await _child(owner_sessionmaker, seed) is None
+
+
+@pytest.mark.parametrize("tool", ["send_message_to_agent", "delegate_to_agent"])
+def test_background_colleague_timeline_is_one_line_for_both_tools(tool):
+    from app.services.web_chat_runtime import _runtime_action_event_from_tool_result
+
+    item = _runtime_action_event_from_tool_result({"status": "done", "name": tool,
+        "args": {"agent_name": COLLEAGUE}, "result": {"task_id": str(uuid4()), "child_session_id": str(uuid4())}})
+    assert item["type"] == "runtime_action_started" and item["status"] == "running"
+    assert item["message"] == f"已委派给 {COLLEAGUE}，后台执行中。"
+    assert item["tool_name"] == tool
+
+
+async def _stop_fixture(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path):
+    from app.services import web_chat_runtime as runtime
+    from app.services import runtime_control_bus
+
+    seed, _, _ = await _setup(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool="delegate_to_agent")
+    child_id = uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(RuntimeTask(id=child_id, tenant_id=seed["tenant_id"], task_type="delegation", status="running",
+            parent_agent_id=seed["agent_id"], child_agent_id=seed["child_agent_id"], root_user_id=seed["user_id"],
+            parent_session_id=str(seed["session_id"]), child_session_id=str(uuid4()), root_runtime_task_id=seed["run_id"]))
+        await db.commit()
+    published, delivered, logs = [], [], []
+    signal = runtime.signal_web_chat_cancel
+
+    async def publish(**payload):
+        published.append(payload)
+
+    async def record_signal(**kwargs):
+        receipt = await signal(**kwargs)
+        delivered.append(receipt)
+        return receipt
+
+    monkeypatch.setattr(runtime_control_bus, "publish_web_chat_cancel", publish)
+    monkeypatch.setattr(runtime, "signal_web_chat_cancel", record_signal)
+    monkeypatch.setattr(runtime.logger, "warning", lambda template, *args: logs.append(template.format(*args)))
+    event = asyncio.Event()
+    monkeypatch.setitem(runtime._CANCEL_EVENTS, seed["run_id"].hex, event)
+    return seed, child_id, published, delivered, logs, event
+
+
+async def test_nonterminal_child_cancel_is_logged_without_changing_parent_receipt(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    from app.services.web_chat_runtime import CancelSignalDeliveryReceipt
+
+    seed, child_id, published, delivered, logs, event = await _stop_fixture(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+
+    async def nonterminal(task_id, **_kwargs):
+        assert published and event.is_set(), "Parent cancellation must be published before stopping children"
+        assert task_id == child_id.hex
+        return {"status": "not_running_here"}
+
+    monkeypatch.setattr(orchestrator, "cancel_async_delegation", nonterminal)
+    async with owner_sessionmaker() as db:
+        receipt = await _cancel(db, seed["agent_id"], seed["session_id"], seed["run_id"], seed["user_id"])
+    assert receipt["status"] == "applying"
+    assert delivered == [CancelSignalDeliveryReceipt(run_id=seed["run_id"].hex, delivery_state="delivered",
+        local_delivered=True, cross_process_delivered=True, retryable=False)]
+    assert any(str(child_id) in line and "not_running_here" in line for line in logs)
+
+
+async def test_member_stop_returns_within_bound_when_child_teardown_ignores_cancellation(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    seed, child_id, published, delivered, logs, event = await _stop_fixture(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    started, tearing_down, release = (asyncio.Event() for _ in range(3))
+    cancellations = []
+
+    async def child_work():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            tearing_down.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+    child_task = asyncio.create_task(child_work())
+    await started.wait()
+    cancel = orchestrator.cancel_async_delegation
+
+    async def capture_cancel(*args, **kwargs):
+        cancellations.append(asyncio.current_task())
+        return await cancel(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "cancel_async_delegation", capture_cancel)
+    monkeypatch.setitem(orchestrator._async_tasks, child_id.hex, SimpleNamespace(task=child_task,
+        parent_agent_id=seed["agent_id"], trace_id=f"r11c-stop:{child_id}", child_session_id=None,
+        child_agent_name=COLLEAGUE, receipt=None))
+    try:
+        start = asyncio.get_running_loop().time()
+        async with owner_sessionmaker() as db:
+            receipt = await asyncio.wait_for(_cancel(db, seed["agent_id"], seed["session_id"],
+                seed["run_id"], seed["user_id"]), 4.5)
+        elapsed = asyncio.get_running_loop().time() - start
+        (tmp_path / "stop-duration.txt").write_text(f"{elapsed:.3f} seconds\n")
+        assert elapsed < 4.5 and receipt["status"] == "applying"
+        assert tearing_down.is_set() and not child_task.done()
+        assert published and event.is_set() and delivered[0].delivery_state == "delivered"
+        await asyncio.sleep(0)
+        assert any(str(child_id) in line and "time budget" in line for line in logs)
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(child_task, *cancellations, return_exceptions=True), 5)

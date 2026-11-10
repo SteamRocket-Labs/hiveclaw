@@ -1062,7 +1062,7 @@ def _runtime_action_event_from_tool_result(data: dict[str, Any]) -> dict[str, An
     args = data.get("args") if isinstance(data.get("args"), dict) else {}
     child_session_id = str(payload.get("child_session_id") or payload.get("session_id") or "").strip()
 
-    if tool_name == "delegate_to_agent":
+    if tool_name in {"delegate_to_agent", "send_message_to_agent"}:
         runtime_task_id = str(payload.get("runtime_task_id") or payload.get("task_id") or "").strip()
         if not child_session_id and not runtime_task_id:
             return None
@@ -3657,6 +3657,60 @@ async def cancel_web_chat_run(
     return payload
 
 
+async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
+    """Bound best-effort child cancellation independently of the parent's receipt."""
+    from app.agents.orchestrator import cancel_async_delegation
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    tasks = {}
+
+    async def cancel_child(child_id, parent_id):
+        try:
+            result = await cancel_async_delegation(child_id.hex, parent_agent_id=parent_id, force=True)
+            if result["status"] not in _TERMINAL_STATUSES:
+                logger.warning("[WebChatRun] child {} cancel did not terminate: status={}", child_id, result["status"])
+        except Exception as exc:  # noqa: BLE001 - child failure must not change the parent receipt.
+            logger.warning("[WebChatRun] child {} cancel failed: error_class={}", child_id, type(exc).__name__)
+
+    async def cancel_batch():
+        try:
+            tenant_id = await resolve_tenant_for_agent(_run_id(agent_id))
+            async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
+                children = select(RuntimeTask.id).where(
+                    RuntimeTask.root_runtime_task_id == run_uuid,
+                    RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.root_user_id == _run_id(user_id),
+                    RuntimeTask.task_type == "delegation",
+                ).cte("cancel_delegation_children", recursive=True)
+                children = children.union(select(RuntimeTask.id).join(
+                    children, RuntimeTask.root_runtime_task_id == children.c.id,
+                ).where(RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.root_user_id == _run_id(user_id), RuntimeTask.task_type == "delegation"))
+                delegated = list((await db.execute(select(RuntimeTask.id, RuntimeTask.parent_agent_id).where(
+                    RuntimeTask.id.in_(select(children.c.id)),
+                    RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
+                ))).all())
+            for child_id, parent_id in delegated:
+                tasks[asyncio.create_task(cancel_child(child_id, parent_id))] = child_id
+            if tasks:
+                await asyncio.wait(tasks)
+        except Exception as exc:  # noqa: BLE001 - child lookup is best-effort too.
+            logger.warning("[WebChatRun] child cancel unavailable for {}: error_class={}", run_uuid, type(exc).__name__)
+        finally:
+            for task, child_id in tasks.items():
+                if not task.done():
+                    logger.warning("[WebChatRun] child {} cancel exceeded stop time budget", child_id)
+                    task.cancel()
+
+    batch = asyncio.create_task(cancel_batch())
+    try:
+        await asyncio.wait({batch}, timeout=3.0)
+    finally:
+        if not batch.done():
+            logger.warning("[WebChatRun] child cancel time budget exceeded for {}", run_uuid)
+            batch.cancel()
+
+
 async def signal_web_chat_cancel(
     *,
     run_id: str | uuid.UUID,
@@ -3678,8 +3732,6 @@ async def signal_web_chat_cancel(
     if cancel_event is not None:
         cancel_event.set()
     try:
-        from app.agents.orchestrator import cancel_async_delegation
-        from app.services.tenant_resolver import resolve_tenant_for_agent
         from app.services.runtime_control_bus import publish_web_chat_cancel
 
         await publish_web_chat_cancel(
@@ -3688,27 +3740,6 @@ async def signal_web_chat_cancel(
             session_id=str(session_id),
             user_id=str(user_id),
         )
-        cross_process_delivered = True
-        tenant_id = await resolve_tenant_for_agent(_run_id(agent_id))
-        async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
-            children = select(RuntimeTask.id).where(
-                RuntimeTask.root_runtime_task_id == run_uuid,
-                RuntimeTask.tenant_id == tenant_id,
-                RuntimeTask.root_user_id == _run_id(user_id),
-                RuntimeTask.task_type == "delegation",
-            ).cte("cancel_delegation_children", recursive=True)
-            children = children.union(select(RuntimeTask.id).join(
-                children, RuntimeTask.root_runtime_task_id == children.c.id,
-            ).where(RuntimeTask.tenant_id == tenant_id,
-                RuntimeTask.root_user_id == _run_id(user_id), RuntimeTask.task_type == "delegation"))
-            delegated = list((await db.execute(select(RuntimeTask.id, RuntimeTask.parent_agent_id).where(
-                RuntimeTask.id.in_(select(children.c.id)),
-                RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
-            ))).all())
-        for child_id, parent_id in delegated:
-            result = await cancel_async_delegation(child_id.hex, parent_agent_id=parent_id, force=True)
-            if result["status"] not in {"killed", "completed", "failed", "skipped", "needs_reconciliation"}:
-                raise RuntimeError("delegation_cancel_unavailable")
     except Exception as exc:  # noqa: BLE001 - returned as a typed retryable delivery failure.
         logger.warning(
             "[WebChatRun] cancel delivery unavailable for {}: error_class={}",
@@ -3723,6 +3754,7 @@ async def signal_web_chat_cancel(
             retryable=True,
             error_class=type(exc).__name__,
         )
+    await _cancel_web_chat_delegation_children(run_uuid=run_uuid, agent_id=agent_id, user_id=user_id)
     return CancelSignalDeliveryReceipt(
         run_id=run_uuid.hex,
         delivery_state="delivered",

@@ -905,6 +905,9 @@ async def test_local_agent_delegation_targets_target_owner_and_returns_stable_re
     assert result["chat_session_id"] is None
     assert "delivered automatically back into this source Agent session" in result["next_action"]
     assert "check_async_task with message_id" in result["next_action"]
+    assert "Do not poll to wait" in result["next_action"]
+    assert "when the member asks" in result["next_action"]
+    assert "fallback status inspection" not in result["next_action"]
 
 
 @pytest.mark.asyncio

@@ -3674,9 +3674,12 @@ async def signal_web_chat_cancel(
     run_uuid = _run_id(run_id)
     cancel_event = _CANCEL_EVENTS.get(run_uuid.hex)
     local_delivered = cancel_event is not None
+    cross_process_delivered = False
     if cancel_event is not None:
         cancel_event.set()
     try:
+        from app.agents.orchestrator import cancel_async_delegation
+        from app.services.tenant_resolver import resolve_tenant_for_agent
         from app.services.runtime_control_bus import publish_web_chat_cancel
 
         await publish_web_chat_cancel(
@@ -3685,9 +3688,30 @@ async def signal_web_chat_cancel(
             session_id=str(session_id),
             user_id=str(user_id),
         )
+        cross_process_delivered = True
+        tenant_id = await resolve_tenant_for_agent(_run_id(agent_id))
+        async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
+            children = select(RuntimeTask.id).where(
+                RuntimeTask.root_runtime_task_id == run_uuid,
+                RuntimeTask.tenant_id == tenant_id,
+                RuntimeTask.root_user_id == _run_id(user_id),
+                RuntimeTask.task_type == "delegation",
+            ).cte("cancel_delegation_children", recursive=True)
+            children = children.union(select(RuntimeTask.id).join(
+                children, RuntimeTask.root_runtime_task_id == children.c.id,
+            ).where(RuntimeTask.tenant_id == tenant_id,
+                RuntimeTask.root_user_id == _run_id(user_id), RuntimeTask.task_type == "delegation"))
+            delegated = list((await db.execute(select(RuntimeTask.id, RuntimeTask.parent_agent_id).where(
+                RuntimeTask.id.in_(select(children.c.id)),
+                RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
+            ))).all())
+        for child_id, parent_id in delegated:
+            result = await cancel_async_delegation(child_id.hex, parent_agent_id=parent_id, force=True)
+            if result["status"] not in {"killed", "completed", "failed", "skipped", "needs_reconciliation"}:
+                raise RuntimeError("delegation_cancel_unavailable")
     except Exception as exc:  # noqa: BLE001 - returned as a typed retryable delivery failure.
         logger.warning(
-            "[WebChatRun] cross-process cancel delivery unavailable for {}: error_class={}",
+            "[WebChatRun] cancel delivery unavailable for {}: error_class={}",
             run_uuid.hex,
             type(exc).__name__,
         )
@@ -3695,7 +3719,7 @@ async def signal_web_chat_cancel(
             run_id=run_uuid.hex,
             delivery_state="unavailable",
             local_delivered=local_delivered,
-            cross_process_delivered=False,
+            cross_process_delivered=cross_process_delivered,
             retryable=True,
             error_class=type(exc).__name__,
         )

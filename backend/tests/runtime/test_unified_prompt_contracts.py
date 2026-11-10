@@ -42,8 +42,10 @@ def test_delegation_tool_descriptions_require_structured_briefs() -> None:
     sync_description = send_message_to_agent.meta.description
     async_description = delegate_to_agent.meta.description
 
-    assert "short consults" in sync_description
-    assert "Do NOT use this for long-running delegated work" in sync_description
+    assert "colleague consults" in sync_description
+    assert "return immediately" in sync_description
+    assert "Completion automatically returns to this conversation" in sync_description
+    assert "Do not sleep, poll, or resend to wait" in sync_description
     assert "task_delegate" not in sync_description
     assert "task_delegate" not in send_message_to_agent.meta.parameters["properties"]["msg_type"]["enum"]
     assert "task_delegate" not in send_message_to_agent.meta.parameters["properties"]["msg_type"]["description"]
@@ -51,7 +53,8 @@ def test_delegation_tool_descriptions_require_structured_briefs() -> None:
         async_description
     )
     assert "session_id/child_session_id" in async_description
-    assert "use `check_async_task` only as a fallback status inspection" in async_description
+    assert "Completion automatically returns to this conversation" in async_description
+    assert "Do not sleep, poll, or resend to wait" in async_description
     assert "Do not ask the worker to infer missing scope silently" in async_description
     assert "cross-workspace artifact contract" in async_description
     async_params = delegate_to_agent.meta.parameters["properties"]

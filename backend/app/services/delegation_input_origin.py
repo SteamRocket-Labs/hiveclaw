@@ -18,7 +18,8 @@ from app.services.session_model_inputs import _hash, model_output_dependencies
 from app.tools.runtime import ToolExecutionContext
 
 
-async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id, tool_name="delegate_to_agent"):
+async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id,
+    tool_name=("delegate_to_agent", "send_message_to_agent")):
     invocation = (
         await db.scalars(
             select(SessionToolInvocation)
@@ -28,7 +29,7 @@ async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id, 
                 SessionToolInvocation.session_id == session_id,
                 SessionToolInvocation.run_id == run_id,
                 SessionToolInvocation.provider_tool_use_id == call_id,
-                SessionToolInvocation.tool_name == tool_name,
+                SessionToolInvocation.tool_name.in_((tool_name,) if isinstance(tool_name, str) else tool_name),
                 ChatSession.tenant_id == tenant_id,
                 ChatSession.agent_id == agent_id,
             )
@@ -385,7 +386,7 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
         session_id=uuid.UUID(row.session_id),
         run_id=row.runtime_task_id,
         call_id=proof.get("call_id"),
-        tool_name="create_employee_from_request" if first_task else "delegate_to_agent",
+        tool_name="create_employee_from_request" if first_task else ("delegate_to_agent", "send_message_to_agent"),
     )
     if parent is None:
         return None

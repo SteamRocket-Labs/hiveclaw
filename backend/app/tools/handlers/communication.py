@@ -122,12 +122,12 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
         timeout_seconds=360.0,
         idempotency_scope="runtime_task",
         description=(
-            "Send a message to a digital employee colleague and wait for a direct reply.\n\n"
+            "Send a request to a digital employee colleague in the background and return immediately.\n\n"
             "Usage:\n"
-            "- Use this for short consults, clarifications, or synchronous collaboration with another agent.\n"
+            "- Use this for colleague consults and clarifications.\n"
             "- Send a precise request so the colleague can answer in one pass.\n"
-            "- Expect a reply in the current round; the result includes reply plus the A2A session_id for continuity.\n"
-            "- Do NOT use this for long-running delegated work — use `delegate_to_agent` when the other agent should continue in the background.\n"
+            "- Completion automatically returns to this conversation and resumes you to use the result.\n"
+            "- Tell the member in one line that the colleague is working, then end the turn if no independent work remains. Do not sleep, poll, or resend to wait.\n"
             "- The A2A Collaborators context lists governed targets: same-owner agents, public agents, "
             "and approved A2A Collaboration Group members. If the target is listed and available, call "
             "this tool directly instead of asking the user to manually add an agent relationship."
@@ -147,7 +147,7 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
                     "type": "string",
                     "enum": ["notify", "consult"],
                     "description": (
-                        "Message type: notify (notification) or consult (ask a short synchronous question). "
+                        "Message type: notify (notification) or consult (ask a colleague). Both return immediately. "
                         "Defaults to notify. Use delegate_to_agent for task delegation, background work, or artifacts."
                     ),
                 },
@@ -161,11 +161,8 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tool_domains.messaging import _normalize_messaging_result
-    from app.services.agent_tools import _send_message_to_agent
-
-    return _normalize_messaging_result("send_message_to_agent", await _send_message_to_agent(agent_id, arguments))
+async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
+    return await delegate_to_agent(agent_id, arguments, execution_context=execution_context)
 
 
 # -- delegate_to_agent -------------------------------------------------------
@@ -183,11 +180,11 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
             "- Provide a precise task with the outcome you expect, any constraints, and the evidence the worker should return.\n"
             "- For cross-workspace artifact work, pass `target_artifacts` (or `target_artifact_path` shorthand) "
             "so the worker updates/delivers the exact target path instead of inventing a replacement artifact.\n"
-            "- The result includes session_id/child_session_id. Continue through `send_agent_session_message`; use `check_async_task` only as a fallback status inspection.\n"
+            "- Completion automatically returns to this conversation and resumes you to use the result. Tell the member in one line that the colleague is working, then end the turn if no independent work remains. Do not sleep, poll, or resend to wait.\n"
+            "- The result includes session_id/child_session_id. Use `send_agent_session_message` only to send additional instructions to the colleague.\n"
             "- To authorize or resume an employee's recorded first task, pass first_task_draft_id and its exact employee/message. "
             "The existing creation receipt supplies these values; do not rewrite the task or supply worker overrides. "
             "Approval and retries resume the same durable task.\n"
-            "- Do NOT use this for quick back-and-forth questions — use `send_message_to_agent` for synchronous collaboration.\n"
             "- Do NOT use this for session-local worker fan-out, context isolation, or independent verification inside the same session — use `spawn_subagent` for To Session Worker."
         ),
         parameters={

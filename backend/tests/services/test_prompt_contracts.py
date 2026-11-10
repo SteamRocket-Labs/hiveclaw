@@ -130,12 +130,14 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
 
     assert "jina_search" not in tools
     assert "jina_read" not in tools
-    assert "Do NOT use this for long-running delegated work" in tools["send_message_to_agent"]
+    assert "return immediately" in tools["send_message_to_agent"]
+    assert "Completion automatically returns to this conversation" in tools["send_message_to_agent"]
     assert "Digital Employee Colleagues" not in tools["send_message_to_agent"]
     assert "same-owner agents" in tools["send_message_to_agent"]
     assert "A2A Collaboration Group" in tools["send_message_to_agent"]
     assert "session_id/child_session_id" in tools["delegate_to_agent"]
-    assert "use `check_async_task` only as a fallback status inspection" in tools["delegate_to_agent"]
+    assert "Completion automatically returns to this conversation" in tools["delegate_to_agent"]
+    assert "Do not sleep, poll, or resend to wait" in tools["delegate_to_agent"]
     assert "follow up with `web_fetch`" in tools["web_search"]
     assert "built-in basic provider chain" in tools["web_search"]
     assert "AnySearch API first" not in tools["web_search"]

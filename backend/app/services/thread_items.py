@@ -815,10 +815,7 @@ def _user_action(
         return None
     if item_type == "approval_request":
         destructive = bool(data.get("destructive"))
-        # A missing delete flag says nothing about a command's read scope.
-        impact = "可能产生不可逆影响" if destructive else (
-            "可能读取敏感信息或访问工作区外内容" if data.get("tool_name") == "run_command" else "可撤销或只读操作"
-        )
+        impact = "可能产生不可逆影响" if destructive else "可能修改内容、读取敏感信息或影响工作区以外"
         return {
             "kind": "resolve_approval",
             "token": _text(data.get("permission_request_id") or data.get("request_id")),

@@ -141,7 +141,7 @@ def test_user_thread_projection_contains_actionable_summary_without_operator_evi
         "token": "permission-7",
         "label": "确认后继续",
         "expires_at": "2026-07-10T12:00:00+00:00",
-        "impact": "可撤销或只读操作",
+        "impact": "可能修改内容、读取敏感信息或影响工作区以外",
         "details": [{"label": "path", "value": "reports/final.md"}],
     }
     assert item["item_data"]["arguments"] == {}
@@ -165,16 +165,23 @@ def test_operator_thread_projection_preserves_evidence_only_in_explicit_details(
 
 
 @pytest.mark.parametrize("destructive", [False, True])
-def test_command_projection_does_not_infer_read_only_from_no_delete(destructive: bool) -> None:
+@pytest.mark.parametrize(("tool_name", "arguments"), [
+    ("execute_code", {"language": "bash", "code": "env | grep -iE key; find / -name '*.pem'"}),
+    ("send_email", {"to": "user@example.com", "subject": "Report"}),
+    ("run_command", {"command": "env | grep -iE 'workspace|sandbox'; find / -name '*.md'"}),
+    ("run_command", {"command": "ls"}),
+])
+def test_approval_projection_does_not_infer_read_only_from_no_delete(
+    destructive: bool, tool_name: str, arguments: dict,
+) -> None:
     from app.services.thread_items import build_thread_item
 
-    event = _event(metadata_json={**_event().metadata_json, "tool_name": "run_command",
-        "arguments": {"command": "env | grep -iE 'workspace|sandbox'; find / -name '*.md'"},
+    event = _event(metadata_json={**_event().metadata_json, "tool_name": tool_name, "arguments": arguments,
         "destructive": destructive})
     projected = build_thread_item(event, audience="user")
 
     assert projected["user_action"]["impact"] == (
-        "可能产生不可逆影响" if destructive else "可能读取敏感信息或访问工作区外内容"
+        "可能产生不可逆影响" if destructive else "可能修改内容、读取敏感信息或影响工作区以外"
     )
     assert projected["item_data"]["arguments"] == {}
 

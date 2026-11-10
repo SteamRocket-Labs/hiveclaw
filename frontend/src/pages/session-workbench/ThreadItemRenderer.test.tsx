@@ -99,7 +99,7 @@ describe('ThreadItemRenderer', () => {
   // The screenshot exposes this prefix through `env | grep -iE`; the pattern
   // and find arguments are reconstructed because the input covers the tail.
   const step4Command = 'ls -la uploads | head; echo "=== hidden ==="; ls -la .[a-z]* 2>/dev/null | head; echo "=== env ==="; env | grep -iE "workspace|sandbox"; find / -name "*.md" 2>/dev/null | head';
-  const uncertainImpact = 'May read sensitive information or access content outside the workspace';
+  const uncertainImpact = 'May modify content, read sensitive information, or affect areas outside the workspace';
 
   function commandApproval(command: unknown, impact?: string): ThreadItem {
     return {
@@ -114,18 +114,16 @@ describe('ThreadItemRenderer', () => {
     step4Command,
     'env', '/usr/bin/env', 'printenv', 'printenv API_KEY', 'set', 'export -p',
     'cat /proc/self/environ', 'cat /proc/123/environ', 'cat .env', 'cat .env.local',
-    'cat workspace/.env.production', 'cat config.env', 'cat config.env.production',
-    'grep foo .env', 'cat ~/.ssh/*', 'cat $HOME/.ssh/id_rsa',
-    'cat workspace/.git/config', 'cat .bash_history', 'cat id_rsa', 'cat id_dsa', 'cat id_ecdsa',
-    'cat id_ed25519', 'cat credentials', 'cat credentials.json', 'cat secrets', 'cat secrets.json',
-    'grep foo workspace/private.pem', 'cat workspace/private.key',
+    'cat workspace/.env.production',
+    'grep foo .env', 'cat ~/.ssh/*', 'cat ~/.ssh/id_rsa', 'cat $HOME/.ssh/id_rsa',
+    'cat workspace/.git/config', 'cat .bash_history',
     'history', 'fc -l', 'ps e', 'git config --list',
     'find / -name report.md', 'cat /etc/passwd', 'ls /', 'ls /other-workspace', 'ls ~',
     'ls ..', 'ls workspace/../../', 'ls -L workspace/link',
     'ls; printenv', 'ls && env', 'ls\nprintenv', 'wc -l report.csv | env',
     'cat $(printenv CONFIG)', 'cat `printenv CONFIG`', 'ls > /etc/output',
     'grep --include=.env foo workspace/', 'wc --files0-from=/etc/filelist',
-    'python -c "import os; print(os.environ)"',
+    'python -c "import os; print(os.environ)"', 'python3 x.py', 'echo x > a.md', 'sed -i s/a/b/ report.md', 'mv a b',
   ])('does not label sensitive, outside, or uncertain command reads as reversible: %s', (command) => {
     // Canonical projections can carry the old low-impact platform copy.
     const approval = commandApproval(command, '可撤销或只读操作');
@@ -134,16 +132,47 @@ describe('ThreadItemRenderer', () => {
     expect(markup).not.toMatch(/Reversible or read-only|可撤销或只读操作/);
   });
 
-  it.each(['ls', 'ls -la', 'ls workspace/', 'wc -l report.csv', 'grep foo workspace/x.md', 'cat report.md'])
+  it.each([
+    'ls', 'ls -la', 'ls workspace/', 'wc -l report.csv', 'grep foo workspace/x.md', 'cat report.md',
+    // R11f r2 removes filename guesses; only literal path and syntax checks remain.
+    'cat config.env', 'cat config.env.production', 'cat id_rsa', 'cat id_dsa', 'cat id_ecdsa',
+    'cat id_ed25519', 'cat credentials', 'cat credentials.json', 'cat secrets', 'cat secrets.json',
+    'grep foo workspace/private.pem', 'cat workspace/private.key', 'cat credentials.yml',
+    'cat secrets.yaml', 'cat service-account.json', 'cat kubeconfig',
+  ])
   ('keeps a recognized workspace read reversible: %s', (command) => {
-    const markup = renderToStaticMarkup(<ThreadItemRenderer item={commandApproval(command)} approvalArguments={{ command }} />);
-    expect(markup).toContain('Reversible or read-only');
-    expect(markup).not.toContain(uncertainImpact);
+    for (const impact of [undefined, '可能修改内容、读取敏感信息或影响工作区以外']) {
+      const markup = renderToStaticMarkup(<ThreadItemRenderer item={commandApproval(command, impact)} />);
+      expect(markup).toContain('Reversible or read-only');
+      expect(markup).not.toContain(uncertainImpact);
+    }
   });
 
   it.each([undefined, null, '', 42, {}])('keeps missing or invalid commands uncertain: %s', (command) => {
-    const markup = renderToStaticMarkup(<ThreadItemRenderer item={commandApproval(command)} />);
-    expect(markup).toContain(uncertainImpact);
+    for (const impact of [undefined, '可撤销或只读操作']) {
+      const markup = renderToStaticMarkup(<ThreadItemRenderer item={commandApproval(command, impact)} />);
+      expect(markup).toContain(uncertainImpact);
+      expect(markup).not.toMatch(/Reversible or read-only|可撤销或只读操作/);
+    }
+  });
+
+  it.each([
+    ['execute_code', { language: 'bash', code: "env | grep -iE key; find / -name '*.pem'" }],
+    ['run_skill_tool', { skill_name: 'example', tool_name: 'script' }],
+    ['send_email', { to: 'user@example.com', subject: 'Report' }],
+    ['reply_email', {}], ['send_feishu_message', {}], ['write_file', { path: 'report.md' }],
+    ['mcp_example_tool', {}], ['office_document_create', {}], ['office_document_apply', {}],
+    ['set_trigger', {}], ['import_mcp_server', {}], ['create_employee_from_request', {}], ['unknown_tool', {}],
+  ])('keeps %s approvals cautious on live and projected cards', (toolName, toolArguments) => {
+    for (const impact of [undefined, '可撤销或只读操作']) {
+      const approval = {
+        ...commandApproval(undefined, impact),
+        item_data: { ...DATA_BY_TYPE.approval_request, tool_name: toolName, arguments: toolArguments },
+      } as ThreadItem;
+      const markup = renderToStaticMarkup(<ThreadItemRenderer item={approval} approvalArguments={toolArguments} />);
+      expect(markup).toContain(uncertainImpact);
+      expect(markup).not.toMatch(/Reversible or read-only|可撤销或只读操作/);
+    }
   });
 
   it.each(['env', 'ls'])('classifies arguments on live items without fetched approval arguments: %s', (command) => {
@@ -158,12 +187,18 @@ describe('ThreadItemRenderer', () => {
     expect(markup).toContain(uncertainImpact);
   });
 
-  it('preserves the existing irreversible label and approval controls', () => {
-    const approval = commandApproval('rm report.md');
-    if (approval.item_type === 'approval_request') approval.item_data.destructive = true;
+  it.each([['run_command', 'rm report.md'], ['delete_file', undefined], ['run_command', 'ls'], ['create_employee_from_request', undefined]])
+  ('preserves the existing irreversible label and approval controls for %s %s', (toolName, command) => {
+    const approval = commandApproval(command, '可撤销或只读操作');
+    if (approval.item_type === 'approval_request') {
+      approval.item_data.tool_name = toolName;
+      approval.item_data.destructive = true;
+    }
     const markup = renderToStaticMarkup(<ThreadItemRenderer item={approval} approvalActions={<button>Allow once</button>} />);
     expect(markup).toContain('Irreversible action');
     expect(markup).toContain('Allow once');
+    expect(markup).not.toContain(uncertainImpact);
+    expect(markup).not.toMatch(/Reversible or read-only|可撤销或只读操作/);
   });
 
   it.each([false, true])('shows an unconfirmed finish for typed unknown delivery without promising a retry: %s', (retryable) => {
@@ -339,7 +374,9 @@ describe('ThreadItemRenderer', () => {
     // collapsed disclosure.
     expect(markup).toContain('This needs your approval: Write file.');
     expect(markup).toContain('reports/final.md');
-    expect(markup).toContain('可撤销或只读操作');
+    // R11f r2: approvals are cautious by default, including old write-file projections.
+    expect(markup).toContain(uncertainImpact);
+    expect(markup).not.toContain('可撤销或只读操作');
     expect(markup).toContain('Allow once');
     expect(markup).not.toContain('permission-7');
     expect(markup).not.toContain('controlled_write');

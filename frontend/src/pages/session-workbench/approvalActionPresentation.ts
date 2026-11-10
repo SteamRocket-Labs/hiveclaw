@@ -32,7 +32,6 @@ export function isSimpleWorkspaceRead(command: unknown): boolean {
     }
     // Hidden paths include .env, shell history, .ssh and credential stores.
     if (arg.startsWith('/') || arg.split('/').some(part => part !== '.' && part.startsWith('.'))) return false;
-    if (/(?:^|\/)(?:id_rsa|id_dsa|id_ecdsa|id_ed25519|credentials(?:\.json)?|secrets(?:\.json)?)$|\.(?:pem|key|env(?:\.[\w.-]+)?)$/i.test(arg)) return false;
     operands += 1;
   }
   return operands >= (executable === 'grep' ? 2 : executable === 'ls' ? 0 : 1);

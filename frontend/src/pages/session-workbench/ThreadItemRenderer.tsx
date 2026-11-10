@@ -66,17 +66,16 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
       const text = Array.isArray(value) ? value.join(', ') : value;
       return typeof text === 'string' && text ? [{ label, value: text.length > 240 ? `${text.slice(0, 240)}…` : text }] : [];
     });
-    const impact = data.tool_name === 'run_command'
-      ? data.destructive ? t('sessionWorkbench.threadItem.value.destructive', 'Irreversible action')
-        : isSimpleWorkspaceRead((args || data.arguments)?.command)
-          ? t('sessionWorkbench.threadItem.value.reversible', 'Reversible or read-only')
-          : t('sessionWorkbench.threadItem.value.commandUncertain', 'May read sensitive information or access content outside the workspace')
-      : userAction?.impact || (data.destructive ? t('sessionWorkbench.threadItem.value.destructive', 'Irreversible action') : t('sessionWorkbench.threadItem.value.reversible', 'Reversible or read-only'));
+    const impact = data.destructive
+      ? t('sessionWorkbench.threadItem.value.destructive', 'Irreversible action')
+      : data.tool_name === 'run_command' && isSimpleWorkspaceRead((args || data.arguments)?.command)
+        ? t('sessionWorkbench.threadItem.value.reversible', 'Reversible or read-only')
+        : t('sessionWorkbench.threadItem.value.approvalUncertain', 'May modify content, read sensitive information, or affect areas outside the workspace');
     return [
       { label: 'tool', value: approvalActionLabel(data.tool_name, t) },
       { label: 'expires', value: expires ? new Date(expires).toLocaleString(language) : null },
-      { label: 'impact', value: data.tool_name === 'create_employee_from_request'
-        ? t('sessionWorkbench.threadItem.value.employeePermanent', 'The employee can be deactivated, but cannot be deleted.')
+      { label: 'impact', value: data.destructive && data.tool_name === 'create_employee_from_request'
+        ? `${impact} · ${t('sessionWorkbench.threadItem.value.employeePermanent', 'The employee can be deactivated, but cannot be deleted.')}`
         : impact },
       ...proposalDetails,
       ...(userAction?.details || []).flatMap((detail) => typeof detail.label === 'string' && typeof detail.value === 'string'

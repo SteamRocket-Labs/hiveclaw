@@ -145,7 +145,7 @@ async def test_revoked_document_derived_memory_is_withheld_from_later_model_requ
 
     monkeypatch.setattr(MemoryRetriever, "_select_with_model", choose)
     monkeypatch.setattr(memory_service, "_get_rerank_model_config", reference_config)
-    loaded, _ = await memory_call(
+    loaded, read_invocation = await memory_call(
         n, app_user_sessionmaker, "read_personal_kb", {"document_id": str(document.id)},
         user=n.foreign, session=s.second_session, run=s.second_run, command="Read the granted release document",
     )
@@ -176,6 +176,17 @@ async def test_revoked_document_derived_memory_is_withheld_from_later_model_requ
     assert DERIVED_MARKER in json.dumps(snapshot["wire_request"]), snapshot
     bindings = snapshot["input_bindings"]
     assert memory_dependency in bindings["dependencies"], bindings
+    # personal KB bodies are not replayed from history; later rounds need a live read
+    read_binding = next(
+        entry for entry in bindings["messages"]
+        if entry.get("source_ref") == f"session-tool-result:{read_invocation.id}"
+    )
+    # message_index addresses the final wire messages, including system memory context.
+    replayed_read = snapshot["wire_request"]["messages"][read_binding["message_index"]]
+    replayed_body = json.loads(replayed_read["content"])
+    assert replayed_body["content_omitted"] is True, replayed_body
+    assert replayed_body["references"], replayed_body
+    assert DOCUMENT_MARKER not in json.dumps(replayed_read), replayed_read
     if surface == "automatic":
         assert selected_bodies and DERIVED_MARKER in selected_bodies[-1], selected_bodies
         assert memory_dependency in recalled.source_refs, recalled
@@ -207,18 +218,24 @@ async def test_revoked_document_derived_memory_is_withheld_from_later_model_requ
     denied = await _model_request(
         s, app_user_sessionmaker, context=recalled if surface == "automatic" else None,
     )
+    denied_snapshot = denied.model_request_snapshot_json
+    assert_source_withheld([denied], content=DERIVED_MARKER, code="content_source_access_denied")
+    # Document absence alone is not withholding proof: its history body was already omitted.
+    assert DOCUMENT_MARKER not in json.dumps(denied_snapshot["wire_request"]), denied_snapshot
     for marker in (DOCUMENT_MARKER, DERIVED_MARKER):
-        assert_source_withheld([denied], content=marker, code="content_source_access_denied")
         assert marker not in after, after
         assert all(marker not in body for body in selected_bodies), selected_bodies
     if surface != "automatic":
         assert "content_source_access_denied" in after, after
-    # A4d round-5 ruling: a withheld source stays in provenance so outputs remain
-    # constrained (test_a4a_round3 successor cases).
+    # A withheld source stays in provenance (A4d round-5 ruling); whatever stays
+    # bound to the revoked document must carry none of its content.
     document_bindings = [
-        entry for entry in denied.model_request_snapshot_json["input_bindings"]["messages"]
+        entry for entry in denied_snapshot["input_bindings"]["messages"]
         if dependency in entry["dependencies"]
     ]
-    assert document_bindings, denied.model_request_snapshot_json["input_bindings"]
+    assert document_bindings, denied_snapshot["input_bindings"]
     for binding in document_bindings:
-        assert binding["status"] == "withheld", binding
+        if binding["status"] == "bound":
+            wire_message = denied_snapshot["wire_request"]["messages"][binding["message_index"]]
+            for marker in (DOCUMENT_MARKER, DERIVED_MARKER):
+                assert marker not in json.dumps(wire_message), (binding, wire_message)

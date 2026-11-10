@@ -132,11 +132,14 @@ async def test_revoked_document_cannot_leave_after_working_copy_read(native_work
         source_kind='text', source_sha256=version, canonical_md_path=source.name,
         canonical_md_sha256=version, title='Private source', status='ready')
     grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type='document',
+        resource_id=document.id, document_id=document.id, grantee_type='user', grantee_id=n.user,
+        created_by_user_id=n.foreign, permission='read')
+    runtime_grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type='document',
         resource_id=document.id, document_id=document.id, grantee_type='agent', grantee_id=n.agent,
         requester_user_id=n.user, session_id=str(n.session), purpose='interactive_session', permission='read',
         expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
     async with owner_sessionmaker() as db:
-        db.add_all([document, grant])
+        db.add_all([document, grant, runtime_grant])
         receipt = await latest_workspace_receipt(db, n.tenant, n.agent, path)
         receipt.dependencies_json = [{'source_kind': 'knowledge_document', 'source_id': str(document.id), 'source_version': version}]
         await db.commit()
@@ -187,6 +190,7 @@ async def test_revoked_document_cannot_leave_after_working_copy_read(native_work
         await db.commit()
         permission_id = outward.permission_item_id
         grant.revoked_at = datetime.now(timezone.utc)
+        runtime_grant.revoked_at = grant.revoked_at
         await db.commit()
         with pytest.raises(ContentInputReceiptError):
             await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name='send_email', arguments={}, context=context), sources)
@@ -201,6 +205,57 @@ async def test_revoked_document_cannot_leave_after_working_copy_read(native_work
         from app.models.chat_transcript_event import ChatTranscriptEvent
         event = await db.get(ChatTranscriptEvent, outward.result_event_id)
         assert event.metadata_json['v2_payload']['outcome'] == 'failed'
+
+
+async def test_agent_only_source_grant_cannot_admit_or_publish_member_working_copy(native_workspace, owner_sessionmaker):  # noqa: F811
+    from datetime import datetime, timedelta, timezone
+    from app.models.chat_artifact import ChatArtifact
+    from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
+    from app.services.content_input_receipts import latest_workspace_receipt, validate_runtime_input_dependencies
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+    from tests.integration.test_artifact_publication_transactions import publish_report
+
+    n = native_workspace
+    path = 'workspace/agent-only-derived-source.md'
+    await _create(n, path, 'DERIVED_SOURCE_BODY')
+    source = n.root.parent / 'agent-only-document-source.md'
+    source.write_text('SOURCE_DOCUMENT')
+    version = hashlib.sha256(source.read_bytes()).hexdigest()
+    document = KnowledgeDocument(id=uuid.uuid4(), tenant_id=n.tenant, scope_type='person', scope_id=n.foreign,
+        source_kind='text', source_sha256=version, canonical_md_path=source.name,
+        canonical_md_sha256=version, title='Private source', status='ready')
+    grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type='document',
+        resource_id=document.id, document_id=document.id, grantee_type='agent', grantee_id=n.agent,
+        requester_user_id=n.user, session_id=str(n.session), purpose='interactive_session', permission='read',
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    async with owner_sessionmaker() as db:
+        db.add_all([document, grant])
+        receipt = await latest_workspace_receipt(db, n.tenant, n.agent, path)
+        dependency = {'source_kind': 'knowledge_document', 'source_id': str(document.id), 'source_version': version}
+        receipt.dependencies_json = [dependency]
+        await db.commit()
+        context = ToolExecutionContext(agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant), workspace=n.root,
+            session_id=str(n.session), runtime_task_id=str(n.run))
+        # The legacy grant is valid for its runtime reader, but cannot authorize the member's read or publication.
+        await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name='send_email', arguments={}, context=context),
+            [{'source_kind': 'workspace_artifact', 'source_id': str(receipt.id), 'source_version': receipt.content_sha256}])
+        await db.commit()
+        result, sources, complete, _invocation = await _read_with_inventory(n, db, tool='read_file', path=path)
+        assert 'DERIVED_SOURCE_BODY' not in str(result), result
+        assert 'SOURCE_DOCUMENT' not in str(result), result
+        assert 'content_source_access_denied' in str(result), result
+        assert result.metadata['native_read_denial'] == {'kind': 'workspace_source_read_denied', 'path': path,
+            'http_status': 403, 'reason_code': 'content_source_access_denied'}
+        assert complete, 'NO_BODY_DENIAL_POISONED_INPUT_INVENTORY'
+        assert not any(row['source_kind'] in {'workspace_artifact', 'knowledge_document'} for row in sources), sources
+        publication = SimpleNamespace(tenant=n.tenant, agent=n.agent, users=[n.user], sessions=[n.session],
+            paths=[path], root=n.root)
+        parts, errors = await publish_report(db, publication, 0)
+        assert parts == []
+        assert [error['reason_code'] for error in errors] == ['content_source_access_denied']
+        assert await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == n.agent, ChatArtifact.path == path)) is None
+        assert receipt.dependencies_json == [dependency] and grant.revoked_at is None
+        await db.commit()
 
 
 @pytest.mark.parametrize('tool', ['read_file', 'grep_search'])

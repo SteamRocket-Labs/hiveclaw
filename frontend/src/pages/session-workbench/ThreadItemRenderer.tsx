@@ -213,7 +213,7 @@ function approvalSentence(item: ThreadItem, t: TFunction): string {
     : t('sessionWorkbench.threadItem.permissionNeeded', 'This needs your approval: {{tool}}.', { tool: action });
 }
 
-const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request', 'warning', 'error', 'plan']);
+const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request', 'warning', 'error', 'plan', 'context_compaction']);
 const NON_BLOCKING_STATUS_EVENTS = new Set(['memory_context_degraded']);
 
 export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorView: boolean): boolean {
@@ -292,6 +292,10 @@ export function ThreadItemRenderer({
     >{JSON.stringify(approvalArguments, null, 2)}</pre>}
     </>
   );
+
+  if (item.item_type === 'context_compaction' && item.audience !== 'operator') {
+    return <p>{item.user_summary}</p>;
+  }
 
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') {
     // A settled permission decision collapses to one plain line (product

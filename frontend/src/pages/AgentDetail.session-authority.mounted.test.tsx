@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   deleteSession: vi.fn(),
   upload: vi.fn(),
   activeSessionRun: null as null | { run_id: string; status: string },
+  activeRunObservedAt: 1,
   chatProps: null as any,
   answerQuestion: vi.fn(),
   questionControl: false,
@@ -84,7 +85,7 @@ vi.mock('@tanstack/react-query', () => ({
       };
     }
     if (options.queryKey[0] === 'chat-active-run' && options.enabled) {
-      return { data: mocks.activeSessionRun, dataUpdatedAt: 1, isLoading: false, error: null };
+      return { data: mocks.activeSessionRun, dataUpdatedAt: mocks.activeRunObservedAt, isLoading: false, error: null };
     }
     return {
       data: undefined,
@@ -253,6 +254,7 @@ beforeEach(() => {
   mocks.cancelSessionRun.mockReset();
   mocks.deleteSession.mockReset();
   mocks.activeSessionRun = null;
+  mocks.activeRunObservedAt = 1;
   mocks.questionControl = false;
   mocks.language = 'en';
 });
@@ -1038,6 +1040,61 @@ it('keeps attachments on a refusal and resends their original bytes', async () =
   expect(nextInput.content).toBe(originalInput.content);
   expect(nextInput.attachments).toEqual(originalInput.attachments);
   expect(mocks.chatProps.attachedFiles).toEqual([]);
+});
+
+it('keeps synchronous compact visible when polling finds no run after the absence grace', async () => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/compact');
+  let sending!: Promise<unknown>;
+  act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1));
+  expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running');
+  const now = Date.now();
+  vi.spyOn(Date, 'now').mockReturnValue(now + 60_000);
+  mocks.activeRunObservedAt += 1;
+  await act(async () => { mocks.chatProps.onSetChatInput('Next request'); });
+  expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running');
+  await act(async () => {
+    request.resolve({ ok: true, command: 'compact', result: { message: '上下文已压缩。' } });
+    await sending;
+  });
+  expect(mocks.chatProps.chatInput).toBe('Next request');
+  expect(mocks.chatProps.isWaiting || mocks.chatProps.isStreaming).toBe(false);
+});
+
+it.each(['success', 'http', 'network', 'empty-summary'])('clears compact on send and keeps progress through the %s response', async outcome => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/compact');
+  let sending!: Promise<unknown>;
+  act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1));
+  expect(mocks.chatProps.chatInput).toBe('');
+  expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running');
+  await act(async () => { mocks.chatProps.onSetChatInput('继续处理下一件事'); });
+  expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running');
+  await act(async () => {
+    if (outcome === 'http') request.reject(new ApiError(504, 'HTTP 504 Gateway Timeout'));
+    else if (outcome === 'network') request.reject(new ApiError(0, 'Failed to fetch'));
+    else request.resolve({ ok: outcome === 'success', command: 'compact', result: outcome === 'success'
+      ? { action: 'compacted_context_installed', message: '上下文已压缩。' }
+      : { action: 'not_supported', ui_action: { type: 'toast', message: 'Summary model is unavailable', level: 'warning' } } });
+    await sending;
+  });
+  if (outcome !== 'success') {
+    const failure = mocks.chatProps.chatMessages.find((message: any) => message.eventType === 'runtime_action_failed');
+    expect(failure.content).toBe(outcome === 'network' ? zh.common.networkFailed : outcome === 'http' ? zh.common.serviceUnavailable : zh.common.requestFailed);
+    expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('failed');
+    expect(document.body.textContent).not.toMatch(/504|Gateway|Failed to fetch|Summary model/);
+  }
+  expect(mocks.chatProps.chatInput).toBe('继续处理下一件事');
+  expect(mocks.chatProps.isWaiting).toBe(false);
 });
 
 it.each([true, false])('clears slash input only after its existing success result: %s', async success => {

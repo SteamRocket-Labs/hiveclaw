@@ -286,6 +286,12 @@ describe('ThreadItemRenderer', () => {
     expect(markup).not.toContain('item-error');
   });
 
+  it('shows members one plain compaction sentence without counts or technical details', () => {
+    const compact = { ...item('context_compaction'), audience: 'user', user_summary: '上下文已压缩。' } as ThreadItem;
+    expect(shouldRenderThreadItemInConversation(compact, false)).toBe(true);
+    expect(renderToStaticMarkup(<ThreadItemRenderer item={compact} />)).toBe('<p>上下文已压缩。</p>');
+  });
+
   it('keeps runtime mechanics in the status surface while preserving user actions in conversation', () => {
     const userItem = (itemType: ThreadItemType) => ({
       ...item(itemType),
@@ -295,7 +301,7 @@ describe('ThreadItemRenderer', () => {
 
     expect(shouldRenderThreadItemInConversation(userItem('tool_call'), false)).toBe(false);
     expect(shouldRenderThreadItemInConversation(userItem('workflow_activity'), false)).toBe(false);
-    expect(shouldRenderThreadItemInConversation(userItem('context_compaction'), false)).toBe(false);
+    expect(shouldRenderThreadItemInConversation(userItem('context_compaction'), false)).toBe(true);
     expect(shouldRenderThreadItemInConversation(userItem('event'), false)).toBe(false);
     expect(shouldRenderThreadItemInConversation(userItem('artifact'), false)).toBe(false);
     expect(shouldRenderThreadItemInConversation(userItem('approval_request'), false)).toBe(true);

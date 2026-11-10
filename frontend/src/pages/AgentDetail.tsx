@@ -1477,6 +1477,7 @@ function AgentDetailInner() {
     // derived views kept in sync through syncActivePhase — never set directly
     // on lifecycle paths anymore.
     const [activePhase, setActivePhase] = useState<RuntimePhase>('idle');
+    const [compactingSessions, setCompactingSessions] = useState<ReadonlySet<SessionRuntimeKey>>(() => new Set());
     const syncActivePhase = (phase: RuntimePhase) => {
         setActivePhase(phase);
         const derived = phaseUi(phase);
@@ -1910,6 +1911,12 @@ function AgentDetailInner() {
                     timestamp: new Date().toISOString(),
                 })]);
 
+                const isCompact = parsedSlashCommand.name === 'compact';
+                if (isCompact) {
+                    setCompactingSessions(prev => new Set(prev).add(activeRuntimeKey));
+                    setChatInput('');
+                }
+                let commandFailed = false;
                 let commandStartedRun = false;
                 try {
                     const response = await ccParityApi.executeCommand(id, parsedSlashCommand.name, {
@@ -1917,9 +1924,12 @@ function AgentDetailInner() {
                         session_id: commandSessionId,
                     });
                     const actionResult = commandResultRecord(response);
+                    if (isCompact && response.ok === false) {
+                        throw new Error('Compaction unavailable');
+                    }
                     if (getSessionCommandUiAction(response)) {
                         await handleSessionCommandUiAction(response, commandSessionId);
-                        setChatInput('');
+                        if (!isCompact) setChatInput('');
                         setChatMessagesAfterQueuedForSession(
                             commandSessionId,
                             prev => prev.filter(message => message.id !== commandMessageId),
@@ -1935,14 +1945,14 @@ function AgentDetailInner() {
                             plan_mode_requested: actionResult.plan_mode_requested === true,
                             permission_mode: sessionPermissionMode,
                         });
-                        setChatInput('');
+                        if (!isCompact) setChatInput('');
                         commandStartedRun = true;
                         setPlanModeRequested(false);
                         applySubmittedRun(activeRuntimeKey, run);
                         invalidateSessionRuntimeQueries(id, commandSessionId);
                         return;
                     }
-                    setChatInput('');
+                    if (!isCompact) setChatInput('');
                     if (actionResult?.action === 'open_tab') {
                         const tab = typeof actionResult.tab === 'string' ? actionResult.tab : '';
                         if (tab) selectDetailTab(tab);
@@ -1959,12 +1969,25 @@ function AgentDetailInner() {
                     })]);
                     invalidateSessionRuntimeQueries(id, commandSessionId);
                 } catch (err: any) {
-                    const msg = err?.message || t('agent.chat.commands.failed', 'Failed to run command');
+                    commandFailed = true;
+                    const msg = isCompact
+                        ? err instanceof ApiError && err.status === 0
+                            ? t('common.networkFailed', 'Network connection failed. Check your connection and try again.')
+                            : err instanceof ApiError && err.status >= 500
+                                ? t('common.serviceUnavailable', 'The service is not responding. Please try again later.')
+                                : t('common.requestFailed', 'The operation could not be completed. Please try again.')
+                        : err?.message || t('agent.chat.commands.failed', 'Failed to run command');
                     setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'command_failed' })]);
                 } finally {
+                    if (isCompact) setCompactingSessions(prev => {
+                        const next = new Set(prev);
+                        next.delete(activeRuntimeKey);
+                        return next;
+                    });
                     if (!commandStartedRun) {
-                        syncActivePhase('idle');
-                        setSessionPhase(activeRuntimeKey, 'idle');
+                        const phase = isCompact && commandFailed ? 'failed' : 'idle';
+                        if (activeSessionIdRef.current === commandSessionId) syncActivePhase(phase);
+                        setSessionPhase(activeRuntimeKey, phase);
                     }
                 }
                 return;
@@ -2302,6 +2325,7 @@ function AgentDetailInner() {
     useEffect(() => {
         if (!id || !activeSession?.id || !isWritableSession(activeSession)) return;
         const key = buildSessionRuntimeKey(id, String(activeSession.id));
+        if (compactingSessions.has(key)) return;
         if (activeSessionRun && isUnfinishedSessionRun(activeSessionRun)) {
             if (shouldIgnoreObservedActiveRun({
                 key,
@@ -2340,7 +2364,7 @@ function AgentDetailInner() {
             selectSession(activeSession);
             fetchMySessions(true, id);
         }
-    }, [activeSessionRun, activeSessionRunObservedAt, activeSession?.id, id]);
+    }, [activeSessionRun, activeSessionRunObservedAt, activeSession?.id, id, compactingSessions]);
 
     const supportsVision = !!agent?.primary_model_id && llmModels.some(
         (m: any) => m.id === agent.primary_model_id && m.supports_vision
@@ -2350,6 +2374,9 @@ function AgentDetailInner() {
     const currentActiveRunState = id && activeSession?.id
         ? activeRunStateBySession[buildSessionRuntimeKey(id, String(activeSession.id))] || null
         : null;
+
+    const compactInProgress = Boolean(id && activeSession?.id
+        && compactingSessions.has(buildSessionRuntimeKey(id, String(activeSession.id))));
 
     const runtimeSummary: ChatRuntimeSummary | null = React.useMemo(() => {
         if (!activeSession) return null;
@@ -2647,8 +2674,8 @@ function AgentDetailInner() {
                                     ? t('session.agent_deactivated', 'Deactivated')
                                     : transportNotice || (groupDiscoveryUnavailable
                                     ? t('agent.chat.groupDiscoveryUnavailable', 'Shared group conversations are unavailable. Try refreshing.') : null)}
-                            isWaiting={isWaiting}
-                            runtimePhase={activePhase}
+                            isWaiting={compactInProgress ? false : isWaiting}
+                            runtimePhase={compactInProgress ? 'compacting' : activePhase}
                             terminalTranscriptPending={Boolean(id && activeSession?.id
                                 && terminalTranscriptPendingKeys.has(buildSessionRuntimeKey(id, String(activeSession.id))))}
                             activeRunStatus={currentActiveRunState?.status || null}
@@ -2686,7 +2713,7 @@ function AgentDetailInner() {
 	                            onBranchMessage={handleBranchMessage}
 	                            onSendMessage={sendChatMessageText}
                             onEnterPlanMode={(reason: string) => sendChatMessageText(reason, { planMode: true })}
-                            isStreaming={isStreaming}
+                            isStreaming={compactInProgress || isStreaming}
                             sessionOnly={sessionWorkbenchMode}
                             canAbortGeneration={activeSession?.audience_kind !== 'group' || Boolean(activeSessionRun?.can_cancel
                                 && normalizeSessionRunId(activeSessionRun.run_id) === normalizeSessionRunId(currentActiveRunState?.runId))}

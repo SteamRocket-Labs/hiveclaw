@@ -62,7 +62,7 @@ def test_fanout_settings_have_env_defaults() -> None:
 
 
 def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
-    """Wiring pin: every per-agent create_task dispatch goes through run_bounded.
+    """Every per-agent dispatch reaches its family's shared concurrency cap.
 
     Trigger runs are deliberately absent: a bounded in-process fanout still had
     no lease and no completion callback, which is how 2,107 trigger rows sat in
@@ -83,7 +83,15 @@ def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
     def bounded_count(source: str, family: str) -> int:
         return len(re.findall(rf'run_bounded\(\s*"{family}"', source))
 
-    assert bounded_count(heartbeat_source, "heartbeat") >= 2, "heartbeat resume + tick dispatch must be bounded"
+    from app.services.heartbeat import _execute_heartbeat
+    import inspect
+
+    heartbeat_entry = inspect.getsource(_execute_heartbeat)
+    assert 'async with get_daemon_semaphore("heartbeat"):' in heartbeat_entry
+    assert heartbeat_entry.index("asyncio.timeout(") < heartbeat_entry.index('get_daemon_semaphore("heartbeat")')
+    assert heartbeat_source.count("asyncio.create_task(_execute_heartbeat(") == 2, (
+        "heartbeat resume + tick must both enter the deadline and shared concurrency cap"
+    )
     assert bounded_count(trigger_source, "trigger") == 0, "trigger runs must be queued for the worker, not fanned out"
     assert "_queue_trigger_run_for_worker(" in trigger_source
     assert 'task.task_type == "trigger"' in runtime_worker_source
@@ -94,7 +102,6 @@ def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
     assert "reconcile_due_dream_runtime_tasks" in evolution_source
     assert 'task.task_type == "dream"' in runtime_worker_source
     assert "_dispatch_async_runtime_task(" in runtime_worker_source
-    assert "asyncio.create_task(_execute_heartbeat(" not in heartbeat_source
     assert "asyncio.create_task(_invoke_agent_for_triggers(" not in trigger_source
     assert "asyncio.create_task(run_dream(" not in trigger_source
     assert "asyncio.create_task(run_dream(" not in evolution_source

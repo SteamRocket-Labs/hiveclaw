@@ -881,7 +881,7 @@ def _wrap_compressed_summary(summary: str) -> dict:
         f"{summary}\n\n"
         "If you need specific pre-compaction detail, raw session evidence lives under "
         "memory/t0/sessions/<session_id>/segments/<segment_id>/source.md in your workspace.\n"
-        "Continue the current request without acknowledging or recapping this summary. "
+        "Continue the current request directly; do not acknowledge or recap this summary, and do not ask the user about it. "
         "A request the user interrupted stays stopped unless the user asks to resume it."
     )
     return {"role": "system", "content": content}
@@ -955,10 +955,6 @@ async def maybe_compress_messages(
 
     # Ensure we don't break tool_call/tool_result pairs at the split point
     old_messages, recent_messages = _safe_split(old_messages, recent_messages)
-    stop = next((message for message in reversed(messages)
-        if str(message.get("source_ref", "")).startswith("session-run-cancelled:")), None)
-    if stop is not None and stop not in recent_messages:
-        recent_messages = [stop, *recent_messages]
 
     logger.info(
         "Memory compress: %d tokens > %d threshold (context=%d), summarizing %d old messages",

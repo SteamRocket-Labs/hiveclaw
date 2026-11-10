@@ -287,7 +287,8 @@ def test_render_reminder_snapshot_lists_current_todos_with_status(tmp_path):
     view = read_agent_work_ledger_view(agent_id=agent_id, data_root=tmp_path)
     snapshot = render_work_ledger_reminder_snapshot(view)
 
-    assert "Current Work Ledger snapshot" in snapshot
+    assert "Recorded Work Ledger snapshot" in snapshot
+    assert "resume stopped work only if asked" in snapshot
     assert f"#{first['item']['id']}" in snapshot
     assert "[in_progress] Collect Q3 revenue figures" in snapshot
     assert "[pending] Draft the variance summary" in snapshot

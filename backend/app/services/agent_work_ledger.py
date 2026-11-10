@@ -1073,7 +1073,7 @@ def render_work_ledger_reminder_snapshot(view: dict[str, Any] | None, *, limit: 
     if not display_items:
         return ""
 
-    lines = ["Current Work Ledger snapshot:"]
+    lines = ["Recorded Work Ledger snapshot (resume stopped work only if asked):"]
     for item in display_items:
         title = _clean_text(item.get("title") or item.get("subject") or item.get("content"))
         item_id = _clean_text(item.get("id"))

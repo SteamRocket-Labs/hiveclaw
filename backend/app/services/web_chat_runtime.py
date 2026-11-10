@@ -2331,19 +2331,6 @@ async def _apply_active_projection_to_history(
         ]
         if not replacement_messages:
             return history_messages
-        stops = [msg for msg in history_messages
-            if str(getattr(msg, "id", "")).startswith("session-run-cancelled:")
-            and not _created_after_projection(msg, applied_at)]
-        if stops:
-            # Compact keeps message bodies, not canonical origins. Restore any
-            # retained stop lines from history and carry the latest beyond the
-            # summary even when it fell outside the retained suffix.
-            kept = [i for i, msg in enumerate(replacement_messages)
-                if msg["role"] == "user" and msg["content"] == stops[-1].content]
-            for i, stop in zip(reversed(kept), reversed(stops)):
-                replacement_messages[i] = stop
-            if not kept:
-                replacement_messages.insert(1, stops[-1])
         return _dedupe_history_projection(
             [*replacement_messages, *_history_tail_after_projection(history_messages, applied_at)]
         )

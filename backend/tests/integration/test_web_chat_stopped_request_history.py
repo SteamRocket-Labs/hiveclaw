@@ -27,6 +27,7 @@ t2_work = support.t2_work
     [
         "after_settlement",
         "before_settlement",
+        "interrupt_and_replace",
         "compact_summary",
         "compact_kept_marker",
         "normal_completion",
@@ -47,7 +48,7 @@ async def test_next_request_records_member_stop_without_current_old_todos(
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
-    from app.models.session_v2 import SessionControlInput, SessionModelResult, SessionTurnInput
+    from app.models.session_v2 import SessionControlInput, SessionModelResult, SessionTurnInput, SessionTurnReplacement
     from app.models.user import User
     from app.services import web_chat_runtime as runtime
     from app.services.agent_work_ledger import read_latest_session_work_ledger_view
@@ -55,6 +56,7 @@ async def test_next_request_records_member_stop_without_current_old_todos(
     from app.services.runtime_control_bus import bridge_transcript_event_to_t0
     from app.services.runtime_task_worker import drain_web_terminal_boundary_outbox_once
     from app.services.session_live_input import submit_live_human_input
+    from app.services.session_turn_replacement import recover_turn_replacements_once
 
     seed = t2_work
     stopped = case != "normal_completion"
@@ -64,6 +66,13 @@ async def test_next_request_records_member_stop_without_current_old_todos(
     settling = asyncio.Event()
     allow_settlement = asyncio.Event()
     followup_id = None
+    replacement_saga = None
+
+    async def recover_replacement():
+        async with owner_sessionmaker() as db:
+            counts = await recover_turn_replacements_once(db, worker_id="stop-history-replacement",
+                tenant_id=seed["tenant_id"], saga_ids=(replacement_saga,))
+            assert counts["needs_reconciliation"] == counts["retryable_failures"] == 0, counts
 
     # Pause local signal delivery after the real cancelling event commits;
     # neither cancel settlement nor input admission is replaced by a double.
@@ -160,7 +169,21 @@ async def test_next_request_records_member_stop_without_current_old_todos(
             assert provider_waiting.is_set(), "Run did not reach its second provider round"
             waiting.cancel()
             await asyncio.gather(waiting, return_exceptions=True)
-            if member_stop:
+            if case == "interrupt_and_replace":
+                followup_id = uuid.uuid4()
+                async with owner_sessionmaker() as db:
+                    receipt = await submit_live_human_input(db=db, agent=await db.get(Agent, seed["agent_id"]),
+                        user=await db.get(User, seed["user_id"]), session=await db.get(ChatSession, seed["session_id"]),
+                        content=FOLLOWUP, source="web", input_id=followup_id,
+                        idempotency_key=f"replacement:{followup_id}", requested_kind="interrupt_and_replace",
+                        expected_run_id=seed["run_id"], expected_turn_id=seed["turn_id"])
+                    assert receipt["intent"] == "interrupt_and_replace", receipt
+                    assert receipt["dispatch_status"] == "dispatched", receipt
+                    replacement_saga = (await db.scalar(select(SessionTurnReplacement).where(
+                        SessionTurnReplacement.replacement_input_id == followup_id))).id
+                    await db.commit()
+                await recover_replacement()
+            elif member_stop:
                 stop_task = asyncio.create_task(stop_run())
                 if case != "before_settlement":
                     assert (await stop_task)["accepted"] is True
@@ -246,6 +269,21 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         drain_web_terminal_boundary_outbox_once, task_id=seed["run_id"], worker_id="stopped-history-boundary"
     )
 
+    if replacement_saga is not None:
+        # The durable owner fences the old run, then queues and starts R.
+        await recover_replacement()
+        await recover_replacement()
+        async with owner_sessionmaker() as db:
+            replacement = await db.get(SessionTurnReplacement, replacement_saga)
+            assert replacement.state == "completed"
+            accepted = await db.scalar(select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.input_id == followup_id, ChatTranscriptEvent.item_kind == "human_input",
+                ChatTranscriptEvent.lifecycle == "accepted"))
+            cancelling = await db.scalar(select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.run_id == seed["run_id"], ChatTranscriptEvent.item_kind == "run",
+                ChatTranscriptEvent.lifecycle == "cancelling"))
+            assert accepted.sequence < cancelling.sequence
+
     if case.startswith("compact_"):
         from tests.integration.test_session_compact_v2_semantic_history import _run_compact
 
@@ -258,7 +296,9 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         )
         assert compact["action"] == "compacted_context_installed"
 
-    if followup_id is not None:
+    if replacement_saga is not None:
+        next_run = uuid.uuid5(replacement_saga, "replacement-run")
+    elif followup_id is not None:
         from app.services import runtime_task_worker
 
         await runtime_task_worker.recover_session_input_dispatches_once(
@@ -308,7 +348,11 @@ async def test_next_request_records_member_stop_without_current_old_todos(
     todo_indices = [i for i, content in enumerate(contents) if OLD_TODO in content]
     followup_index = next(i for i, content in enumerate(contents) if FOLLOWUP in content)
     markers = [i for i, content in enumerate(contents) if content == STOP_MARKER]
-    if member_stop:
+    if case == "compact_summary":
+        # Round 3: compaction no longer pins the stop line; the summary carries it.
+        assert markers == []
+        assert any("[Previous conversation summary]" in content for content in contents)
+    elif member_stop:
         assert len(markers) == 1, "Member stop is missing from the next provider request"
         assert markers[0] < followup_index
         if case.startswith("compact_"):
@@ -335,7 +379,8 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         stop_bindings = [
             entry for entry in bindings if str(entry.get("source_ref", "")).startswith("session-run-cancelled:")
         ]
-        assert len(stop_bindings) == int(member_stop)
+        # Round 3: only a naturally kept copy needs its own stop binding.
+        assert len(stop_bindings) == int(member_stop and case != "compact_summary")
         assert all(entry["status"] == "bound" and entry["dependency_status"] == "resolved" for entry in stop_bindings)
         after = [
             (event.id, event.lifecycle, event.content)
@@ -347,7 +392,7 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         ]
         assert after == before, "Loading a successor must not rewrite the stopped turn"
 
-    if case == "before_settlement":
+    if case in {"before_settlement", "interrupt_and_replace"}:
         # The rolled-over input is historical on the following request too.
         async with owner_sessionmaker() as db:
             ids = list(await db.scalars(select(ChatTranscriptEvent.id).where(ChatTranscriptEvent.run_id == next_run)))
@@ -368,6 +413,7 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         await execute(third_run)
         third_contents = [str(message.get("content") or "") for message in third.requests[0]["messages"]]
         assert third_contents.index(PARTIAL_WORK) < third_contents.index(STOP_MARKER) < third_contents.index(FOLLOWUP)
+        assert third_contents.index(FOLLOWUP) < third_contents.index("已停止。")
         async with owner_sessionmaker() as db:
             result = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == third_run))
             stop_binding = next(

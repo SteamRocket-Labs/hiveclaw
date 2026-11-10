@@ -32,29 +32,42 @@ async def test_after_click_inputs_follow_matching_stop_and_last_committed_round(
             item_id=uuid.uuid4(),
         )
         views.append(history._EventView(target=row, source=row))
+        return row
 
     event(1, "human_input", "accepted", content_parts=[{"type": "text", "text": "Stopped request"}])
     event(2, "result_commit", "round_committed")
-    event(3, "run", "cancelling", control_id=control)
-    for index in (4, 5):
+    cancel_sequence, commit_sequence = 3, 6 if late_commit else 2
+    if intent == "interrupt_and_replace":
+        # Real replacement admission precedes both saga creation and cancelling.
+        replacement = event(3, "human_input", "accepted", intent=intent,
+            content_parts=[{"type": "text", "text": "Later input 4"}])
+        saga = event(4, "turn_replacement", "requested", old_run_id=str(run),
+            replacement_input_id=str(replacement.input_id))
+        saga.input_id = replacement.input_id
+        cancel_sequence, commit_sequence = 5, 7 if late_commit else 2
+        later_inputs = [(6, 5)]
+    else:
+        later_inputs = [(4, 4), (5, 5)]
+    event(cancel_sequence, "run", "cancelling", control_id=control)
+    for sequence, index in later_inputs:
         event(
-            index,
+            sequence,
             "human_input",
             "accepted",
             intent=intent,
             content_parts=[{"type": "text", "text": f"Later input {index}"}],
         )
     if late_commit:
-        event(6, "result_commit", "round_committed")
+        event(commit_sequence, "result_commit", "round_committed")
     # Another control is not the stop point for this settled cancellation.
-    event(7, "run", "cancelling", control_id=str(uuid.uuid4()))
-    event(8, "run", "cancelled", control_id=control)
+    event(8, "run", "cancelling", control_id=str(uuid.uuid4()))
+    event(9, "run", "cancelled", control_id=control)
 
     async def load_views(*_args, **_kwargs):
         return views, {}
 
     async def rounds(*_args, **_kwargs):
-        sequence = 6 if late_commit else 2
+        sequence = commit_sequence
         return (
             [
                 history.SessionSemanticMessage(
@@ -89,5 +102,5 @@ async def test_after_click_inputs_follow_matching_stop_and_last_committed_round(
         "Later input 5",
     ]
     stop = result.messages[2]
-    assert stop.sequence_start == (6 if late_commit else 3)
+    assert stop.sequence_start == max(cancel_sequence, commit_sequence)
     assert stop.id == f"session-run-cancelled:{views[-1].source.id}"

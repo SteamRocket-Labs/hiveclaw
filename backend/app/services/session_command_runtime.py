@@ -1576,6 +1576,9 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
 
         source_id = uuid.uuid4()
         replacement[0]["source_ref"] = f"session-compaction:{source_id}"
+        # Scalability ceiling: inputs is the whole semantic history, with no size
+        # cap, reloaded and rehashed each round carrying this summary. Upgrade to
+        # bounded canonical source references in the shared compaction schema.
         await record_invocation_span(db=context.db, tenant_id=session.tenant_id, agent_id=agent.id,
             user_id=user.id, runtime_task_id=None, session_id=str(session.id), request_id=None,
             trace_id=str(session.id), span_id=f"compaction-source:{source_id}", parent_span_id=None,

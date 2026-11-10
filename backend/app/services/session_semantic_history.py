@@ -385,7 +385,15 @@ def _cancelled_run_messages(
             if _source_scope_run_id(candidate.source) == run_id
             and candidate.source.item_kind == "result_commit" and candidate.source.lifecycle == "round_committed")],
             key=lambda candidate: candidate.sequence)
-        stop_windows.append((stop.sequence, point.sequence))
+        # Replacement admission precedes cancelling; its existing saga events
+        # identify the input that must follow this stop, including late commits.
+        replacement_ids = {_source_input_id(candidate.source) for candidate in views
+            if candidate.source.item_kind == "turn_replacement"
+            and _uuid_or_none(_event_payload(candidate.source).get("old_run_id")) == run_id}
+        start = min([stop.sequence, *(candidate.sequence for candidate in views
+            if is_human_input_checkpoint(candidate.source)
+            and _source_input_id(candidate.source) in replacement_ids)])
+        stop_windows.append((start, point.sequence))
         messages[run_id] = SessionSemanticMessage(
             id=f"session-run-cancelled:{source.id}", role="user", content=_USER_STOP_MARKER,
             created_at=point.created_at, sequence_start=point.sequence, sequence_end=point.sequence,
@@ -832,7 +840,7 @@ async def load_session_semantic_history(
         if message.id.startswith("session-input:"):
             # A round can finish committing during cancellation. Later inputs
             # follow both that round and the stop, retaining admission order.
-            sequence = max([sequence, *(end for start, end in stop_windows if sequence > start)])
+            sequence = max([sequence, *(end for start, end in stop_windows if sequence >= start)])
         rank = 2 if message.id.startswith("session-run-cancelled:") else (
             3 if message.id.startswith("session-input:") else (0 if message.role == "assistant" else 1))
         return sequence, rank, message.sequence_start, message.id

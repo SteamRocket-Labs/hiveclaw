@@ -79,9 +79,10 @@ it('does not interpret a code fragment in a successful result as a typed failure
   }] }} />);
   fireEvent.click(container.querySelector('.run-tool-group-toggle') as HTMLElement);
   fireEvent.click(container.querySelector('.run-tool-history-toggle') as HTMLButtonElement);
-  // R11g r4: a result with a code fragment stays internal
-  expect(container.querySelector('p')?.textContent).toBe('处理请求。已返回结果');
-  expect(container.textContent).not.toContain(result);
+  // owner ruling 11-10: non-command results show as on 2182d216
+  expect(container.querySelector('p')?.textContent).toBe(result);
+  // owner ruling 11-10: non-command results show as on 2182d216
+  expect(container.textContent).toContain(result);
   expect(details.result).toBe(result);
   expect(container.textContent).not.toContain('操作等待超时');
   expect(container.textContent).not.toContain('请稍后再试');

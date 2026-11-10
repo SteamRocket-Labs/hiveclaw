@@ -22,11 +22,9 @@ function expand(container: HTMLElement) {
 
 // Run 8 output snippets plus a None stdout counterexample from the brief.
 it.each([
-  ['write_file', { path: 'workspace/sales-report-sales-run8.md' }, '✅ Written to workspace/sales-report-sales-run8.md (3123 chars)', 'sales-report-sales-run8.md', '已返回结果'],
   ['execute_code', { code: 'print(summary)' }, "📤 Output:\n{'file': 'sales-run8.csv', 'rows': 20, 'cols': ['日期', '地区', '产品', '数量', '单价', '销售额'], 'dates': ('2026-10-01', '2026-10-20'), 'region_product_1to1': True, 'qty_diffs': {'华南': [4.0], '华北': [4.0], '华东': [4.0], '西部': [4.0]}, 'qty_is_arith': True, 'price_constant_per_product': True, 'prices': {'基础版': ['100'], '进阶版': ['150'], '专业版': ['200'], '企业版': ['250']}}", '运行命令', '结果尚未确认。'],
   ['execute_code', { code: "print({'error': None})" }, "📤 Output:\n{'error': None}", '运行命令', '结果尚未确认。'],
   ['run_command', { command: 'which gh git curl 2>/dev/null; echo "---gh auth---"; gh auth status 2>&1 | head -20; echo "---gh api---"; gh api notifications --jq \'.[].subject.title\' 2>&1 | head -20' }, '📤 Output:\n/opt/git/bin/git\n/usr/bin/curl\n---gh auth---\nbash: line 1: gh: command not found\n---gh api---\nbash: line 1: gh: command not found', '运行命令', '操作未能完成，结果尚未确认。'],
-  ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。', '保存记忆', '已返回结果'],
 ] as const)('projects recorded %s output into a member summary without mutating the model payload', (toolName, toolArgs, toolResult, label, status) => {
   const message: AgentChatMessage = { id: toolName, role: 'tool_call', content: '', toolName, toolArgs, toolResult, toolStatus: 'done' };
   const before = JSON.stringify(message);
@@ -35,8 +33,23 @@ it.each([
   expand(container);
   expect(container.textContent).toContain(label);
   expect(container.textContent).toContain(status);
-  if (status !== '已返回结果') expect(container.textContent).not.toContain('已返回结果');
+  expect(container.textContent).not.toContain('已返回结果');
   expect(container.textContent).not.toMatch(/Written to|Saved memory|True|None|workspace|\/opt\/git|command not found|pwd;|3123/);
+  expect(JSON.stringify(message)).toBe(before);
+  expect((timeline.steps[0].details as { result: string }).result).toBe(toolResult);
+});
+
+it.each([
+  ['write_file', { path: 'workspace/sales-report-sales-run8.md' }, '✅ Written to workspace/sales-report-sales-run8.md (3123 chars)'],
+  ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。'],
+] as const)('shows the recorded non-command %s result as in production without mutating the model payload', (toolName, toolArgs, toolResult) => {
+  const message: AgentChatMessage = { id: toolName, role: 'tool_call', content: '', toolName, toolArgs, toolResult, toolStatus: 'done' };
+  const before = JSON.stringify(message);
+  const timeline = buildRunTimelineFromMessages([message]);
+  const { container } = render(<RunDisclosureBlock timeline={timeline} />);
+  expand(container);
+  // owner ruling 11-10: non-command results show as on 2182d216
+  expect(container.querySelector('p')?.textContent).toBe(toolResult);
   expect(JSON.stringify(message)).toBe(before);
   expect((timeline.steps[0].details as { result: string }).result).toBe(toolResult);
 });
@@ -89,41 +102,46 @@ it.each([
   '报告位于/var/tmp/report.md',
   "{'rows': 20, 'ok': True}", '{"rows": 20, "ok": True}', 'Traceback (most recent call last):\nValueError: PRIVATE_ERROR',
   'send_message_to_agent failed', 'call_private123',
-])('keeps unsafe non-command result bytes internal: %s', toolResult => {
+])('shows non-JSON non-command result text as in production: %s', toolResult => {
   const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
     { role: 'tool_call', content: '', toolName: 'send_message_to_agent', toolResult, toolStatus: 'done' },
   ])} />);
   expand(container);
-  expect(container.textContent).not.toContain(toolResult);
-  expect(container.querySelector('p')?.textContent).toContain('已返回结果');
+  // owner ruling 11-10: non-command results show as on 2182d216
+  expect(container.querySelector('p')?.textContent).toBe(toolResult.replace(/\r?\n/g, ' '));
 });
 
 it.each([
-  ['fatal: not a git repository (or any of the parent directories): .git', false],
-  ["head: cannot open 'workspace/uploads/*.csv' for reading: No such file or directory", false],
-  ['gh: command not found', false],
-  ['file:///private/tmp/secret', false],
-  ['见 </var/tmp/secret>', false],
-  ['目录／private/tmp/报告.md', false],
-  ['prefix {"rows": 20, "ok": True}', false],
-  ['(True, None)', false],
-  ['请对比输入/输出。', true],
-  ['和/或', true],
-  ['对方数字员工暂不可用', true],
-  ['报告内容已读取。', true],
-] as const)('uses the lexical plain-result gate for %s', (toolResult, visible) => {
+  'fatal: not a git repository (or any of the parent directories): .git',
+  "head: cannot open 'workspace/uploads/*.csv' for reading: No such file or directory",
+  'gh: command not found',
+  'file:///private/tmp/secret',
+  '见 </var/tmp/secret>',
+  '目录／private/tmp/报告.md',
+  'prefix {"rows": 20, "ok": True}',
+  '(True, None)',
+  '请对比输入/输出。',
+  '和/或',
+  '对方数字员工暂不可用',
+  '报告内容已读取。',
+] as const)('preserves the recorded non-command result sentence: %s', toolResult => {
   const timeline = buildRunTimelineFromMessages([
     { role: 'tool_call', content: '', toolName: 'send_message_to_agent', toolResult, toolStatus: 'done' },
   ]);
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
   expand(container);
-  if (visible) {
-    expect(container.querySelector('p')?.textContent).toBe(toolResult);
-  } else {
-    expect(container.querySelector('p')?.textContent).toContain('已返回结果');
-    expect(container.textContent).not.toContain(toolResult);
-  }
+  // owner ruling 11-10: non-command results show as on 2182d216
+  expect(container.querySelector('p')?.textContent).toBe(toolResult);
   expect((timeline.steps[0].details as { result: string }).result).toBe(toolResult);
+});
+
+it('shows dates, ratios, A/B groups and a URL verbatim in a non-command result', () => {
+  const toolResult = '截至 2026/11/10 完成 3/4，A/B 两组：见 https://example.com';
+  const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
+    { role: 'tool_call', content: '', toolName: 'read_file', toolResult, toolStatus: 'done' },
+  ])} />);
+  expand(container);
+  expect(container.querySelector('p')?.textContent).toBe(toolResult);
 });
 
 it('names the recorded generic step and readiness event with everyday words', () => {

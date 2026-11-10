@@ -189,17 +189,6 @@ function commandOutcome(details: unknown): 'done' | 'failed' | null {
   return exitCodes.includes(0) ? 'done' : null;
 }
 
-function plainToolResult(result: string, toolName: string | null): boolean {
-  if (!result.trim()) return false;
-  try { JSON.parse(result); return false; } catch { /* Preserve ordinary result prose. */ }
-  // Lexical ceiling: "Permission denied (publickey)." shows; backend member summaries per tool (as for write_file/save_memory) should replace this classifier.
-  return !(toolName && result.includes(toolName))
-    && !/[\/／\\][a-z0-9._~]|file:|[a-z]:\\/i.test(result)
-    && !/^\s*[\[{]|\{["']|[(),:]\s*(?:True|False|None)\b|\b(?:True|False|None)\s*[(),:]|\b(?:call_|toolu_)[\w-]+/m.test(result)
-    && !/^(?:[A-Za-z][\w.+-]*: |Traceback \(most recent call last\):|\s*File "[^"]+", line \d+)/mi.test(result)
-    && !/^(?:✅ Written to |Saved memory \[|📤 Output:|💻 Command:|⚠️ Stderr:)/m.test(result);
-}
-
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   if (toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)) {
@@ -209,17 +198,21 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
     const result = typeof step.details === 'string' ? step.details : details?.result;
     const toolName = toolNameOf(step);
     const command = step.kind === 'command' || ['run_command', 'execute_code', 'run_skill_tool'].includes(toolName || '');
-    const receipt = typeof result === 'string' && ((toolName === 'write_file' && result.startsWith('已写入文件「'))
-      || (toolName === 'save_memory' && result.startsWith('已记住：')));
-    if (typeof result === 'string' && (receipt || (!command && plainToolResult(result, toolName)))) {
-      const lines = result.trim().split(/\r?\n/);
-      return <p>{lines.map((line, index) => (
-        <React.Fragment key={index}>
-          {index > 0 && <br />}
-          <PastedCredentialText content={line} />
-          {line && index < lines.length - 1 && ' '}
-        </React.Fragment>
-      ))}</p>;
+    // Raw non-command tool text can reach members as on production; backend per-tool member summaries will replace it.
+    if (!command && typeof result === 'string' && result.trim()) {
+      try {
+        JSON.parse(result);
+      } catch {
+        // Native breaks retain line layout while DOM text reads as a sentence.
+        const lines = result.trim().split(/\r?\n/);
+        return <p>{lines.map((line, index) => (
+          <React.Fragment key={index}>
+            {index > 0 && <br />}
+            <PastedCredentialText content={line} />
+            {line && index < lines.length - 1 && ' '}
+          </React.Fragment>
+        ))}</p>;
+      }
     }
     const path = step.kind === 'file' ? details?.args?.path ?? details?.args?.file_path : null;
     const file = typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).pop() : undefined;

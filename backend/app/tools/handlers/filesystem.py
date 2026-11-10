@@ -571,7 +571,6 @@ async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None =
             "Usage:\n"
             "- Working directory is your workspace/ inside the container.\n"
             "- Use this for local project commands such as `git status`, `pytest`, `npm test`, `node script.js`, or `python3 script.py`.\n"
-            "- For a service the company has not connected, do not try CLIs, commands, browsers or other routes; answer in one sentence that it is not connected and an administrator can add it in 公司连接.\n"
             "- Prefer this over `execute_code` when you need normal shell tooling rather than embedding a short script.\n"
             "- This is NOT a general admin shell: dangerous system commands, package manager commands, docker/kubernetes commands, and direct network fetch commands are blocked.\n"
             "- Keep commands non-interactive and scoped to the current task."

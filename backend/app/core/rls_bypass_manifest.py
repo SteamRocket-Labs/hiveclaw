@@ -916,7 +916,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land15 (A2a, A2b, R10a, R10b, R11a-R11g) versus land14: module-source and function entries
 # change (authority-aware batched preflight in group_source_read, UUID task-session comparison,
 # native read-denial receipts); still 122 callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "4d329991e5ecaf0a3152c874493741a2aa1b1874fb682d06ef31f1ba4e6cee35"
+# Land16 (R12a, R12b) versus land15: module-source entries of content_input_receipts.py
+# (memo key without the ancestor set, visiting/revisiting) and heartbeat.py (one run
+# deadline, run_bounded removed); still 122 callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "b6250088725451fd3d86b11906ea67f56e7f61ff58614d6692a5dc677dae2760"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

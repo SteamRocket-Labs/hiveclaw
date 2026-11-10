@@ -5,7 +5,7 @@ import json
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 import pytest
 from sqlalchemy import event, select
@@ -28,7 +28,8 @@ from app.services.personal_knowledge_access import AgentRuntimePrincipal
 from app.tools.handlers.memory import _load_scoped_memory, search_memory
 from app.tools.runtime import ToolExecutionContext
 from tests.integration.test_m1g24_workspace_artifact_authority_postgres import native_workspace  # noqa: F401
-from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call, shared_memory  # noqa: F401
+from tests.integration.test_m4d_group_memory_postgres import group_call, group_memory, save_group  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -312,3 +313,111 @@ async def test_final_reader_check_sees_revocation_during_the_walk(memory_dag, ow
             entries=[next(entry for entry in n.active if entry.entry_id == "dag-4")])
     assert revoked
     assert (caught.value.code, caught.value.status_code) == ("content_source_access_denied", 403)
+
+
+@pytest.mark.parametrize("surface", ["authorization", "result_recording"])
+@pytest.mark.parametrize("withdraw", [True, False])
+async def test_private_reader_rechecks_each_origin_group_after_the_walk(
+    group_memory, owner_sessionmaker, app_user_sessionmaker, monkeypatch, surface, withdraw,  # noqa: F811
+):
+    from types import SimpleNamespace
+    from app.models.chat_session import ChatSession
+    from app.models.invocation_span import InvocationSpan
+    from app.services import content_input_receipts, shared_group_authority
+    from app.services.channel_session import find_or_create_shared_group_session
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.explicit_memory_authority import latest_memory_receipt
+    from app.services.explicit_memory_tool_sources import record_memory_result
+    from app.services.feishu_service import FeishuService
+    from app.tools.runtime import ToolExecutionRequest
+
+    g, live_checks = group_memory, Counter()
+    n = g.n
+    await save_group(g, app_user_sessionmaker)
+    result, _ = await group_call(g, app_user_sessionmaker, "save_memory",
+        {"content": "Remember the group deployment window SECOND_GROUP_MARKER", "category": "project"})
+    assert "Saved memory" in result, result
+    async with owner_sessionmaker() as db:
+        origin = await db.get(ChatSession, g.session)
+        other = await find_or_create_shared_group_session(db, tenant_id=n.tenant, agent_id=n.agent,
+            installation_ref=origin.group_installation_ref, chat_id="second-origin-memory-group",
+            first_message_title="Another memory origin")
+        await db.commit()
+    elsewhere = SimpleNamespace(n=n, session=other.id, runs={}, rounds={})
+    result, _ = await group_call(elsewhere, app_user_sessionmaker, "save_memory",
+        {"content": "Remember the other group's review date OTHER_ORIGIN_MARKER", "category": "project"})
+    assert "Saved memory" in result, result
+    entries = load_explicit_overlay_entries(n.root.parent, n.agent)
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        sources = [(entry, await latest_memory_receipt(db, n.tenant, n.agent, entry.entry_id)) for entry in entries]
+    groups = [(e, r) for e, r in sources if r.authority_json["audience_kind"] == "group"]
+    groups.sort(key=lambda pair: pair[1].authority_json["source_session_id"] != str(g.session))
+    private = [(e, r) for e, r in sources if r.authority_json["audience_kind"] == "private"]
+    assert len(groups) == 3 and len(private) == 1
+    sources = [*groups, *private]
+    principal = AgentRuntimePrincipal(agent_id=n.agent, requester_user_id=n.user,
+        session_id=str(n.session), runtime_task_id=str(n.run), purpose="interactive_session")
+    arguments = {"query": "release", "scope": "facts"}
+    if surface == "result_recording":
+        content, invocation = await memory_call(n, app_user_sessionmaker, "search_memory", arguments)
+        identity = uuid5(invocation.id, "explicit-memory-tool-result")
+        # Reuse the real sealed invocation, removing only this test's first proof
+        # so the observed pass must either commit a fresh proof or reject it.
+        async with owner_sessionmaker() as db:
+            proof = await db.get(InvocationSpan, identity)
+            assert proof is not None
+            await db.delete(proof)
+            await db.commit()
+        context = ToolExecutionContext(agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant),
+            workspace=n.root, session_id=str(n.session), runtime_task_id=str(n.run),
+            turn_id=f"turn-{n.run.hex}", tool_call_id=invocation.provider_tool_use_id, emit_runtime_hooks=False)
+        request = ToolExecutionRequest("search_memory", arguments, context)
+
+    validate = content_input_receipts._validate_input_dependency_batch
+    membership = shared_group_authority._require_current_group_member
+    injected = False
+
+    async def current_members(_self, _app_id, _app_secret, chat_id, **_kwargs):
+        return {"memory-author", "memory-member"} if chat_id == other.group_subject_id else set(g.members)
+
+    async def withdraw_after_first_source(db, tenant_id, dependencies, **kwargs):
+        nonlocal injected
+        await validate(db, tenant_id, dependencies, **kwargs)
+        if dependencies == groups[0][1].dependencies_json and not injected:
+            if withdraw:
+                g.members.remove("memory-author")
+            injected = True
+
+    async def observe_live_membership(db, *, session, **kwargs):
+        if content_input_receipts._preflight_inputs(db) is None:
+            live_checks[session.id] += 1
+        return await membership(db, session=session, **kwargs)
+
+    monkeypatch.setattr(content_input_receipts, "_validate_input_dependency_batch", withdraw_after_first_source)
+    monkeypatch.setattr(shared_group_authority, "_require_current_group_member", observe_live_membership)
+    monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", current_members)
+    if surface == "authorization":
+        issues = []
+        allowed = await authorized_explicit_entries(tenant_id=n.tenant, agent_id=n.agent, request=principal,
+            entries=[e for e, _ in sources], issue_observer=issues)
+        expected = [(e, r) for e, r in sources
+            if not withdraw or r.authority_json["source_session_id"] != str(g.session)]
+        assert [(e.entry_id, r.id) for e, r in allowed] == [(e.entry_id, r.id) for e, r in expected]
+        assert issues == ([{"memory_id": e.entry_id, "status": "denied", "code": "group_membership_required"}
+            for e, r in groups if r.authority_json["source_session_id"] == str(g.session)] if withdraw else [])
+    else:
+        if withdraw:
+            with pytest.raises(ContentInputReceiptError) as caught:
+                await record_memory_result(request, content=content, entries=sources)
+            assert (caught.value.code, caught.value.status_code) == ("group_membership_required", 403)
+        else:
+            await record_memory_result(request, content=content, entries=sources)
+        async with owner_sessionmaker() as db:
+            proof = await db.get(InvocationSpan, identity)
+            if withdraw:
+                assert proof is None
+            else:
+                assert sorted(proof.metadata_json["memory_result"]["sources"], key=lambda ref: ref["source_id"]) == sorted(
+                    [source_dependency(r) for _, r in sources], key=lambda ref: ref["source_id"])
+    assert injected
+    assert live_checks == {g.session: 1, other.id: 1}

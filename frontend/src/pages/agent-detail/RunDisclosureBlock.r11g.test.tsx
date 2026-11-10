@@ -98,6 +98,34 @@ it.each([
   expect(container.querySelector('p')?.textContent).toContain('已返回结果');
 });
 
+it.each([
+  ['fatal: not a git repository (or any of the parent directories): .git', false],
+  ["head: cannot open 'workspace/uploads/*.csv' for reading: No such file or directory", false],
+  ['gh: command not found', false],
+  ['file:///private/tmp/secret', false],
+  ['见 </var/tmp/secret>', false],
+  ['目录／private/tmp/报告.md', false],
+  ['prefix {"rows": 20, "ok": True}', false],
+  ['(True, None)', false],
+  ['请对比输入/输出。', true],
+  ['和/或', true],
+  ['对方数字员工暂不可用', true],
+  ['报告内容已读取。', true],
+] as const)('uses the lexical plain-result gate for %s', (toolResult, visible) => {
+  const timeline = buildRunTimelineFromMessages([
+    { role: 'tool_call', content: '', toolName: 'send_message_to_agent', toolResult, toolStatus: 'done' },
+  ]);
+  const { container } = render(<RunDisclosureBlock timeline={timeline} />);
+  expand(container);
+  if (visible) {
+    expect(container.querySelector('p')?.textContent).toBe(toolResult);
+  } else {
+    expect(container.querySelector('p')?.textContent).toContain('已返回结果');
+    expect(container.textContent).not.toContain(toolResult);
+  }
+  expect((timeline.steps[0].details as { result: string }).result).toBe(toolResult);
+});
+
 it('names the recorded generic step and readiness event with everyday words', () => {
   const timeline = buildRunTimelineFromMessages([
     { id: 'unknown', role: 'tool_call', toolName: 'search_personal_kb', content: '', toolResult: '{"ok":true}', toolStatus: 'done' },

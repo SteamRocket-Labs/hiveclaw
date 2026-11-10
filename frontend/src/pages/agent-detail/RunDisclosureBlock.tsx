@@ -192,11 +192,11 @@ function commandOutcome(details: unknown): 'done' | 'failed' | null {
 function plainToolResult(result: string, toolName: string | null): boolean {
   if (!result.trim()) return false;
   try { JSON.parse(result); return false; } catch { /* Preserve ordinary result prose. */ }
-  // These are tool-output formats, never filters on model-authored prose.
+  // Lexical ceiling: "Permission denied (publickey)." shows; backend member summaries per tool (as for write_file/save_memory) should replace this classifier.
   return !(toolName && result.includes(toolName))
-    && !/(?:^|[^a-z0-9_/.<])(?:\/[^\s/]|[a-z]:\\|\\\\)/iu.test(result)
-    && !/^\s*[\[{]|\{\s*'[^']+'\s*:|^\s*(?:True|False|None)\s*$|\b(?:call_|toolu_)[\w-]+/m.test(result)
-    && !/^(?:Traceback \(most recent call last\):|\s*File "[^"]+", line \d+|\w*(?:Error|Exception):|(?:bash|sh|zsh):|stderr:)/mi.test(result)
+    && !/[\/／\\][a-z0-9._~]|file:|[a-z]:\\/i.test(result)
+    && !/^\s*[\[{]|\{["']|[(),:]\s*(?:True|False|None)\b|\b(?:True|False|None)\s*[(),:]|\b(?:call_|toolu_)[\w-]+/m.test(result)
+    && !/^(?:[A-Za-z][\w.+-]*: |Traceback \(most recent call last\):|\s*File "[^"]+", line \d+)/mi.test(result)
     && !/^(?:✅ Written to |Saved memory \[|📤 Output:|💻 Command:|⚠️ Stderr:)/m.test(result);
 }
 

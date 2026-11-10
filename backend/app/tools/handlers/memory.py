@@ -196,7 +196,7 @@ async def _record_memory_output(
 
     try:
         if entry_id is not None:
-            entries = await _scoped_explicit_entries(agent_id, context, ids=[entry_id])
+            entries = await _scoped_explicit_entries(agent_id, context, ids=[entry_id], tool_name=tool_name)
             if len(entries) != 1:
                 from app.services.content_input_receipts import ContentInputReceiptError
 
@@ -948,7 +948,7 @@ def _render_memory_fact(content, entry_id, *, source="", timestamp=""):
     return "\n".join(lines)
 
 
-async def _scoped_explicit_entries(agent_id, execution_context, *, ids=None, issue_observer=None, output_byte_limit=None):
+async def _scoped_explicit_entries(agent_id, execution_context, *, ids=None, issue_observer=None, output_byte_limit=None, tool_name="load_memory"):
     from app.config import get_settings
     from app.memory.explicit_overlay import load_explicit_overlay_entries, load_explicit_overlay_entries_by_ids
     from app.services.explicit_memory_authority import authorized_explicit_entries
@@ -963,7 +963,7 @@ async def _scoped_explicit_entries(agent_id, execution_context, *, ids=None, iss
     return await authorized_explicit_entries(
         tenant_id=uuid.UUID(str(execution_context.tenant_id)),
         agent_id=agent_id,
-        request=ToolExecutionRequest("load_memory", {}, execution_context),
+        request=ToolExecutionRequest(tool_name, {}, execution_context),
         entries=entries,
         issue_observer=issue_observer,
     )

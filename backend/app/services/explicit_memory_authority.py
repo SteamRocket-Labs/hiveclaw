@@ -207,6 +207,16 @@ async def _recheck_group_memory_audiences(db, *, tenant_id, agent_id, request, r
     return denied
 
 
+async def _validate_member_memory_sources(db, *, tenant_id, request, dependencies):
+    """Private recall consumes sources as the member, independently of Agent grants."""
+    from app.core.source_read_purpose import source_recipient_read
+
+    _principal, actor, session = await _actor(db, tenant_id, request)
+    if session.user_id is not None and session.audience_kind in {None, "private"}:
+        with source_recipient_read(session_id=session.id, user_id=actor.id):
+            await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+
+
 async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, session_factory=None, issue_observer=None):
     """Return only exact current versions; do not let previews bypass this boundary."""
     allowed = []
@@ -223,6 +233,10 @@ async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, 
                     receipt = await latest_memory_receipt(db, tenant_id, agent_id, entry.entry_id)
                     await _authorize_entry(db, tenant_id=tenant_id, agent_id=agent_id, request=request,
                         entry=entry, receipt=receipt)
+                    # A write's immediate acknowledgement retains its sealed-round contract.
+                    if getattr(request, "tool_name", None) not in {"save_memory", "update_memory", "retire_memory", "reconcile_memory_write"}:
+                        await _validate_member_memory_sources(db, tenant_id=tenant_id, request=request,
+                            dependencies=receipt.dependencies_json)
                 except ContentInputReceiptError as exc:
                     checked_entries.append((entry, receipt, exc))
                 else:
@@ -481,7 +495,7 @@ async def validate_memory_model_sources(db, *, task, agent_id, session_id, depen
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
     sources = [ref for ref in dependencies if ref["source_kind"] in {
-        "explicit_memory", "team_memory", "learned_skill_candidate", "learned_skill_file", "skill_evolution_observation", "session_model_result"}]
+        "explicit_memory", "team_memory", "learned_skill_candidate", "learned_skill_file", "skill_evolution_observation", "session_model_result", "knowledge_document"}]
     from app.models.config_revision import ConfigRevision
 
     for ref in dependencies:
@@ -501,6 +515,7 @@ async def validate_memory_model_sources(db, *, task, agent_id, session_id, depen
         principal = principal or AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=task.root_user_id,
             session_id=str(session_id), runtime_task_id=str(task.id), purpose="interactive_session")
         await _validate_input_dependencies(db, task.tenant_id, sources, runtime_request=principal)
+        await _validate_member_memory_sources(db, tenant_id=task.tenant_id, request=principal, dependencies=sources)
     except ContentInputReceiptError as exc:
         raise ExecutionAuthorityUnavailable(code=exc.code, task=task, effect="model_request",
             status="denied" if exc.status_code in {401, 403, 404} else "unavailable") from exc

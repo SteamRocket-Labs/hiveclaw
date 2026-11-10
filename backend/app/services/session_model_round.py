@@ -526,6 +526,48 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
     input_bindings["dependencies"][:] = [ref for ref in input_bindings["dependencies"] if ref in retained]
 
 
+async def _recheck_model_source_readers(db, *, tenant_id, group_principal, checked_memories,
+    input_bindings, messages, wire_request):
+    from app.models.organization_identity import ContentInputReceipt
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.explicit_memory_authority import _actor, _recheck_group_memory_audiences
+
+    # These checks must remain outside batch_inputs: its actor and membership
+    # caches otherwise hide a withdrawal during the walk until the next round.
+    for reader, checked in checked_memories.items():
+        retained = [(source, indexes) for source, indexes in checked
+            if source in input_bindings["dependencies"] and (indexes is None or any(
+                entry["message_index"] in indexes and source in entry.get("dependencies", [])
+                for entry in input_bindings["messages"]))]
+        if not retained and (reader != group_principal or not input_bindings["dependencies"]):
+            continue
+        try:
+            actor_frame = await _actor(db, tenant_id, reader)
+        except ContentInputReceiptError as exc:
+            if reader == group_principal:
+                for source in list(input_bindings["dependencies"]) or [None]:
+                    if source is None:
+                        raise
+                    if not any(source in entry.get("dependencies", []) for entry in input_bindings["messages"]):
+                        raise ContentInputReceiptError("group_model_sources_unavailable",
+                            "这次对话暂时无法确认访问范围，请重试。", 503) from exc
+                    _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
+            else:
+                for source, indexes in retained:
+                    _withhold_model_source(messages, wire_request, input_bindings, source, exc.code, indexes)
+            continue
+        receipts = [await db.get(ContentInputReceipt, uuid.UUID(source["source_id"])) for source, _indexes in retained]
+        denials = await _recheck_group_memory_audiences(db, tenant_id=tenant_id, agent_id=reader.agent_id,
+            request=reader, receipts=receipts, actor_frame=actor_frame)
+        for (source, indexes), receipt in zip(retained, receipts, strict=True):
+            if exc := denials.get(receipt.id):
+                if reader == group_principal and not any(
+                    source in entry.get("dependencies", []) for entry in input_bindings["messages"]):
+                    raise ContentInputReceiptError("group_model_sources_unavailable",
+                        "这次对话暂时无法确认访问范围，请重试。", 503) from exc
+                _withhold_model_source(messages, wire_request, input_bindings, source, exc.code, indexes)
+
+
 async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, session_id, run_id,
     input_bindings, messages, wire_request):
     from app.kernel.contracts import ExecutionAuthorityUnavailable
@@ -572,8 +614,9 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
             session_id=session_id, source_ref=entry.get("source_ref", ""))
         if reader is not None:
             memory_readers[entry["message_index"]] = principals.setdefault(reader, reader)
-    # This provider boundary owns one point-in-time read frame. The next
-    # round opens a new scope, including when it reuses the same transaction.
+    # Batch source walks share a frame; readers and origin-group membership
+    # are refreshed after the batch, before the request can leave this boundary.
+    checked_memories = {group_principal: []} if group_principal is not None else {}
     with group_source_read(batch_inputs=True):
         # Each dependency is checked once; an arbitrary retry cap must not turn the
         # fourth unavailable item into a whole-turn failure.
@@ -594,11 +637,14 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                         try:
                             await validate_memory_model_sources(db, task=task, agent_id=agent_id,
                                 session_id=session_id, dependencies=dependencies, principal=reader)
+                            checked_memories.setdefault(reader, []).append((source, indexes))
                         except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
                             _withhold_model_source(messages, wire_request, input_bindings, source, exc.code, indexes)
                 else:
                     await validate_memory_model_sources(db, task=task, agent_id=agent_id,
                         session_id=session_id, dependencies=dependencies, principal=memory_principal)
+                    if source is not None and source["source_kind"] == "explicit_memory":
+                        checked_memories.setdefault(memory_principal, []).append((source, None))
             except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
                 if source is None or exc.code == "group_model_sources_unavailable":
                     raise
@@ -607,6 +653,9 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                     raise ContentInputReceiptError("group_model_sources_unavailable",
                         "这次对话暂时无法确认访问范围，请重试。", 503) from exc
                 _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
+
+    await _recheck_model_source_readers(db, tenant_id=tenant_id, group_principal=group_principal,
+        checked_memories=checked_memories, input_bindings=input_bindings, messages=messages, wire_request=wire_request)
 
     # Defer non-tool rows within a group, but never cross into the next group.
     wire_messages = wire_request["messages"]

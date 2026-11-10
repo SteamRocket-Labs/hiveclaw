@@ -77,7 +77,6 @@ async def test_parent_memory_is_attested_only_for_exact_same_member_instruction(
     from app.models.runtime_task import RuntimeTask
     from app.services import delegation_input_origin as delegation
     from app.services.session_model_inputs import _hash
-    from app.services.session_model_round import _validate_or_withhold_model_sources
     from tests.integration.test_a4c_one_item_withheld import _bindings
 
     tenant, parent_agent, child_agent, user, parent_session, child_session, parent_run, child_run = (
@@ -149,6 +148,9 @@ async def test_parent_memory_is_attested_only_for_exact_same_member_instruction(
             raise receipts.ContentInputReceiptError("explicit_memory_source_unverified", "Private memory", 403)
 
     monkeypatch.setattr(receipts, "_validate_input_dependency_batch", memory_check)
+    # Keep this unit focused on which parent reader is attested. The real
+    # actor, receipt and live membership boundary use PostgreSQL regressions.
+    monkeypatch.setattr("app.services.session_model_round._recheck_model_source_readers", AsyncMock())
     monkeypatch.setattr("app.services.trigger_read_sources.validate_native_trigger_model_sources", AsyncMock())
     monkeypatch.setattr("app.services.team_task_context.validate_model_sources", AsyncMock())
     messages = [{"role": "user", "content": child.prompt}]

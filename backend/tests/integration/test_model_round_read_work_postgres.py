@@ -14,6 +14,8 @@ import pytest
 from sqlalchemy import event, select
 
 from tests.integration.test_memory_source_read_work_postgres import memory_dag, native_workspace  # noqa: F401
+from tests.integration.test_m4c_explicit_memory_scope_postgres import shared_memory  # noqa: F401
+from tests.integration.test_m4d_group_memory_postgres import group_memory  # noqa: F401
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -253,4 +255,190 @@ async def test_next_round_rechecks_sources_and_withholds_only_affected_item(
             {"role": "system", "content": n.entries[4].content},
         ]
         assert "MEMORY_DAG_9" not in json.dumps(second)
+        await db.rollback()
+
+
+@pytest.mark.parametrize("change", ["inactive", "membership", "unchanged"])
+async def test_private_round_refreshes_reader_and_origin_group_after_batch(
+    group_memory, owner_sessionmaker, app_user_sessionmaker, monkeypatch, change,  # noqa: F811
+):
+    from app.database import tenant_scoped_session
+    from app.memory.explicit_overlay import load_explicit_overlay_entries
+    from app.models.session_v2 import SessionModelResult
+    from app.models.user import User
+    from app.runtime.context_candidates import ContextMessageOrigin
+    from app.services import content_input_receipts, explicit_memory_authority, shared_group_authority
+    from app.services.explicit_memory_authority import latest_memory_receipt, source_dependency
+    from app.services.llm_client import LLMMessage
+    from app.services.session_model_round import prepare_model_request
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import new_owner_work
+    from tests.integration.test_m4d_group_memory_postgres import group_call, save_group
+
+    g, injected, audience_checks, live_actors, live_groups = group_memory, False, 0, Counter(), Counter()
+    n = g.n
+    await save_group(g, app_user_sessionmaker)
+    result, _ = await group_call(g, app_user_sessionmaker, "save_memory",
+        {"content": "Remember our group review date GROUP_SECOND_MARKER", "category": "project"})
+    assert "Saved memory" in result, result
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        sources = [(entry, await latest_memory_receipt(db, n.tenant, n.agent, entry.entry_id))
+            for entry in load_explicit_overlay_entries(n.root.parent, n.agent)]
+    sources.sort(key=lambda pair: (pair[1].authority_json["audience_kind"] != "group", str(pair[1].id)))
+    assert [r.authority_json["audience_kind"] for _, r in sources] == ["group", "group", "private"]
+    # Binding sorts source triples by receipt ID. Deactivate at the first
+    # actual source, or drop membership at the first group source, so every
+    # expected withheld item is still pending the base's in-walk recheck.
+    target = min(sources, key=lambda pair: str(pair[1].id))[1] if change == "inactive" else sources[0][1]
+    session, run = await new_owner_work(n, owner_sessionmaker)
+    authorize = explicit_memory_authority.authorize_memory_audience
+    resolve_actor = content_input_receipts._resolve_runtime_input_actor
+    membership = shared_group_authority._require_current_group_member
+
+    async def change_before_post_walk_audience(db, **kwargs):
+        nonlocal injected, audience_checks
+        if kwargs["authority"] == target.authority_json:
+            audience_checks += 1
+        # The second audience check follows the first item's source walk.
+        if audience_checks == 2 and not injected:
+            if change == "inactive":
+                async with owner_sessionmaker() as writer:
+                    (await writer.get(User, n.user)).is_active = False
+                    await writer.commit()
+            elif change == "membership":
+                g.members.remove("memory-author")
+            injected = True
+        return await authorize(db, **kwargs)
+
+    async def observe_actor(db, tenant_id, request):
+        if injected and content_input_receipts._preflight_inputs(db) is None:
+            live_actors[request] += 1
+        return await resolve_actor(db, tenant_id, request)
+
+    async def observe_membership(db, *, session, **kwargs):
+        if injected and content_input_receipts._preflight_inputs(db) is None:
+            live_groups[session.id] += 1
+        return await membership(db, session=session, **kwargs)
+
+    monkeypatch.setattr(explicit_memory_authority, "authorize_memory_audience", change_before_post_walk_audience)
+    monkeypatch.setattr(content_input_receipts, "_resolve_runtime_input_actor", observe_actor)
+    monkeypatch.setattr(shared_group_authority, "_require_current_group_member", observe_membership)
+    messages = [LLMMessage(role="system", content=e.content,
+        context_origin=ContextMessageOrigin.capture(kind="memory", role="system", content=e.content,
+            sources=[source_dependency(r)], unbound=())) for e, r in sources]
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        request = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent, session_id=session,
+            run_id=run, turn_id=f"turn-{run.hex}", round_index=1, messages=messages, tools=[],
+            provider="synthetic", model="local-reference")
+        row = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
+        snapshot = row.model_request_snapshot_json
+        await db.rollback()
+    assert injected
+    expected = [change != "unchanged", change != "unchanged", change == "inactive"]
+    bindings = snapshot["input_bindings"]
+    assert bindings["dependency_coverage"]["complete"]
+    notice = "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"
+    for (entry, receipt), bound, wire, withheld in zip(sources, bindings["messages"],
+            snapshot["wire_request"]["messages"], expected, strict=True):
+        assert bound["status"] == ("withheld" if withheld else "bound"), bound
+        if withheld:
+            assert bound["code"] == ("content_source_access_denied" if change == "inactive" else "group_membership_required")
+            assert bound["dependencies"] == []
+            assert wire == {"role": "system", "content": notice}
+            assert entry.content not in json.dumps(snapshot, ensure_ascii=False)
+        else:
+            assert wire["content"] == entry.content
+            assert source_dependency(receipt) in bindings["dependencies"]
+    print("A2B_LIVE_RECHECKS", change, "actors", list(live_actors.values()), "groups", list(live_groups.values()))
+    assert list(live_actors.values()) == [1], live_actors
+    assert list(live_groups.values()) == ([] if change == "inactive" else [1]), live_groups
+
+
+@pytest.mark.parametrize("change,attached", [("claim", True), ("membership", True),
+    ("claim", False), ("membership", False), ("unchanged", True)])
+async def test_group_round_refreshes_actor_and_preserves_withholding_escalation(
+    group_memory, app_user_sessionmaker, monkeypatch, change, attached,  # noqa: F811
+):
+    from app.database import tenant_scoped_session
+    from app.memory.explicit_overlay import load_explicit_overlay_entries
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult
+    from app.runtime.context_candidates import ContextMessageOrigin
+    from app.services import content_input_receipts, explicit_memory_authority, shared_group_authority
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.explicit_memory_authority import latest_memory_receipt, source_dependency
+    from app.services.llm_client import LLMMessage
+    from app.services.session_model_round import _validate_or_withhold_model_sources, prepare_model_request
+    from tests.integration.test_a4c_one_item_withheld import _bindings
+    from tests.integration.test_m4d_group_memory_postgres import save_group
+
+    g, injected, audience_checks, live = group_memory, False, 0, Counter()
+    n = g.n
+    await save_group(g, app_user_sessionmaker)
+    run = g.runs[n.user]
+    entry = next(e for e in load_explicit_overlay_entries(n.root.parent, n.agent) if e.entry_id == g.entry_id)
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        receipt = await latest_memory_receipt(db, n.tenant, n.agent, entry.entry_id)
+    source = source_dependency(receipt)
+    authorize = explicit_memory_authority.authorize_memory_audience
+    resolve_actor = content_input_receipts._resolve_runtime_input_actor
+    membership = shared_group_authority._require_current_group_member
+
+    async def change_before_post_walk_audience(db, **kwargs):
+        nonlocal injected, audience_checks
+        if kwargs["authority"] == receipt.authority_json:
+            audience_checks += 1
+        if audience_checks == 2 and not injected:
+            if change == "claim":
+                # Change the canonical task in this transaction, so the base's
+                # identity-map read and the live boundary observe the same fact.
+                task = await db.get(RuntimeTask, run)
+                task.claim_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                await db.flush()
+            elif change == "membership":
+                g.members.remove("memory-author")
+            injected = True
+        return await authorize(db, **kwargs)
+
+    async def observe_actor(db, tenant_id, request):
+        if injected and content_input_receipts._preflight_inputs(db) is None:
+            live["actor"] += 1
+        return await resolve_actor(db, tenant_id, request)
+
+    async def observe_membership(db, **kwargs):
+        if injected and content_input_receipts._preflight_inputs(db) is None:
+            live["membership"] += 1
+        return await membership(db, **kwargs)
+
+    monkeypatch.setattr(explicit_memory_authority, "authorize_memory_audience", change_before_post_walk_audience)
+    monkeypatch.setattr(content_input_receipts, "_resolve_runtime_input_actor", observe_actor)
+    monkeypatch.setattr(shared_group_authority, "_require_current_group_member", observe_membership)
+    messages = [LLMMessage(role="system", content=entry.content,
+        context_origin=ContextMessageOrigin.capture(kind="memory", role="system", content=entry.content,
+            sources=[source], unbound=()))]
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        if attached:
+            request = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent, session_id=g.session,
+                run_id=run, turn_id=(await db.get(RuntimeTask, run)).metadata_json["turn_id"],
+                round_index=g.rounds[run] + 1, messages=messages, tools=[], provider="synthetic", model="local-reference")
+            row = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
+            snapshot = row.model_request_snapshot_json
+            if change == "unchanged":
+                assert snapshot["input_bindings"]["messages"][0]["status"] == "bound"
+                assert snapshot["wire_request"]["messages"] == [{"role": "system", "content": entry.content}]
+                print("A2B_GROUP_LIVE_RECHECKS", dict(live))
+                assert live == {"actor": 1, "membership": 1}
+            else:
+                assert snapshot["input_bindings"]["messages"][0]["status"] == "withheld"
+                assert snapshot["input_bindings"]["messages"][0]["code"] == "content_source_access_denied"
+                assert snapshot["wire_request"]["messages"] == [{"role": "system",
+                    "content": "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"}]
+                assert entry.content not in json.dumps(snapshot, ensure_ascii=False)
+        else:
+            bindings = _bindings(0, {})
+            bindings["dependencies"] = [source]
+            with pytest.raises(ContentInputReceiptError) as caught:
+                await _validate_or_withhold_model_sources(db, tenant_id=n.tenant, agent_id=n.agent,
+                    session_id=g.session, run_id=run, input_bindings=bindings, messages=[], wire_request={"messages": []})
+            assert caught.value.code == "group_model_sources_unavailable"
+        assert injected
         await db.rollback()

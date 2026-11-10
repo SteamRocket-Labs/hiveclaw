@@ -69,13 +69,13 @@ def _same_group(authority, session):
         for key, value in audience_for_session(session).items())
 
 
-async def authorize_memory_audience(db, *, tenant_id, agent_id, request, authority, mutation=False):
+async def authorize_memory_audience(db, *, tenant_id, agent_id, request, authority, mutation=False, actor_frame=None):
     """A source audience is independent of creator and operation-recovery ownership."""
     from fastapi import HTTPException
     from app.models.chat_session import ChatSession
     from app.services.shared_group_authority import require_current_group_member
 
-    principal, actor, current = await _actor(db, tenant_id, request)
+    principal, actor, current = actor_frame if actor_frame is not None else await _actor(db, tenant_id, request)
     if (authority.get("schema") != AUTHORITY_SCHEMA or authority.get("tenant_id") != str(tenant_id)
         or authority.get("agent_id") != str(agent_id) or principal.agent_id != agent_id):
         raise ContentInputReceiptError("explicit_memory_source_unverified", "The memory source binding is unavailable.", 403)
@@ -91,9 +91,11 @@ async def authorize_memory_audience(db, *, tenant_id, agent_id, request, authori
                 or (mutation and not _same_group(authority, current))):
                 raise ContentInputReceiptError("explicit_memory_group_context_mismatch",
                     "Revise group memory in its original group; private work does not grant group disclosure.", 403)
-            # Even an administrator's Agent run needs actual membership.
+            # A supplied live group actor already checked this same group's
+            # membership. Private readers still need the origin-group check.
             # Business inspection belongs to the separate browser reader.
-            await require_current_group_member(db, session=origin, user=actor)
+            if actor_frame is None or not _same_group(authority, current):
+                await require_current_group_member(db, session=origin, user=actor)
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
             raise ContentInputReceiptError(detail.get("code", "explicit_memory_group_denied"),
@@ -186,7 +188,7 @@ async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, 
     return receipt
 
 
-async def _recheck_group_memory_audiences(db, *, tenant_id, agent_id, request, receipts):
+async def _recheck_group_memory_audiences(db, *, tenant_id, agent_id, request, receipts, actor_frame=None):
     """Refresh each allowed origin group's membership outside the input batch."""
     checked, denied = {}, {}
     for receipt in receipts:
@@ -197,7 +199,7 @@ async def _recheck_group_memory_audiences(db, *, tenant_id, agent_id, request, r
         if key not in checked:
             try:
                 await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id,
-                    request=request, authority=authority)
+                    request=request, authority=authority, actor_frame=actor_frame)
             except ContentInputReceiptError as exc:
                 checked[key] = exc
             else:

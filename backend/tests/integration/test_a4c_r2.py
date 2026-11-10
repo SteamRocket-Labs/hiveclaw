@@ -94,6 +94,9 @@ def patch_validators(monkeypatch, bad=()):
     monkeypatch.setattr("app.services.trigger_read_sources.validate_native_trigger_model_sources", AsyncMock())
     monkeypatch.setattr("app.services.team_task_context.validate_model_sources", AsyncMock())
     monkeypatch.setattr("app.services.explicit_memory_authority.validate_memory_model_sources", check)
+    # This contract uses synthetic source IDs and a stub actor/database; the
+    # live provider-boundary recheck has real-PostgreSQL coverage separately.
+    monkeypatch.setattr("app.services.session_model_round._recheck_model_source_readers", AsyncMock())
 
 
 async def validate(db, bindings, messages):

@@ -161,7 +161,7 @@ async def test_discovery_returns_connection_steps_and_preserves_connected_execut
     result = str(await service.execute("tool_search", {"query": "GitHub" if connection == "absent" else "Company documents"}, **context))
     assert "Connection actions:\n" in result, result
     actions = json.loads(result.split("Connection actions:\n", 1)[1].split("\n", 1)[0])
-    assert actions["not_connected"]["connect_action"] == {"location": "company connections", "actor": "administrator"}
+    assert actions["not_connected"]["connect_action"] == {"location": "公司连接", "actor": "administrator"}
     assert "not connected" in result
     assert "Do not probe browser sessions, email or importable integrations as workarounds" in result
     if connection == "absent":

@@ -92,7 +92,9 @@ def _error(request, exc):
     state = {}
     if exc.code == "browser_device_not_configured":
         message = "No browser is configured for this assistant."
-        hint = "No browser is available; retrying will not help. Explain the limitation in the member's language and use an available non-browser path."
+        hint = ("No browser is available; retrying will not help. Explain the limitation in the member's language. "
+            "For a service the company has not connected, answer in one sentence that it is not connected and an administrator can add it in 公司连接, "
+            "then stop attempts to access that service. This completes the request; do not try other routes.")
     elif exc.code == "browser_revision_conflict":
         state = {"current_revision": exc.current_revision, "current_epoch": exc.current_epoch}
         message = "The browser state changed; the requested revision and epoch are stale."

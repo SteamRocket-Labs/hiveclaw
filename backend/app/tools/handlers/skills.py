@@ -333,11 +333,11 @@ async def reconcile_skill_candidate(agent_id: uuid.UUID, workspace: Path, argume
             "- Use `load_skill` only when you need the skill's instructions or component guidance, not merely to unlock tool schemas.\n"
             "- For administrator-requested installation or import of a NEW MCP server, use the explicit MCP resource tools "
             "only when those tools are explicitly available to this agent. Never use installation to resolve a member's missing connection.\n"
-            "- Prefer builtin tools, loaded skills, and direct web/file workflows first; reach for an imported MCP tool "
+            "- Within verified connections, prefer builtin tools, loaded skills, and direct web/file workflows first; reach for an imported MCP tool "
             "when the task genuinely needs it.\n"
             "- When no tool matches, use the returned company-app list to distinguish an unconnected company app from a missing personal account.\n"
-            "- If the company has not registered the app, briefly ask the member to contact an administrator in company connections. "
-            "Do not keep searching or try installation or browser workarounds. Installation tools require explicit availability."
+            "- If the company has not registered the app, answer in one sentence that it is not connected and an administrator can add it in 公司连接 (company connections). "
+            "Do not keep searching or try browsers, CLIs, commands, installation or other routes to reach it. Installation tools require explicit availability."
         ),
         parameters={
             "type": "object",

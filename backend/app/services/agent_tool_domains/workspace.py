@@ -618,7 +618,8 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
         if "import_mcp_server" in missing:
             guidance += (
                 " This assistant cannot install company connections. If the company has not connected the requested app, "
-                "tell the member to ask an administrator to add it in company connections. "
+                "tell the member in one sentence that it is not connected and an administrator can add it in 公司连接 (company connections). "
+                "Do not try browsers, CLIs, commands or other routes to reach it. "
                 "For an already registered app, use its available tools and the existing personal-account connection card."
             )
         return _skill_control_error(authority_scope, tool_name, "skill_tools_unavailable",
@@ -1850,7 +1851,7 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         lines.extend(["Connection actions:", json.dumps({
             "not_connected": {
                 "when": "The requested service is absent from company_applications.",
-                "connect_action": {"location": "company connections", "actor": "administrator"},
+                "connect_action": {"location": "公司连接", "actor": "administrator"},
             },
             "connect_if_account_needed": {"tool": "ask_user_question", "arguments": {
                 "questions": [{"question": "<Write a connection question in the member's language>", "options": []}],
@@ -1859,8 +1860,10 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         }, ensure_ascii=False)])
         lines.append(
             "company_applications is the complete list of company-registered apps, not a list of personal accounts. "
-            "If the requested app is absent, it is not connected: say so in one plain sentence in the member's language "
-            "and offer its connect_action. Do not probe browser sessions, email or importable integrations as workarounds. "
+            "If the requested app is absent, answer in one sentence in the member's language "
+            "that it is not connected and an administrator can add it in 公司连接 (company connections), then stop attempts to access that service. "
+            "Do not try browsers, CLIs, shell commands, web requests, workspace files, memory, personal knowledge or other routes to reach it. "
+            "Do not probe browser sessions, email or importable integrations as workarounds. "
             "Do not install or create a company connection. "
             "Only for a row marked connect_if_account_needed, copy that call template, substituting configuration.mcp_server_id "
             "with the row's mcp_server_id and replacing the question text with the member's language to show the existing connection card. "

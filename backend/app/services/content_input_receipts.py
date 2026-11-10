@@ -106,6 +106,8 @@ class _DisclosureSourceValidations:
         self.batch_inputs = batch_inputs
         self.cache_authority = cache_authority
         self.verified = {}
+        self.visiting = set()
+        self.revisiting = set()
         self.actors = {}
         self.inputs = {}
 
@@ -120,6 +122,8 @@ def group_source_read(*, batch_inputs=False, cache_authority=True):
     finally:
         scope.active = False
         scope.verified.clear()
+        scope.visiting.clear()
+        scope.revisiting.clear()
         scope.actors.clear()
         scope.inputs.clear()
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
@@ -392,9 +396,21 @@ async def _validate_input_dependencies(
             id(runtime_request),
             _SOURCE_READER.get() is not None,
             recipient,
-            None if scope.batch_inputs else active_workspace_receipts,
             source_key,
         )
+        if reader_key in scope.visiting:
+            # Re-enter a gray source once so its own active-chain check can classify
+            # the cycle; a second re-entry means no kind check fires on this cycle.
+            if reader_key in scope.revisiting:
+                raise ContentInputReceiptError(
+                    "content_source_unavailable", "The source dependency chain is cyclic.", 503
+                )
+            scope.revisiting.add(reader_key)
+            try:
+                await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+            finally:
+                scope.revisiting.discard(reader_key)
+            continue
         # Nested children of a top-level source are cached for the same reader
         # within one round; every top-level model source is walked live.
         # Nested group membership reflects its first walk, as on A2a's tool path.
@@ -404,7 +420,11 @@ async def _validate_input_dependencies(
             or reader_key not in scope.verified
             or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())
         ):
-            await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+            scope.visiting.add(reader_key)
+            try:
+                await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+            finally:
+                scope.visiting.remove(reader_key)
             if scope.active and transaction is not None:
                 # A cyclic walk cannot complete and enter this preflight's cache.
                 scope.verified[reader_key] = (user, runtime_request)

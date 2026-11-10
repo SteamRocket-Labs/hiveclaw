@@ -62,6 +62,12 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
             ).where(RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id)
         )
     ).one_or_none()
+    try:
+        task_sessions = {
+            uuid.UUID(value) for value in (task.parent_session_id, task.child_session_id) if value
+        } if task is not None else set()
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise _error() from exc
     if (
         user is None
         or agent is None
@@ -76,7 +82,7 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
         or task is None
         or task.root_user_id != user_id
         or agent_id not in {task.parent_agent_id, task.child_agent_id}
-        or session_id not in {uuid.UUID(value) for value in (task.parent_session_id, task.child_session_id) if value}
+        or session_id not in task_sessions
     ):
         raise _error()
     from fastapi import HTTPException
@@ -340,16 +346,3 @@ async def directory_page_sources(db, *, agent_id, invocation, content, sources):
     except (KeyError, ValueError, TypeError) as exc:
         raise _error("content_source_changed") from exc
     return sources
-
-
-async def owned_directory_source(db, *, dependency, agent_id, tenant_id, session_id, user_id):
-    """Publish owned context with tenant-public peers; retain private group boundaries."""
-    row, proof, _user = await _load(db, tenant_id=tenant_id, dependency=dependency)
-    return (
-        row.user_id is not None
-        and row.agent_id == agent_id
-        and row.session_id == str(session_id)
-        and row.user_id == user_id
-        and proof["agent_owner_id"] == str(user_id)
-        and all(entry.get("section") in {"same_owner_agents", "public_agents"} for entry in proof["inventory"])
-    )

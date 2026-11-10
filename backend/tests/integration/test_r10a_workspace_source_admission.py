@@ -146,7 +146,7 @@ async def test_web_report_withholds_tainted_history_and_delivers_new_csv_report(
     walks = Counter()
     model_walks = Counter()
     native_validate = content_input_receipts._validate_workspace_dependency
-    native_published = content_input_receipts.validate_published_workspace_receipt
+    native_tool_input = content_input_receipts._validate_workspace_tool_input
     native_model_source = learned_skill_sources._validate_model_source
     native_read = content_input_receipts.authorize_workspace_receipt_read
     native_round = session_model_round._validate_or_withhold_model_sources
@@ -155,9 +155,9 @@ async def test_web_report_withholds_tainted_history_and_delivers_new_csv_report(
         walks[phase.get()] += 1
         return await native_validate(*args, **kwargs)
 
-    async def count_published(*args, **kwargs):
+    async def count_tool_input(*args, **kwargs):
         walks[phase.get()] += 1
-        return await native_published(*args, **kwargs)
+        return await native_tool_input(*args, **kwargs)
 
     async def count_model_source(*args, **kwargs):
         model_walks[phase.get()] += 1
@@ -178,7 +178,7 @@ async def test_web_report_withholds_tainted_history_and_delivers_new_csv_report(
             phase.reset(token)
 
     monkeypatch.setattr(content_input_receipts, "_validate_workspace_dependency", count_validation)
-    monkeypatch.setattr(content_input_receipts, "validate_published_workspace_receipt", count_published)
+    monkeypatch.setattr(content_input_receipts, "_validate_workspace_tool_input", count_tool_input)
     monkeypatch.setattr(learned_skill_sources, "_validate_model_source", count_model_source)
     monkeypatch.setattr(content_input_receipts, "authorize_workspace_receipt_read", observe_read)
     monkeypatch.setattr(session_model_round, "_validate_or_withhold_model_sources", observe_round)

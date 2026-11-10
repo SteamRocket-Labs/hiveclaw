@@ -566,10 +566,16 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
 
     kind, source_id = dependency["source_kind"], dependency["source_id"]
     if kind == "agent_directory_observation":
-        from app.services.agent_directory_sources import owned_directory_source
+        from app.services.agent_directory_sources import _load
 
-        return await owned_directory_source(
-            db, dependency=dependency, agent_id=agent_id, tenant_id=tenant_id, session_id=session_id, user_id=user_id
+        row, proof, _user = await _load(db, tenant_id=tenant_id, dependency=dependency)
+        return (
+            row.user_id is not None
+            and row.agent_id == agent_id
+            and row.session_id == str(session_id)
+            and row.user_id == user_id
+            and proof["agent_owner_id"] == str(user_id)
+            and all(entry.get("section") in {"same_owner_agents", "public_agents"} for entry in proof["inventory"])
         )
     allowed = {
         "agent_identity": {"identity"},

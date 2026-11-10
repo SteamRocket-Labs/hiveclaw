@@ -1992,10 +1992,12 @@ async def _validate_workspace_tool_input(db, request, receipt):
     # Private Web and delegation outputs publish as the session's member;
     # group and machine outputs retain their runtime reader.
     if session.user_id is None or session.audience_kind == "group":
-        await validate_runtime_workspace_receipt(db, tenant_id, request, receipt, receipt.content_sha256)
+        await _validate_workspace_receipt_inputs(
+            db, receipt, runtime_request=request, active_receipts=frozenset({receipt.id})
+        )
     else:
         with source_recipient_read(session_id=session.id, user_id=user.id):
-            await validate_published_workspace_receipt(db, tenant_id, user, receipt, receipt.content_sha256)
+            await validate_browser_input_dependencies(db, tenant_id, user, receipt.dependencies_json)
 
 
 async def authorize_workspace_execution_inputs(request):
@@ -2009,8 +2011,8 @@ async def authorize_workspace_execution_inputs(request):
     from sqlalchemy.exc import SQLAlchemyError
 
     context, scope = request.context, request.context.workspace_authority_scope
-    if (request.tool_name not in {"grep_search", "execute_code", "run_command", "run_skill_tool",
-        "office_document_create", "office_document_apply"}) or not isinstance(scope, WorkspaceAuthorityScope):
+    if request.tool_name not in {"grep_search", "execute_code", "run_command", "run_skill_tool",
+        "office_document_create", "office_document_apply"} or not isinstance(scope, WorkspaceAuthorityScope):
         return
     try:
         paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}

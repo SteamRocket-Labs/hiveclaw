@@ -3,9 +3,11 @@
 import hashlib
 import json
 import uuid
+from contextlib import nullcontext
 
 from sqlalchemy import select
 
+from app.core.source_read_purpose import source_recipient_read
 from app.models.agent import Agent
 from app.models.chat_artifact import ChatArtifact
 from app.models.hr_creation import HrCreationDraft
@@ -904,17 +906,19 @@ async def _validate_runtime_result_sources(db, request, result_object, *, user=N
             )
         )
     for dependency in dependencies:
-        published = (first_task or published_return) and await _published_owned_delegation_input(
-            db, dependency, task, receipt_ids=receipt_ids
+        published = (first_task or published_return) and (
+            dependency["source_kind"] == "workspace_artifact"
+            or await _published_owned_delegation_input(db, dependency, task, receipt_ids=receipt_ids)
         )
-        await _validate_input_dependencies(
-            db,
-            task.tenant_id,
-            [dependency],
-            user=requester if published else user,
-            runtime_request=None if published else request,
-            active_workspace_receipts=frozenset(receipt_ids),
-        )
+        with source_recipient_read(session_id=reader_session, user_id=requester.id) if published else nullcontext():
+            await _validate_input_dependencies(
+                db,
+                task.tenant_id,
+                [dependency],
+                user=requester if published else user,
+                runtime_request=None if published else request,
+                active_workspace_receipts=frozenset(receipt_ids),
+            )
     return True
 
 

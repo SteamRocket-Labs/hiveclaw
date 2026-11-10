@@ -292,6 +292,18 @@ describe('ThreadItemRenderer', () => {
     expect(renderToStaticMarkup(<ThreadItemRenderer item={compact} />)).toBe('<p>上下文已压缩。</p>');
   });
 
+  it('hides automatic compaction with no member summary while preserving the operator card', () => {
+    const compact = { ...item('context_compaction'), audience: 'user', user_summary: '', content: '',
+      metadata: { status: 'succeeded' }, operator_details: null } as ThreadItem;
+    expect(shouldRenderThreadItemInConversation(compact, false)).toBe(false);
+    expect(renderToStaticMarkup(<ThreadItemRenderer item={compact} />)).toBe('');
+    const operatorItem = item('context_compaction');
+    expect(shouldRenderThreadItemInConversation(operatorItem, true)).toBe(true);
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={operatorItem} />);
+    expect(markup).toContain('thread-item-card thread-item-context_compaction');
+    expect(markup).toContain('context_compaction summary');
+  });
+
   it('keeps runtime mechanics in the status surface while preserving user actions in conversation', () => {
     const userItem = (itemType: ThreadItemType) => ({
       ...item(itemType),

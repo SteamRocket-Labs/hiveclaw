@@ -958,6 +958,8 @@ def _project_for_audience(
             },
         }
         return raw
+    if raw["item_type"] == "context_compaction" and merged.get("manual") is not True:
+        raw["user_summary"] = summary = ""
     raw["operator_details"] = None
     preservable_content_types = {"user_message", "agent_message", "tool_call", "tool_result", "plan", "artifact"}
     raw["content"] = (

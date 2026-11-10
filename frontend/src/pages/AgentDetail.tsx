@@ -785,7 +785,8 @@ function AgentDetailInner() {
                 sessionVisibilityBoundariesRef.current[runtimeKey] = projected.visibilityBoundary;
                 sessionUiStateRef.current[runtimeKey] = projected.ui;
                 syncActivePhase(projected.ui.phase);
-                const { messages: preParsed, activeProjection } = projected;
+                const { activeProjection } = projected;
+                let preParsed = projected.messages;
                 if (activeProjection.checkpointEventId) {
                     if (activeProjection.draftContent) setChatInput(activeProjection.draftContent);
                     if (activeProjection.shouldScrollToProjectionTail && !publishedCanonicalSnapshot) {
@@ -795,6 +796,10 @@ function AgentDetailInner() {
                 publishedCanonicalSnapshot = true;
                 if (writableSession) {
                     setChatMessagesSessionId(sessionId);
+                    preParsed = [
+                        ...preParsed,
+                        ...sessionMessageStore.getSnapshot(sessionId).filter(message => message.eventType === 'runtime_action_failed' && message.threadItem?.metadata?.eventStatus === 'command_failed'),
+                    ];
                     setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed));
                 } else {
                     setHistoryMessagesSessionId(sessionId);
@@ -862,6 +867,10 @@ function AgentDetailInner() {
                     : null;
                 if (writableSession) {
                     setChatMessagesSessionId(sessionId);
+                    preParsed = [
+                        ...preParsed,
+                        ...sessionMessageStore.getSnapshot(sessionId).filter(message => message.eventType === 'runtime_action_failed' && message.threadItem?.metadata?.eventStatus === 'command_failed'),
+                    ];
                     setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed));
                 } else {
                     setHistoryMessagesSessionId(sessionId);
@@ -1477,7 +1486,8 @@ function AgentDetailInner() {
     // derived views kept in sync through syncActivePhase — never set directly
     // on lifecycle paths anymore.
     const [activePhase, setActivePhase] = useState<RuntimePhase>('idle');
-    const [compactingSessions, setCompactingSessions] = useState<ReadonlySet<SessionRuntimeKey>>(() => new Set());
+    const compactingSessionsRef = useRef(new Set<SessionRuntimeKey>());
+    const [compactingSessions, setCompactingSessions] = useState<ReadonlySet<SessionRuntimeKey>>(compactingSessionsRef.current);
     const syncActivePhase = (phase: RuntimePhase) => {
         setActivePhase(phase);
         const derived = phaseUi(phase);
@@ -1855,6 +1865,7 @@ function AgentDetailInner() {
     const sendChatMsg = async (options?: SessionMessageOptions, retryMessageId?: string, retrySession?: ChatSession) => {
         let sendSession = retrySession || activeSession;
         if (!id || !sendSession?.id) return;
+        if (compactingSessionsRef.current.has(buildSessionRuntimeKey(id, String(sendSession.id)))) return false;
         if (options?.expectedSessionId && String(sendSession.id) !== options.expectedSessionId) return false;
         const expectedSubject = `${readinessScopeKey}:${currentUser?.role || ''}`;
         const stillOriginalSubject = () => {
@@ -1897,6 +1908,7 @@ function AgentDetailInner() {
                 if (!commandSession?.id) return;
                 const commandSessionId = String(commandSession.id);
                 const activeRuntimeKey = buildSessionRuntimeKey(id, commandSessionId);
+                if (compactingSessionsRef.current.has(activeRuntimeKey)) return false;
                 if (!activeRunStateRef.current[activeRuntimeKey]?.runId) {
                     syncActivePhase('queued');
                     setSessionPhase(activeRuntimeKey, 'queued');
@@ -1913,7 +1925,8 @@ function AgentDetailInner() {
 
                 const isCompact = parsedSlashCommand.name === 'compact';
                 if (isCompact) {
-                    setCompactingSessions(prev => new Set(prev).add(activeRuntimeKey));
+                    compactingSessionsRef.current.add(activeRuntimeKey);
+                    setCompactingSessions(new Set(compactingSessionsRef.current));
                     setChatInput('');
                 }
                 let commandFailed = false;
@@ -1977,13 +1990,12 @@ function AgentDetailInner() {
                                 ? t('common.serviceUnavailable', 'The service is not responding. Please try again later.')
                                 : t('common.requestFailed', 'The operation could not be completed. Please try again.')
                         : err?.message || t('agent.chat.commands.failed', 'Failed to run command');
-                    setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'command_failed' })]);
+                    setChatMessagesAfterQueuedForSession(commandSessionId, prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'command_failed' })]);
                 } finally {
-                    if (isCompact) setCompactingSessions(prev => {
-                        const next = new Set(prev);
-                        next.delete(activeRuntimeKey);
-                        return next;
-                    });
+                    if (isCompact) {
+                        compactingSessionsRef.current.delete(activeRuntimeKey);
+                        setCompactingSessions(new Set(compactingSessionsRef.current));
+                    }
                     if (!commandStartedRun) {
                         const phase = isCompact && commandFailed ? 'failed' : 'idle';
                         if (activeSessionIdRef.current === commandSessionId) syncActivePhase(phase);
@@ -2713,7 +2725,7 @@ function AgentDetailInner() {
 	                            onBranchMessage={handleBranchMessage}
 	                            onSendMessage={sendChatMessageText}
                             onEnterPlanMode={(reason: string) => sendChatMessageText(reason, { planMode: true })}
-                            isStreaming={compactInProgress || isStreaming}
+                            isStreaming={isStreaming}
                             sessionOnly={sessionWorkbenchMode}
                             canAbortGeneration={activeSession?.audience_kind !== 'group' || Boolean(activeSessionRun?.can_cancel
                                 && normalizeSessionRunId(activeSessionRun.run_id) === normalizeSessionRunId(currentActiveRunState?.runId))}

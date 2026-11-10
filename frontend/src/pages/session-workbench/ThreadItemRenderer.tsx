@@ -213,7 +213,7 @@ function approvalSentence(item: ThreadItem, t: TFunction): string {
     : t('sessionWorkbench.threadItem.permissionNeeded', 'This needs your approval: {{tool}}.', { tool: action });
 }
 
-const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request', 'warning', 'error', 'plan', 'context_compaction']);
+const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request', 'warning', 'error', 'plan']);
 const NON_BLOCKING_STATUS_EVENTS = new Set(['memory_context_degraded']);
 
 export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorView: boolean): boolean {
@@ -233,6 +233,7 @@ export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorV
   // approval card and the run status already own what the member sees (B2 r2).
   if (item.item_type === 'boundary') return false;
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') return true;
+  if (item.item_type === 'context_compaction') return Boolean(item.user_summary);
   if (USER_CONVERSATION_ITEM_TYPES.has(item.item_type)) return true;
   return Boolean(item.user_action && item.user_action.kind !== 'open_artifact');
 }
@@ -294,7 +295,7 @@ export function ThreadItemRenderer({
   );
 
   if (item.item_type === 'context_compaction' && item.audience !== 'operator') {
-    return <p>{item.user_summary}</p>;
+    return item.user_summary ? <p>{item.user_summary}</p> : null;
   }
 
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') {

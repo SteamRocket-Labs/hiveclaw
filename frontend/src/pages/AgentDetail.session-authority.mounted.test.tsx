@@ -1097,6 +1097,94 @@ it.each(['success', 'http', 'network', 'empty-summary'])('clears compact on send
   expect(mocks.chatProps.isWaiting).toBe(false);
 });
 
+it('keeps the compacting composer editable without Stop or another send until the response', async () => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/compact');
+  let first!: Promise<unknown>;
+  let second!: Promise<unknown>;
+  act(() => {
+    first = mocks.chatProps.onSendChatMsg();
+    second = mocks.chatProps.onSendChatMsg();
+  });
+  await waitFor(() => expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1));
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
+  const input = screen.getByTestId('session-composer-input') as HTMLTextAreaElement;
+  const send = screen.getByTestId('session-composer-send') as HTMLButtonElement;
+  expect(input.disabled).toBe(false);
+  fireEvent.change(input, { target: { value: 'Keep the next draft' } });
+  expect(send.disabled).toBe(true);
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+  fireEvent.change(input, { target: { value: '/compact' } });
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1);
+  fireEvent.change(input, { target: { value: 'Keep the next draft' } });
+  await act(async () => {
+    request.resolve({ ok: true, command: 'compact', result: { action: 'compacted_context_installed',
+      message: '上下文已压缩。', ui_action: { type: 'install_compacted_context', message: '上下文已压缩。' } } });
+    await Promise.all([first, second]);
+  });
+  expect(input.value).toBe('Keep the next draft');
+  expect(send.disabled).toBe(false);
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
+});
+
+it.each(['http', 'empty-summary'])('keeps a %s compact failure in its session while another session can send', async outcome => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/compact');
+  const compactingSession = mocks.chatProps.activeSession;
+  const otherSession = { ...compactingSession, id: 'other-session', title: 'Other conversation' };
+  mocks.listSessions.mockResolvedValue([compactingSession, otherSession]);
+  let sending!: Promise<unknown>;
+  act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1));
+  mocks.sessionId = otherSession.id;
+  await act(async () => { await mocks.chatProps.onSelectSession(otherSession); });
+  await waitFor(() => expect(mocks.chatProps.activeSession.id).toBe(otherSession.id));
+  const input = screen.getByTestId('session-composer-input') as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: 'Work in the other conversation' } });
+  expect((screen.getByTestId('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
+  mocks.startSessionRun.mockResolvedValue({ run_id: 'other-run', status: 'running' });
+  mocks.activeSessionRun = { run_id: 'other-run', status: 'running' };
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(mocks.startSessionRun).toHaveBeenCalledExactlyOnceWith('agent-1', otherSession.id,
+    expect.objectContaining({ content: 'Work in the other conversation' }));
+  const otherPhase = mocks.chatProps.runtimePhase;
+  expect(otherPhase).not.toBe('compacting');
+  fireEvent.change(input, { target: { value: 'Keep the other draft' } });
+  await act(async () => {
+    if (outcome === 'http') request.reject(new ApiError(504, 'HTTP 504 Gateway Timeout'));
+    else request.resolve({ ok: false, command: 'compact', result: { action: 'not_supported' } });
+    await sending;
+  });
+  expect(mocks.chatProps.activeSession.id).toBe(otherSession.id);
+  expect(mocks.chatProps.runtimePhase).toBe(otherPhase);
+  expect(mocks.chatProps.chatMessages.some((m: any) => m.eventType === 'runtime_action_failed')).toBe(false);
+  expect(input.value).toBe('Keep the other draft');
+  mocks.activeSessionRun = null;
+  mocks.sessionId = compactingSession.id;
+  if (outcome === 'empty-summary') mocks.getSessionTranscript.mockResolvedValue([{
+    event_id: 'prior-reply', id: 'prior-reply', session_id: compactingSession.id, sequence: 1,
+    event_type: 'assistant_message', role: 'assistant', content: 'Earlier completed work',
+  }]);
+  await act(async () => { await mocks.chatProps.onSelectSession(compactingSession); });
+  await waitFor(() => expect(mocks.chatProps.activeSession.id).toBe(compactingSession.id));
+  const failures = mocks.chatProps.chatMessages.filter((m: any) => m.eventType === 'runtime_action_failed');
+  expect(failures).toHaveLength(1);
+  expect(failures[0].content).toBe(outcome === 'http' ? zh.common.serviceUnavailable : zh.common.requestFailed);
+  expect(screen.getAllByTestId('run-disclosure-block').map(block => block.getAttribute('data-status'))).toContain('failed');
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Retry later' } });
+  expect((screen.getByTestId('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
+});
+
 it.each([true, false])('clears slash input only after its existing success result: %s', async success => {
   const request = deferred<any>();
   vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);

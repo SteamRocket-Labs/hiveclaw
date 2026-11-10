@@ -164,6 +164,42 @@ def test_operator_thread_projection_preserves_evidence_only_in_explicit_details(
     assert item["operator_details"]["links"]["run_id"] == "33333333-3333-3333-3333-333333333333"
 
 
+@pytest.mark.parametrize("preserve_user_content", [False, True])
+@pytest.mark.parametrize("compaction", [
+    {"manual": True, "command": "compact"},
+    {},
+    {"reason": "prompt_too_long_retry", "strategy": "full_compress", "attempt": 1},
+    {"reason": "prompt_too_long_retry", "strategy": "round_group", "attempt": 2},
+])
+def test_compaction_member_projection_only_exposes_manual_completion(compaction, preserve_user_content) -> None:
+    from app.services.thread_items import build_thread_item
+
+    event = _event(event_type="session_compact", item_type="context_compaction", item_status="succeeded",
+        content="PRIVATE_COMPACTION_SUMMARY", metadata_json={"original_message_count": 120, **compaction})
+    item = build_thread_item(event, audience="user", preserve_user_content=preserve_user_content)
+
+    expected = "上下文已压缩。" if compaction.get("manual") is True else ""
+    assert item["user_summary"] == expected
+    assert item["content"] == expected
+    assert item["metadata"] == {"status": "succeeded"}
+    assert item["item_data"] == {"continuity_sections_injected": []}
+    assert "PRIVATE_COMPACTION_SUMMARY" not in json.dumps(item)
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_compaction_operator_projection_keeps_details_and_summary(manual) -> None:
+    from app.services.thread_items import build_thread_item
+
+    metadata = {"manual": manual, "original_message_count": 120}
+    item = build_thread_item(_event(event_type="session_compact", item_type="context_compaction",
+        item_status="succeeded", content="Compacted history", metadata_json=metadata), audience="operator")
+
+    assert item["content"] == "Compacted history"
+    assert item["user_summary"] == ("上下文已压缩。" if manual else "已整理会话上下文，任务会继续。")
+    assert item["item_data"]["original_message_count"] == 120
+    assert item["operator_details"]["metadata"] == metadata
+
+
 def test_nonblocking_memory_degradation_has_no_turn_retry_action_or_raw_internal_copy() -> None:
     from app.services.thread_items import build_thread_item
 

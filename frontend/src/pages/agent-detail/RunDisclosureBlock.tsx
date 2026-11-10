@@ -192,12 +192,12 @@ function commandOutcome(details: unknown): 'done' | 'failed' | null {
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   if (toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)) {
-    const summary = toolOutputForDisplay(step.details, t, step.status);
+    const toolName = toolNameOf(step);
+    const command = step.kind === 'command' || ['run_command', 'execute_code', 'run_skill_tool'].includes(toolName || '');
+    const summary = toolOutputForDisplay(step.details, t, step.status, !command);
     if (summary) return <p>{summary}</p>;
     const details = step.details as { args?: Record<string, unknown>; result?: unknown } | null;
     const result = typeof step.details === 'string' ? step.details : details?.result;
-    const toolName = toolNameOf(step);
-    const command = step.kind === 'command' || ['run_command', 'execute_code', 'run_skill_tool'].includes(toolName || '');
     // Raw non-command tool text can reach members as on production; backend per-tool member summaries will replace it.
     if (!command && typeof result === 'string' && result.trim()) {
       try {

@@ -55,7 +55,7 @@ export function toolFailureForDisplay(details: unknown, t: TFunction, status: Ru
 }
 
 /** Project known platform envelopes, including the JSON lines in memory results. */
-export function toolOutputForDisplay(details: unknown, t: TFunction, status: RunStepStatus): string | null {
+export function toolOutputForDisplay(details: unknown, t: TFunction, status: RunStepStatus, projectLines = true): string | null {
   const failure = toolFailureForDisplay(details, t, status);
   if (failure) return failure;
   const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
@@ -73,11 +73,14 @@ export function toolOutputForDisplay(details: unknown, t: TFunction, status: Run
   };
   if (typeof raw !== 'string') return summary(raw);
   try { return summary(JSON.parse(raw)); } catch { /* Memory producers also return headings followed by JSON lines. */ }
-  const summaries = raw.split(/\r?\n/).flatMap(line => {
+  if (!projectLines) return null;
+  let projected = false;
+  const lines = raw.split(/\r?\n/).map(line => {
     try {
       const text = summary(JSON.parse(line));
-      return text ? [text] : [];
-    } catch { return []; }
+      if (text) { projected = true; return text; }
+    } catch { /* Preserve ordinary tool output. */ }
+    return line;
   });
-  return summaries.length ? summaries.join('\n') : null;
+  return projected ? lines.join('\n') : null;
 }

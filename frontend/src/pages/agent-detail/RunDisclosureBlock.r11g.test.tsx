@@ -197,12 +197,69 @@ it('keeps model-authored words intact even when they contain technical vocabular
   expect(container.querySelector('.run-commentary-content')?.textContent).toBe(content);
 });
 
-it('summarizes a mixed memory envelope without passing through adjacent raw output', () => {
+it('preserves sibling lines when summarizing a mixed non-command memory result', () => {
   const toolResult = 'INTERNAL_HEADER /vercel/sandbox/workspace\n{"schema":"hive.explicit_memory_availability.v1"}\nPRIVATE_RAW_LINE';
   const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
     { role: 'tool_call', content: '', toolName: 'search_memory', toolResult, toolStatus: 'done' },
   ])} />);
   expand(container);
-  expect(container.textContent).toContain('目前只读到了部分记忆');
-  expect(container.textContent).not.toMatch(/INTERNAL_HEADER|workspace|PRIVATE_RAW_LINE|schema/);
+  // owner ruling 11-10: non-command results show as on 2182d216
+  expect(container.querySelector('p')?.textContent).toBe('INTERNAL_HEADER /vercel/sandbox/workspace\n目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。\nPRIVATE_RAW_LINE');
+  expect(container.textContent).not.toContain('schema');
 });
+
+it.each(['search_memory', 'load_memory'])('preserves the memory body beside the availability notice from %s', toolName => {
+  const body = '## 你要求记住的内容\n- 偏好深色界面\n\n## 可用情况\n';
+  const message = '目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。';
+  const toolResult = body + JSON.stringify({ schema: 'hive.explicit_memory_availability.v1', status: 'partial',
+    issues: [{ code: 'explicit_memory_source_unverified' }], message });
+  const timeline = buildRunTimelineFromMessages([
+    { role: 'tool_call', content: '', toolName, toolResult, toolStatus: 'done' },
+  ]);
+  const { container } = render(<RunDisclosureBlock timeline={timeline} />);
+  expand(container);
+  expect(container.querySelector('p')?.textContent).toBe(body + message);
+  expect(container.textContent).not.toMatch(/schema|explicit_memory_source_unverified/);
+  expect((timeline.steps[0].details as { result: string }).result).toBe(toolResult);
+});
+
+it('preserves recalled conversation lines beside a recall error notice', () => {
+  const toolResult = '已找到的对话内容。\n## 相关对话\n{"schema":"hive.session_recall_error.v1"}';
+  const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
+    { role: 'tool_call', content: '', toolName: 'search_memory', toolResult, toolStatus: 'done' },
+  ])} />);
+  expand(container);
+  expect(container.querySelector('p')?.textContent).toBe('已找到的对话内容。\n## 相关对话\n暂时无法读取这部分历史对话，请稍后重试。');
+  expect(container.textContent).not.toContain('schema');
+});
+
+it.each([
+  ['command', undefined, 0, '完成'],
+  ['tool', 'run_command', 0, '完成'],
+  ['tool', 'execute_code', 0, '完成'],
+  ['tool', 'run_skill_tool', 0, '完成'],
+  ['tool', 'run_command', 7, '操作未能完成，结果尚未确认。'],
+  ['tool', 'execute_code', undefined, '结果尚未确认。'],
+] as const)('uses only command execution facts for %s / %s beside an envelope (exit %s)', (kind, toolName, exit_code, status) => {
+  const result = 'PRIVATE_STDOUT\n{"schema":"hive.explicit_memory_availability.v1"}\nPRIVATE_STDERR';
+  const details = { toolName, result, exit_code };
+  const { container } = render(<RunDisclosureBlock timeline={{ id: 'command-envelope', status: 'done', steps: [{
+    id: 'step', kind, title: 'Run command', status: 'done', visibility: 'visible', details,
+  }] }} />);
+  expand(container);
+  expect(container.querySelector('p')?.textContent).toContain(status);
+  expect(container.textContent).not.toMatch(/PRIVATE_|schema|目前只读到了部分记忆|已返回结果/);
+  expect(details.result).toBe(result);
+});
+
+it.each(['search_memory', 'run_command', 'execute_code', 'run_skill_tool'])(
+  'keeps whole-result memory JSON summaries for %s', toolName => {
+    const toolResult = '{"schema":"hive.explicit_memory_availability.v1"}';
+    const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
+      { role: 'tool_call', content: '', toolName, toolResult, toolStatus: 'done' },
+    ])} />);
+    expand(container);
+    expect(container.querySelector('p')?.textContent).toBe('目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。');
+    expect(container.textContent).not.toContain('schema');
+  },
+);

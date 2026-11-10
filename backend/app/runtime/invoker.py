@@ -280,6 +280,8 @@ def _latest_user_prompt(messages: list[dict] | tuple[dict, ...] | None) -> str:
             continue
         if str(message.get("role") or "") != "user":
             continue
+        if str(message.get("source_ref", "")).startswith("session-run-cancelled:"):
+            continue
         content = message.get("content")
         if isinstance(content, str):
             return content

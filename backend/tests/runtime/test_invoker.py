@@ -3917,7 +3917,10 @@ def test_skill_catalog_ranking_inputs_include_prompt_session_active_and_path_tri
     ]
     request = AgentInvocationRequest(
         model=SimpleNamespace(name="test-model"),
-        messages=[{"role": "user", "content": "Fix the typed Python handler"}],
+        messages=[
+            {"role": "user", "content": "Fix the typed Python handler"},
+            {"role": "user", "content": "Stop metadata", "source_ref": f"session-run-cancelled:{uuid4()}"},
+        ],
         agent_name="Engineer",
         role_description="Runtime engineer",
         session_context=session,
@@ -3926,6 +3929,7 @@ def test_skill_catalog_ranking_inputs_include_prompt_session_active_and_path_tri
     inputs = _skill_catalog_ranking_inputs(request)
 
     assert "Fix the typed Python handler" in inputs["scenario_text"]
+    assert "Stop metadata" not in inputs["scenario_text"]
     assert "stabilize API boundary" in inputs["scenario_text"]
     assert inputs["active_skill_names"] == ("incident",)
     assert inputs["path_triggered_skill_names"] == ("python",)

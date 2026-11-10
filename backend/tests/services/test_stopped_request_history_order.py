@@ -104,3 +104,112 @@ async def test_after_click_inputs_follow_matching_stop_and_last_committed_round(
     stop = result.messages[2]
     assert stop.sequence_start == max(cancel_sequence, commit_sequence)
     assert stop.id == f"session-run-cancelled:{views[-1].source.id}"
+
+
+@pytest.fixture
+def many_stopped_events():
+    """20k events with 50 stops, branch copies, late commits and replacements."""
+    from app.services import session_semantic_history as history
+
+    now = datetime(2026, 11, 10, tzinfo=timezone.utc)
+    views, expected, windows = [], [], []
+    for index in range(50):
+        run, control, replacement = uuid.uuid4(), str(uuid.uuid4()), uuid.uuid4()
+        block = []
+        for offset in range(1, 401):
+            payload = {}
+            kind, lifecycle, input_id = "provider_call", "observed", None
+            if offset == 389:
+                kind, lifecycle, input_id = "human_input", "accepted", replacement
+            elif offset == 390:
+                kind, lifecycle, input_id = "turn_replacement", "requested", replacement
+                payload = {"old_run_id": str(run)}
+            elif offset in {391, 392}:
+                kind, lifecycle = "run", "cancelling"
+                payload = {"control_id": control if offset == 392 else str(uuid.uuid4())}
+                if offset == 392 and index % 5 == 0:
+                    lifecycle = "waiting"  # Missing matching cancelling: use settled event.
+            elif offset == 394:
+                kind, lifecycle = "result_commit", "round_committed"
+            elif offset in {393, 395, 396}:
+                kind, lifecycle = "run", "cancelled"
+                payload = {"control_id": control} if offset != 393 else {}
+            row = SimpleNamespace(
+                id=uuid.uuid4(), sequence=index * 400 + offset, item_kind=kind,
+                lifecycle=lifecycle, run_id=run if index % 2 else None,
+                scope_json={"run_id": str(run)}, metadata_json={"v2_payload": payload},
+                input_id=input_id, item_id=uuid.uuid4(), created_at=now,
+            )
+            target = SimpleNamespace(**vars(row))
+            if index % 2:
+                target.id = uuid.uuid4()
+            block.append(history._EventView(target=target, source=row))
+        views.extend(block)
+        point = index * 400 + (395 if index % 5 == 0 else 394)
+        expected.append(history.SessionSemanticMessage(
+            id=f"session-run-cancelled:{block[394].source.id}", role="user",
+            content=history._USER_STOP_MARKER, created_at=now,
+            sequence_start=point, sequence_end=point, group_id=f"run-stop:{run}",
+            source_event_ids=(block[394].target_event_id,),
+        ))
+        windows.append((index * 400 + 389, point))
+    return views, expected, windows
+
+
+@pytest.mark.parametrize("exclude_current", [False, True])
+def test_many_stops_preserve_scan_projection(many_stopped_events, exclude_current):
+    from app.services import session_semantic_history as history
+
+    views, expected, windows = many_stopped_events
+    current = history._source_scope_run_id(views[0].source) if exclude_current else None
+    result = history._cancelled_run_messages(views, current_run_id=current)
+    assert result[:2] == (expected[int(exclude_current):], windows[int(exclude_current):])
+
+
+@pytest.mark.parametrize("target_starts_after_stop", [False, True])
+async def test_pre_click_queue_follows_stop_only_when_consumed_by_successor(monkeypatch, target_starts_after_stop):
+    from app.services import session_semantic_history as history
+
+    run, successor, input_id, control = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    views = []
+
+    def event(sequence, kind, lifecycle, run_id=None, input_id=None, **payload):
+        row = SimpleNamespace(id=uuid.uuid4(), sequence=sequence, item_kind=kind, lifecycle=lifecycle,
+            run_id=run_id, input_id=input_id, item_id=uuid.uuid4(), scope_json={}, created_at=now,
+            schema_version=2, metadata_json={"v2_payload": payload})
+        views.append(history._EventView(target=row, source=row))
+
+    event(1, "human_input", "accepted", input_id=uuid.uuid4(),
+        content_parts=[{"type": "text", "text": "Plan the migration"}])
+    event(4, "human_input", "accepted", input_id=input_id, intent="queue_next_turn",
+        content_parts=[{"type": "text", "text": "List the rollback"}])
+    event(10, "run", "cancelling", run_id=run, control_id=control)
+    event(11, "run", "cancelled", run_id=run, control_id=control)
+    event(20 if target_starts_after_stop else 5, "run", "queued", run_id=successor, input_id=input_id)
+    event(21, "human_input", "bound", input_id=input_id, target_run_id=str(successor))
+    event(30, "result_commit", "round_committed", run_id=successor)
+    views.sort(key=lambda view: view.sequence)
+
+    async def load_views(*_args, **_kwargs):
+        return views, {}
+
+    async def rounds(*_args, **_kwargs):
+        return [history.SessionSemanticMessage(id="answer", role="assistant", content="Rollback answer",
+            created_at=now, sequence_start=30, sequence_end=30, group_id="round", source_event_ids=())], [], 0
+
+    class DB:
+        async def execute(self, _statement):
+            return SimpleNamespace(all=lambda: [])
+
+    monkeypatch.setattr(history, "_load_event_views", load_views)
+    monkeypatch.setattr(history, "_committed_round_messages", rounds)
+    result = await history.load_session_semantic_history(
+        DB(), tenant_id=uuid.uuid4(), agent_id=uuid.uuid4(), session_id=uuid.uuid4()
+    )
+    stop_and_queue = [history._USER_STOP_MARKER, "List the rollback"]
+    if not target_starts_after_stop:
+        stop_and_queue.reverse()
+    assert [message.content for message in result.messages] == [
+        "Plan the migration", *stop_and_queue, "Rollback answer",
+    ]

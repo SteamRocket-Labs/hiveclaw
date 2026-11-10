@@ -787,7 +787,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
                 ChatTranscriptEvent.agent_id == agent_id, ChatSession.tenant_id == tenant_id,
                 ChatSession.agent_id == agent_id, ChatTranscriptEvent.item_kind == "run",
                 ChatTranscriptEvent.lifecycle == "cancelled"))
-        # The canonical binding checks the fixed marker bytes. This mechanical
+        # Binding is the cancelled event plus its control id. This mechanical
         # stop notice contains no user/document/tool body dependencies.
         return [], event is not None and bool(_event_payload(event).get("control_id"))
     if kind == "session-kernel-context":

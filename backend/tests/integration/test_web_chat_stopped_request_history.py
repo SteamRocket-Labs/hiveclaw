@@ -27,6 +27,8 @@ t2_work = support.t2_work
     [
         "after_settlement",
         "before_settlement",
+        "before_cancelling",
+        "queued_before_stop",
         "interrupt_and_replace",
         "compact_summary",
         "compact_kept_marker",
@@ -65,6 +67,8 @@ async def test_next_request_records_member_stop_without_current_old_todos(
     provider_waiting = asyncio.Event()
     settling = asyncio.Event()
     allow_settlement = asyncio.Event()
+    before_cancelling = asyncio.Event()
+    allow_cancelling = asyncio.Event()
     followup_id = None
     replacement_saga = None
 
@@ -85,6 +89,18 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         return await original_signal(**kwargs)
 
     monkeypatch.setattr(runtime, "signal_web_chat_cancel", signal)
+
+    if case == "before_cancelling":
+        from app.services import session_control_input
+
+        original_begin = session_control_input.begin_cancel_control_input
+
+        async def begin(*args, **kwargs):
+            before_cancelling.set()
+            await allow_cancelling.wait()
+            return await original_begin(*args, **kwargs)
+
+        monkeypatch.setattr(session_control_input, "begin_cancel_control_input", begin)
 
     async def stop_run():
         async with owner_sessionmaker() as db:
@@ -184,13 +200,27 @@ async def test_next_request_records_member_stop_without_current_old_todos(
                     await db.commit()
                 await recover_replacement()
             elif member_stop:
+                if case == "queued_before_stop":
+                    followup_id = uuid.uuid4()
+                    async with owner_sessionmaker() as db:
+                        receipt = await submit_live_human_input(
+                            db=db, agent=await db.get(Agent, seed["agent_id"]),
+                            user=await db.get(User, seed["user_id"]), session=await db.get(ChatSession, seed["session_id"]),
+                            content=FOLLOWUP, source="web", input_id=followup_id,
+                            idempotency_key=f"queued:{followup_id}", requested_kind="queue_next_turn",
+                        )
+                        assert receipt["intent"] == "queue_next_turn", receipt
+                        assert (await db.get(SessionTurnInput, followup_id)).target_run_id is None
+                        await db.commit()
                 stop_task = asyncio.create_task(stop_run())
-                if case != "before_settlement":
+                if case not in {"before_settlement", "before_cancelling"}:
                     assert (await stop_task)["accepted"] is True
             else:
                 cancel_event.set()
-            if case == "before_settlement":
-                await asyncio.wait_for(settling.wait(), timeout=40)
+            if case in {"before_settlement", "before_cancelling"}:
+                await asyncio.wait_for(
+                    (settling if case == "before_settlement" else before_cancelling).wait(), timeout=40
+                )
                 followup_id = uuid.uuid4()
                 async with owner_sessionmaker() as db:
                     receipt = await submit_live_human_input(
@@ -207,14 +237,17 @@ async def test_next_request_records_member_stop_without_current_old_todos(
                     assert receipt["intent"] == "steer_current_turn", receipt
                     row = await db.get(SessionTurnInput, followup_id)
                     assert row.target_run_id == seed["run_id"]
-                    assert (await db.get(RuntimeTask, seed["run_id"])).metadata_json["cancel_state"] == "cancelling"
+                    if case == "before_settlement":
+                        assert (await db.get(RuntimeTask, seed["run_id"])).metadata_json["cancel_state"] == "cancelling"
                     await db.commit()
                 allow_settlement.set()
+                allow_cancelling.set()
                 assert (await stop_task)["accepted"] is True
             assert cancel_event.is_set()
         await asyncio.wait_for(worker, timeout=40)
     finally:
         allow_settlement.set()
+        allow_cancelling.set()
         if stop_task is not None:
             await asyncio.gather(stop_task, return_exceptions=True)
         if not worker.done():
@@ -231,6 +264,18 @@ async def test_next_request_records_member_stop_without_current_old_todos(
                 select(SessionControlInput).where(SessionControlInput.expected_run_id == previous.id)
             )
             assert control.status == "applied"
+            if case == "before_cancelling":
+                events = list(await db.scalars(select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.session_id == seed["session_id"])))
+                accepted = next(event for event in events if event.item_kind == "control_input"
+                    and event.lifecycle == "accepted"
+                    and event.metadata_json["v2_payload"].get("control_id") == str(control.id))
+                followup = next(event for event in events if event.input_id == followup_id
+                    and event.item_kind == "human_input" and event.lifecycle == "accepted")
+                cancelling = next(event for event in events if event.item_kind == "run"
+                    and event.lifecycle == "cancelling"
+                    and event.metadata_json["v2_payload"].get("control_id") == str(control.id))
+                assert accepted.sequence < followup.sequence < cancelling.sequence
         else:
             assert (
                 await db.scalar(select(SessionControlInput).where(SessionControlInput.expected_run_id == previous.id))
@@ -287,14 +332,18 @@ async def test_next_request_records_member_stop_without_current_old_todos(
     if case.startswith("compact_"):
         from tests.integration.test_session_compact_v2_semantic_history import _run_compact
 
+        captured_summary = []
         compact = await _run_compact(
             owner_sessionmaker,
             (seed["agent_id"], seed["session_id"], seed["tenant_id"], seed["user_id"]),
             monkeypatch,
-            [],
+            captured_summary,
             arguments={"keep_recent": 1 if case == "compact_kept_marker" else 100},
         )
         assert compact["action"] == "compacted_context_installed"
+        assert len(captured_summary) == 1
+        if case == "compact_summary":
+            assert STOP_MARKER in [message["content"] for message in captured_summary[0]]
 
     if replacement_saga is not None:
         next_run = uuid.uuid5(replacement_saga, "replacement-run")
@@ -315,13 +364,23 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         )
         async with owner_sessionmaker() as db:
             row = await db.get(SessionTurnInput, followup_id)
-            assert row.status == "rolled_over"
+            assert row.status == ("queued" if case == "queued_before_stop" else "rolled_over")
             next_run = await db.scalar(
                 select(RuntimeTask.id).where(
                     RuntimeTask.parent_session_id == str(seed["session_id"]), RuntimeTask.id != seed["run_id"]
                 )
             )
             assert next_run is not None
+            if case == "queued_before_stop":
+                assert row.target_run_id == next_run
+                events = list(await db.scalars(select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.session_id == seed["session_id"])))
+                queued = next(event for event in events if event.item_kind == "human_input"
+                    and event.lifecycle == "accepted" and event.input_id == followup_id)
+                stop = next(event for event in events if event.item_kind == "run" and event.lifecycle == "cancelling")
+                successor = next(event for event in events if event.item_kind == "run"
+                    and event.lifecycle == "queued" and event.run_id == next_run)
+                assert queued.sequence < stop.sequence < successor.sequence
     else:
         _, next_run, _ = await _submit_turn(
             owner_sessionmaker,
@@ -392,7 +451,7 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         ]
         assert after == before, "Loading a successor must not rewrite the stopped turn"
 
-    if case in {"before_settlement", "interrupt_and_replace"}:
+    if case in {"before_settlement", "before_cancelling", "interrupt_and_replace", "queued_before_stop"}:
         # The rolled-over input is historical on the following request too.
         async with owner_sessionmaker() as db:
             ids = list(await db.scalars(select(ChatTranscriptEvent.id).where(ChatTranscriptEvent.run_id == next_run)))

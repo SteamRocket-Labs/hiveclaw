@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import json
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -364,42 +365,42 @@ def _user_messages(
 
 def _cancelled_run_messages(
     views: list[_EventView], *, current_run_id: uuid.UUID | None,
-) -> tuple[list[SessionSemanticMessage], list[tuple[int, int]]]:
-    messages = {}
-    stop_windows = []
+) -> tuple[list[SessionSemanticMessage], list[tuple[int, int]], dict[str, int]]:
+    by_run, by_old_run, by_input = defaultdict(lambda: defaultdict(list)), defaultdict(set), defaultdict(list)
     for view in views:
         source = view.source
-        run_id = _source_scope_run_id(source)
-        # A settled member cancel has a control id. Generic runtime termination
-        # and failure/timeout/budget outcomes do not imply a member stop.
-        if (run_id is None or run_id == current_run_id or run_id in messages
-            or source.item_kind != "run" or source.lifecycle != "cancelled"
-            or not _event_payload(source).get("control_id")):
+        by_run[_source_scope_run_id(source)][source.item_kind, source.lifecycle].append(view)
+        by_input[_source_input_id(source)].append(view)
+        if source.item_kind == "turn_replacement":
+            by_old_run[_uuid_or_none(_event_payload(source).get("old_run_id"))].add(_source_input_id(source))
+    queued_starts = {f"session-input:{input_id}": candidate.sequence
+        for input_id, events in by_input.items()
+        if any(is_human_input_checkpoint(event.source)
+            and _event_payload(event.source).get("intent") == "queue_next_turn" for event in events)
+        for candidate in events if candidate.source.item_kind == "run" and candidate.source.lifecycle == "queued"}
+    messages, stop_windows = [], []
+    for run_id, events in by_run.items():
+        if run_id is None or run_id == current_run_id:
             continue
-        control_id = _event_payload(source)["control_id"]
-        stop = next((candidate for candidate in views
-            if _source_scope_run_id(candidate.source) == run_id
-            and candidate.source.item_kind == "run" and candidate.source.lifecycle == "cancelling"
-            and _event_payload(candidate.source).get("control_id") == control_id), view)
-        point = max([stop, *(candidate for candidate in views
-            if _source_scope_run_id(candidate.source) == run_id
-            and candidate.source.item_kind == "result_commit" and candidate.source.lifecycle == "round_committed")],
-            key=lambda candidate: candidate.sequence)
-        # Replacement admission precedes cancelling; its existing saga events
-        # identify the input that must follow this stop, including late commits.
-        replacement_ids = {_source_input_id(candidate.source) for candidate in views
-            if candidate.source.item_kind == "turn_replacement"
-            and _uuid_or_none(_event_payload(candidate.source).get("old_run_id")) == run_id}
-        start = min([stop.sequence, *(candidate.sequence for candidate in views
-            if is_human_input_checkpoint(candidate.source)
-            and _source_input_id(candidate.source) in replacement_ids)])
+        view = next((candidate for candidate in events["run", "cancelled"]
+            if _event_payload(candidate.source).get("control_id")), None)
+        if view is None:
+            continue
+        control_id = _event_payload(view.source)["control_id"]
+        stop = next((candidate for candidate in events["run", "cancelling"]
+            if _event_payload(candidate.source).get("control_id") == control_id), view)
+        point = max([stop, *events["result_commit", "round_committed"]], key=lambda candidate: candidate.sequence)
+        start = min([stop.sequence, *(candidate.sequence for candidate in events["control_input", "accepted"]
+            if _event_payload(candidate.source).get("control_id") == control_id),
+            *(candidate.sequence for input_id in by_old_run[run_id] for candidate in by_input[input_id]
+                if is_human_input_checkpoint(candidate.source))])
         stop_windows.append((start, point.sequence))
-        messages[run_id] = SessionSemanticMessage(
-            id=f"session-run-cancelled:{source.id}", role="user", content=_USER_STOP_MARKER,
+        messages.append(SessionSemanticMessage(
+            id=f"session-run-cancelled:{view.source.id}", role="user", content=_USER_STOP_MARKER,
             created_at=point.created_at, sequence_start=point.sequence, sequence_end=point.sequence,
             group_id=f"run-stop:{run_id}", source_event_ids=(view.target_event_id,),
-        )
-    return list(messages.values()), stop_windows
+        ))
+    return messages, stop_windows, queued_starts
 
 
 async def _committed_round_messages(
@@ -832,7 +833,7 @@ async def load_session_semantic_history(
             evidence_refs=("chat_transcript_events", "session_model_results", "session_tool_invocations"),
         ) from exc
 
-    cancelled, stop_windows = _cancelled_run_messages(views, current_run_id=current_run_id)
+    cancelled, stop_windows, queued_starts = _cancelled_run_messages(views, current_run_id=current_run_id)
     messages = [*users, *rounds, *legacy, *remote, *cancelled]
 
     def history_order(message):
@@ -840,7 +841,10 @@ async def load_session_semantic_history(
         if message.id.startswith("session-input:"):
             # A round can finish committing during cancellation. Later inputs
             # follow both that round and the stop, retaining admission order.
-            sequence = max([sequence, *(end for start, end in stop_windows if sequence >= start)])
+            # A pre-click queue belongs to its successor, whose run/queued
+            # event links the input to the run that consumed it.
+            admitted = max(sequence, queued_starts.get(message.id, sequence))
+            sequence = max([sequence, *(end for start, end in stop_windows if admitted >= start)])
         rank = 2 if message.id.startswith("session-run-cancelled:") else (
             3 if message.id.startswith("session-input:") else (0 if message.role == "assistant" else 1))
         return sequence, rank, message.sequence_start, message.id

@@ -828,8 +828,12 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
           <MemberMessageBody message={msg} />
         )}
         {msg.sendState && <div role="status" data-testid="message-send-status">
-          {msg.sendState === 'sending' ? t('agent.chat.sending', 'Sending…') : <>
-            {msg.sendError} <button type="button" onClick={msg.retrySend}>{t('common.retry', 'Retry')}</button>
+          {msg.sendState === 'queued' ? t('agent.aware.workQueued', 'Queued')
+            : msg.sendState === 'sending' ? t('agent.chat.sending', 'Sending…') : <>
+            {msg.sessionItem?.payload.reason_code === 'terminal_boundary_dead_letter'
+              ? t('agent.chat.previousRunUnfinished', 'The previous task did not end normally. This conversation cannot continue. Please start a new conversation and try again.')
+              : msg.sendError || t('agent.chat.sendRefused', 'Not sent: this message could not be accepted.')}
+            {msg.retrySend && <button type="button" onClick={msg.retrySend}>{t('common.retry', 'Retry')}</button>}
           </>}
         </div>}
         {msg.role === 'user' && msg.inputAttachmentFailures?.map((file, index) => <div
@@ -1227,6 +1231,7 @@ function AgentChatSection({
         eventType: msg.eventType,
         content: msg.content,
         status: msg.eventStatus,
+        tool_name: msg.toolName,
         action: msg.eventAction,
         title: msg.eventTitle,
         runtime_task_id: msg.eventRuntimeTaskId,
@@ -1235,7 +1240,9 @@ function AgentChatSection({
         created_at: msg.timestamp,
       });
       if (!item) return null;
-      if (!shouldRenderThreadItemInConversation(item, Boolean(activeSession?.operator_view))) return null;
+      if (!shouldRenderThreadItemInConversation(item, Boolean(activeSession?.operator_view))
+        && !(msg.role === 'tool_call' && item.audience === 'user'
+          && (item.item_type === 'tool_call' || item.item_type === 'tool_result'))) return null;
       // In a group conversation only the requester sees the proposal and the
       // resolve actions; everyone else waits for their decision.
       const permissionReadOnly = activeSession?.audience_kind === 'group'
@@ -1424,7 +1431,8 @@ function AgentChatSection({
         );
         return;
       }
-      nodes.push(renderEventMessage(cell.message, cell.index));
+      nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index), checkpointByIndex)
+        ?? renderEventMessage(cell.message, cell.index));
     });
 
     return nodes;

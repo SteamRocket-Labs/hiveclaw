@@ -273,7 +273,9 @@ function legacyUserSummary(
     const key = data.retryable === true ? 'retryable' : 'unavailable';
     return t(`sessionWorkbench.threadItem.failure.${key}`, zh.sessionWorkbench.threadItem.failure[key]);
   }
-  if (itemType === 'context_compaction') return t('agent.chat.disclosure.contextCompacted', zh.agent.chat.disclosure.contextCompacted);
+  if (itemType === 'context_compaction') return data.manual === true
+    ? t('sessionWorkbench.commandPanel.contextCompactedTitle', zh.sessionWorkbench.commandPanel.contextCompactedTitle)
+    : t('agent.chat.disclosure.contextCompacted', zh.agent.chat.disclosure.contextCompacted);
   if (['subagent_activity', 'agent_team_activity', 'peer_a2a_activity', 'event'].includes(itemType)) return t(`sessionWorkbench.threadItem.type.${itemType}`, zh.sessionWorkbench.threadItem.type[itemType]);
   return content;
 }

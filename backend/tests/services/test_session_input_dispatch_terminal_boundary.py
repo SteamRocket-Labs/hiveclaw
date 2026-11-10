@@ -42,7 +42,9 @@ async def test_discovery_holds_only_the_named_unchanged_undelivered_boundary(own
         for status, receipt_status, named_id, code, boundary_session, dispatch_state, held in [
             ("pending", "pending", str(boundary_id), "terminal_boundary_ack_pending", str(session_id), "pending", True),
             ("processing", "processing", boundary_id.hex, "terminal_boundary_ack_pending", session_id.hex, "pending", True),
-            ("dead_letter", "dead_letter", str(boundary_id), "terminal_boundary_ack_pending", str(session_id), "pending", True),
+            # R8a B1: even a hold recorded by the old worker at dead_letter
+            # must wake up to reject; it is no longer a quiescent queue.
+            ("dead_letter", "dead_letter", str(boundary_id), "terminal_boundary_ack_pending", str(session_id), "pending", False),
             ("delivered", "delivered", str(boundary_id), "terminal_boundary_ack_pending", str(session_id), "pending", False),
             ("processing", "pending", str(boundary_id), "terminal_boundary_ack_pending", str(session_id), "pending", False),
             ("pending", "pending", str(uuid4()), "terminal_boundary_ack_pending", str(session_id), "pending", False),
@@ -126,3 +128,7 @@ async def test_old_web_boundary_delivery_releases_next_session_input(owner_sessi
         next_input = await db.get(SessionTurnInput, next_input_id)
         assert next_input.target_run_id == uuid5(next_input_id, "session-v2-runtime-run")
         assert await db.get(RuntimeTask, next_input.target_run_id) is not None
+        assert (await recover_admitted_session_inputs_once(db, worker_id="old-web-input", tenant_id=tenant_id))["claimed"] == 0
+        assert list((await db.scalars(select(RuntimeTask.id).where(
+            RuntimeTask.tenant_id == tenant_id, RuntimeTask.parent_session_id == str(session_id),
+            RuntimeTask.id != run_id))).all()) == [next_input.target_run_id]

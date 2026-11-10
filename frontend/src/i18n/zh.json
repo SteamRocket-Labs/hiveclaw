@@ -2474,6 +2474,7 @@
       "sendCancelled": "未发送：发送已取消。",
       "sendUnconfirmed": "暂时无法确认这条消息是否已保存。",
       "sendRefused": "未发送：暂时无法接受这条消息。",
+      "previousRunUnfinished": "上一轮任务没有正常结束，这段对话暂时无法继续。请新建对话后再试。",
       "sendFailed": "消息未发送，请重试。",
       "mySessions": "我的对话",
       "allUsers": "所有用户",

@@ -206,6 +206,7 @@ export interface CreateSessionRunResponse {
 }
 
 export interface SessionHumanInputReceipt {
+  dispatch?: { kind?: string; code?: string; reason_code?: string; message?: string; retryable?: boolean };
   admission_state?: string;
   reason_code?: string | null;
   schema: 'hive.human_input_receipt';

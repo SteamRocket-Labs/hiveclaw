@@ -51,7 +51,7 @@ export type RuntimeEventType =
 
 export interface AgentChatMessage {
   pastedCredentialNotice?: boolean;
-  sendState?: 'sending' | 'failed';
+  sendState?: 'sending' | 'queued' | 'failed';
   sendError?: string;
   retrySend?: () => void;
   role: 'user' | 'assistant' | 'tool_call' | 'event';
@@ -806,6 +806,14 @@ export function mergePendingUserMessages(
 ): { messages: AgentChatMessage[]; pending: PendingUserMessage[] } {
   if (pending.length === 0) return { messages, pending };
 
+  const settledInputs = new Set(messages.flatMap(message => message.sessionItem?.kind === 'run'
+    ? [message.sessionItem.payload.input_id]
+    : message.sessionItem?.kind === 'human_input' && message.sessionItem.lifecycle === 'rejected'
+      ? [message.sessionItem.id] : []));
+  pending = pending.map(item => item.message.sendState === 'queued' && settledInputs.has(item.message.id)
+    ? { ...item, message: { ...item.message, sendState: undefined } } : item);
+  messages = messages.map(message => message.sendState === 'queued' && settledInputs.has(message.id)
+    ? { ...message, sendState: undefined } : message);
   const remaining = pending.filter((item) => item.message.sendState || !hasMatchingDurableUserMessage(messages, item));
   if (remaining.length === 0) return { messages, pending: [] };
 

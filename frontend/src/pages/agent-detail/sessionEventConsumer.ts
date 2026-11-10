@@ -372,6 +372,7 @@ function projectCanonicalItem(
       transcriptEventId: item.checkpointEventId ?? null,
       timestamp: item.occurredAt,
       sessionItem: item,
+      ...(item.lifecycle === 'rejected' ? { sendState: 'failed' as const, sendError: undefined, retrySend: undefined } : {}),
     };
   }
   if (item.kind === 'assistant_final') {

@@ -1760,7 +1760,14 @@ async def _list_runtime_tasks(
                 # Workflow evidence) even though the delegator owns the task.
                 and_(
                     RuntimeTask.child_agent_id == agent_id,
-                    RuntimeTask.child_session_id == session_key,
+                    or_(
+                        RuntimeTask.child_session_id == session_key,
+                        # The session FK is the exact binding even when a
+                        # legacy child_session_id uses a compact UUID.
+                        RuntimeTask.id.in_(select(ChatSession.runtime_task_id).where(
+                            ChatSession.id == session_id, ChatSession.agent_id == agent_id,
+                        )),
+                    ),
                 ),
             )
         )

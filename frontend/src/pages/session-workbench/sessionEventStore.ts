@@ -66,6 +66,8 @@ export type SessionItemV2 = {
   summary?: string;
   source_blocks?: Array<{ item_id: string; block_index: number; content_hash: string }>;
   occurredAt: string;
+  terminalAt?: string;
+  terminalSequence?: number;
   first_sequence: number;
   last_sequence: number;
   last_ordinal?: number;
@@ -294,6 +296,8 @@ function assertEnvelope(event: SessionEventV2): void {
 }
 
 function isTerminal(event: SessionEventV2): boolean {
+  if (event.item_kind === 'run' && event.lifecycle === 'completed'
+    && event.payload.reason_code === 'company_approval_required') return false;
   return EVENT_RULES[event.item_kind].terminal.has(event.lifecycle);
 }
 
@@ -326,7 +330,8 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
         id: event.item_id, kind: event.item_kind, scope: event.scope,
         lifecycle: event.lifecycle, terminal: isTerminal(event), revision: (prior?.revision ?? 0) + 1,
         content,
-        payload: sourceHeld || sourceWasHeld ? event.payload : { ...(prior?.payload || {}), ...event.payload },
+        payload: sourceHeld || sourceWasHeld ? event.payload : { ...(prior?.payload || {}), ...event.payload,
+          ...(event.item_kind === 'run' ? { reason_code: event.payload.reason_code } : {}) },
         actor: event.actor,
         visibility: event.visibility,
         display: sourceHeld ? undefined : event.display ?? prior?.display,
@@ -341,6 +346,8 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
         summary: sourceHeld ? undefined : event.display?.summary ?? prior?.summary,
         source_blocks: sourceBlocks,
         occurredAt: prior?.occurredAt ?? event.occurred_at,
+        terminalAt: isTerminal(event) ? event.occurred_at : undefined,
+        terminalSequence: isTerminal(event) ? event.sequence : undefined,
         first_sequence: prior?.first_sequence ?? event.sequence, last_sequence: event.sequence,
         last_ordinal: ordinal ?? prior?.last_ordinal,
         checkpointEventId:

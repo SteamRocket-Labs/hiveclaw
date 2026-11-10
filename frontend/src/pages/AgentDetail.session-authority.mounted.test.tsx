@@ -2,11 +2,12 @@
 
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../api/core';
 import { ccParityApi } from '../api/domains/ccParity';
 import { StructuredToolResultBody } from './agent-detail/StructuredToolResult';
+import zh from '../i18n/zh.json';
 
 const mocks = vi.hoisted(() => ({
   queryCalls: [] as Array<{ key: unknown[]; enabled: unknown }>,
@@ -27,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   agentError: null as unknown,
   userRole: 'platform_admin' as string,
   projectActiveTimeline: false,
+  realChat: false,
   startSessionRun: vi.fn(),
   createSessionRun: vi.fn(),
   cancelSessionRun: vi.fn(),
@@ -37,18 +39,23 @@ const mocks = vi.hoisted(() => ({
   answerQuestion: vi.fn(),
   questionControl: false,
   transport: null as any,
+  language: 'en',
 }));
 
 vi.mock('../api/core/upload-progress', () => ({ uploadFileWithProgress: (...args: unknown[]) => ({ promise: mocks.upload(...args) }) }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, fallback?: string) => fallback ?? key,
-    i18n: { language: 'en' },
+    t: (key: string, fallback?: string | Record<string, unknown>) => {
+      const translated = mocks.language === 'zh' ? key.split('.').reduce<any>((value, part) => value?.[part], zh) : undefined;
+      return typeof translated === 'string' ? translated : typeof fallback === 'string' ? fallback : key;
+    },
+    i18n: { language: mocks.language },
   }),
 }));
 
 vi.mock('@tanstack/react-query', () => ({
+  useMutation: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useQuery: (options: { queryKey: unknown[]; queryFn?: () => unknown; enabled?: unknown }) => {
     mocks.queryCalls.push({ key: options.queryKey, enabled: options.enabled });
     if (options.enabled && options.queryKey[0] === 'activity') {
@@ -95,6 +102,8 @@ vi.mock('@tanstack/react-query', () => ({
 }));
 
 vi.mock('react-router-dom', () => ({
+  useInRouterContext: () => false,
+  Link: ({ to, children, ...props }: any) => <a href={to} {...props}>{children}</a>,
   useParams: () => ({ id: 'agent-1', sessionId: mocks.sessionId }),
   useLocation: () => ({
     hash: mocks.hash,
@@ -172,22 +181,14 @@ vi.mock('./LocalAgents', () => ({ default: () => null }));
 vi.mock('./agent-detail/LocalAgentChatSection', () => ({
   default: () => <div data-testid="local-agent-chat">Local mutable chat</div>,
 }));
-vi.mock('./agent-detail/AgentChatSection', () => ({
-  default: ({ activeSession, chatMessages, historyMsgs, allSessions, chatMessagesSessionId, historyMessagesSessionId, onSendMessage,
-    activeRunId, activeRunStatus, onAbortGeneration, ...composer }: {
-    [key: string]: any;
-    activeSession?: any;
-    chatMessages?: Array<{ content?: string }>;
-    historyMsgs?: Array<{ content?: string }>;
-    allSessions?: Array<{ id?: string; title?: string }>;
-    chatMessagesSessionId?: string | null;
-    historyMessagesSessionId?: string | null;
-    onSendMessage?: (text: string, options?: any) => unknown;
-    activeRunId?: string | null;
-    activeRunStatus?: string | null;
-    onAbortGeneration?: () => unknown;
-  }) => {
+vi.mock('./agent-detail/AgentChatSection', async (importOriginal) => {
+  const { default: ActualChat } = await importOriginal<typeof import('./agent-detail/AgentChatSection')>();
+  return ({
+  default: (props: any) => {
+    const { activeSession, chatMessages, historyMsgs, allSessions, chatMessagesSessionId, historyMessagesSessionId, onSendMessage,
+    activeRunId, activeRunStatus, onAbortGeneration, ...composer } = props;
     mocks.chatProps = { activeSession, onSendMessage, chatMessages, activeRunId, activeRunStatus, onAbortGeneration, ...composer };
+    if (mocks.realChat) return <ActualChat {...props} />;
     return (
     <div data-testid="fabricated-session-shell">
       {mocks.questionControl && <StructuredToolResultBody toolName="ask_user_question" questionItemId="child-question"
@@ -196,18 +197,24 @@ vi.mock('./agent-detail/AgentChatSection', () => ({
         onAnswerQuestion={composer.onAnswerQuestion} />}
       {activeSession?.operator_view ? <strong>Operator View</strong> : activeSession?.read_only ? 'Read-only · User' : null}
       {(!mocks.projectActiveTimeline || (!activeSession?.read_only && chatMessagesSessionId === activeSession?.id) ? chatMessages || [] : [])
-        .map((message, index) => <span key={`chat-${index}`}>{message.content}</span>)}
+        .map((message: any, index: number) => <span key={`chat-${index}`}>{message.content}</span>)}
       {(!mocks.projectActiveTimeline || (activeSession?.read_only && historyMessagesSessionId === activeSession?.id) ? historyMsgs || [] : [])
-        .map((message, index) => <span key={index}>{message.content}</span>)}
-      {(allSessions || []).map((session) => <span key={session.id}>{session.title}</span>)}
+        .map((message: any, index: number) => <span key={index}>{message.content}</span>)}
+      {(allSessions || []).map((session: any) => <span key={session.id}>{session.title}</span>)}
     </div>
     );
   },
-}));
+});
+});
 
 import AgentDetail from './AgentDetail';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+beforeAll(async () => {
+  // Resolve the real lazy chat module before the first mounted waitFor starts.
+  await import('./agent-detail/AgentChatSection');
+}, 30_000);
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -220,6 +227,7 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  HTMLElement.prototype.scrollIntoView = vi.fn();
   vi.clearAllMocks();
   mocks.navigate.mockReset();
   mocks.queryCalls.length = 0;
@@ -232,6 +240,7 @@ beforeEach(() => {
   mocks.agentError = null;
   mocks.userRole = 'platform_admin';
   mocks.projectActiveTimeline = false;
+  mocks.realChat = false;
   mocks.executedActivityQueries.clear();
   mocks.activityList.mockResolvedValue([]);
   mocks.toolFailures.mockResolvedValue(undefined);
@@ -245,6 +254,7 @@ beforeEach(() => {
   mocks.deleteSession.mockReset();
   mocks.activeSessionRun = null;
   mocks.questionControl = false;
+  mocks.language = 'en';
 });
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -258,7 +268,7 @@ it('reuses one input id for three failed retries on the child conversation answe
   mocks.answerQuestion.mockRejectedValue(new Error('Connection lost'));
   render(<AgentDetail />);
   await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe('child-session'));
-  fireEvent.click(screen.getByRole('radio', { name: 'Team' }));
+  fireEvent.click(await screen.findByRole('radio', { name: 'Team' }));
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }));
     await waitFor(() => expect(mocks.answerQuestion).toHaveBeenCalledTimes(attempt));
@@ -828,6 +838,149 @@ it.each(['rejected', 'cancelled', 'needs_reconciliation'])('keeps text and offer
   expect(mocks.chatProps.chatMessages.filter((m: any) => m.role === 'user')).toHaveLength(1);
 });
 
+// Round 2 F2 replaces the round-1 expectation: terminal-boundary holds and
+// successors are accepted queues; mailbox authority belongs to the backend.
+it.each(['deferred', 'successor'])('shows an accepted %s message as queued until its own run arrives', async kind => {
+  mocks.realChat = true;
+  mocks.startSessionRun.mockImplementation(async () => ({ schema: 'hive.human_input_receipt', schema_version: 2,
+    intent: kind === 'successor' ? 'queue_next_turn' : 'start_turn', status: 'accepted', admission_state: 'admitted',
+    run: null, dispatch: { kind, code: kind === 'deferred' ? 'terminal_boundary_ack_pending' : undefined } }));
+  await composeOrdinaryMessage('What were the three tasks before compaction?');
+  await act(async () => { expect(await mocks.chatProps.onSendChatMsg()).toBe(true); });
+  expect(mocks.chatProps.chatInput).toBe('');
+  expect(mocks.chatProps.chatMessages.at(-1).sendState).not.toBe('failed');
+  expect(screen.getByTestId('message-send-status').textContent).toBe('Queued');
+  expect(mocks.chatProps.transportNotice || '').not.toContain('Your input is recorded');
+  const inputId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  const envelope = (sequence: number, kind: string, lifecycle: string, item_id: string, payload: any) => ({
+    schema: 'hive.session_event', schema_version: 2, event_id: `queued-${sequence}`, tenant_id: 'tenant-1',
+    sequence, item_id, item_kind: kind, kind: `${kind}.${lifecycle}`, lifecycle,
+    payload_schema: `hive.session.payload.${kind}.${lifecycle}.v2`,
+    scope: kind === 'run' ? { level: 'run', session_id: mocks.sessionId, thread_id: mocks.sessionId,
+      turn_id: `turn-${item_id}`, run_id: item_id } : { level: 'session', session_id: mocks.sessionId, thread_id: mocks.sessionId },
+    actor: { type: 'runtime' }, visibility: { audience: 'direct_user' }, payload,
+    occurred_at: '2026-11-09T00:00:00Z', persisted_at: '2026-11-09T00:00:00Z',
+  });
+  await act(async () => receiveLiveMessage(envelope(1, 'human_input', 'accepted', inputId,
+    { content_parts: [{ type: 'text', text: 'What were the three tasks before compaction?' }] })));
+  await waitFor(() => expect(mocks.chatProps.chatMessages.some((m: any) => m.sessionItem?.id === inputId)).toBe(true));
+  expect(screen.getByTestId('message-send-status').textContent).toBe('Queued');
+  await act(async () => receiveLiveMessage(envelope(2, 'run', 'queued', 'another-run', { input_id: 'another-input' })));
+  await waitFor(() => expect(mocks.chatProps.chatMessages.some((m: any) => m.sessionItem?.id === 'another-run')).toBe(true));
+  expect(screen.getByTestId('message-send-status').textContent).toBe('Queued');
+  await act(async () => receiveLiveMessage(envelope(3, 'run', 'queued', 'new-run', { input_id: inputId })));
+  await waitFor(() => expect(screen.queryByTestId('message-send-status')).toBeNull());
+  await act(async () => {
+    receiveLiveMessage(envelope(4, 'run', 'running', 'new-run', { input_id: inputId }));
+    receiveLiveMessage({ ...envelope(5, 'assistant_commentary', 'completed', 'new-step',
+      { phase: 'commentary', content: 'Checking the previous three tasks.' }),
+      scope: { level: 'round', session_id: mocks.sessionId, thread_id: mocks.sessionId,
+        turn_id: 'turn-new-run', run_id: 'new-run', round_id: 'round-new-run' } });
+  });
+  expect(mocks.startSessionRun).toHaveBeenCalledTimes(1);
+  expect(mocks.chatProps.chatMessages.some((m: any) => m.sessionItem?.id === 'new-run')).toBe(true);
+  await waitFor(() => expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running'));
+});
+
+it('presents a nonretryable dead-letter rejection without Retry', async () => {
+  const message = '上一轮任务没有正常结束，这段对话暂时无法继续。请新建对话后再试。';
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: 'admitted',
+    status: 'rejected', run: null, dispatch: { kind: 'rejected', retryable: false,
+      reason_code: 'terminal_boundary_dead_letter', message } });
+  await composeOrdinaryMessage();
+  await act(async () => { expect(await mocks.chatProps.onSendChatMsg()).toBe(false); });
+  expect(mocks.chatProps.chatInput).toBe('Keep this message');
+  expect(screen.getByText(message)).toBeTruthy();
+  // Round 3 replaces the round-2 Retry expectation: retryable:false forbids another attempt here.
+  expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
+  expect(mocks.chatProps.chatMessages.at(-1).retrySend).toBeUndefined();
+  expect(mocks.startSessionRun).toHaveBeenCalledTimes(1);
+});
+
+function heldInputEvent(sequence: number, inputId: string, lifecycle: 'accepted' | 'rejected', reason_code?: string) {
+  return { schema: 'hive.session_event', schema_version: 2, event_id: `held-${sequence}`, tenant_id: 'tenant-1',
+    sequence, item_id: inputId, item_kind: 'human_input', kind: `human_input.${lifecycle}`, lifecycle,
+    payload_schema: `hive.session.payload.human_input.${lifecycle}.v2`,
+    scope: { level: 'session', session_id: mocks.sessionId, thread_id: mocks.sessionId },
+    actor: { type: 'runtime' }, visibility: { audience: 'direct_user' },
+    payload: lifecycle === 'accepted' ? { input_id: inputId, intent: 'start_turn',
+      content_parts: [{ type: 'text', text: '压缩前的三件事是什么？' }] }
+      : { input_id: inputId, intent: 'start_turn', reason_code },
+    occurred_at: '2026-11-09T00:00:00Z', persisted_at: '2026-11-09T00:00:00Z' };
+}
+
+it('replaces a deferred queued bubble with the localized dead-letter refusal on the open page', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: 'admitted',
+    status: 'accepted', run: null, dispatch: { kind: 'deferred', code: 'terminal_boundary_ack_pending' } });
+  await composeOrdinaryMessage('压缩前的三件事是什么？');
+  await act(async () => { expect(await mocks.chatProps.onSendChatMsg()).toBe(true); });
+  expect(screen.getByTestId('message-send-status').textContent).toBe('排队中');
+  const inputId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  await act(async () => receiveLiveMessage(heldInputEvent(1, inputId, 'accepted')));
+  expect(screen.getByTestId('message-send-status').textContent).toBe('排队中');
+  await act(async () => receiveLiveMessage(heldInputEvent(2, inputId, 'rejected', 'terminal_boundary_dead_letter')));
+  await waitFor(() => expect(screen.queryByText('排队中')).toBeNull());
+  expect(screen.getByTestId('message-send-status').textContent).toBe('上一轮任务没有正常结束，这段对话暂时无法继续。请新建对话后再试。');
+  expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
+  expect(mocks.chatProps.chatMessages.filter((m: any) => m.role === 'user')).toHaveLength(1);
+  expect(mocks.chatProps.chatMessages.find((m: any) => m.id === inputId).sendState).toBe('failed');
+});
+
+it('reloads a rejected human input as refused without an HTTP receipt or Retry', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.sessionId = 'held-reload';
+  mocks.listSessions.mockResolvedValue([{ id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
+    title: 'Held message', session_kind: 'human_chat', read_only: false }]);
+  mocks.getSessionTranscript.mockResolvedValue([heldInputEvent(1, 'held-input', 'accepted'),
+    heldInputEvent(2, 'held-input', 'rejected', 'terminal_boundary_dead_letter')]);
+  render(<AgentDetail />);
+  await waitFor(() => expect(screen.getByTestId('message-send-status').textContent)
+    .toBe('上一轮任务没有正常结束，这段对话暂时无法继续。请新建对话后再试。'));
+  expect(screen.getByText('压缩前的三件事是什么？')).toBeTruthy();
+  expect(screen.queryByText('排队中')).toBeNull();
+  expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+});
+
+it('trusts a mailbox receipt even without a local active run id', async () => {
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: 'admitted',
+    status: 'queued', target_run_id: 'active-on-server', run: null, dispatch: { kind: 'mailbox' } });
+  await composeOrdinaryMessage();
+  expect(mocks.chatProps.activeRunId).toBeFalsy();
+  await act(async () => { expect(await mocks.chatProps.onSendChatMsg()).toBe(true); });
+  expect(mocks.chatProps.chatInput).toBe('');
+  expect(mocks.chatProps.chatMessages.at(-1).sendState).toBeUndefined();
+  expect(mocks.chatProps.transportNotice).toBe('Your input is recorded. Follow its application status in this work.');
+});
+
+it('preserves base acceptance for other deferred codes', async () => {
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: 'admitted',
+    status: 'accepted', run: null, dispatch: { kind: 'deferred', code: 'execution_denied' } });
+  await composeOrdinaryMessage();
+  await act(async () => { expect(await mocks.chatProps.onSendChatMsg()).toBe(true); });
+  expect(mocks.chatProps.chatInput).toBe('');
+  expect(mocks.chatProps.chatMessages.at(-1).sendState).toBeUndefined();
+});
+
+it('opens a writable conversation when the newest history entry is a delegated read-only session', async () => {
+  mocks.sessionId = undefined;
+  mocks.hash = '#chat';
+  mocks.getSessionTranscript.mockResolvedValue([]);
+  mocks.listSessions.mockResolvedValue([
+    { id: 'delegated', agent_id: 'agent-1', user_id: 'platform-admin-1', session_kind: 'delegation_run',
+      read_only: true, created_at: '2026-11-09T12:00:00Z' },
+    { id: 'editable', agent_id: 'agent-1', user_id: 'platform-admin-1', session_kind: 'human_chat',
+      read_only: false, source_channel: 'web', created_at: '2026-11-09T11:00:00Z' },
+  ]);
+  render(<AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe('editable'));
+});
+
 it('reuses the same attempt after a network failure with no response', async () => {
   mocks.startSessionRun.mockRejectedValue(new TypeError('Failed to fetch'));
   await composeOrdinaryMessage();
@@ -929,4 +1082,24 @@ it('keeps the optimistic message visible when a draft becomes a durable session 
   expect(mocks.chatProps.chatMessages).toEqual(expect.arrayContaining([
     expect.objectContaining({ role: 'user', content: 'Keep the first draft message', sendState: undefined }),
   ]));
+});
+
+it('keeps the read-only conversation the member opened after leaving and returning to chat', async () => {
+  mocks.sessionId = undefined;
+  mocks.hash = '#chat';
+  mocks.getSessionTranscript.mockResolvedValue([]);
+  const delegated = { id: 'delegated', agent_id: 'agent-1', user_id: 'platform-admin-1', session_kind: 'delegation_run', read_only: true };
+  mocks.listSessions.mockResolvedValue([delegated, { id: 'editable', agent_id: 'agent-1', user_id: 'platform-admin-1',
+    session_kind: 'human_chat', source_channel: 'web', read_only: false }]);
+  const view = render(<AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe('editable'));
+  await act(async () => mocks.chatProps.onSelectSession(delegated));
+  await waitFor(() => expect(mocks.chatProps.activeSession.id).toBe('delegated'));
+  mocks.hash = '#settings';
+  view.rerender(<AgentDetail />);
+  await waitFor(() => expect(screen.queryByTestId('fabricated-session-shell')).toBeNull());
+  mocks.hash = '#chat';
+  view.rerender(<AgentDetail />);
+  await waitFor(() => expect(mocks.listSessions.mock.calls.length).toBeGreaterThan(1));
+  expect(mocks.chatProps.activeSession.id).toBe('delegated');
 });

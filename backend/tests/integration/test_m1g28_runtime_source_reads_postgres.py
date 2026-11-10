@@ -1,4 +1,4 @@
-"""Owned working copies remain readable; original source grants stay separate."""
+"""Owned browser copies remain readable; runs recheck original source grants."""
 
 import hashlib
 import json
@@ -62,7 +62,7 @@ async def test_native_reader_reads_owned_body_without_manufacturing_a_receipt(
 
 
 @pytest.mark.parametrize("tool", ["read_file", "fs_read", "read_document", "fs_read_document"])
-async def test_owned_working_copy_does_not_inherit_source_read_gates(
+async def test_owned_browser_keeps_working_copy_while_run_rechecks_source_grant(
     native_workspace, owner_sessionmaker, tool,  # noqa: F811
 ):
     from app.models.user import User
@@ -88,10 +88,11 @@ async def test_owned_working_copy_does_not_inherit_source_read_gates(
     browser = await n.client.get(f"/agents/{n.agent}/files/content", params={"path": path})
     assert browser.status_code == 200 and body in browser.text, browser.text
     denied = await _read(n, tool, path)
-    assert body in denied and "content_source_access_denied" not in denied, denied
+    # R10a read-time ruling: an unauthorized source never reaches the model
+    assert body not in denied and "content_source_access_denied" in denied, denied
     grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",
-        resource_id=document.id, document_id=document.id, grantee_type="agent", grantee_id=n.agent,
-        requester_user_id=n.user, session_id=str(n.session), purpose="interactive_session", permission="read",
+        resource_id=document.id, document_id=document.id, grantee_type="user", grantee_id=n.user,
+        created_by_user_id=n.foreign, permission="read",  # R10a reader ruling: agent-only grants no longer admit a member read
         expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
     async with owner_sessionmaker() as db:
         db.add(grant)
@@ -102,7 +103,8 @@ async def test_owned_working_copy_does_not_inherit_source_read_gates(
         (await db.get(KnowledgeGrant, grant.id)).revoked_at = datetime.now(timezone.utc)
         await db.commit()
     denied = await _read(n, tool, path)
-    assert body in denied and "content_source_access_denied" not in denied, denied
+    # R10a read-time ruling: after revocation the derived working copy does not re-enter a run
+    assert body not in denied and "content_source_access_denied" in denied, denied
     assert (n.root / path).read_text() == body
 
 

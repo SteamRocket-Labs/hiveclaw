@@ -2421,7 +2421,12 @@ async def _execute_tool_with_hooks(
             )
 
             current_connector_source_items = extract_connector_source_items(result, origin=f"tool:{tool_name}")
-            argument_source_items = source_items_from_tool_call(
+            # A captured native refusal has no source body. Preserve its exact
+            # receipt instead of replacing it with an argument-source refusal.
+            native_read_denied = (
+                ((trace_metadata_sink or {}).get("native_read_denial_evidence") or {}).get("status") == "captured"
+            )
+            argument_source_items = [] if native_read_denied else source_items_from_tool_call(
                 tool_name,
                 effective_args,
                 origin=f"tool_args:{tool_name}",

@@ -62,6 +62,12 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
             ).where(RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id)
         )
     ).one_or_none()
+    try:
+        task_sessions = {
+            uuid.UUID(value) for value in (task.parent_session_id, task.child_session_id) if value
+        } if task is not None else set()
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise _error() from exc
     if (
         user is None
         or agent is None
@@ -76,7 +82,7 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
         or task is None
         or task.root_user_id != user_id
         or agent_id not in {task.parent_agent_id, task.child_agent_id}
-        or str(session_id) not in {task.parent_session_id, task.child_session_id}
+        or session_id not in task_sessions
     ):
         raise _error()
     from fastapi import HTTPException

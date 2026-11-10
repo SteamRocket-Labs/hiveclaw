@@ -213,6 +213,9 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         "first_task_parent_missing_file",
         "first_task_parent_legacy_workspace_read",
         "complete",
+        "colleague",
+        "colleague_command_member",
+        "colleague_command_admin",
         "unbound",
         "revoked",
         "first_task",
@@ -261,6 +264,8 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         "first_task_parent_result_denial",
         "first_task_parent_public_directory",
         "first_task_child_readback",
+        "first_task_child_office_denied",
+        "first_task_parent_workspace_child_readback",
         "first_task_child_glob",
         "first_task_workspace_listing",
         "first_task_workspace_listing_alias",
@@ -305,6 +310,14 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
+    colleague_source_case = input_case in {"colleague_command_member", "colleague_command_admin"}
+    colleague_admin_case = input_case == "colleague_command_admin"
+    colleague_case = input_case == "colleague" or colleague_source_case
+    office_denial_case = input_case == "first_task_child_office_denied"
+    if colleague_case:
+        input_case = "complete"
+    if office_denial_case:
+        input_case = "first_task_child_readback"
     forged_timeout_case = input_case == "first_task_forged_timeout_observation"
     if forged_timeout_case:
         input_case = "first_task_creator_task_inventory"
@@ -401,8 +414,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     parity_list_case = input_case == "first_task_parity_list"
     parity_sequence_case = input_case in {"first_task_parity_ledger", "first_task_parity_ledger_unknown"}
     parity_unknown = input_case == "first_task_parity_ledger_unknown"
+    parent_workspace_child_readback = input_case == "first_task_parent_workspace_child_readback"
     child_readback_case = (
-        grep_case
+        parent_workspace_child_readback
+        or grep_case
         or child_missing_file_case
         or parent_missing_file_case
         or creator_task_inventory_case
@@ -441,7 +456,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     creation_result_case = input_case == "first_task_parent_creation_result" or historical_creation_case
     if creation_result_case:
         input_case = "first_task_parent_status"
-    child_command_case = sequential_child_case or input_case in {"first_task_child_command", "first_task_child_code"}
+    child_command_case = colleague_source_case or sequential_child_case or input_case in {"first_task_child_command", "first_task_child_code"}
     child_tool = "execute_code" if sequential_code_case or input_case == "first_task_child_code" else "run_command"
     if child_command_case:
         import platform
@@ -455,7 +470,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             "HIVE_ALLOW_UNSANDBOXED_CODE_EXEC": "0",
         }.items():
             monkeypatch.setenv(key, value)
-        input_case = "first_task_parent_status"
+        if not colleague_source_case:
+            input_case = "first_task_parent_status"
     parent_status_unknown = input_case == "first_task_parent_status_unknown"
     parent_status_case = input_case in {"first_task_parent_status", "first_task_parent_status_unknown"}
     if parent_status_case:
@@ -506,7 +522,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         "first_task_question",
         "first_task_question_after_write",
     }
-    delivery_case = input_case == "first_task_delivery" or parent_model_case
+    delivery_case = colleague_case or input_case == "first_task_delivery" or parent_model_case
     native_refined = feishu_creation or input_case in {
         "first_task_refined_native",
         "first_task_native_creation",
@@ -538,6 +554,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         ),
     )
     receiver = uuid4()
+    colleague_owner = uuid4() if colleague_case else seed["user_id"]
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(seed["data_root"]))
     (seed["agent_root"] / "workspace").rmdir()
     seed["agent_root"].rmdir()
@@ -564,16 +581,38 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 )
             )
         else:
+            if colleague_case:
+                from app.models.agent import AgentPermission
+                from app.models.user import User
+
+                (await db.get(User, seed["user_id"])).role = "org_admin" if colleague_admin_case else "member"
+                db.add(User(id=colleague_owner, tenant_id=seed["tenant_id"], username=f"colleague-{colleague_owner.hex}",
+                    email=f"{colleague_owner.hex}@fixture.test", password_hash="fixture", display_name="Colleague owner", role="member"))
+                await db.flush()
             db.add(
                 Agent(
                     id=receiver,
                     tenant_id=seed["tenant_id"],
                     name="Origin worker",
-                    creator_id=seed["user_id"],
-                    owner_user_id=seed["user_id"],
+                    creator_id=colleague_owner,
+                    owner_user_id=colleague_owner,
                     primary_model_id=model.id,
                 )
             )
+            if colleague_case:
+                await db.flush()
+                db.add(AgentPermission(agent_id=receiver, tenant_id=seed["tenant_id"], scope_type="user",
+                    scope_id=seed["user_id"], access_level="use"))
+                from app.models.agent_collaboration import AgentCollaborationGroup, AgentCollaborationGroupMember
+
+                group = AgentCollaborationGroup(tenant_id=seed["tenant_id"], name="Authorized colleagues",
+                    created_by_user_id=seed["user_id"])
+                db.add(group)
+                await db.flush()
+                for target_id, owner_id in ((seed["agent_id"], seed["user_id"]), (receiver, colleague_owner)):
+                    db.add(AgentCollaborationGroupMember(tenant_id=seed["tenant_id"], group_id=group.id,
+                        agent_id=target_id, agent_owner_user_id=owner_id, status="active",
+                        approved_by_user_id=owner_id))
         db.add(
             CapabilityPolicy(
                 tenant_id=seed["tenant_id"], capability="agent.message.send", allowed=True, requires_approval=False
@@ -953,11 +992,13 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         queued["trace_id"] = kwargs.get("trace_id") or "origin-probe"
         handle = (
             await native_dispatch(**kwargs)
-            if first_task or permission_case
+            if first_task or permission_case or colleague_case
             else orchestrator.AsyncDelegationHandle(
                 task_id=uuid4().hex, trace_id="origin-probe", target_name="Origin worker", status="queued"
             )
         )
+        if colleague_case:
+            assert handle.status == "queued", handle
         queued["task_id"] = handle.task_id
         return handle
 
@@ -1361,6 +1402,17 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 return await native_parity_stream(**kwargs)
 
             monkeypatch.setattr(creator_client, "stream", continue_parity_ledger)
+        if parent_workspace_child_readback:
+            from tests.integration.test_artifact_publication_transactions import stage_report
+
+            parent_input_path = "workspace/delegation-input.md"
+            async with owner_sessionmaker() as db:
+                await stage_report(db, tenant=seed["tenant_id"], agent=seed["agent_id"], user=seed["user_id"],
+                    session=seed["session_id"], root=seed["agent_root"], path=parent_input_path)
+                await db.commit()
+            creator_client.script.insert(0, {"tool_calls": [{"id": "parent-workspace-read", "type": "function",
+                "function": {"name": "read_file", "arguments": json.dumps({"path": parent_input_path})}}],
+                "finish_reason": "tool_calls"})
         if input_case == "first_task_explicit_unverified_memory":
             creator_client.script.insert(
                 0,
@@ -1439,7 +1491,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             after_read = json.dumps(creator_client.requests[2]["messages"])
             assert prior_body in after_read and "workspace_content_unverified" not in after_read
         if discovery_case:
-            if creator_readiness_case:
+            if parent_workspace_child_readback:
+                assert len(creator_client.requests) == 4
+            elif creator_readiness_case:
                 assert len(creator_client.requests) == 4
             elif parity_sequence_case:
                 assert len(creator_client.requests) == 4
@@ -1449,7 +1503,15 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert len(creator_client.requests) == 3
         if ledger_unknown_case:
             assert "LEGACY_PRIVATE_LEDGER_WITHOUT_NATIVE_RECEIPT" not in json.dumps(creator_client.requests[1]["messages"])
-        if input_case != "first_task_explicit_unverified_memory" and not discovery_case:
+        if parent_workspace_child_readback:
+            assert len(creator_client.requests) == 4
+            assert "COMPANY_SOURCE_MARKER" in json.dumps(creator_client.requests[1]["messages"])
+            async with owner_sessionmaker() as db:
+                parent_models = list(await db.scalars(select(SessionModelResult).where(
+                    SessionModelResult.run_id == seed["run_id"])))
+                assert any(ref["source_kind"] == "workspace_artifact" for model in parent_models
+                    for ref in model.model_request_snapshot_json["input_bindings"]["dependencies"])
+        elif input_case != "first_task_explicit_unverified_memory" and not discovery_case:
             assert len(creator_client.requests) == 2 and "NATIVE_PARENT_CONTEXT" in json.dumps(
                 creator_client.requests[0]["messages"]
             )
@@ -1604,7 +1666,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                         for row in creating_rounds
                     )
                 else:
-                    assert len(creating_rounds) == 3 and all(
+                    assert len(creating_rounds) == (4 if parent_workspace_child_readback else 3) and all(
                         row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
                         for row in creating_rounds
                     )
@@ -1848,7 +1910,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         )
 
         previous_identity = get_execution_identity()
-        if permission_case:
+        if permission_case or colleague_case:
             set_delegated_user_identity(seed["user_id"], "Original requester", channel="web")
         try:
             result = await agent_tools.execute_tool(
@@ -1998,7 +2060,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     assert isinstance(message.get("a2a_instruction_origin"), dict), message
 
     task_id = UUID(queued.pop("task_id"))
-    if first_task or permission_case:
+    if first_task or permission_case or colleague_case:
         from app.services.runtime_task_service import get_runtime_task_record
 
         request = await orchestrator._build_delegation_request_from_runtime_record(
@@ -2016,7 +2078,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         )
     async with owner_sessionmaker() as db:
         target = await db.get(Agent, receiver)
-        if first_task or permission_case:
+        if first_task or permission_case or colleague_case:
             if not first_task:
                 await AgentManager().initialize_agent_files(
                     db, target, personality="NATIVE_RECEIVER_CONTEXT", original_author_id=seed["user_id"]
@@ -2069,6 +2131,38 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 source="synthetic_legacy_input",
             )
             await db.commit()
+    if office_denial_case:
+        from tests.integration.test_r10a_workspace_source_admission import _unverifiable_history
+
+        async with owner_sessionmaker() as db:
+            denied_office_path, _ = await _unverifiable_history(db, tenant=seed["tenant_id"], agent=receiver,
+                user=seed["user_id"], session=UUID(request.session_id), root=seed["data_root"] / str(receiver))
+            await db.commit()
+    if colleague_source_case:
+        import asyncio
+        from types import SimpleNamespace
+        from app.services.agent_tool_domains import code_exec
+        from app.services.code_execution.contracts import CodeExecutionResult
+        from tests.integration.test_artifact_publication_transactions import stage_report
+        from tests.integration.test_r10b_workspace_execution_readers import _personal_source
+
+        source_root = seed["data_root"] / str(receiver)
+        async with owner_sessionmaker() as db:
+            await stage_report(db, tenant=seed["tenant_id"], agent=receiver, user=seed["user_id"],
+                session=seed["session_id"], root=source_root, path="workspace/command-source.md")
+            await _personal_source(db, SimpleNamespace(tenant=seed["tenant_id"], agent=receiver,
+                user=seed["user_id"], foreign=colleague_owner, session=UUID(request.session_id), root=source_root),
+                member_grant=True, path="workspace/command-source.md")
+
+        async def local_command(command, *, work_dir, env, **_kwargs):
+            # Replace only nested sandbox startup; execute the command on the real admitted inputs.
+            process = await asyncio.create_subprocess_exec(*command, cwd=work_dir, env=env,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await process.communicate()
+            assert process.returncode == 0 and b"COMPANY_SOURCE_MARKER" in stdout and b"360" in stdout
+            return CodeExecutionResult(stdout=stdout.decode(), stderr=stderr.decode(), exit_code=process.returncode)
+
+        monkeypatch.setattr(code_exec, "execute_agent_command", local_command)
     report_path = "workspace/delegated-report.md"
     child_commands = (
         [
@@ -2080,7 +2174,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     "arguments": json.dumps(
                         {"language": "python", "code": "print(120 + 90 + 150)", "timeout": 10}
                         if child_tool == "execute_code"
-                        else {"command": "python3 -c 'print(120 + 90 + 150)'", "timeout": 10}
+                        else {"command": ("cat command-source.md && " if colleague_source_case else "")
+                            + "python3 -c 'print(120 + 90 + 150)'", "timeout": 10}
                     ),
                 },
             }
@@ -2107,6 +2202,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             {"content": "Report generated.", "finish_reason": "stop"},
         ]
     )
+    if office_denial_case:
+        client.script[0]["tool_calls"].insert(0, {"id": "child-office-denied", "type": "function", "function": {
+            "name": "office_document_dump", "arguments": json.dumps({"path": denied_office_path})}})
     if child_readback_case:
         client.script.insert(
             1,
@@ -4194,7 +4292,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 "source_id": f"{receiver}\na2a-collaborators",
                 "source_version": legacy_roster.sha256,
             }
-            if public_directory_case:
+            if public_directory_case or colleague_case:
                 # A legacy file has no receipt for foreign public identities; the native directory does.
                 with pytest.raises(ContentInputReceiptError) as unavailable:
                     await validate_browser_input_dependencies(
@@ -4334,6 +4432,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             if m.get("role") == "tool" and m.get("tool_call_id") == "child-calculate"
         )
         assert "360" in result and "<tool_error>" not in result, result
+        if colleague_source_case:
+            assert "COMPANY_SOURCE_MARKER" in result, result
     if child_readback_case:
         if child_missing_file_case:
             assert len(client.requests) == 4 and marker.stat().st_mtime_ns == written_at
@@ -4653,7 +4753,31 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             )
         )
 
+    if colleague_source_case:
+        from app.core.source_read_purpose import business_inspection_allowed, current_source_recipient
+        from app.services import runtime_result_sources
+
+        member_reads = []
+        validate_sources = runtime_result_sources._validate_input_dependencies
+
+        async def observe_member_read(*args, **kwargs):
+            if kwargs.get("user") is not None and kwargs.get("runtime_request") is None:
+                member_reads.append((current_source_recipient(), business_inspection_allowed()))
+            return await validate_sources(*args, **kwargs)
+
+        monkeypatch.setattr(runtime_result_sources, "_validate_input_dependencies", observe_member_read)
     delivered = await read_return()
+    if colleague_source_case:
+        assert member_reads and all(recipient == (str(seed["session_id"]), str(seed["user_id"])) and not inspection
+            for recipient, inspection in member_reads), member_reads
+    if office_denial_case:
+        denied_message = next(message for message in client.requests[1]["messages"]
+            if message.get("tool_call_id") == "child-office-denied")
+        assert "learned_model_source_unavailable" in denied_message["content"]
+        assert "COMPANY_SOURCE_MARKER" not in json.dumps(client.requests)
+    if colleague_case:
+        async with owner_sessionmaker() as db:
+            assert (await db.get(Agent, receiver)).owner_user_id != seed["user_id"]
     (tmp_path / "native-parent-result-read.json").write_text(json.dumps(delivered, indent=2))
     assert delivered["status"] == "ok" and "DELEGATED_REPORT" in delivered["content"], delivered
     assert "A later local edit" not in delivered["content"] and delivered["dependency_coverage"]["complete"] is True
@@ -4842,6 +4966,40 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             and "DELEGATED_REPORT" in returned.text
             and "A later local edit" not in returned.text
         )
+    if colleague_case:
+        from app.models.agent_collaboration import AgentCollaborationGroupMember
+
+        if colleague_source_case:
+            from datetime import datetime, timezone
+            from app.models.knowledge import KnowledgeGrant
+
+            async with owner_sessionmaker() as db:
+                grant = await db.scalar(select(KnowledgeGrant).where(KnowledgeGrant.tenant_id == seed["tenant_id"],
+                    KnowledgeGrant.grantee_type == "user", KnowledgeGrant.grantee_id == seed["user_id"]))
+                assert grant is not None and grant.revoked_at is None
+                grant.revoked_at = datetime.now(timezone.utc)
+                await db.commit()
+            denied_source = await read_return()
+            assert denied_source["status"] == "source_access_denied", denied_source
+            assert denied_source["reason_code"] == "content_source_access_denied", denied_source
+            assert "DELEGATED_REPORT" not in json.dumps(denied_source), denied_source
+            async with owner_sessionmaker() as db:
+                (await db.get(KnowledgeGrant, grant.id)).revoked_at = None
+                await db.commit()
+            assert (await read_return())["status"] == "ok"
+        async with owner_sessionmaker() as db:
+            membership = await db.scalar(select(AgentCollaborationGroupMember).where(
+                AgentCollaborationGroupMember.tenant_id == seed["tenant_id"],
+                AgentCollaborationGroupMember.agent_id == receiver))
+            membership.status = "revoked"
+            await db.commit()
+        denied = await read_return()
+        assert denied["status"] == "source_access_denied" and "DELEGATED_REPORT" not in json.dumps(denied), denied
+        async with owner_sessionmaker() as db:
+            (await db.get(AgentCollaborationGroupMember, membership.id)).status = "active"
+            await db.commit()
+        assert (await read_return())["status"] == "ok"
+        return
     if parent_model_case:
         from app.services.web_chat_runtime import execute_web_chat_run
 

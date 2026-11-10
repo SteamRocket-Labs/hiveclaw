@@ -62,8 +62,9 @@ async def _project(db, tenant_id, user, project_id, *, runtime=False):
         return row
     if not runtime:
         from app.core.permissions import is_scoped_business_admin
+        from app.core.source_read_purpose import business_inspection_allowed
 
-        if is_scoped_business_admin(user, resource_tenant_id=tenant_id):
+        if business_inspection_allowed() and is_scoped_business_admin(user, resource_tenant_id=tenant_id):
             return row
     raise ContentInputReceiptError("project_access_denied", "The project requires current ownership or a read grant.", 403)
 

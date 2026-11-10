@@ -68,11 +68,15 @@ async def _document(n, db):
         tenant_id=n.tenant, owner_user_id=n.foreign, title="Private document D",
         markdown=f"# Input\nPRIVATE_DOCUMENT_D\n{uuid.uuid4()}\n", source_kind="paste", sensitivity="PL3_sensitive")
     document = await db.get(KnowledgeDocument, imported.document_id)
-    grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",
+    grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",  # R10a reader ruling: agent-only grants no longer admit a member read
+        resource_id=document.id, document_id=document.id, grantee_type="user", grantee_id=n.user,  # R10a reader ruling: agent-only grants no longer admit a member read
+        created_by_user_id=n.foreign, permission="read",  # R10a reader ruling: agent-only grants no longer admit a member read
+        sensitivity_ceiling="PL3_sensitive")  # member grant must cover the document's PL3 sensitivity (personal_knowledge_access.py:244)
+    runtime_grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",  # R10a reader ruling: agent-only grants no longer admit a member read
         resource_id=document.id, document_id=document.id, grantee_type="agent", grantee_id=n.agent,
         requester_user_id=n.user, session_id=str(n.session), purpose="interactive_session", permission="read",
         expires_at=datetime.now(timezone.utc) + timedelta(hours=1), sensitivity_ceiling="PL3_sensitive")
-    db.add(grant)
+    db.add_all([grant, runtime_grant])  # R10a reader ruling: agent-only grants no longer admit a member read
     agent = await db.get(Agent, n.agent)
     agent.owner_user_id = n.foreign
     db.add(ResourcePermission(tenant_id=n.tenant, principal_type="user", principal_id=n.user,
@@ -218,10 +222,19 @@ async def test_bot_successor_keeps_document_until_approved_send(native_workspace
         db.add(run)
         await db.commit()
         later_n = SimpleNamespace(**{**vars(n), "session": later.id, "run": run.id})
-        messages = await _admitted_write_messages(db, later_n, content="Email my report")
-        read = await _step(later_n, db, "read_file", {"path": path}, messages, 1)
-        assert "PRIVATE_DOCUMENT_D" in str(read.result) and read.complete
-        await _resolve_email(later_n, db, app_user_sessionmaker, monkeypatch, read.message, index=2)
+        later_messages = await _admitted_write_messages(db, later_n, content="Email my report")
+        later_read = await _step(later_n, db, "read_file", {"path": path}, later_messages, 1)
+        # R10a read-time ruling: after revocation the derived working copy does not re-enter a run
+        assert "PRIVATE_DOCUMENT_D" not in str(later_read.result) and "content_source_access_denied" in str(later_read.result)
+        # Keep the outward control in the writing session that already consumed D.
+        from app.models.knowledge import KnowledgeGrant
+        runtime_grant = await db.scalar(select(KnowledgeGrant).where(KnowledgeGrant.document_id == document.id,
+            KnowledgeGrant.grantee_type == "agent", KnowledgeGrant.grantee_id == n.agent,
+            KnowledgeGrant.session_id == str(n.session)))
+        runtime_grant.revoked_at = datetime.now(timezone.utc)
+        await db.commit()
+        with legacy_model_requests(monkeypatch):
+            await _resolve_email(n, db, app_user_sessionmaker, monkeypatch, read.message, index=4)
         assert successor.content_sha256 == hashlib.sha256(target.read_bytes()).hexdigest(), "BOT_WRITE_LOST_SUCCESSOR_RECEIPT"
         assert dependency in successor.dependencies_json, "BOT_WRITE_DROPPED_DOCUMENT_D"
         assert inherited is None or inherited in successor.dependencies_json, "BOT_WRITE_DROPPED_INHERITED_SOURCES"
@@ -419,9 +432,18 @@ async def test_incomplete_successor_remains_owned_but_cannot_leave(native_worksp
         readable = await n.client.get(f"/agents/{n.agent}/files/content", params={"path": path})
         assert readable.status_code == 200 and "PRIVATE_DOCUMENT_D" in readable.text
         read = await _step(n, db, "read_file", {"path": path}, messages, 3)
-        assert read.complete and "PRIVATE_DOCUMENT_D" in str(read.result)
+        # R10a read-time ruling: an unverifiable source never reaches the model
+        assert "PRIVATE_DOCUMENT_D" not in str(read.result) and "learned_model_source_unavailable" in str(read.result)
         if route == "approved_send":
-            await _resolve_email(n, db, app_user_sessionmaker, monkeypatch, read.message, index=4)
+            from app.runtime.context_candidates import ContextMessageOrigin
+            # Seed historical context with the actual working copy's receipt chain.
+            content = readable.json()["content"]
+            message = LLMMessage(role="system", content=content, context_origin=ContextMessageOrigin.capture(
+                kind="working_copy", role="system", content=content, unbound=(),
+                sources=({"source_kind": "workspace_artifact", "source_id": str(receipt.id),
+                    "source_version": receipt.content_sha256},)))
+            with legacy_model_requests(monkeypatch):
+                await _resolve_email(n, db, app_user_sessionmaker, monkeypatch, message, index=4)
         elif route == "first_task":
             assert not await _owned_context_source(db, dependency=marker, agent_id=n.agent,
                 tenant_id=n.tenant, session_id=str(n.session), user_id=n.user)

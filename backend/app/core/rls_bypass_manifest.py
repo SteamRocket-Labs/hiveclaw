@@ -909,6 +909,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # (one condition and one comment line in session_model_round); still 122 callsites.
 # R11a: only web_chat_runtime's module-source entry changes (stop ends old plan
 # clarification); all 790 entries and 122 bypass callsites remain unchanged.
+# R10a validates workspace sources at read time and reuses exact no-body refusal proofs.
+# Three source/function entries change; all 122 bypass callsites and grants remain identical.
+# R10b unifies workspace input readers and preserves bound colleague returns.
+# Two module sources and the directory UUID comparison change; 790 entries and 122 callsites remain.
 RLS_BYPASS_SCOPES_SHA256 = "73c1f91f73516e271dc2dae0060b8517b991a118dc39fcc9d7892771d98a4a96"
 
 

@@ -1454,6 +1454,27 @@ async def _apply_projection_rewind(
     )
 
 
+async def _bind_manual_compaction_source(
+    context: SessionCommandContext, session: ChatSession, summary_message: dict[str, Any], messages: list[dict[str, Any]]
+) -> None:
+    # Manual compact uses the same summary-origin binding as in-run
+    # compaction, so the wrapper and retained stop do not lose their source.
+    from app.services.invocation_trace import record_invocation_span
+    from app.services.session_model_inputs import message_snapshot
+
+    source_id = uuid.uuid4()
+    summary_message["source_ref"] = f"session-compaction:{source_id}"
+    # Scalability ceiling: inputs is the whole semantic history, with no size
+    # cap, reloaded and rehashed each round carrying this summary. Upgrade to
+    # bounded canonical source references in the shared compaction schema.
+    await record_invocation_span(db=context.db, tenant_id=session.tenant_id, agent_id=context.agent.id,
+        user_id=context.user.id, runtime_task_id=None, session_id=str(session.id), request_id=None,
+        trace_id=str(session.id), span_id=f"compaction-source:{source_id}", parent_span_id=None,
+        parent_trace_id=None, span_type="compaction", name="compaction_checkpoint_installed", status="ok",
+        duration_ms=0, metadata={"compaction_source": {"schema": "hive.compaction_source.v1",
+            "source_id": str(source_id), "message": message_snapshot(summary_message), "inputs": messages}})
+
+
 async def _handle_compact(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
     agent, user, arguments = context.agent, context.user, context.arguments
     reason = str(arguments.get("reason") or "manual compact command").strip()
@@ -1569,22 +1590,7 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
         _, recent = _safe_split(messages[:-keep_recent], recent)
     replacement = [_wrap_compressed_summary(summary), *recent]
     if semantic_receipt is not None:
-        # Manual compact uses the same summary-origin binding as in-run
-        # compaction, so the wrapper and retained stop do not lose their source.
-        from app.services.invocation_trace import record_invocation_span
-        from app.services.session_model_inputs import message_snapshot
-
-        source_id = uuid.uuid4()
-        replacement[0]["source_ref"] = f"session-compaction:{source_id}"
-        # Scalability ceiling: inputs is the whole semantic history, with no size
-        # cap, reloaded and rehashed each round carrying this summary. Upgrade to
-        # bounded canonical source references in the shared compaction schema.
-        await record_invocation_span(db=context.db, tenant_id=session.tenant_id, agent_id=agent.id,
-            user_id=user.id, runtime_task_id=None, session_id=str(session.id), request_id=None,
-            trace_id=str(session.id), span_id=f"compaction-source:{source_id}", parent_span_id=None,
-            parent_trace_id=None, span_type="compaction", name="compaction_checkpoint_installed", status="ok",
-            duration_ms=0, metadata={"compaction_source": {"schema": "hive.compaction_source.v1",
-                "source_id": str(source_id), "message": message_snapshot(replacement[0]), "inputs": messages}})
+        await _bind_manual_compaction_source(context, session, replacement[0], messages)
     projection = {
         "projection_reason": "compact",
         "applied_at": datetime.now(timezone.utc).isoformat(),

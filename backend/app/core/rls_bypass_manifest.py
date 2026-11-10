@@ -913,7 +913,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Three source/function entries change; all 122 bypass callsites and grants remain identical.
 # R10b unifies workspace input readers and preserves bound colleague returns.
 # Two module sources and the directory UUID comparison change; 790 entries and 122 callsites remain.
-RLS_BYPASS_SCOPES_SHA256 = "73c1f91f73516e271dc2dae0060b8517b991a118dc39fcc9d7892771d98a4a96"
+# Land15 (A2a, A2b, R10a, R10b, R11a-R11g) versus land14: module-source and function entries
+# change (authority-aware batched preflight in group_source_read, UUID task-session comparison,
+# native read-denial receipts); still 122 callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "4d329991e5ecaf0a3152c874493741a2aa1b1874fb682d06ef31f1ba4e6cee35"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

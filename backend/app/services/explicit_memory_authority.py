@@ -18,6 +18,7 @@ from app.models.organization_identity import ContentInputReceipt
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.services.content_input_receipts import (
     ContentInputReceiptError,
+    group_source_read,
     _runtime_input_actor,
     _input_row,
     _preflight_inputs,
@@ -189,31 +190,34 @@ async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, 
     """Return only exact current versions; do not let previews bypass this boundary."""
     allowed = []
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
-        _principal, actor, _session = await _actor(db, tenant_id, request)
-        actor_id = actor.id
-        current_audience = audience_for_session(_session)
-        issues = []
-        for entry in entries:
-            receipt = None
-            try:
-                receipt = await latest_memory_receipt(db, tenant_id, agent_id, entry.entry_id)
-                await _authorize_entry(db, tenant_id=tenant_id, agent_id=agent_id, request=request,
-                    entry=entry, receipt=receipt)
-            except ContentInputReceiptError as exc:
-                authority = receipt.authority_json if receipt is not None else {}
-                if (authority.get("owner_user_id") == str(actor_id)
-                    and authority.get("tenant_id") == str(tenant_id) and authority.get("agent_id") == str(agent_id)
-                    and authority.get("schema") == AUTHORITY_SCHEMA and authority.get("state") not in {"retired", "revoked"}
-                    and (_session.audience_kind in {None, "private"} or _same_group(authority, _session))):
-                    issues.append({"memory_id": entry.entry_id, "status": "denied" if exc.status_code == 403 else "unavailable",
-                        "code": exc.code})
-                elif (authority.get("schema") == AUTHORITY_SCHEMA and authority.get("audience_kind") == "group"
-                    and exc.status_code >= 500):
-                    issue = {"status": "unavailable", "code": "explicit_memory_group_unavailable"}
-                    if issue not in issues:
-                        issues.append(issue)
-                continue
-            allowed.append((entry, receipt))
+        # Every authorization pass, including post-selection, owns a fresh walk.
+        with group_source_read(batch_inputs=True):
+            _principal, actor, _session = await _actor(db, tenant_id, request)
+            actor_id = actor.id
+            current_audience = audience_for_session(_session)
+            issues = []
+            for entry in entries:
+                receipt = None
+                try:
+                    receipt = await latest_memory_receipt(db, tenant_id, agent_id, entry.entry_id)
+                    await _authorize_entry(db, tenant_id=tenant_id, agent_id=agent_id, request=request,
+                        entry=entry, receipt=receipt)
+                except ContentInputReceiptError as exc:
+                    authority = receipt.authority_json if receipt is not None else {}
+                    if (authority.get("owner_user_id") == str(actor_id)
+                        and authority.get("tenant_id") == str(tenant_id) and authority.get("agent_id") == str(agent_id)
+                        and authority.get("schema") == AUTHORITY_SCHEMA and authority.get("state") not in {"retired", "revoked"}
+                        and (_session.audience_kind in {None, "private"} or _same_group(authority, _session))):
+                        issues.append({"memory_id": entry.entry_id, "status": "denied" if exc.status_code == 403 else "unavailable",
+                            "code": exc.code})
+                    elif (authority.get("schema") == AUTHORITY_SCHEMA and authority.get("audience_kind") == "group"
+                        and exc.status_code >= 500):
+                        issue = {"status": "unavailable", "code": "explicit_memory_group_unavailable"}
+                        if issue not in issues:
+                            issues.append(issue)
+                    continue
+                allowed.append((entry, receipt))
+        # Keep the final reader check live after the point-in-time batch.
         _principal, current_actor, _session = await _actor(db, tenant_id, request)
         if current_actor.id != actor_id or audience_for_session(_session) != current_audience:
             raise ContentInputReceiptError("explicit_memory_reader_changed", "The current memory reader changed.", 403)

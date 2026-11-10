@@ -96,6 +96,76 @@ function item(itemType: ThreadItemType): ThreadItem {
 }
 
 describe('ThreadItemRenderer', () => {
+  // The screenshot exposes this prefix through `env | grep -iE`; the pattern
+  // and find arguments are reconstructed because the input covers the tail.
+  const step4Command = 'ls -la uploads | head; echo "=== hidden ==="; ls -la .[a-z]* 2>/dev/null | head; echo "=== env ==="; env | grep -iE "workspace|sandbox"; find / -name "*.md" 2>/dev/null | head';
+  const uncertainImpact = 'May read sensitive information or access content outside the workspace';
+
+  function commandApproval(command: unknown, impact?: string): ThreadItem {
+    return {
+      ...item('approval_request'),
+      audience: 'user',
+      item_data: { ...DATA_BY_TYPE.approval_request, tool_name: 'run_command', arguments: { command } },
+      user_action: impact ? { kind: 'resolve_approval', label: 'Review', impact, details: [] } : null,
+    } as ThreadItem;
+  }
+
+  it.each([
+    step4Command,
+    'env', '/usr/bin/env', 'printenv', 'printenv API_KEY', 'set', 'export -p',
+    'cat /proc/self/environ', 'cat /proc/123/environ', 'cat .env', 'cat .env.local',
+    'cat workspace/.env.production', 'cat config.env', 'cat config.env.production',
+    'grep foo .env', 'cat ~/.ssh/*', 'cat $HOME/.ssh/id_rsa',
+    'cat workspace/.git/config', 'cat .bash_history', 'cat id_rsa', 'cat id_dsa', 'cat id_ecdsa',
+    'cat id_ed25519', 'cat credentials', 'cat credentials.json', 'cat secrets', 'cat secrets.json',
+    'grep foo workspace/private.pem', 'cat workspace/private.key',
+    'history', 'fc -l', 'ps e', 'git config --list',
+    'find / -name report.md', 'cat /etc/passwd', 'ls /', 'ls /other-workspace', 'ls ~',
+    'ls ..', 'ls workspace/../../', 'ls -L workspace/link',
+    'ls; printenv', 'ls && env', 'ls\nprintenv', 'wc -l report.csv | env',
+    'cat $(printenv CONFIG)', 'cat `printenv CONFIG`', 'ls > /etc/output',
+    'grep --include=.env foo workspace/', 'wc --files0-from=/etc/filelist',
+    'python -c "import os; print(os.environ)"',
+  ])('does not label sensitive, outside, or uncertain command reads as reversible: %s', (command) => {
+    // Canonical projections can carry the old low-impact platform copy.
+    const approval = commandApproval(command, '可撤销或只读操作');
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={approval} approvalArguments={{ command }} />);
+    expect(markup).toContain(uncertainImpact);
+    expect(markup).not.toMatch(/Reversible or read-only|可撤销或只读操作/);
+  });
+
+  it.each(['ls', 'ls -la', 'ls workspace/', 'wc -l report.csv', 'grep foo workspace/x.md', 'cat report.md'])
+  ('keeps a recognized workspace read reversible: %s', (command) => {
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={commandApproval(command)} approvalArguments={{ command }} />);
+    expect(markup).toContain('Reversible or read-only');
+    expect(markup).not.toContain(uncertainImpact);
+  });
+
+  it.each([undefined, null, '', 42, {}])('keeps missing or invalid commands uncertain: %s', (command) => {
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={commandApproval(command)} />);
+    expect(markup).toContain(uncertainImpact);
+  });
+
+  it.each(['env', 'ls'])('classifies arguments on live items without fetched approval arguments: %s', (command) => {
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={commandApproval(command)} />);
+    expect(markup).toContain(command === 'ls' ? 'Reversible or read-only' : uncertainImpact);
+  });
+
+  it('classifies the full fetched command even when the item has no arguments and the detail is truncated', () => {
+    const command = `ls ${'report '.repeat(60)}; env`;
+    const approval = commandApproval(undefined, '可撤销或只读操作');
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={approval} approvalArguments={{ command }} />);
+    expect(markup).toContain(uncertainImpact);
+  });
+
+  it('preserves the existing irreversible label and approval controls', () => {
+    const approval = commandApproval('rm report.md');
+    if (approval.item_type === 'approval_request') approval.item_data.destructive = true;
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={approval} approvalActions={<button>Allow once</button>} />);
+    expect(markup).toContain('Irreversible action');
+    expect(markup).toContain('Allow once');
+  });
+
   it.each([false, true])('shows an unconfirmed finish for typed unknown delivery without promising a retry: %s', (retryable) => {
     const failure = { ...item('error'), event_type: 'runtime_failure', item_status: 'failed', audience: 'user',
       metadata: { delivery_state: 'unknown' },

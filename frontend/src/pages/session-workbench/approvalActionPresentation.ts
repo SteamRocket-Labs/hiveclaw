@@ -7,6 +7,37 @@ export type ApprovalActionLabel = {
   fallback: string;
 };
 
+const WORKSPACE_READ_FLAGS: Record<string, RegExp> = {
+  ls: /^-[1aAdFhlrt]+$/,
+  wc: /^-[clmwL]+$/,
+  grep: /^-[EFHhcilnsvwx]+$/,
+  cat: /^-[benstuvAET]+$/,
+};
+
+/** Presentation only: recognize a small, literal workspace-read syntax.
+ * Shell evaluation, other commands, and unknown paths keep the cautious copy;
+ * this never decides whether a command is approved or allowed to execute. */
+export function isSimpleWorkspaceRead(command: unknown): boolean {
+  if (typeof command !== 'string' || !/^[\w./-]+(?:[ \t]+[\w./-]+)*$/.test(command.trim())) return false;
+  const [executable, ...args] = command.trim().split(/[ \t]+/);
+  const flags = Object.prototype.hasOwnProperty.call(WORKSPACE_READ_FLAGS, executable) ? WORKSPACE_READ_FLAGS[executable] : null;
+  if (!flags) return false;
+  let operands = 0;
+  let optionsEnded = false;
+  for (const arg of args) {
+    if (!optionsEnded && arg === '--') { optionsEnded = true; continue; }
+    if (!optionsEnded && arg.startsWith('-')) {
+      if (!flags.test(arg)) return false;
+      continue;
+    }
+    // Hidden paths include .env, shell history, .ssh and credential stores.
+    if (arg.startsWith('/') || arg.split('/').some(part => part !== '.' && part.startsWith('.'))) return false;
+    if (/(?:^|\/)(?:id_rsa|id_dsa|id_ecdsa|id_ed25519|credentials(?:\.json)?|secrets(?:\.json)?)$|\.(?:pem|key|env(?:\.[\w.-]+)?)$/i.test(arg)) return false;
+    operands += 1;
+  }
+  return operands >= (executable === 'grep' ? 2 : executable === 'ls' ? 0 : 1);
+}
+
 // Exact tool names only: an exact name carries a known verb. File verbs reuse
 // the existing toolTitle.* keys instead of duplicates (B2 r2).
 const EXACT_TOOLS: Record<string, ApprovalActionLabel> = {

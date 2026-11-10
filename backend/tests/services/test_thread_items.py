@@ -164,6 +164,21 @@ def test_operator_thread_projection_preserves_evidence_only_in_explicit_details(
     assert item["operator_details"]["links"]["run_id"] == "33333333-3333-3333-3333-333333333333"
 
 
+@pytest.mark.parametrize("destructive", [False, True])
+def test_command_projection_does_not_infer_read_only_from_no_delete(destructive: bool) -> None:
+    from app.services.thread_items import build_thread_item
+
+    event = _event(metadata_json={**_event().metadata_json, "tool_name": "run_command",
+        "arguments": {"command": "env | grep -iE 'workspace|sandbox'; find / -name '*.md'"},
+        "destructive": destructive})
+    projected = build_thread_item(event, audience="user")
+
+    assert projected["user_action"]["impact"] == (
+        "可能产生不可逆影响" if destructive else "可能读取敏感信息或访问工作区外内容"
+    )
+    assert projected["item_data"]["arguments"] == {}
+
+
 def test_nonblocking_memory_degradation_has_no_turn_retry_action_or_raw_internal_copy() -> None:
     from app.services.thread_items import build_thread_item
 

@@ -308,6 +308,20 @@ describe('default screen language (B2)', () => {
     }
   });
 
+  it('describes uncertain command reads in Chinese without changing the approval action', () => {
+    const command = 'env | grep -iE "workspace|sandbox"; find / -name "*.md"';
+    const item = {
+      item_type: 'approval_request', item_status: 'waiting_user', audience: 'user',
+      item_data: { tool_name: 'run_command', arguments: {}, destructive: false },
+      user_action: { kind: 'resolve_approval', impact: '可撤销或只读操作', details: [] },
+    } as unknown as ThreadItem;
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={item} approvalArguments={{ command }}
+      approvalActions={<button>允许本次</button>} />);
+    expect(markup).toContain('可能读取敏感信息或访问工作区外内容');
+    expect(markup).not.toMatch(/可逆或只读|可撤销或只读操作/);
+    expect(markup).toContain('允许本次');
+  });
+
   it('names the exact approval action; a delete or share is never called an edit', () => {
     const approvalFor = (toolName: string): string => {
       const item: ThreadItem = {

@@ -17,7 +17,7 @@ from app.models.session_v2 import SessionCommand, SessionModelResult, SessionToo
 from app.runtime.context_candidates import ContextMessageOrigin
 from app.services.llm_client import LLMMessage
 from tests.integration.test_artifact_publication_transactions import stage_report
-from tests.integration.test_m1g24_workspace_artifact_authority_postgres import native_workspace  # noqa: F401
+from tests.integration.test_m1g24_workspace_artifact_authority_postgres import _prepare_write, native_workspace  # noqa: F401
 from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
 from tests.services.test_session_semantic_history import _seal_round
 
@@ -133,6 +133,7 @@ async def _graph(n, size, owner_sessionmaker, app_user_sessionmaker, monkeypatch
     raw, newest_read = await asyncio.wait_for(memory_call(n, app_user_sessionmaker, "read_file",
         {"path": n.path}), TIMEOUT)
     assert "COMPANY_SOURCE_MARKER" in raw, raw
+    n.newest_read, n.newest_raw = newest_read, raw
     # A genuine read-tool result enters a committed Web round. Its source-bound
     # output is revalidated at the next provider boundary and by T2.
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
@@ -191,6 +192,214 @@ async def _model(n, app_user_sessionmaker):
         snapshot = row.model_request_snapshot_json
         await db.rollback()
         return snapshot
+
+
+async def _delegation(n, owner_sessionmaker, app_user_sessionmaker, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app.agents import orchestrator
+    from app.config import get_settings
+    from app.core.execution_context import ExecutionPrincipal
+    from app.kernel.contracts import ExecutionIdentityRef
+    from app.models.agent import Agent
+    from app.models.llm import LLMModel
+    from app.models.runtime_task import RuntimeTask
+    from app.runtime.ccplus_contracts import permission_profile_snapshot
+    from app.services import agent_context
+    from app.services.agent_manager import AgentManager
+    from app.services.delegation_input_origin import capture_delegation_instruction_origin
+    from app.services.secrets_provider import get_secrets_provider
+    from app.services.web_chat_runtime import _persist_tool_call
+    from app.tools.runtime import ToolExecutionContext
+
+    monkeypatch.setattr(agent_context, "PERSISTENT_DATA", n.root.parent)
+    monkeypatch.setattr(agent_context, "TOOL_WORKSPACE", n.root.parent)
+    monkeypatch.setattr("app.services.agent_manager.settings", get_settings())
+    async with owner_sessionmaker() as db:
+        model = LLMModel(tenant_id=n.tenant, provider="openai", model="synthetic-local",
+            label="Local delegation probe", base_url="http://127.0.0.1:1", max_input_tokens=256_000,
+            api_key_encrypted=get_secrets_provider().encrypt("synthetic-local-only"))
+        db.add(model)
+        await db.flush()
+        child = Agent(id=uuid.uuid4(), tenant_id=n.tenant, name="Graph worker", creator_id=n.user,
+            owner_user_id=n.user, primary_model_id=model.id)
+        db.add(child)
+        await db.flush()
+        await AgentManager().initialize_agent_files(db, child,
+            personality="Prepare referenced draft reports.", original_author_id=n.user)
+        await db.commit()
+    instruction = f"Prepare the referenced report from these authorized inputs:\n{BODY}\n{DERIVED}"
+    arguments = {"agent_name": child.name, "target_agent_id": str(child.id), "message": instruction}
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        # Use the parent's real read result, as the Web loop does, so the child
+        # inherits the working copies/commands/tools rather than an invented
+        # cross-employee model-memory pointer.
+        invocation, _, _ = await _prepare_write(db, n, tool_name="delegate_to_agent", arguments=arguments,
+            round_index=5, messages=[LLMMessage(role="tool", content=n.newest_raw,
+                tool_call_id=n.newest_read.provider_tool_use_id,
+                source_ref=f"session-tool-result:{n.newest_read.id}")])
+    await _persist_tool_call(agent_id=n.agent, user_id=n.user, session_id=str(n.session), data={
+        "name": "delegate_to_agent", "args": arguments, "tool_call_id": invocation.provider_tool_use_id,
+        "provider_request_id": invocation.provider_request_id, "runtime_task_id": str(n.run),
+        "status": "effect_started"})
+    origin = await capture_delegation_instruction_origin(ToolExecutionContext(agent_id=n.agent,
+        user_id=n.user, tenant_id=str(n.tenant), workspace=n.root, session_id=str(n.session),
+        runtime_task_id=str(n.run), tool_call_id=invocation.provider_tool_use_id), arguments,
+        recipient_agent_id=child.id)
+    assert origin is not None
+    run, session = uuid.uuid4(), uuid.uuid4()
+    principal = ExecutionPrincipal(tenant_id=n.tenant, source_agent_id=n.agent, requester_user_id=n.user,
+        root_session_id=str(n.session), root_runtime_task_id=str(n.run))
+    request = orchestrator.AgentDelegationRequest(target=child, target_model=model,
+        conversation_messages=[{"role": "user", "content": instruction, "a2a_instruction_origin": origin}],
+        owner_id=n.user, session_id=str(session), parent_agent_id=n.agent, parent_session_id=str(n.session),
+        tenant_id=n.tenant, runtime_task_id=str(run), root_runtime_task_id=str(n.run), trace_id="r12a-delegation",
+        execution_principal=principal.to_evidence(),
+        execution_identity=ExecutionIdentityRef(identity_type="delegated_user", identity_id=n.user),
+        permission_profile=permission_profile_snapshot(None),
+        policy=orchestrator.OrchestrationPolicy(timeout_seconds=TIMEOUT))
+    request.execution_receipt = orchestrator._build_delegation_execution_receipt(
+        request, task_id=str(run), trace_id=request.trace_id, status="running")
+    async with owner_sessionmaker() as db:
+        db.add(RuntimeTask(id=run, task_type="delegation", status="running", tenant_id=n.tenant,
+            parent_agent_id=n.agent, child_agent_id=child.id, parent_session_id=str(n.session),
+            child_session_id=str(session), root_session_id=str(n.session), root_user_id=n.user,
+            root_runtime_task_id=n.run, prompt=instruction, claimed_by="r12a-delegation-worker",
+            claim_version=1, attempt_count=1, claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            metadata_json=orchestrator._build_runtime_task_metadata(request, task_id=str(run))))
+        await db.commit()
+    n.delegation = request
+    return n
+
+
+async def _delegated_first_model(n, monkeypatch):
+    from functools import wraps
+
+    import app.runtime.invoker as invoker
+    from app.agents import orchestrator
+    from app.services import delegation_input_origin, session_model_round
+    from app.services.delegation_session_runtime import DelegationSessionRuntime
+    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient, SimulatedWorkerCrash
+
+    # Stop at the real transport boundary, after canonical preparation, without
+    # sending model bytes or including final-response settlement in the budget.
+    client = ScriptedLLMClient([SimulatedWorkerCrash()])
+    first, phases = {}, []
+    result, timed_out = None, False
+    started = time.perf_counter()
+    with _sql() as statements, monkeypatch.context() as patch:
+        def observe(module, name, phase):
+            original = getattr(module, name)
+
+            @wraps(original)
+            async def measured(*args, **kwargs):
+                before, at = len(statements), time.perf_counter()
+                try:
+                    return await original(*args, **kwargs)
+                finally:
+                    phases.append({"phase": phase, "statements": len(statements) - before,
+                        "seconds": round(time.perf_counter() - at, 4)})
+
+            patch.setattr(module, name, measured)
+
+        observe(DelegationSessionRuntime, "attach", "delegation_context")
+        observe(delegation_input_origin, "authorize_delegation_instruction", "instruction_validation")
+        observe(invoker, "_resolve_memory_context", "memory_context")
+        observe(session_model_round, "prepare_model_request", "model_round")
+        stream = client.stream
+
+        async def reached(**kwargs):
+            first.update(statements=len(statements), seconds=round(time.perf_counter() - started, 4))
+            return await stream(**kwargs)
+
+        patch.setattr(client, "stream", reached)
+        patch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+        request = n.delegation
+        token = set_runtime_task_fence(task_id=uuid.UUID(request.runtime_task_id),
+            worker_id="r12a-delegation-worker", claim_version=1)
+        try:
+            result = await asyncio.wait_for(orchestrator._delegate_after_cycle_check(request,
+                trace_id=request.trace_id, child_session_id=request.session_id,
+                tool_profile=orchestrator._resolve_delegation_tool_profile("worker_safe"),
+                is_delegation=True), TIMEOUT)
+        except SimulatedWorkerCrash:
+            assert len(client.requests) == 1
+        except asyncio.TimeoutError:
+            timed_out = True
+        finally:
+            reset_runtime_task_fence(token)
+        row = {"path": "delegated_pre_model", "N": n.size, "nodes": n.nodes, "edges": n.edges,
+            "statements": first.get("statements", len(statements)),
+            "seconds": first.get("seconds", round(time.perf_counter() - started, 4)),
+            "timed_out": timed_out, "first_request": bool(first), "phases": phases}
+    print("R12A_GRAPH_SQL", json.dumps(row), flush=True)
+    return client.requests, result, row
+
+
+@pytest.mark.parametrize("size", [4, 6, 8, 10, 16])
+async def test_delegated_pre_model_source_graph_statement_work(native_workspace, owner_sessionmaker,  # noqa: F811
+    app_user_sessionmaker, monkeypatch, size):
+    n = await _graph(native_workspace, size, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    await _delegation(n, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    requests, result, row = await _delegated_first_model(n, monkeypatch)
+    assert not row["timed_out"] and row["first_request"], (row, result)
+    # Two live instruction checks plus fixed child/context assembly: measured
+    # green work is 421..488 statements over these graphs, including cold setup.
+    assert row["statements"] <= 3 * (n.nodes + n.edges) + 400, row
+    assert DERIVED in json.dumps(requests) and "COMPANY_SOURCE_MARKER" in json.dumps(requests)
+    assert [phase["phase"] for phase in row["phases"]] == [
+        "delegation_context", "instruction_validation", "memory_context", "instruction_validation", "model_round"]
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        model = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.run_id == uuid.UUID(n.delegation.runtime_task_id)))
+        bindings = model.model_request_snapshot_json["input_bindings"]
+        assert bindings["dependency_coverage"]["complete"]
+        assert _source(n.receipts[-1]) in bindings["dependencies"]
+        assert not any(entry.get("status") == "withheld" for entry in bindings["messages"])
+
+
+async def test_delegated_deep_source_change_withholds_before_first_model(native_workspace, owner_sessionmaker,  # noqa: F811
+    app_user_sessionmaker, monkeypatch):
+    from tests.services.test_session_input_control_v2 import _accepted_input, _authority
+
+    n = await _graph(native_workspace, 16, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    # This independent real command was never input to any producer model or
+    # read tool. Its only incoming edge is on the oldest working copy.
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        authority = await _authority(db, user_id=n.user, agent_id=n.agent, session_id=n.session)
+        accepted = await _accepted_input(db, authority=authority, session_id=n.session, run_id=n.run,
+            kind="steer_current_turn", content="An independent input used only by the oldest report.")
+        command = await db.get(SessionCommand, accepted.command_id)
+        bad_source = {"source_kind": "session_command", "source_id": str(command.id),
+            "source_version": command.request_hash}
+    async with owner_sessionmaker() as db:
+        oldest = await db.get(type(n.receipts[0]), n.receipts[0].id)
+        oldest.dependencies_json = [bad_source]
+        n.receipts[0] = oldest
+        await db.commit()
+    n.nodes += 1
+    n.edges += 1
+    await _delegation(n, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    assert all(bad_source not in receipt.dependencies_json
+        for receipt in n.receipts[1:])
+    async with owner_sessionmaker() as db:
+        parent_models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == n.run)))
+        assert all(bad_source["source_id"] not in json.dumps(model.model_request_snapshot_json)
+            for model in parent_models)
+        command = await db.get(SessionCommand, accepted.command_id)
+        command.request_hash = "0" * 64
+        await db.commit()
+    requests, result, row = await _delegated_first_model(n, monkeypatch)
+    assert not row["timed_out"] and not requests, row
+    assert result.failed and result.terminal_reason == "delegation_instruction_source_access_denied", result
+    assert DERIVED not in result.content and "COMPANY_SOURCE_MARKER" not in result.content
+    async with owner_sessionmaker() as db:
+        assert not list(await db.scalars(select(SessionModelResult).where(
+            SessionModelResult.run_id == uuid.UUID(n.delegation.runtime_task_id))))
+        for receipt in n.receipts:
+            current = await db.get(type(receipt), receipt.id, populate_existing=True)
+            assert current.dependencies_json == receipt.dependencies_json
 
 
 @pytest.mark.parametrize("size", [4, 6, 8, 10, 16])

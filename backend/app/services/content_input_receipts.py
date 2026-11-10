@@ -1982,24 +1982,20 @@ async def _validate_workspace_receipt_inputs(
 
 
 async def _validate_workspace_tool_input(db, request, receipt):
-    """Read the exact workspace carrier as this session's output recipient."""
+    """Validate a working copy's source chain as this session's output recipient."""
     from app.core.source_read_purpose import source_recipient_read
     from app.models.chat_session import ChatSession
 
     tenant_id = uuid.UUID(str(request.context.tenant_id))
     principal, user = await _runtime_input_actor(db, tenant_id, request)
     session = await _input_row(db, ChatSession, uuid.UUID(principal.session_id))
-    dependency = {"source_kind": "workspace_artifact", "source_id": str(receipt.id),
-        "source_version": receipt.content_sha256}
     # Private Web and delegation outputs publish as the session's member;
     # group and machine outputs retain their runtime reader.
     if session.user_id is None or session.audience_kind == "group":
-        await _validate_workspace_dependency(db, tenant_id, dependency, user=None,
-            runtime_request=request, active_receipts=frozenset())
+        await validate_runtime_workspace_receipt(db, tenant_id, request, receipt, receipt.content_sha256)
     else:
         with source_recipient_read(session_id=session.id, user_id=user.id):
-            await _validate_workspace_dependency(db, tenant_id, dependency, user=user,
-                runtime_request=None, active_receipts=frozenset())
+            await validate_published_workspace_receipt(db, tenant_id, user, receipt, receipt.content_sha256)
 
 
 async def authorize_workspace_execution_inputs(request):

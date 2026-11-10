@@ -75,7 +75,7 @@ async def _set_run_kind(db, n, kind):
     await db.commit()
 
 
-async def _personal_source(db, n, *, member_grant):
+async def _personal_source(db, n, *, member_grant, path="workspace/derived-source.md"):
     from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
     from app.services.content_input_receipts import latest_workspace_receipt
 
@@ -95,7 +95,7 @@ async def _personal_source(db, n, *, member_grant):
         db.add(KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",
             resource_id=document.id, document_id=document.id, grantee_type="user", grantee_id=n.user,
             created_by_user_id=n.foreign, permission="read"))
-    receipt = await latest_workspace_receipt(db, n.tenant, n.agent, "workspace/derived-source.md")
+    receipt = await latest_workspace_receipt(db, n.tenant, n.agent, path)
     receipt.dependencies_json = [{"source_kind": "knowledge_document", "source_id": str(document.id),
         "source_version": digest}]
     await db.commit()
@@ -196,7 +196,8 @@ async def test_depth_three_execution_preflight_is_batched_once(
     monkeypatch.setattr(receipts, "authorize_workspace_execution_inputs", gate)
     result = await _execute(n, "grep_search", path)
     assert "COMPANY_SOURCE_MARKER" not in str(result), result
-    assert calls == {"batch_preload": 1, "workspace_validation": 3, "model_validation": 1}, calls
+    # Validate the two upstream receipts, not the selected working copy's bytes.
+    assert calls == {"batch_preload": 1, "workspace_validation": 2, "model_validation": 1}, calls
     print("R10B_EXECUTION_COST", json.dumps({"task_type": run_kind, "depth": 3, **calls}))
 
 
@@ -233,15 +234,23 @@ async def test_scoped_admin_cannot_consume_business_inspection_sources(
 
 
 @pytest.mark.parametrize("tool", ["office_document_view", "office_document_query", "office_document_validate", "office_document_dump"])
-async def test_office_rejects_changed_receipted_bytes_before_adapter(
-    native_workspace, monkeypatch, tool,  # noqa: F811
+async def test_office_reads_edited_working_copy_but_denies_revoked_sources_before_adapter(
+    native_workspace, owner_sessionmaker, monkeypatch, tool,  # noqa: F811
 ):
+    from sqlalchemy import select
+    from app.models.knowledge import KnowledgeGrant
     from app.services.office_document_service import OfficeDocumentService
 
     n = native_workspace
     path = "workspace/changed.docx"
     target = await _create(n, path, "RECEIPTED_BODY")
-    target.write_text("UNRECEIPTED_BODY")
+    async with owner_sessionmaker() as db:
+        await _personal_source(db, n, member_grant=True, path=path)
+        grant = await db.scalar(select(KnowledgeGrant).where(KnowledgeGrant.tenant_id == n.tenant,
+            KnowledgeGrant.grantee_type == "user", KnowledgeGrant.grantee_id == n.user))
+        grant_id = grant.id
+        await db.commit()
+    target.write_text("OUT_OF_BAND_REWRITE")
     invoked = []
 
     def adapter(*_args, **_kwargs):
@@ -252,9 +261,16 @@ async def test_office_rejects_changed_receipted_bytes_before_adapter(
     monkeypatch.setattr(OfficeDocumentService, "run_query", adapter)
     monkeypatch.setattr(OfficeDocumentService, "run_validate", adapter)
     monkeypatch.setattr(OfficeDocumentService, "run_dump", adapter)
+    assert "OUT_OF_BAND_REWRITE" in str(await _execute(n, "read_file", path))
     result = await _execute(n, tool, path)
-    assert "UNRECEIPTED_BODY" not in str(result), result
-    assert "content_source_changed" in str(result) and invoked == [], result
+    assert "OUT_OF_BAND_REWRITE" in str(result) and invoked == [True], result
+    async with owner_sessionmaker() as db:
+        (await db.get(KnowledgeGrant, grant_id)).revoked_at = datetime.now(timezone.utc)
+        await db.commit()
+    invoked.clear()
+    result = await _execute(n, tool, path)
+    assert "OUT_OF_BAND_REWRITE" not in str(result), result
+    assert "content_source_access_denied" in str(result) and invoked == [], result
 
 
 @pytest.mark.parametrize("path", ["memory/explicit/notes.docx", "memory/control/run.docx"])

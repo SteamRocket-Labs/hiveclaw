@@ -5,8 +5,10 @@ import uuid
 
 from app.database import tenant_scoped_session
 from app.models.invocation_span import InvocationSpan
-from app.services.content_input_receipts import ContentInputReceiptError, _input_row
-from app.services.explicit_memory_authority import _actor, _authorize_entry, _writer_input, source_dependency
+from app.services.content_input_receipts import ContentInputReceiptError, _input_row, group_source_read
+from app.services.explicit_memory_authority import (
+    _actor, _authorize_entry, _recheck_group_memory_audiences, _writer_input, source_dependency,
+)
 from app.services.session_model_inputs import _hash, _stored_dependencies, _unique_dependencies
 
 MEMORY_RESULT_TOOLS = frozenset({"save_memory", "update_memory", "retire_memory", "reconcile_memory_write",
@@ -17,14 +19,19 @@ async def record_memory_result(request, *, content, entries=(), team_entries=(),
     """Pin actual emitted entries, never infer source completeness from prose."""
     tenant_id = uuid.UUID(str(request.context.tenant_id))
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
-        await _actor(db, tenant_id, request)
-        for entry, receipt in entries:
-            await _authorize_entry(db, tenant_id=tenant_id, agent_id=request.context.agent_id,
-                request=request, entry=entry, receipt=receipt)
+        with group_source_read(batch_inputs=True):
+            await _actor(db, tenant_id, request)
+            for entry, receipt in entries:
+                await _authorize_entry(db, tenant_id=tenant_id, agent_id=request.context.agent_id,
+                    request=request, entry=entry, receipt=receipt)
         from app.services.team_memory_runtime import authorize_entry, source_dependency as team_source
 
         for entry, receipt in team_entries:
             await authorize_entry(db, tenant_id, request, entry, receipt)
+        group_denials = await _recheck_group_memory_audiences(db, tenant_id=tenant_id,
+            agent_id=request.context.agent_id, request=request, receipts=[receipt for _entry, receipt in entries])
+        if group_denials:
+            raise next(iter(group_denials.values()))
         try:
             facts = await _writer_input(db, request, require_sources=False)
         except ContentInputReceiptError as exc:

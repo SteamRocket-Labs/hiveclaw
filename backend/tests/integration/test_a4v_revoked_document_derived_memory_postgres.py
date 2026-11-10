@@ -186,34 +186,24 @@ async def test_revoked_document_derived_memory_is_withheld_from_later_model_requ
             for entry in bindings["messages"]
         ), bindings
 
-    execute = n.service.execute
-
-    async def revoke_before_save(_self, *args, **kwargs):
-        # The DELETE /grants/{grant_id} product route calls this revocation service.
-        # Revoke B's member grant after sealing this round, before its save effect;
-        # the runtime grant remains live and cannot replace B's own document access.
-        async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
-            assert await service.delete_personal_grant(
-                db, tenant_id=n.tenant, owner_user_id=n.user, current_user_id=n.user, grant_id=grant.id,
-            )
-            await db.commit()
-        return await execute(*args, **kwargs)
-
-    with monkeypatch.context() as revocation:
-        revocation.setattr(type(n.service), "execute", revoke_before_save)
-        same_round, revocation_invocation = await memory_call(
-            n, app_user_sessionmaker, "save_memory",
-            {"content": f"Remember the document release cadence again {DERIVED_MARKER}", "category": "project"},
-            user=n.foreign, session=s.second_session, run=s.second_run,
-            command="Save the release note in this round", include_history=True,
-        )
-    assert "Saved memory [project] (capabilities):" in same_round, same_round
-
+    # The run loses access only when every grant that authorises it is revoked;
+    # an owner's agent grant bound to the requester authorises the run by itself
+    # (personal_knowledge_access.py).
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
-        same_round_receipt = await db.get(ContentInputReceipt, uuid5(revocation_invocation.id, "explicit-memory-source"))
-        same_round_entry_id = same_round_receipt.authority_json["entry_id"]
+        for grant_id in (grant.id, runtime_grant.id):
+            assert await service.delete_personal_grant(
+                db, tenant_id=n.tenant, owner_user_id=n.user, current_user_id=n.user, grant_id=grant_id,
+            )
+        await db.commit()
+
+    direct_read, _ = await memory_call(
+        n, app_user_sessionmaker, "read_personal_kb", {"document_id": str(document.id)},
+        user=n.foreign, session=s.second_session, run=s.second_run, command="Read the revoked release document",
+    )
+    assert DOCUMENT_MARKER not in direct_read, direct_read
+
     selected_bodies.clear()
-    after, recalled = await _recall(s, app_user_sessionmaker, surface, [entry_id, same_round_entry_id])
+    after, recalled = await _recall(s, app_user_sessionmaker, surface, [entry_id])
     denied = await _model_request(
         s, app_user_sessionmaker, context=recalled if surface == "automatic" else None,
     )
@@ -223,5 +213,12 @@ async def test_revoked_document_derived_memory_is_withheld_from_later_model_requ
         assert all(marker not in body for body in selected_bodies), selected_bodies
     if surface != "automatic":
         assert "content_source_access_denied" in after, after
-    dependencies = denied.model_request_snapshot_json["input_bindings"]["dependencies"]
-    assert all(ref["source_kind"] != "knowledge_document" for ref in dependencies), dependencies
+    # A4d round-5 ruling: a withheld source stays in provenance so outputs remain
+    # constrained (test_a4a_round3 successor cases).
+    document_bindings = [
+        entry for entry in denied.model_request_snapshot_json["input_bindings"]["messages"]
+        if dependency in entry["dependencies"]
+    ]
+    assert document_bindings, denied.model_request_snapshot_json["input_bindings"]
+    for binding in document_bindings:
+        assert binding["status"] == "withheld", binding

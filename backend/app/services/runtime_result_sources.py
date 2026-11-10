@@ -49,7 +49,7 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
         ref = source_id.split("\n")[1:]
         allowed = {
             "agent_identity": {"identity"},
-            "agent_context_resource": {"soul", "a2a-collaborators"},
+            "agent_context_resource": {"channels", "soul", "a2a-collaborators"},
             "agent_resident_memory": {"memory/self/self.md"},
         }
         return agent_id == task.child_agent_id and (

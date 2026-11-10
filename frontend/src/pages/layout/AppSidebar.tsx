@@ -236,7 +236,7 @@ export default function AppSidebar({
             const badge = getAgentBadgeStatus(agent);
             const sourceBadge = getAgentSourceBadge(agent, t, user);
             const name = String(agent.id) === assistantAgentId ? t('assistant.title') : assistantNameForDisplay(agent.name, t('assistant.title', 'My Assistant'));
-            const avatarChar = ((Array.from(name || '?')[0] as string) || '?').toUpperCase();
+            const avatarChar = (name.replace(/^(?:\s*\[[^\]]*\])+/, '').match(/[\p{L}\p{N}]/u)?.[0] || '?').toUpperCase();
             const isAgentRowActive = String(activeAgentId || '') === String(agent.id);
             // B5: opening a bot opens its conversation (#chat is the workbench),
             // or a fresh one when it has none. Operator-only bots keep their

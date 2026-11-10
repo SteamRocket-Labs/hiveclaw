@@ -95,6 +95,16 @@ describe('AppSidebar bot-list authority (B3: the bot is the way in)', () => {
 
   afterEach(() => cleanup());
 
+  it.each([
+    ['[E2E] 白鹭-8 助手', '白'], ['[QA] [E2E] 周报助手', '周'],
+    ['🤖 AI算力研究员', 'A'], ['  周报助手', '周'], ['[]', '?'],
+  ])('uses the first real character of %s as its avatar', async (name, character) => {
+    const { container } = renderSidebar(<AppSidebar {...baseProps} user={{ id: 'user', role: 'member' }}
+      agents={[{ id: 'avatar-test', name, is_owner: true }]} />);
+    await waitFor(() => expect(container.querySelector('.agent-avatar')?.textContent).toBe(character));
+    expect(screen.getByTitle(name.trim()).textContent).toContain(name.trim());
+  });
+
   it('does not provision an HR bot to render a creation entry', async () => {
     renderSidebar(
       <AppSidebar {...baseProps} user={{ id: 'platform-user', role: 'platform_admin' }} agents={[]} />,

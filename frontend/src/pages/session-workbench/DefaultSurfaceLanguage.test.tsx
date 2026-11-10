@@ -49,6 +49,8 @@ import type { AgentChatMessage } from '../agent-detail/chatRuntime';
 // production run surfaced on the default screen (brief, 2026-11-04).
 // ---------------------------------------------------------------------------
 const BANNED_WORDS = [
+  'True', 'None', '会话证据', '对端', '落盘', '退出码', 'execute_code', 'run_command', 'pick()',
+  'Written to', 'Saved memory', 'command not found', '/vercel/sandbox', '/opt/git', 'Agent → Tools → Send Email',
   '主体', '对账', '回执', '来源绑定', '租约', '隔离', '入账',
   'runtime', 'token', 'trace', 'schema', 'quarantine', 'workspace',
   'Agent', 'agent', 'A2A',
@@ -567,15 +569,17 @@ describe('default screen language (B2)', () => {
     group.open = true;
     const rows = group.querySelectorAll<HTMLButtonElement>('.run-tool-history-toggle');
     expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      expect(row.textContent).toContain('工具');
+    for (const [index, row] of Array.from(rows).entries()) {
+      expect(row.textContent).toContain(['查看工作资料', '使用已连接的应用'][index]);
       fireEvent.click(row);
       expect(row.getAttribute('aria-expanded')).toBe('true');
     }
     fireEvent.click(screen.getByRole('button', { name: /交给其他数字员工/ }));
     expect(document.body.textContent).not.toMatch(/read_context_resource|call_mcp_tool|send_message_to_agent|MCP RESULT|INDEX CONTENT|weather|toolName|rawResult/);
     expect(document.body.textContent).not.toMatch(/private_content|tool_name|"ref"/);
-    expect(screen.getAllByText('对方数字员工暂不可用')).toHaveLength(1);
+    expect(document.body.textContent).toContain('操作未能完成，结果尚未确认。');
+    expect(document.body.textContent).not.toContain('对方数字员工暂不可用');
+    expect((timeline.steps[2].details as { result: string }).result).toBe('对方数字员工暂不可用');
     expect(findInternalWords(visibleSurface(document.body.innerHTML))).toEqual([]);
     cleanup();
   });

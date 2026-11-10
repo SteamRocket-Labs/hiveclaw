@@ -31,6 +31,12 @@ const TOOL_TITLE_KEY: Record<string, string> = {
 };
 
 const MEMORY_AND_CREATION: Record<string, [string, string]> = {
+  read_context_resource: ['readContext', 'Read work context'],
+  search_personal_kb: ['searchPersonal', 'Search personal documents'],
+  read_personal_kb: ['readPersonal', 'Read personal documents'],
+  search_company_kb: ['searchCompany', 'Search company documents'],
+  read_company_kb: ['readCompany', 'Read company documents'],
+  call_mcp_tool: ['useConnection', 'Use a connected app'],
   save_memory: ['saveMemory', 'Save memory'],
   search_memory: ['searchMemory', 'Search memory'],
   load_memory: ['loadMemory', 'Load memory'],

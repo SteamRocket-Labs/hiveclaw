@@ -2,6 +2,9 @@ import React, { useMemo, useState } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
+import { attention } from 'micromark-core-commonmark';
+import type { Extension, Token } from 'micromark-util-types';
+import type { Processor } from 'unified';
 
 import {
   apiPathFromBrowserUrl,
@@ -18,6 +21,31 @@ const CREDENTIAL_QUERY_KEYS = new Set([
   'bearer',
   'token',
 ]);
+
+// CommonMark treats a full-width closing punctuation mark before ** as an
+// opening delimiter when the following character is a letter or digit.
+// Extend the native tokenizer so escaped markers and code keep native rules.
+function remarkChineseStrong(this: Processor) {
+  const data = this.data() as { micromarkExtensions?: Extension[] };
+  const extension: Extension = { text: { 42: {
+    ...attention,
+    tokenize(effects, ok, nok) {
+      const previous = this.previous;
+      let sequence: Token | undefined;
+      return attention.tokenize.call(this, { ...effects, exit(type) {
+        const token = effects.exit(type);
+        if (type === 'attentionSequence') sequence = token;
+        return token;
+      } }, code => {
+        if (sequence && sequence.end.offset - sequence.start.offset === 2
+          && previous != null && previous > 0 && /[\u3001-\u303f\uff01-\uff65]/u.test(String.fromCodePoint(previous))
+          && code != null && code > 0 && !/\s/u.test(String.fromCodePoint(code))) sequence._close = true;
+        return ok(code);
+      }, nok);
+    },
+  } } };
+  (data.micromarkExtensions ??= []).push(extension);
+}
 
 function containsCredentialQuery(value: string): boolean {
   try {
@@ -148,7 +176,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({
     <div className={classes} style={style}>
       <ReactMarkdown
         skipHtml
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkChineseStrong]}
         rehypePlugins={[rehypeSanitize]}
         urlTransform={safeMarkdownUrl}
         components={markdownComponents}

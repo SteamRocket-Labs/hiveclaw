@@ -396,7 +396,7 @@ describe('RunDisclosureBlock', () => {
     expect(markup).toMatch(/1[0-9]s/); // live elapsed derived from startedAt
   });
 
-  it('renders command details with a preview, complete recoverable output, and an exit code badge', () => {
+  it('keeps raw command evidence internal in both surface and tool history', () => {
     const longOutput = Array.from({ length: 20 }, (_, index) => `line-${index + 1}`).join('\n');
     const commandStep = {
       id: 'cmd-1',
@@ -422,9 +422,8 @@ describe('RunDisclosureBlock', () => {
     expect(collapsed).not.toContain('$ pytest tests/');
     expect(collapsed).not.toContain('line-1');
 
-    // The exec view itself keeps its preview, recoverable full output, and
-    // exit badge wherever it is shown: in the opened tool history a failed
-    // command's details remain expanded for inspection.
+    // R11g: expanded member details are summaries; original evidence stays
+    // on the timeline for the model and internal diagnostics.
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
         timeline={{
@@ -436,13 +435,10 @@ describe('RunDisclosureBlock', () => {
     );
 
     expect(markup).toContain('aria-expanded="true"');
-    expect(markup).toContain('session-tui-exec-output');
-    expect(markup).toContain('line-1');
-    expect(markup).toContain('line-20');
-    expect(markup).toContain('…'); // concise preview
-    expect(markup).toContain('Show complete output');
-    expect(markup).toContain('line-10'); // full evidence remains recoverable
-    expect(markup).toContain('exit 1');
+    expect(markup).not.toContain('session-tui-exec-output');
+    expect(markup).not.toMatch(/line-1|line-10|line-20|exit 1|Show complete output/);
+    expect(commandStep.details).toEqual({ command: 'pytest tests/', output: longOutput, exit_code: 1, duration_ms: 2300 });
+
   });
 
   it('renders a live turn as one expanded chronological stream of prose, tool rows, and compaction boundaries', () => {

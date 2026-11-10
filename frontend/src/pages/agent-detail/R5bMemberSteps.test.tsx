@@ -16,14 +16,14 @@ it.each([
   ['save_memory', '保存记忆'], ['search_memory', '查找记忆'], ['load_memory', '读取记忆'],
   ['update_memory', '更新记忆'], ['retire_memory', '忘记记忆'],
   ['create_employee_from_request', '创建数字员工'], ['create_digital_employee', '创建数字员工'],
-  ['preview_agent_blueprint', '预览数字员工'], ['unknown_new_tool', '工具'],
-  ['constructor', '工具'], ['__proto__', '工具'], ['toString', '工具'],
+  ['preview_agent_blueprint', '预览数字员工'], ['unknown_new_tool', '处理请求'],
+  ['constructor', '处理请求'], ['__proto__', '处理请求'], ['toString', '处理请求'],
 ])('gives %s a Chinese label even with a stored ellipsis', (name, label) => {
   expect(toolStepLabel(name, t as unknown as TFunction, '…')).toBe(label);
 });
 
 it.each(['…', '...', 'private_raw_label', '', 'constructor', '__proto__'])('uses a Chinese generic fallback for %s', sentinel => {
-  expect(toolStepLabel(null, t as unknown as TFunction, sentinel)).toBe('工具');
+  expect(toolStepLabel(null, t as unknown as TFunction, sentinel)).toBe('处理请求');
 });
 
 it.each(['timeout', 'auth_or_permission', 'quota_or_billing', 'rate_limited', 'not_found', 'bad_arguments',
@@ -75,12 +75,15 @@ it.each([
   'A document discussing <tool_error>{"error_class":"timeout"}</tool_error>',
   '已改用其他方式获取以下结果：\n\n报告内容已读取。',
 ])('uses the terminal step status for a successful plain-text result: %s', result => {
+  const details = { result };
   const { container } = render(<RunDisclosureBlock timeline={{ id: 'success', status: 'running', steps: [{
-    id: 'step', kind: 'file', title: '读取文件', status: 'done', visibility: 'visible', details: { result },
+    id: 'step', kind: 'file', title: '读取文件', status: 'done', visibility: 'visible', details,
   }] }} />);
   fireEvent.click(container.querySelector('.run-tool-group-toggle') as HTMLElement);
   fireEvent.click(container.querySelector('.run-tool-history-toggle') as HTMLButtonElement);
-  expect(container.textContent).toContain(result.replace(/\s+/g, ' '));
+  expect(container.textContent).toContain('已返回结果');
+  expect(container.textContent).not.toContain(result);
+  expect(details.result).toBe(result);
   expect(container.textContent).not.toContain('操作等待超时');
   expect(container.textContent).not.toContain('请稍后再试');
 });

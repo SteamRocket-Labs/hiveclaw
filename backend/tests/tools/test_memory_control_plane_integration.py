@@ -39,7 +39,8 @@ async def test_save_memory_preserves_secret_shaped_fixture_after_model_review(tm
             },
         )
 
-    assert result.startswith("Saved memory [reference] (capabilities):")
+    assert result.model_visible_text.startswith("Saved memory [reference] (capabilities):")
+    assert str(result).startswith("已记住：")
     entry = next((tmp_path / str(agent_id) / "memory" / "explicit" / "entries").glob("*.md"))
     assert "sk-1234567890abcdefghijklmnop" in entry.read_text(encoding="utf-8")
 
@@ -70,7 +71,8 @@ async def test_save_memory_masks_pii_before_explicit_overlay_write(tmp_path: Pat
     entry_body = next((tmp_path / str(agent_id) / "memory" / "explicit" / "entries").glob("*.md")).read_text(
         encoding="utf-8"
     )
-    assert result.startswith("Saved memory [user] (user):")
+    assert result.model_visible_text.startswith("Saved memory [user] (user):")
+    assert str(result).startswith("已记住：")
     assert not user_path.exists()
     assert "alice@example.com" not in body
     assert "alice@example.com" not in entry_body

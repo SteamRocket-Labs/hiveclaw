@@ -22,7 +22,7 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
 async def memory_call(n, app_user_sessionmaker, tool_name, arguments, *, user=None, session=None, run=None, command=None, include_history=False):
-    from app.kernel.engine import _mid_run_items_to_user_messages
+    from app.kernel.engine import _mid_run_items_to_user_messages, _normalize_tool_result_for_llm
     from app.runtime.hooks import HookResult
     from app.services.session_human_input import queue_admitted_human_input
     from app.services.session_input_admission import run_user_prompt_admission
@@ -93,9 +93,10 @@ async def memory_call(n, app_user_sessionmaker, tool_name, arguments, *, user=No
 
     await _persist_tool_call(agent_id=n.agent, user_id=user, session_id=str(session),
         data={"name": tool_name, "args": arguments, "status": "done", "result": str(raw),
+            "model_visible_content": _normalize_tool_result_for_llm(raw),
             "tool_call_id": invocation.provider_tool_use_id, "provider_request_id": invocation.provider_request_id,
             "runtime_task_id": str(run), "tool_execution_evidence": _execution_evidence(trace)})
-    return str(raw), invocation
+    return _normalize_tool_result_for_llm(raw), invocation
 
 
 async def new_owner_work(n, owner_sessionmaker):

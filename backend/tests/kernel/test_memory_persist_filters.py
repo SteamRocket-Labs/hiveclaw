@@ -189,7 +189,8 @@ async def test_persisted_messages_contain_no_ledger_or_pressure_reminder_text():
     assert persist_sink == []
     texts = _response_texts(result)
     assert not any("gentle reminder" in t for t in texts), "ledger reminder leaked into persist"
-    assert not any("Current Work Ledger snapshot" in t for t in texts), "ledger snapshot leaked into persist"
+    assert not any("Current Work Ledger snapshot" in t for t in texts), "legacy ledger snapshot leaked into persist"
+    assert not any("Recorded Work Ledger snapshot" in t for t in texts), "ledger snapshot leaked into persist"
     assert not any("tool rounds used" in t for t in texts), "round-pressure warning leaked into persist"
 
 

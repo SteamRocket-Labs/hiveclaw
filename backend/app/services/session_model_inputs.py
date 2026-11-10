@@ -780,6 +780,16 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         source_id = uuid.UUID(raw_id)
     except (ValueError, TypeError):
         return [], False
+    if kind == "session-run-cancelled":
+        event = await db.scalar(select(ChatTranscriptEvent).join(ChatSession,
+            ChatSession.id == ChatTranscriptEvent.session_id).where(
+                ChatTranscriptEvent.id == source_id, ChatTranscriptEvent.tenant_id == tenant_id,
+                ChatTranscriptEvent.agent_id == agent_id, ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == agent_id, ChatTranscriptEvent.item_kind == "run",
+                ChatTranscriptEvent.lifecycle == "cancelled"))
+        # Binding is the cancelled event plus its control id. This mechanical
+        # stop notice contains no user/document/tool body dependencies.
+        return [], event is not None and bool(_event_payload(event).get("control_id"))
     if kind == "session-kernel-context":
         # Complete inventory is separate from the live leaf-authority readers.
         origin = await load_context_message_origin(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)

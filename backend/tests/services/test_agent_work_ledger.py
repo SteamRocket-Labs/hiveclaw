@@ -382,3 +382,65 @@ async def test_latest_session_work_ledger_uses_session_ledger_when_active_task_h
     assert view["task_type"] == "session_work_ledger"
     assert view["session_id"] == str(session_id)
     assert [item["title"] for item in view["todo_items"]] == ["Live session todo"]
+
+
+@pytest.mark.parametrize(
+    "status,successor,fresh",
+    [
+        ("killed", False, False),
+        ("killed", True, False),
+        ("killed", True, True),
+        ("failed", True, False),
+    ],
+)
+async def test_session_ledger_preserves_recorded_work_after_stop(
+    tmp_path,
+    monkeypatch,
+    status,
+    successor,
+    fresh,
+):
+    from datetime import datetime, timedelta, timezone
+    from app.services import agent_work_ledger as module
+
+    agent_id, session_id = uuid4(), uuid4()
+    start = datetime.now(timezone.utc)
+    stop = start + timedelta(seconds=1)
+    previous = SimpleNamespace(
+        id=uuid4(),
+        task_type="web_chat_turn",
+        status=status,
+        created_at=start,
+        completed_at=stop,
+        metadata_json={"cancel_state": "cancelled"} if status == "killed" else {},
+    )
+    tasks = [previous]
+    if successor:
+        tasks.append(
+            SimpleNamespace(
+                id=uuid4(), task_type="web_chat_turn", status="running", created_at=stop + timedelta(seconds=1)
+            )
+        )
+
+    class DB:
+        async def execute(self, _statement):
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: tasks))
+
+    monkeypatch.setattr(module, "_now_iso", lambda: start.isoformat())
+    module.upsert_agent_work_ledger_todo(
+        agent_id=agent_id, session_id=session_id, title="Previous work", data_root=tmp_path
+    )
+    if fresh:
+        monkeypatch.setattr(module, "_now_iso", lambda: (stop + timedelta(seconds=2)).isoformat())
+        module.upsert_agent_work_ledger_todo(
+            agent_id=agent_id, session_id=session_id, title="New work", data_root=tmp_path
+        )
+    path = module._ledger_path(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    before = path.read_bytes()
+    view = await module.read_latest_session_work_ledger_view(
+        db=DB(), agent_id=agent_id, session_id=session_id, data_root=tmp_path
+    )
+    assert view is not None
+    assert [item["title"] for item in view["todo_items"]] == ["Previous work", *(["New work"] if fresh else [])]
+    assert view["counts"]["todos_total"] == 1 + int(fresh)
+    assert path.read_bytes() == before

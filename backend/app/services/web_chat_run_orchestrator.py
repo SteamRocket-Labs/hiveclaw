@@ -302,6 +302,8 @@ async def _load_web_chat_context(state: _WebChatRunState) -> None:
 
 def _replace_latest_user_prompt(conversation: list[dict[str, Any]], prompt: str) -> None:
     for message in reversed(conversation):
+        if str(message.get("source_ref", "")).startswith("session-run-cancelled:"):
+            continue
         if message.get("role") == "user":
             message["content"] = prompt
             return

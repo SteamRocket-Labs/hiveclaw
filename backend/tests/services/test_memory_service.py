@@ -149,7 +149,7 @@ def _clean_breaker():
     memory_service._summary_breaker.clear()
 
 
-async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool):
+async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool, messages=None, summary_inputs=None):
     """Run maybe_compress_messages with a stubbed summary LLM.
 
     Test Double rationale: summary model resolution (DB) and the LLM call are
@@ -166,6 +166,8 @@ async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool)
 
     async def fake_llm_summarize(_messages, _model_config, **_kwargs):
         llm_calls.append(1)
+        if summary_inputs is not None:
+            summary_inputs.append(_messages)
         if fail:
             raise RuntimeError("llm down")
         return "fine summary"
@@ -175,7 +177,7 @@ async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool)
     monkeypatch.setattr(summarizer_mod, "_llm_summarize", fake_llm_summarize)
 
     return await memory_service.maybe_compress_messages(
-        _breaker_test_messages(),
+        _breaker_test_messages() if messages is None else messages,
         "openai",
         "m",
         1000,  # max_input_tokens_override → tiny window, forces compression
@@ -251,24 +253,76 @@ async def test_summary_breaker_opens_after_consecutive_failures(monkeypatch, cap
 
 
 @pytest.mark.asyncio
-async def test_compressed_summary_wrapper_aligns_cc(monkeypatch, _clean_breaker):
-    """P3-2 (docs/compaction-cc-alignment.md): the post-compaction wrapper carries
-    CC's resume-directly directive (auto-compaction is implicit — the user must not
-    perceive a break) and a system-injected recovery pointer (never LLM-written)."""
+@pytest.mark.parametrize("stopped", [True, False])
+async def test_auto_compaction_returns_context_without_reopening_stopped_work(monkeypatch, _clean_breaker, stopped):
+    """Auto-compaction returns to its caller without directing stopped work to resume."""
     tenant_id = uuid4()
     llm_calls: list = []
 
-    result = await _compress_once(monkeypatch, tenant_id, llm_calls, fail=False)
+    messages = _breaker_test_messages()
+    stop = {
+        "role": "user",
+        "content": "[Request interrupted by user; its plan and todos are stopped. Resume only if asked.]",
+        "source_ref": f"session-run-cancelled:{uuid4()}",
+    }
+    if stopped:
+        messages.insert(1, stop)
+    result = await _compress_once(monkeypatch, tenant_id, llm_calls, fail=False, messages=messages)
+    assert result[-10:] == messages[-10:]
+    if stopped:
+        # Round 3: compaction no longer pins the stop line; the summary carries it.
+        assert stop not in result
 
     wrapper = result[0]
     assert wrapper["role"] == "system"
     content = wrapper["content"]
     assert content.startswith("[Previous conversation summary]")  # stable marker
     assert "fine summary" in content  # the LLM summary body
-    assert "Resume directly" in content
-    assert "do not acknowledge the summary" in content
+    assert (
+        "Continue the current request directly; do not acknowledge or recap this summary, "
+        "and do not ask the user about it."
+    ) in content
+    assert "A request the user interrupted stays stopped unless the user asks to resume it." in content
+    assert "Resume directly" not in content
+    assert "Pick up the last task" not in content
+    assert "Continue the conversation from where it left off" not in content
     assert "memory/t0/sessions/<session_id>/segments/<segment_id>/source.md" in content
     assert "logs/" not in content  # Native session readers cannot authorize legacy log names.
+
+
+@pytest.mark.asyncio
+async def test_mid_run_compaction_summarizes_later_request_without_pinning_earlier_stop(monkeypatch, _clean_breaker):
+    stop = {
+        "role": "user",
+        "content": "[Request interrupted by user; its plan and todos are stopped. Resume only if asked.]",
+        "source_ref": f"session-run-cancelled:{uuid4()}",
+    }
+    messages = [
+        {"role": "user", "content": "A " + "a" * 200},
+        {"role": "assistant", "content": "A partial " + "a" * 200},
+        stop,
+        {"role": "user", "content": "C (current request) " + "c" * 200},
+        *[{"role": "assistant", "content": f"C step {i} " + "c" * 200} for i in range(12)],
+    ]
+    summarized = []
+    result = await _compress_once(monkeypatch, uuid4(), [], fail=False, messages=messages, summary_inputs=summarized)
+    assert summarized == [messages[:6]]  # A, partial, STOP, C, C steps 0-1.
+    # Round 3: compaction no longer pins the stop line; the summary carries it.
+    assert result[1:] == messages[6:]
+    assert stop not in result
+
+
+def test_summary_prompt_records_interruption_without_reopening_stopped_tasks():
+    from app.services.conversation_summarizer import _SUMMARIZE_SYSTEM_PROMPT
+
+    rule = (
+        'A user message that starts with "[Request interrupted by user" stops the request before it: '
+        'record that request under Primary Request and Intent as stopped by the user, and keep it and its plan '
+        'and todos out of Pending Tasks, Current Work and Next Step unless a later user message asks to resume it.'
+    )
+    summary_format = _SUMMARIZE_SYSTEM_PROMPT.split("<summary_format>", 1)[1].split("</summary_format>", 1)[0]
+    assert summary_format.splitlines()[-1] == rule
+    assert summary_format.splitlines()[-2].startswith("**Next Step:**")
 
 
 @pytest.mark.asyncio

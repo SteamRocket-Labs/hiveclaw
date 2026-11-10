@@ -1873,6 +1873,68 @@ async def test_active_compact_projection_replaces_prior_history_and_keeps_later_
 
 
 @pytest.mark.asyncio
+async def test_stop_line_is_never_the_latest_user_query():
+    from app.kernel.engine import _latest_user_query
+    from app.runtime.invoker import _last_user_query
+    from app.services.web_chat_run_orchestrator import _replace_latest_user_prompt
+
+    marker = {"role": "user", "content": "[Request interrupted by user]",
+        "source_ref": f"session-run-cancelled:{uuid4()}"}
+    assert _last_user_query([marker]) == ""
+    assert _latest_user_query([marker]) == ""
+    conversation = [{"role": "user", "content": "Original request"}, marker.copy()]
+    assert _last_user_query(conversation) == "Original request"
+    assert _latest_user_query(conversation) == "Original request"
+    member_quote = {"role": "user", "content": marker["content"], "source_ref": f"session-input:{uuid4()}"}
+    assert _latest_user_query([member_quote]) == marker["content"]
+    _replace_latest_user_prompt(conversation, "Current request")
+    assert conversation[0]["content"] == "Current request"
+    assert conversation[1] == marker
+    only_stop = [marker.copy()]
+    _replace_latest_user_prompt(only_stop, "New request")
+    assert only_stop == [marker, {"role": "user", "content": "New request"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["later_request", "stopped_only", "kept_stop", "member_quote"])
+async def test_compact_projection_uses_kept_source_refs_without_pinning_stops(case):
+    from app.services import web_chat_runtime as runtime
+
+    applied_at = datetime(2026, 6, 27, 12, 5, tzinfo=timezone.utc)
+    stop = {
+        "role": "user",
+        "content": "[Request interrupted by user; its plan and todos are stopped. Resume only if asked.]",
+        "source_ref": f"session-run-cancelled:{uuid4()}",
+    }
+    history = [
+        _history_msg(role="user", content="A"),
+        _history_msg(msg_id=stop["source_ref"], role="user", content=stop["content"]),
+    ]
+    replacement = [{"role": "system", "content": "Summary: A stopped by user.",
+        "source_ref": f"session-compaction:{uuid4()}"}]
+    if case == "later_request":
+        history.extend([
+            _history_msg(role="user", content="B"),
+            _history_msg(role="user", content="C"),
+            _history_msg(msg_id="session-model-result:c", role="assistant", content="C answer"),
+        ])
+        # keep_recent=1: C itself is summarized, and only its answer remains.
+        replacement.append({"role": "assistant", "content": "C answer", "source_ref": "session-model-result:c",
+            "reasoning_content": "C reasoning", "reasoning_signature": "C signature"})
+    elif case == "kept_stop":
+        replacement.append(stop.copy())
+    elif case == "member_quote":
+        quote_ref = f"session-input:{uuid4()}"
+        history.append(_history_msg(msg_id=quote_ref, role="user", content=stop["content"]))
+        replacement.append({**stop, "source_ref": quote_ref})
+    session = SimpleNamespace(transcript_metadata_json={"active_projection": {
+        "projection_reason": "compact", "applied_at": applied_at.isoformat(), "replacement_messages": replacement}})
+    projected = await runtime._apply_active_projection_to_history(_QueuedDB(), session, history)
+    # Round 3: compaction no longer pins the stop line; the summary carries it.
+    assert runtime.conversation_from_history_messages(projected) == replacement
+
+
+@pytest.mark.asyncio
 async def test_active_rewind_projection_excludes_selected_user_checkpoint_and_keeps_later_tail():
     import app.services.web_chat_runtime as runtime
 
@@ -2039,6 +2101,21 @@ def test_preserve_plan_mode_for_blocking_clarification_reply():
 
     assert context.plan_mode.active is True
     assert context.metadata["plan_mode"]["active"] is True
+
+
+def test_member_stop_ends_previous_plan_clarification():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import PlanModeState, SessionContext
+
+    context = SessionContext(session_id="session-1", source="web_chat", channel="web")
+    context.plan_mode = PlanModeState(active=True, original_request="draft a plan")
+    context.metadata["plan_mode"] = context.plan_mode.to_metadata()
+    runtime._clear_stale_plan_mode_for_new_turn(context, plan_mode_requested=False, history_messages=[
+        SimpleNamespace(role="assistant", content='{"status":"awaiting_user_clarification","blocking":true}'),
+        SimpleNamespace(id="session-run-cancelled:stop-event", role="user", content="Request interrupted by user"),
+    ])
+    assert context.plan_mode.active is False
+    assert "plan_mode" not in context.metadata
 
 
 def test_interactive_pause_summary_accepts_structured_tool_payloads():

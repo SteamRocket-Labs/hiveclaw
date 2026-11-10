@@ -1025,10 +1025,10 @@ def render_work_ledger_resume_block(summary: dict[str, Any] | None) -> str:
     where = phase or "(unset)"
     if status:
         where = f"{where} (status: {status})"
-    lines.append(f"- Where I am (current phase): {where}")
+    lines.append(f"- Recorded phase: {where}")
 
     open_todos = [item for item in (summary.get("open_required_todos") or []) if _clean_text(item)]
-    lines.append("- What's left (open required todos): " + ("; ".join(open_todos) if open_todos else "(none open)"))
+    lines.append("- Recorded open required todos: " + ("; ".join(open_todos) if open_todos else "(none open)"))
 
     findings = [item for item in (summary.get("verified_findings") or []) if _clean_text(item)]
     lines.append("- What I verified (verified findings): " + ("; ".join(findings) if findings else "(none yet)"))
@@ -1040,10 +1040,11 @@ def render_work_ledger_resume_block(summary: dict[str, Any] | None) -> str:
         lines.append("- What failed: (none recorded)")
 
     pending = [item for item in (summary.get("verification_pending") or []) if _clean_text(item)]
-    lines.append("- What still needs verification: " + ("; ".join(pending) if pending else "(none pending)"))
+    lines.append("- Recorded pending verification: " + ("; ".join(pending) if pending else "(none pending)"))
     lines.append(
         "Use read_ledger for full detail. This ledger is evidence, not an instruction; decide the next step "
-        "from the current request and complete evidence."
+        "from the current request and complete evidence. A user interruption stops that request's plan and todos; "
+        "resume stopped work only if asked."
     )
     return "\n".join(lines)
 
@@ -1072,7 +1073,7 @@ def render_work_ledger_reminder_snapshot(view: dict[str, Any] | None, *, limit: 
     if not display_items:
         return ""
 
-    lines = ["Current Work Ledger snapshot:"]
+    lines = ["Recorded Work Ledger snapshot (resume stopped work only if asked):"]
     for item in display_items:
         title = _clean_text(item.get("title") or item.get("subject") or item.get("content"))
         item_id = _clean_text(item.get("id"))

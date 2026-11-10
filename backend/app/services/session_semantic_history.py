@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import json
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -33,6 +34,7 @@ from app.services.session_user_checkpoint import (
 
 
 _BRANCH_PREFIX_SOURCE = "conversation_branch_prefix"
+_USER_STOP_MARKER = "[Request interrupted by user; its plan and todos are stopped. Resume only if asked.]"
 
 
 class SessionSemanticHistoryUnavailable(RuntimeError):
@@ -359,6 +361,46 @@ def _user_messages(
             )
         )
     return messages
+
+
+def _cancelled_run_messages(
+    views: list[_EventView], *, current_run_id: uuid.UUID | None,
+) -> tuple[list[SessionSemanticMessage], list[tuple[int, int]], dict[str, int]]:
+    by_run, by_old_run, by_input = defaultdict(lambda: defaultdict(list)), defaultdict(set), defaultdict(list)
+    for view in views:
+        source = view.source
+        by_run[_source_scope_run_id(source)][source.item_kind, source.lifecycle].append(view)
+        by_input[_source_input_id(source)].append(view)
+        if source.item_kind == "turn_replacement":
+            by_old_run[_uuid_or_none(_event_payload(source).get("old_run_id"))].add(_source_input_id(source))
+    queued_starts = {f"session-input:{input_id}": candidate.sequence
+        for input_id, events in by_input.items()
+        if any(is_human_input_checkpoint(event.source)
+            and _event_payload(event.source).get("intent") == "queue_next_turn" for event in events)
+        for candidate in events if candidate.source.item_kind == "run" and candidate.source.lifecycle == "queued"}
+    messages, stop_windows = [], []
+    for run_id, events in by_run.items():
+        if run_id is None or run_id == current_run_id:
+            continue
+        view = next((candidate for candidate in events["run", "cancelled"]
+            if _event_payload(candidate.source).get("control_id")), None)
+        if view is None:
+            continue
+        control_id = _event_payload(view.source)["control_id"]
+        stop = next((candidate for candidate in events["run", "cancelling"]
+            if _event_payload(candidate.source).get("control_id") == control_id), view)
+        point = max([stop, *events["result_commit", "round_committed"]], key=lambda candidate: candidate.sequence)
+        start = min([stop.sequence, *(candidate.sequence for candidate in events["control_input", "accepted"]
+            if _event_payload(candidate.source).get("control_id") == control_id),
+            *(candidate.sequence for input_id in by_old_run[run_id] for candidate in by_input[input_id]
+                if is_human_input_checkpoint(candidate.source))])
+        stop_windows.append((start, point.sequence))
+        messages.append(SessionSemanticMessage(
+            id=f"session-run-cancelled:{view.source.id}", role="user", content=_USER_STOP_MARKER,
+            created_at=point.created_at, sequence_start=point.sequence, sequence_end=point.sequence,
+            group_id=f"run-stop:{run_id}", source_event_ids=(view.target_event_id,),
+        ))
+    return messages, stop_windows, queued_starts
 
 
 async def _committed_round_messages(
@@ -791,14 +833,23 @@ async def load_session_semantic_history(
             evidence_refs=("chat_transcript_events", "session_model_results", "session_tool_invocations"),
         ) from exc
 
-    messages = [*users, *rounds, *legacy, *remote]
-    messages.sort(
-        key=lambda message: (
-            message.sequence_start,
-            0 if message.role == "user" else (1 if message.role == "assistant" else 2),
-            message.id,
-        )
-    )
+    cancelled, stop_windows, queued_starts = _cancelled_run_messages(views, current_run_id=current_run_id)
+    messages = [*users, *rounds, *legacy, *remote, *cancelled]
+
+    def history_order(message):
+        sequence = message.sequence_start
+        if message.id.startswith("session-input:"):
+            # A round can finish committing during cancellation. Later inputs
+            # follow both that round and the stop, retaining admission order.
+            # A pre-click queue belongs to its successor, whose run/queued
+            # event links the input to the run that consumed it.
+            admitted = max(sequence, queued_starts.get(message.id, sequence))
+            sequence = max([sequence, *(end for start, end in stop_windows if admitted >= start)])
+        rank = 2 if message.id.startswith("session-run-cancelled:") else (
+            3 if message.id.startswith("session-input:") else (0 if message.role == "assistant" else 1))
+        return sequence, rank, message.sequence_start, message.id
+
+    messages.sort(key=history_order)
     reader_run = reader_run_id or current_run_id
     if reader_run is not None:
         session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id,

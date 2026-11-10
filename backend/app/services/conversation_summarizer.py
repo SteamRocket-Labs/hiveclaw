@@ -164,6 +164,7 @@ After </analysis>, produce the summary in <summary> tags. Use EXACTLY these
 **Pending Tasks:** [incomplete items + where work left off — include direct quotes from recent messages]
 **Current Work:** [what was actively being done when compression triggered — include file names and code snippets where applicable]
 **Next Step:** [the next step DIRECTLY in line with the user's most recent explicit request and the task in progress when compression triggered. Include a verbatim quote from the most recent conversation showing exactly where work left off, so there is no drift in task interpretation. If the last task concluded, use "(none)" — do NOT start tangential requests or already-completed old requests without confirming with the user first]
+A user message that starts with "[Request interrupted by user" stops the request before it: record that request under Primary Request and Intent as stopped by the user, and keep it and its plan and todos out of Pending Tasks, Current Work and Next Step unless a later user message asks to resume it.
 </summary_format>
 
 <good_summary_example>

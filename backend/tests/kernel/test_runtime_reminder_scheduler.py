@@ -169,7 +169,7 @@ def test_ledger_reminder_is_gentle_and_includes_current_snapshot():
     def _snapshot() -> str:
         nonlocal snapshot_calls
         snapshot_calls += 1
-        return "Current Work Ledger snapshot:\n- #todo-1 [in_progress] Collect Q3 revenue figures"
+        return "Recorded Work Ledger snapshot:\n- #todo-1 [in_progress] Collect Q3 revenue figures"
 
     fired: dict[int, list[str]] = {}
     for i in range(11):
@@ -185,7 +185,7 @@ def test_ledger_reminder_is_gentle_and_includes_current_snapshot():
     assert "gentle reminder" in lowered
     assert "ignore it if it does not apply" in lowered
     assert "do not mention this reminder to the user" in lowered
-    assert "Current Work Ledger snapshot" in text
+    assert "Recorded Work Ledger snapshot" in text
     assert "#todo-1 [in_progress] Collect Q3 revenue figures" in text
 
 
@@ -562,7 +562,7 @@ async def test_kernel_ledger_reminder_reads_persisted_session_snapshot(tmp_path,
         m.content or ""
         for call in client.calls
         for m in call["messages"]
-        if m.role == "system" and "Current Work Ledger snapshot" in (m.content or "")
+        if m.role == "system" and "Recorded Work Ledger snapshot" in (m.content or "")
     ]
     assert reminder_messages, "ledger reminder never carried the persisted snapshot"
     assert any("[in_progress] Collect Q3 revenue figures" in text for text in reminder_messages)

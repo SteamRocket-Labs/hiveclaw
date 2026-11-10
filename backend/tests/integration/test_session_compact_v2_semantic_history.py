@@ -52,13 +52,14 @@ def _round_scope(session_id, turn_id, run_id, round_id) -> dict[str, str]:
 
 
 class TurnSeed:
-    def __init__(self, seed, turn_id, run_id, round_id, result_id):
+    def __init__(self, seed, turn_id, run_id, round_id, result_id, input_id):
         agent_id, session_id, tenant_id, user_id = seed
         self.agent_id, self.session_id, self.tenant_id, self.user_id = agent_id, session_id, tenant_id, user_id
         self.turn_id = turn_id
         self.run_id = run_id
         self.round_id = round_id
         self.result_id = result_id
+        self.input_id = input_id
 
 
 async def _seed(owner_sessionmaker) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
@@ -275,7 +276,7 @@ async def _seed_completed_v2_turn(
             materialize_chat_message=False,
         )
         await db.commit()
-        return TurnSeed(seed, turn_id, run_id, round_id, result_id)
+        return TurnSeed(seed, turn_id, run_id, round_id, result_id, input_id)
 
 
 async def _run_compact(owner_sessionmaker, seed, monkeypatch, captured_messages, *, arguments=None):
@@ -310,7 +311,7 @@ async def test_compact_zero_copy_v2_round_resolves_reply_and_excludes_debug_rows
     owner_sessionmaker, monkeypatch
 ) -> None:
     seed = await _seed(owner_sessionmaker)
-    await _seed_completed_v2_turn(owner_sessionmaker, seed, streamed=False)
+    turn = await _seed_completed_v2_turn(owner_sessionmaker, seed, streamed=False)
 
     captured: list[list[dict[str, str]]] = []
     result = await _run_compact(owner_sessionmaker, seed, monkeypatch, captured, arguments={"keep_recent": 1})
@@ -318,12 +319,14 @@ async def test_compact_zero_copy_v2_round_resolves_reply_and_excludes_debug_rows
     assert result["action"] == "compacted_context_installed", result
     assert captured == [
         [
-            {"role": "user", "content": "current amount is 13"},
-            {"role": "assistant", "content": ASSISTANT_TEXT},
+            {"role": "user", "content": "current amount is 13", "source_ref": f"session-input:{turn.input_id}"},
+            {"role": "assistant", "content": ASSISTANT_TEXT, "source_ref": f"session-model-result:{turn.result_id}"},
         ]
     ]
     replacement = result["debug_payload"]["replacement_messages"]
-    assert replacement[-1] == {"role": "assistant", "content": ASSISTANT_TEXT}
+    assert replacement[-1] == {"role": "assistant", "content": ASSISTANT_TEXT,
+        "source_ref": f"session-model-result:{turn.result_id}"}
+    assert replacement[0]["source_ref"].startswith("session-compaction:")
     receipt = result["debug_payload"]["semantic_history_receipt"]
     assert receipt["status"] == "complete"
     assert receipt["coverage"]["committed_provider_messages"] == 1
@@ -333,14 +336,15 @@ async def test_compact_streamed_plus_terminal_round_emits_single_assistant_messa
     owner_sessionmaker, monkeypatch
 ) -> None:
     seed = await _seed(owner_sessionmaker)
-    await _seed_completed_v2_turn(owner_sessionmaker, seed, streamed=True)
+    turn = await _seed_completed_v2_turn(owner_sessionmaker, seed, streamed=True)
 
     captured: list[list[dict[str, str]]] = []
     result = await _run_compact(owner_sessionmaker, seed, monkeypatch, captured, arguments={"keep_recent": 1})
 
     assert result["action"] == "compacted_context_installed", result
     assistant_entries = [m for m in captured[0] if m["role"] == "assistant"]
-    assert assistant_entries == [{"role": "assistant", "content": ASSISTANT_TEXT}]
+    assert assistant_entries == [{"role": "assistant", "content": ASSISTANT_TEXT,
+        "source_ref": f"session-model-result:{turn.result_id}"}]
     receipt = result["debug_payload"]["semantic_history_receipt"]
     assert receipt["coverage"]["committed_provider_messages"] == 1
 
@@ -354,7 +358,7 @@ async def test_compact_excludes_next_turn_input_until_its_round_is_applied(
     from app.services.session_v2_persistence import accept_human_input, resolve_session_mutation_authority
 
     seed = await _seed(owner_sessionmaker)
-    await _seed_completed_v2_turn(owner_sessionmaker, seed, streamed=False)
+    turn = await _seed_completed_v2_turn(owner_sessionmaker, seed, streamed=False)
     agent_id, session_id, _tenant_id, user_id = seed
     input_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
@@ -388,8 +392,8 @@ async def test_compact_excludes_next_turn_input_until_its_round_is_applied(
     assert result["ok"] is True
     assert captured == [
         [
-            {"role": "user", "content": "current amount is 13"},
-            {"role": "assistant", "content": ASSISTANT_TEXT},
+            {"role": "user", "content": "current amount is 13", "source_ref": f"session-input:{turn.input_id}"},
+            {"role": "assistant", "content": ASSISTANT_TEXT, "source_ref": f"session-model-result:{turn.result_id}"},
         ]
     ]
     async with owner_sessionmaker() as db:
@@ -556,9 +560,10 @@ async def test_compact_tool_pair_survives_summary_and_projection_consumption(
     captured = []
     result = await _run_compact(owner_sessionmaker, seed, monkeypatch, captured, arguments={"keep_recent": keep_recent})
     assert result["ok"] is True
-    assert captured == [expected]
+    projected = [{**item, "source_ref": str(index)} for index, item in enumerate(expected)]
+    assert captured == [projected]
     async with owner_sessionmaker() as db:
         session = await db.get(ChatSession, seed[1])
         consumed = await _apply_active_projection_to_history(db, session, [])
     assert consumed[0]["role"] == "system"
-    assert consumed[1:] == (expected[1:] if keep_recent == 2 else [])
+    assert consumed[1:] == (projected[1:] if keep_recent == 2 else [])

@@ -2218,6 +2218,11 @@ def _normalize_projection_message(raw: Any) -> dict[str, Any] | None:
     if role not in {"system", "user", "assistant", "tool"} or (content is None and not tool_calls):
         return None
     normalized = {"role": role, "content": str(content) if content is not None else None}
+    if isinstance(raw.get("source_ref"), str):
+        normalized["source_ref"] = raw["source_ref"]
+    for key in ("reasoning_content", "reasoning_signature"):
+        if raw.get(key) is not None:
+            normalized[key] = raw[key]
     if tool_calls:
         normalized["tool_calls"] = tool_calls
     if role == "tool" and raw.get("tool_call_id"):
@@ -5365,6 +5370,8 @@ def _clear_interactive_plan_mode(runtime_session_context: Any | None) -> None:
 
 def _history_waits_for_blocking_clarification(history_messages: list[Any] | tuple[Any, ...] | None) -> bool:
     for msg in reversed(history_messages or []):
+        if str(getattr(msg, "id", "")).startswith("session-run-cancelled:"):
+            return False
         if getattr(msg, "role", None) != "assistant":
             continue
         content = getattr(msg, "content", None)

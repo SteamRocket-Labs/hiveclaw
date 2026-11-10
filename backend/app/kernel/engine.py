@@ -626,6 +626,8 @@ def _bind_recovery_attachment_source(agent_id, session, result, content):
 
 def _latest_user_query(messages: list[dict[str, Any]] | None) -> str:
     for message in reversed(messages or []):
+        if str(message.get("source_ref", "")).startswith("session-run-cancelled:"):
+            continue
         if message.get("role") == "user" and isinstance(message.get("content"), str):
             return message["content"]
     return ""

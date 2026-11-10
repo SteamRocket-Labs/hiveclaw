@@ -5723,7 +5723,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert await validate_runtime_result_sources(db, consumer, result_object)
             if public_directory_case:
                 from app.models.invocation_span import InvocationSpan
-                from app.services.employee_creation_sources import _owned_context_source
+                from app.services.agent_directory_sources import owned_directory_source
                 from app.services.runtime_result_sources import (
                     load_canonical_result_sources,
                     validate_runtime_result_sources,
@@ -5744,7 +5744,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert any(
                     entry["section"] == "public_agents" and entry["id"] == str(peer_id) for entry in proof["inventory"]
                 )
-                assert await _owned_context_source(
+                assert await owned_directory_source(
                     db,
                     dependency=child_directory,
                     agent_id=receiver,
@@ -5752,7 +5752,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     session_id=UUID(request.session_id),
                     user_id=seed["user_id"],
                 )
-                assert not await _owned_context_source(
+                assert not await owned_directory_source(
                     db,
                     dependency=child_directory,
                     agent_id=receiver,

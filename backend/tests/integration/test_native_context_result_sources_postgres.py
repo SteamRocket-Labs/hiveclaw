@@ -94,8 +94,8 @@ async def test_directory_observation_preserves_bytes_and_rechecks_authority(
     from app.services.agent_directory_sources import (
         directory_page_sources,
         observe_directory,
+        owned_directory_source,
     )
-    from app.services.employee_creation_sources import _owned_context_source
     from app.services.content_input_receipts import (
         ContentInputReceiptError,
         _validate_input_dependencies,
@@ -184,7 +184,7 @@ async def test_directory_observation_preserves_bytes_and_rechecks_authority(
         ]
         assert all(retained) and "Observed colleague" in content
         await validate_runtime_input_dependencies(db, request, [source])
-        assert await _owned_context_source(
+        assert await owned_directory_source(
             db,
             dependency=source,
             agent_id=s["agent_id"],

@@ -346,3 +346,16 @@ async def directory_page_sources(db, *, agent_id, invocation, content, sources):
     except (KeyError, ValueError, TypeError) as exc:
         raise _error("content_source_changed") from exc
     return sources
+
+
+async def owned_directory_source(db, *, dependency, agent_id, tenant_id, session_id, user_id):
+    """Publish owned context with tenant-public peers; retain private group boundaries."""
+    row, proof, _user = await _load(db, tenant_id=tenant_id, dependency=dependency)
+    return (
+        row.user_id is not None
+        and row.agent_id == agent_id
+        and row.session_id == str(session_id)
+        and row.user_id == user_id
+        and proof["agent_owner_id"] == str(user_id)
+        and all(entry.get("section") in {"same_owner_agents", "public_agents"} for entry in proof["inventory"])
+    )

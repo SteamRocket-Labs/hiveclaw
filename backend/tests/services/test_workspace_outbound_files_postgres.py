@@ -28,7 +28,10 @@ async def outbound_files(owner_sessionmaker, monkeypatch, tmp_path):
     own, foreign = "workspace/mine/own.png", "workspace/foreign.png"
     root.mkdir()
     own_bytes = b"Requester-created image bytes"
-    assert "Written" in workspace._write_file(root, own, own_bytes.decode())
+    result = workspace._write_file(root, own, own_bytes.decode())
+    # R11g: write_file returns a member receipt; model-visible text is unchanged
+    assert "Written to" in result.model_visible_text
+    assert str(result) == "已写入文件「own.png」。"
     (root / foreign).write_bytes(b"Other member's private bytes")
     outside = tmp_path / "outside.png"
     outside.write_bytes(b"Outside bytes")

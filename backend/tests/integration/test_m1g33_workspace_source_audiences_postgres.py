@@ -66,7 +66,7 @@ async def test_later_verified_write_does_not_rebase_or_taint_the_selected_old_so
 
 
 @pytest.mark.parametrize("change", ["version", "bytes", "quarantine", "deleted", "cycle"])
-async def test_invalid_source_blocks_outward_use_but_keeps_owned_derived_copy_readable(
+async def test_invalid_source_blocks_outward_use_and_run_reads_but_owner_keeps_the_copy(
     workspace_source, owner_sessionmaker, app_user_sessionmaker, change,
 ):
     s = workspace_source
@@ -91,7 +91,20 @@ async def test_invalid_source_blocks_outward_use_but_keeps_owned_derived_copy_re
         with pytest.raises(ContentInputReceiptError) as error:
             await validate_runtime_input_dependencies(db, s.request, [dependency])
         assert error.value.status_code == (503 if change == "cycle" else 403)
-    assert s.body in await _read(s.n, "read_file", s.derived)
+    # R10a read-time ruling: an invalid source never reaches the model; the owner's browser still opens the working copy
+    denied = await _read(s.n, "read_file", s.derived)
+    reason_code = {
+        "version": "content_source_changed",
+        "bytes": "content_source_changed",
+        "quarantine": "content_source_access_denied",
+        "deleted": "content_source_access_denied",
+        "cycle": "content_source_unavailable",
+    }[change]
+    assert s.body not in denied, denied
+    assert f'"reason_code": "{reason_code}"' in denied, denied
+    browser = await s.n.client.get(f"/agents/{s.n.agent}/files/content", params={"path": s.derived})
+    assert browser.status_code == 200, browser.text
+    assert browser.json()["content"] == s.body
 
 
 async def test_transitive_grant_revocation_is_live_and_browser_admin_does_not_authorize_native(

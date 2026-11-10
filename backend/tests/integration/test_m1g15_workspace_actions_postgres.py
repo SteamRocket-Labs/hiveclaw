@@ -103,7 +103,10 @@ async def test_exact_effect_grants_preserve_only_their_declared_actions(
     if actions == ["write"]:
         assert "auth_or_permission" in str(read_file(root, {"path": path}, authority_scope=scope))
         result = write_file(root, {"path": path, "content": "Explicitly authorized write"}, authority_scope=scope)
-        assert "Written" in result and target.read_text() == "Explicitly authorized write"
+        # R11g: write_file returns a member receipt; model-visible text is unchanged
+        assert "Written to" in result.model_visible_text
+        assert str(result) == "已写入文件「report.txt」。"
+        assert target.read_text() == "Explicitly authorized write"
 
 
 @pytest.mark.parametrize("state", ["expired", "revoked", "deny"])

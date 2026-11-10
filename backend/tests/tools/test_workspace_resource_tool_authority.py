@@ -167,7 +167,10 @@ def test_workspace_alias_guard_preserves_normal_files_and_skill_aliases(tmp_path
     skill.write_text("Independent skill content")
     (tmp_path / "skills/current.md").symlink_to(skill)
     assert "Independent skill content" in str(_read_file(tmp_path, "skills/current.md", authority_scope=_scope()))
-    assert "Written" in _write_file(tmp_path, "workspace/mine/report.md", "Owned content", authority_scope=_scope())
+    result = _write_file(tmp_path, "workspace/mine/report.md", "Owned content", authority_scope=_scope())
+    # R11g: write_file returns a member receipt; model-visible text is unchanged
+    assert "Written to" in result.model_visible_text
+    assert str(result) == "已写入文件「report.md」。"
     assert "Owned content" in str(_read_file(tmp_path, "workspace/mine/report.md", authority_scope=_scope()))
     recovery = tmp_path / "runtime_artifacts/recovery_manifest.json"
     recovery.parent.mkdir()
@@ -376,7 +379,8 @@ def test_workspace_write_allows_new_unclaimed_resource_for_current_scope(tmp_pat
         authority_scope=scope,
     )
 
-    assert "Written" in result
+    assert "Written to" in result.model_visible_text
+    assert str(result) == "已写入文件「new-report.md」。"
     assert (tmp_path / "workspace" / "current-session" / "new-report.md").read_text() == "new owned output"
 
 

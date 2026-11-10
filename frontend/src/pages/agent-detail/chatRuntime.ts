@@ -79,6 +79,8 @@ export interface AgentChatMessage {
   threadItem?: ThreadItem;
   /** Session V2 canonical item. Present only for the canonical event-store projection. */
   sessionItem?: SessionItemV2;
+  /** Original process items behind a canonical zero-copy final. */
+  runSourceMessages?: AgentChatMessage[];
   eventTitle?: string;
   eventStatus?: string;
   eventToolName?: string;

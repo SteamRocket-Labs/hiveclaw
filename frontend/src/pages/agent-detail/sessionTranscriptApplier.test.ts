@@ -281,6 +281,31 @@ function makeApplierHarness(messageStore?: SessionMessageStore) {
 }
 
 describe('session transcript applier real consumption path (Codex REQUEST_CHANGES #3)', () => {
+  it('keeps the terminal block identical through late live updates and fresh hydration (R11d)', () => {
+    const harness = makeApplierHarness();
+    const events = [canonicalInputEvent(1, 'Write the report.'), canonicalRunLifecycleEvent(2, 'queued'),
+      canonicalAssistantEvent(3, 'assistant_text', 'delta', 'turn-1', 'run-1', 'work-item',
+        { content: 'Preparing the report.' }), canonicalRunLifecycleEvent(4, 'cancelled')];
+    events.forEach(event => harness.applyEvent(event));
+    const build = (messages: AgentChatMessage[]) => buildThreadTimeline({ messages, activeSession: { id: 'session-1' },
+      runtimePhase: 'cancelled', isWaiting: false, isStreaming: false });
+    const block = (messages: AgentChatMessage[]) => {
+      const cell = build(messages).cells.find(cell => cell.kind === 'active_run');
+      return cell?.kind === 'active_run' ? cell.timeline : undefined;
+    };
+    const before = block(harness.messages());
+    expect(before?.steps).toHaveLength(1);
+    const late = [compatibilityCarrier(5, 'tool_group_activation', { metadata: { status: 'info' } }),
+      canonicalAssistantEvent(6, 'assistant_text', 'completed', 'turn-1', 'run-1', 'work-item',
+        { content: 'Late text after stop.' })];
+    late.forEach(event => harness.applyEvent(event));
+    const live = block(harness.messages());
+    expect(live).toEqual(before);
+    expect(block(hydrateSessionTranscriptEvents([...events, ...late]).messages)).toEqual(before);
+    expect(build(harness.messages()).cells.some(cell => cell.kind === 'boundary'
+      && cell.message.eventType === 'tool_group_activation')).toBe(true);
+  });
+
   it.each(['cancelled', 'completed'] as const)('keeps a settled %s phase when an approval result notice follows', (lifecycle) => {
     const harness = makeApplierHarness();
     harness.refs.replayStates[KEY]!.ui = uiForPhase('tool_running');

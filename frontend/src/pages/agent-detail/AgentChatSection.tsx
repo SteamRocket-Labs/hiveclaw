@@ -1004,7 +1004,6 @@ function AgentChatSection({
   const normalizedActiveRunStatus = String(activeRunStatus || '').trim().toLowerCase();
   const unfinishedRunStatus = ['created', 'pending', 'queued', 'running', 'started', 'in_progress', 'resuming',
     'waiting', 'waiting_user', 'suspended', 'resumable'].includes(normalizedActiveRunStatus);
-  const hasUnfinishedRun = Boolean(activeRunId?.trim()) && unfinishedRunStatus;
   const rewindUnavailableReason = isStreaming
     || isWaiting
     || unfinishedRunStatus
@@ -2245,7 +2244,7 @@ function AgentChatSection({
                 goalModeRequested={goalModeRequested}
                 uploading={uploading}
                 uploadProgress={uploadProgress}
-                running={isStreaming || isWaiting || hasUnfinishedRun}
+                running={['running', 'streaming', 'waiting'].includes(threadTimelineModel.header.status)}
                 onChange={onSetChatInput}
                 onPaste={onHandlePaste}
                 onSubmit={sendFromComposer}

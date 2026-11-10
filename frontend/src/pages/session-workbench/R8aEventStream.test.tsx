@@ -15,7 +15,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
 vi.mock('../agent-detail/ToolAccounts', () => ({ default: () => null }));
 afterEach(cleanup);
 const at = (m: number) => new Date(Date.UTC(2026, 10, 9, 0, m)).toISOString();
-const rounds = new Set(['assistant_commentary', 'assistant_text', 'tool_call', 'tool_result']);
+const rounds = new Set(['assistant_commentary', 'assistant_text', 'assistant_final', 'tool_call', 'tool_result']);
 function ev(sequence: number, kind: string, lifecycle: string, minute: number,
   payload: Record<string, unknown> = {}, runId: string | null = 'run-1', itemId?: string): SessionEventV2 {
   return { schema: 'hive.session_event', schema_version: 2, event_id: `e-${sequence}`, sequence,
@@ -128,17 +128,19 @@ it.each(['human_chat', 'trigger_run', 'delegation_run'])('does not apply the ses
   expect(model.header.status).toBe('running');
 });
 
-it('renders an ordinary bash tool call arriving after completion', () => {
+it.each([false, true])('renders a late tool call with consistent terminal controls (stale live flags: %s)', staleLiveFlags => {
   const messages = hydrateSessionTranscriptEvents([...completed,
-    ev(7, 'tool_call', 'completed', 7, { tool_name: 'bash', arguments: { command: 'pwd' } })] as any).messages;
+    ev(7, 'assistant_final', 'completed', 6, { content: 'Here is the report.' }),
+    ev(8, 'tool_call', 'completed', 7, { tool_name: 'bash', arguments: { command: 'pwd' } })] as any).messages;
   const ref = React.createRef<any>();
   const noop = vi.fn();
   const session = { id: 'session', user_id: 'member', title: 'Report' };
   const props = { agent: { id: 'bot', name: 'Assistant' }, currentUser: { id: 'member' }, isAdmin: false,
     sessions: [session], activeSession: session, allSessions: [], historyMsgs: [], chatMessages: messages,
-    chatMessagesSessionId: 'session', attachedFiles: [], wsConnected: true, isWaiting: false, isStreaming: false,
-    runtimePhase: 'idle', sessionsLoading: false, allSessionsLoading: false, uploading: false, uploadProgress: -1,
-    allUserFilter: '', chatInput: '', runtimeSummary: null, activeRunStatus: null,
+    chatMessagesSessionId: 'session', attachedFiles: [], wsConnected: true, isWaiting: staleLiveFlags, isStreaming: staleLiveFlags,
+    runtimePhase: staleLiveFlags ? 'thinking' : 'idle', activeRunId: 'run-1',
+    sessionsLoading: false, allSessionsLoading: false, uploading: false, uploadProgress: -1,
+    allUserFilter: '', chatInput: '', runtimeSummary: null, activeRunStatus: staleLiveFlags ? 'running' : null,
     historyContainerRef: ref, chatContainerRef: ref, chatEndRef: ref, fileInputRef: ref, chatInputRef: ref,
     uploadAbortRef: { current: null }, onLoadAllSessions: noop, onCreateNewSession: noop,
     onSetAllUserFilter: noop, onSelectSession: noop, onDeleteSession: noop, onHistoryScroll: noop,
@@ -148,4 +150,6 @@ it('renders an ordinary bash tool call arriving after completion', () => {
   render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <AgentChatSection {...props} /></QueryClientProvider></MemoryRouter>);
   expect(document.querySelector('[data-thread-item-type="tool_call"]')?.textContent).toContain('bash');
+  expect(screen.getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('done');
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
 });

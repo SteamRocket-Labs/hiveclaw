@@ -62,7 +62,7 @@ it('merges a duplicate live/transcript delivery by normalized run identity', () 
 
 // Literal creation sequence: HR tool card, first-task completion, then separate
 // integration turns with assistant_final/run.completed and no process steps.
-it.each(['done', 'idle'])('preserves completed follow-up disclosures after creation (%s)', phase => {
+it.each(['done', 'idle'])('omits empty completed follow-up disclosures after creation (%s)', phase => {
   const creation = { ...tool, id: 'create', toolName: 'create_employee_from_request',
     sessionItem: item('create', 'tool_call', 'run'), toolMeta: { kind: 'hr_preview', blueprintId: 'blueprint' } } as AgentChatMessage;
   const model = build([user, creation, answer, terminal('run'),
@@ -72,10 +72,9 @@ it.each(['done', 'idle'])('preserves completed follow-up disclosures after creat
     terminal('followup', 'completed', 'followup-turn'),
     { id: 'empty-final', role: 'assistant', content: '', sessionItem: item('empty-final', 'assistant_final', 'card-followup', 'completed', 'card-turn') },
     terminal('card-followup', 'completed', 'card-turn')], phase);
-  expect(runs(model).filter(cell => cell.timeline.status === 'done' && cell.timeline.steps.length === 0)
-    .map(cell => cell.runId)).toEqual(['followup', 'card-followup']);
+  expect(runs(model).filter(cell => cell.timeline.status === 'done' && cell.timeline.steps.length === 0)).toEqual([]);
   expect(model.cells.some(cell => cell.kind === 'assistant_final' && cell.id === 'followup-answer')).toBe(true);
-  expect(mount(model).getAllByTestId('run-disclosure-block')).toHaveLength(4);
+  expect(mount(model).getAllByTestId('run-disclosure-block')).toHaveLength(2);
 });
 
 it('keeps distinct runs distinct when they have member-visible work after an answer', () => {

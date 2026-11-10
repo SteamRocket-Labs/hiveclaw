@@ -2365,7 +2365,10 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
         && (!headerRunId || !cell.runId || isSameSessionRunId(cell.runId, headerRunId))
         && cell.timeline.status === 'done'
         ? { ...cell, timeline: { ...cell.timeline, status: 'running' as const }, phase: undefined }
-        : cell),
+        : cell)
+      .filter(cell => cell.kind !== 'active_run' || cell.timeline.status !== 'done'
+        || cell.timeline.steps.length > 0
+        || cell.sourceMessages.some(({ message }) => message.artifacts?.length)),
     header: {
       title: getSessionTitle(input.activeSession),
       status: headerStatus,

@@ -178,12 +178,20 @@ it('does not show completion before the reply has arrived', () => {
 });
 
 it('keeps the hello block after a reply and a fresh hydration', () => {
-  const events = [user(), event(2, 'run', 'queued', 0), final(3, 25), event(4, 'run', 'completed', 26)];
+  const events = [user(), event(2, 'run', 'queued', 0),
+    event(3, 'assistant_text', 'completed', 24, 'run-1', { content: 'Hello.' }, 'hello-text'),
+    event(4, 'assistant_final', 'completed', 25, 'run-1',
+      { source_blocks: [{ item_id: 'hello-text', block_index: 0, content_hash: 'hello-hash' }] }),
+    event(5, 'run', 'completed', 26)];
   for (const runtimePhase of ['done', 'idle']) {
     const model = build(events, { runtimePhase });
     expect(runs(model)).toHaveLength(1);
     expect(runs(model)[0].timeline).toMatchObject({ status: 'done', durationMs: 26_000 });
+    expect(runs(model)[0].timeline.steps.map(step => step.id)).toEqual(['hello-text']);
     expect(model.cells.filter(cell => cell.kind === 'assistant_final')).toHaveLength(1);
+    const view = render(<RunDisclosureBlock timeline={runs(model)[0].timeline} />);
+    expect(view.getAllByTestId('run-disclosure-block')).toHaveLength(1);
+    view.unmount();
   }
 });
 

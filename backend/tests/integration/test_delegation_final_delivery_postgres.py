@@ -24,12 +24,13 @@ from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanoni
 from tests.integration import test_m1g49_delegation_instruction_origin_postgres as native_cases
 
 
-@pytest.mark.usefixtures("migrated_pg_url")
-async def test_first_task_final_answer_and_pinned_file_survive_sealed_round_replay(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url
+async def _exercise_first_task_delivery(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url, *, configured_channel
 ):
     original_delegate = orchestrator._delegate
+    original_delegate_body = orchestrator._delegate_after_cycle_check
     observed = set()
+    configured_agents = set()
 
     async def inspect_delivery(request, result):
         tenant_id = request.tenant_id
@@ -147,9 +148,34 @@ async def test_first_task_final_answer_and_pinned_file_survive_sealed_round_repl
             assert hashlib.sha256(expected.encode()).hexdigest() == part["content_hash"]
             return final["event_id"]
 
+    async def configure_before_delegate(request, **kwargs):
+        if configured_channel and request.target.id not in configured_agents:
+            from app.models.channel_config import ChannelConfig
+
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, request.tenant_id)
+                db.add(ChannelConfig(tenant_id=request.tenant_id, agent_id=request.target.id,
+                    channel_type="feishu", is_configured=True))
+                await db.commit()
+            configured_agents.add(request.target.id)
+        return await original_delegate_body(request, **kwargs)
+
     async def observe_delegate(request):
         result = await original_delegate(request)
         if request.interaction_type == "delegation" and request.runtime_task_id and not result.failed:
+            if configured_channel:
+                from app.models.session_v2 import SessionModelResult
+
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, request.tenant_id)
+                    models = list(await db.scalars(select(SessionModelResult).where(
+                        SessionModelResult.run_id == UUID(str(request.runtime_task_id)))))
+                    assert models
+                    for model in models:
+                        assert {"source_kind": "agent_context_resource",
+                            "source_id": f"{request.target.id}\nchannels",
+                            "source_version": hashlib.sha256(b"feishu").hexdigest(),
+                        } in model.model_request_snapshot_json["input_bindings"]["dependencies"]
             first_event = await inspect_delivery(request, result)
             # Simulate recovery after final publication but before outer task
             # settlement. The sealed round must not make another provider call
@@ -160,6 +186,7 @@ async def test_first_task_final_answer_and_pinned_file_survive_sealed_round_repl
             observed.add(str(request.runtime_task_id))
         return result
 
+    monkeypatch.setattr(orchestrator, "_delegate_after_cycle_check", configure_before_delegate)
     monkeypatch.setattr(orchestrator, "_delegate", observe_delegate)
     await native_cases.test_governed_delegation_preserves_its_parent_instruction_origin(
         owner_sessionmaker=owner_sessionmaker,
@@ -170,3 +197,21 @@ async def test_first_task_final_answer_and_pinned_file_survive_sealed_round_repl
         migrated_pg_url=migrated_pg_url,
     )
     assert len(observed) == 1
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_first_task_final_answer_and_pinned_file_survive_sealed_round_replay(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url
+):
+    await _exercise_first_task_delivery(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url, configured_channel=False
+    )
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_configured_child_channel_allows_first_task_result_and_sealed_round_replay(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url
+):
+    await _exercise_first_task_delivery(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, migrated_pg_url, configured_channel=True
+    )

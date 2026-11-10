@@ -510,7 +510,8 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
         # Replacing the complete payload also removes arguments and private
         # reasoning; unaffected sibling calls keep their own paired results.
         wire_messages[index] = replacement
-        if replacement["role"] == "system":
+        # Dict messages may also be the caller's provider wire payload.
+        if replacement["role"] == "system" and not isinstance(messages[index], dict):
             replacement = {**replacement, "context_origin": ContextMessageOrigin.capture(
                 kind="source_withholding_notice", role="system", content=replacement["content"],
                 sources=(), unbound=())}

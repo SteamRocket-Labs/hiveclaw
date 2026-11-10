@@ -1,4 +1,4 @@
-"""Replacement constants survive dictionary compilation and inherited-source withholding."""
+"""Compiled dictionary inputs and inherited-source notices stay bound."""
 
 import json
 
@@ -31,12 +31,12 @@ async def test_platform_notice_is_bound_after_dictionary_or_inherited_source_rep
         messages[0]["context_origin"] = ContextMessageOrigin.capture(
             kind="dynamic_prompt", role="system", content=messages[0]["content"], sections=[{"name": "skill_catalog"}])
     wire = {"messages": [message_snapshot(message) for message in messages]}
+    messages = _dicts_to_llm_messages(messages)
     bindings = _bindings(len(messages), {0: [source]} if messages else {})
     bindings["dependencies"] = [source]
     _withhold_model_source(messages, wire, bindings, source, "content_source_changed")
     if variant != "inherited":
         assert bindings["messages"][0]["status"] == "withheld"
-        messages = _dicts_to_llm_messages(messages)
     expected = ("技能目录内容暂时无法核实，已略过；请使用其余内容继续，需要时向用户询问。" if variant == "skill_catalog"
         else "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。")
     assert messages[0].content == expected

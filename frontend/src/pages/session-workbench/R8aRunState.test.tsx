@@ -18,8 +18,8 @@ function event(sequence: number, kind: string, lifecycle: string, minutes: numbe
     schema: 'hive.session_event', schema_version: 2, event_id: `event-${sequence}`, sequence,
     tenant_id: 'tenant', item_id: kind === 'run' ? runId! : `item-${sequence}`, item_kind: kind,
     kind: `${kind}.${lifecycle}`, lifecycle, payload_schema: `hive.session.payload.${kind}.${lifecycle}.v2`,
-    scope: runId ? { level: ['assistant_commentary', 'assistant_text', 'tool_call', 'tool_result', 'event'].includes(kind) ? 'round' : 'run', session_id: 'session', thread_id: 'session',
-      turn_id: `turn-${runId}`, run_id: runId, ...(['assistant_commentary', 'assistant_text', 'tool_call', 'tool_result', 'event'].includes(kind) ? { round_id: `round-${runId}` } : {}) }
+    scope: runId ? { level: ['assistant_commentary', 'assistant_text', 'assistant_final', 'tool_call', 'tool_result', 'event'].includes(kind) ? 'round' : 'run', session_id: 'session', thread_id: 'session',
+      turn_id: `turn-${runId}`, run_id: runId, ...(['assistant_commentary', 'assistant_text', 'assistant_final', 'tool_call', 'tool_result', 'event'].includes(kind) ? { round_id: `round-${runId}` } : {}) }
       : { level: 'session', session_id: 'session', thread_id: 'session' },
     actor: { type: 'runtime' }, visibility: { audience: 'direct_user' }, payload,
     ...(runId ? { run_id: runId } : {}), occurred_at: at(minutes), persisted_at: at(minutes),
@@ -54,18 +54,19 @@ it('keeps manual session compaction outside the stopped run through transcript h
 });
 
 it('uses terminal timestamps rather than late step times or a stale running poll', () => {
-  const events = [user(1), work(2), event(3, 'run', 'completed', 5), work(4, 13)];
+  const events = [user(1), work(2), event(3, 'assistant_final', 'completed', 4, 'run-1', { content: 'The report is ready.' }),
+    event(4, 'run', 'completed', 5), work(5, 13)];
   const model = build(events, { activeRunId: 'run-1', activeRunStatus: 'running', runtimePhase: 'thinking', isWaiting: true });
   expect(runs(model)).toHaveLength(1);
   expect(runs(model)[0].timeline).toMatchObject({ status: 'done', completedAt: at(5), durationMs: 300_000 });
   expect(model.header.status).toBe('complete');
-  expect(runs(model)[0].timeline).toEqual(runs(build(events.slice(0, 3)))[0].timeline);
+  expect(runs(model)[0].timeline).toEqual(runs(build(events.slice(0, 4)))[0].timeline);
   expect(model.cells.some(cell => cell.kind === 'boundary' && cell.message.content === 'Preparing the report.')).toBe(true);
   const delivery = { id: 'late-file', role: 'tool_call' as const, content: '', toolName: 'write_file',
     toolStatus: 'done' as const, eventRuntimeTaskId: 'run-1', timestamp: at(14),
     // Real compatibility deliveries retain their transcript sequence. F1
     // orders terminal boundaries by that sequence, never by wall time.
-    threadItem: normalizeThreadItemPayload({ id: 'late-file', sequence: 5, eventType: 'tool_call',
+    threadItem: normalizeThreadItemPayload({ id: 'late-file', sequence: 6, eventType: 'tool_call',
       tool_name: 'write_file', runtime_task_id: 'run-1', created_at: at(14) })!,
     artifacts: [{ id: 'report', name: 'report.md', path: 'workspace/report.md' }] };
   const withDelivery = build(events, { messages: [...messages(events), delivery] });

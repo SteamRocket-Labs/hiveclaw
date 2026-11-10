@@ -386,6 +386,11 @@ function projectCanonicalItem(
       timestamp: item.occurredAt,
       artifacts: extractArtifactParts(item.payload),
       sessionItem: item,
+      runSourceMessages: [...new Set((item.source_blocks || []).map(source => source.item_id))]
+        .map(id => store.items[id]?.atRunTerminal ?? store.items[id])
+        .filter((source): source is SessionItemV2 => Boolean(source && source.kind === 'assistant_text'))
+        .map(source => projectCanonicalItem(source, store, toolResultByCall, questionsByInvocation))
+        .filter((message): message is AgentChatMessage => message !== null),
     };
   }
   if (ASSISTANT_ITEM_KINDS.has(item.kind)) {
@@ -525,11 +530,20 @@ function projectCanonicalItem(
  * They are never reduced from the raw event a second time.
  */
 export function projectSessionEventStoreToMessages(store: SessionEventStore): AgentChatMessage[] {
-  const terminalFinalSources = new Set(
-    Object.values(store.items)
-      .filter((item) => item.kind === 'assistant_final' && item.terminal)
-      .flatMap((item) => (item.source_blocks || []).map((source) => source.item_id)),
-  );
+  // A terminal run's process is projected as of that boundary. The store
+  // still consumes later updates; they cannot rewrite its finished block.
+  const items = Object.values(store.items).map(item => item.atRunTerminal ?? item);
+  const terminalFinalSources = new Set(items.filter(item => item.kind === 'assistant_final' && item.terminal)
+    .flatMap(item => (item.source_blocks || []).map(source => source.item_id)));
+  const terminalSequences = new Map<string, number>();
+  for (const item of items) {
+    if ((item.kind === 'run' || item.kind === 'runtime_failure') && item.terminal && 'run_id' in item.scope) {
+      terminalSequences.set(item.scope.run_id, Math.min(terminalSequences.get(item.scope.run_id) ?? Infinity,
+        item.terminalSequence ?? item.last_sequence));
+    }
+  }
+  const beforeRunTerminal = (item: SessionItemV2) => !('run_id' in item.scope)
+    || item.first_sequence <= (terminalSequences.get(item.scope.run_id) ?? Infinity);
   const toolCallIds = new Set(
     Object.values(store.items).filter((item) => item.kind === 'tool_call').map((item) => item.id),
   );
@@ -544,14 +558,15 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
     const source = item.invocationId || (typeof item.payload.legacy_event_id === 'string' ? `legacy:${item.payload.legacy_event_id}` : null);
     if (source && (questionsByInvocation.get(source)?.last_sequence || 0) < item.last_sequence) questionsByInvocation.set(source, item);
   });
-  Object.values(store.items).filter((item) => item.kind === 'tool_result').forEach((item) => {
+  items.filter((item) => item.kind === 'tool_result' && beforeRunTerminal(item)).forEach((item) => {
     if (item.parentItemId) toolResultByCall.set(item.parentItemId, item);
     if (item.invocationId) toolResultByCall.set(item.invocationId, item);
   });
-  return Object.values(store.items)
+  return items
     .sort((left, right) => left.first_sequence - right.first_sequence || left.id.localeCompare(right.id))
-    .filter((item) => !(item.kind === 'assistant_text' && terminalFinalSources.has(item.id)))
+    .filter(item => !(item.kind === 'assistant_text' && terminalFinalSources.has(item.id)))
     .filter((item) => item.kind !== 'tool_result'
+      || !beforeRunTerminal(item)
       || !((item.parentItemId && toolCallIds.has(item.parentItemId))
         || (item.invocationId && toolCallInvocations.has(item.invocationId))))
     .map((item) => projectCanonicalItem(item, store, toolResultByCall, questionsByInvocation))

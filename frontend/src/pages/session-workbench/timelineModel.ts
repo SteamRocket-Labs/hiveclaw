@@ -39,6 +39,7 @@ export type ThreadTimelineCell =
       /** Canonical run identity used to bind later run-terminal evidence. */
       runId?: string;
       timeline: RunTimelineSnapshot;
+      totalsUnknown?: boolean;
       sourceMessages: Array<{ message: AgentChatMessage; index: number }>;
       /** Live RuntimePhase for the open run (§3 seam 3); settled runs carry none. */
       phase?: string;
@@ -1616,6 +1617,14 @@ function buildRunCell(
   activeRun = false,
   turnStartedAt?: string,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> {
+  const sources = [...sourceMessages];
+  for (const message of answer?.message.runSourceMessages || []) {
+    const id = message.sessionItem?.id || message.id;
+    if (!sources.some(entry => (entry.message.sessionItem?.id || entry.message.id) === id)) {
+      sources.push({ message, index: answer!.index });
+    }
+  }
+  sourceMessages = sources;
   const canonicalAssistantTextPresent = sourceMessages.some(
     ({ message }) => message.sessionItem?.kind === 'assistant_text',
   );
@@ -1798,19 +1807,20 @@ function ensureOpenRunDisclosureContinuity(
   }
 }
 
-function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null): ThreadTimelineCell[] {
+function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
   const cells: ThreadTimelineCell[] = [];
   const pendingRun: Array<{ message: AgentChatMessage; index: number }> = [];
   const answeredRuns = new Map<string, Extract<ThreadTimelineCell, { kind: 'active_run' }>>();
   let runIndex = 0;
   let turnStartedAt: string | undefined;
   let turnHasRun = false;
+  let turnTerminalSequence: number | undefined;
   const terminalSequences = new Map<string, number>();
   for (const message of messages) {
     const runId = messageRunId(message);
     if (runId && isCanonicalRunTerminal(message)) {
       const item = message.sessionItem!;
-      terminalSequences.set(runId, item.terminalSequence ?? item.last_sequence);
+      terminalSequences.set(runId, Math.min(terminalSequences.get(runId) ?? Infinity, item.terminalSequence ?? item.last_sequence));
     }
   }
 
@@ -1850,6 +1860,9 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
   };
 
   messages.forEach((message, index) => {
+    const runId = messageRunId(message);
+    const pendingRunId = pendingRun.map(entry => messageRunId(entry.message)).find(Boolean);
+    if (runId && pendingRunId && !isSameSessionRunId(runId, pendingRunId)) flushRun();
     if (isRenderableAssistantAnswer(message)) {
       if (message.thinking?.trim()) {
         const answerMessage = assistantAnswerMessage(message);
@@ -1879,17 +1892,17 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
 
     if (isCanonicalSessionPresentationInternalItem(message)) return;
 
-    const runId = messageRunId(message);
     const sessionCompaction = !runId && message.threadItem?.metadata?.manual === true
       && (message.eventType === 'session_compact' || message.sessionItem?.kind === 'context_compaction');
     const firstSequence = message.sessionItem?.first_sequence ?? message.threadItem?.sequence;
-    const afterTerminal = runId && firstSequence != null
-      && firstSequence > (terminalSequences.get(runId) ?? Infinity);
+    const afterTerminal = firstSequence != null && firstSequence > (runId
+      ? terminalSequences.get(runId) ?? Infinity : turnTerminalSequence ?? Infinity);
     if (!sessionCompaction && !afterTerminal && (
       isStreamingAssistantMessage(message)
       || isCanonicalSessionProcessItem(message)
       || isDisclosureStepMessage(message)
     )) {
+      if (runId) turnTerminalSequence = terminalSequences.get(runId);
       if (!appendLateProcessToAnsweredRun(message, index)) pendingRun.push({ message, index });
       return;
     }
@@ -1899,6 +1912,7 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
       answeredRuns.clear();
       turnStartedAt = message.timestamp;
       turnHasRun = false;
+      turnTerminalSequence = undefined;
       cells.push({
         kind: 'user_turn',
         id: messageId(message, `user-${index}`),
@@ -1909,8 +1923,8 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
     }
 
     if (message.role === 'event' || afterTerminal) {
+      if (message.sessionItem?.kind === 'run' || isCanonicalRunTerminal(message)) turnTerminalSequence = terminalSequences.get(runId!);
       if (isCanonicalRunTerminal(message)
-        && (runtimePhase !== 'idle' || ['cancelled', 'killed', 'canceled', 'failed', 'needs_reconciliation'].includes(message.sessionItem!.lifecycle))
         && !cells.some(cell => cell.kind === 'active_run' && isSameSessionRunId(cell.runId, messageRunId(message)))) {
         cells.push(buildRunCell(runIndex++, [{ message, index }], undefined, false, turnStartedAt));
       }
@@ -2054,8 +2068,9 @@ const CANONICAL_RUN_TERMINAL_LIFECYCLES = new Set(['completed', 'failed', 'kille
 
 function isCanonicalRunTerminal(message: AgentChatMessage): boolean {
   const item = message.sessionItem;
-  return item?.kind === 'run' && CANONICAL_RUN_TERMINAL_LIFECYCLES.has(item.lifecycle)
-    && terminalRuntimePhaseForSessionEvent(item.kind, item.lifecycle, item.payload) !== 'awaiting_approval';
+  return (item?.kind === 'run' && CANONICAL_RUN_TERMINAL_LIFECYCLES.has(item.lifecycle)
+    && terminalRuntimePhaseForSessionEvent(item.kind, item.lifecycle, item.payload) !== 'awaiting_approval')
+    || (item?.kind === 'runtime_failure' && item.scope.level === 'run' && item.lifecycle === 'recorded');
 }
 
 function runAwaitsApproval(messages: AgentChatMessage[], runId?: string | null): boolean {
@@ -2072,27 +2087,36 @@ function applyCanonicalRunTerminalEvidence(
   runtimeTasks: Record<string, unknown>[] = [],
   sessionRunId?: string | null,
 ): ThreadTimelineCell[] {
-  const terminalByRunId = new Map<string, { startedAt: string; completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
+  const firstUserCell = cells.findIndex(cell => cell.kind === 'user_turn');
+  const firstSequence = messages.reduce((first, message) => Math.min(first,
+    message.sessionItem?.first_sequence ?? message.threadItem?.sequence ?? Infinity), Infinity);
+  const startsMidTurn = Number.isFinite(firstSequence) && firstSequence > 1;
+  const terminalByRunId = new Map<string, { sequence: number; startedAt: string; completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
   messages.forEach((message) => {
     const item = message.sessionItem;
-    const lifecycle = item?.kind === 'run' ? item.lifecycle : null;
+    const lifecycle = item?.kind === 'runtime_failure' ? 'failed' : item?.kind === 'run' ? item.lifecycle : null;
     if (!lifecycle || !isCanonicalRunTerminal(message)) return;
     const runId = messageRunId(message);
     const completedAtMs = Date.parse(item?.terminalAt || message.timestamp || item?.occurredAt || '');
     if (!runId || !Number.isFinite(completedAtMs)) return;
+    const sequence = item!.terminalSequence ?? item!.last_sequence;
+    if ((terminalByRunId.get(runId)?.sequence ?? Infinity) <= sequence) return;
     const status: RunTimelineSnapshot['status'] = lifecycle === 'failed' || lifecycle === 'needs_reconciliation'
       ? 'failed'
       : lifecycle === 'cancelled' || lifecycle === 'killed'
         ? 'cancelled'
         : 'done';
-    terminalByRunId.set(runId, { startedAt: item && item.first_sequence < (item.terminalSequence ?? item.last_sequence)
+    terminalByRunId.set(runId, { sequence, startedAt: item?.kind === 'run' && item.first_sequence < sequence
       ? item.occurredAt : '', completedAtMs, status });
   });
-  return cells.map((cell) => {
+  return cells.map((cell, index) => {
     if (cell.kind !== 'active_run') return cell;
     const runId = cell.runId || (cell.sourceMessages.length > 0 ? normalizeSessionRunId(sessionRunId) : null);
     if (!runId) return cell;
     const terminal = terminalByRunId.get(runId);
+    const nativeReplyPendingTerminal = !terminal && messages.some(message => message.sessionItem?.kind === 'assistant_final'
+      && message.sessionItem.completedEventId && message.sessionItem.payload?.legacy !== true
+      && isSameSessionRunId(messageRunId(message), runId));
     const awaitingApproval = runAwaitsApproval(messages, runId);
     const liveStatus = activeRunStatus && activeRunId && isSameSessionRunId(runId, activeRunId)
       ? runtimeStatusKey(activeRunStatus) : null;
@@ -2101,11 +2125,15 @@ function applyCanonicalRunTerminalEvidence(
     const canonicalStatus = terminal?.status || (awaitingApproval ? 'waiting' : taskStatus || liveStatus);
     const status = canonicalStatus ? (canonicalStatus === 'waiting' ? 'blocked' : canonicalStatus === 'stopped' ? 'cancelled'
       : canonicalStatus === 'done' ? 'done' : canonicalStatus) : terminal?.status;
+    if (nativeReplyPendingTerminal && (!canonicalStatus || canonicalStatus === 'done')) return { ...cell, runId,
+      timeline: { ...cell.timeline, status: 'running', completedAt: undefined, durationIsFinal: false } };
     if (!status) return cell;
-    // A run item is first emitted at queued. Its own clock remains authoritative
-    // when a paginated runtime-task row appears or disappears.
-    const startedAt = terminal ? terminal.startedAt || cell.timeline.startedAt
-      : readString(task ?? {}, ['started_at', 'created_at'], '') || cell.timeline.startedAt;
+    // Keep the accepted input / queued clock when a later task-row start
+    // appears. Terminal events alone freeze the completed run's clock.
+    const startedAt = [terminal?.startedAt, cell.timeline.startedAt,
+      ...(!terminal ? [readString(task ?? {}, ['started_at', 'created_at'], '')] : [])]
+      .filter((value): value is string => Boolean(value && Number.isFinite(Date.parse(value))))
+      .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
     if (status === 'running' || status === 'blocked') return { ...cell, runId, timeline: { ...cell.timeline, status, startedAt,
       ...(awaitingApproval ? { durationIsFinal: false, completedAt: undefined } : {}),
     } };
@@ -2116,16 +2144,23 @@ function applyCanonicalRunTerminalEvidence(
     const durationMs = Number.isFinite(startedAtMs) && Number.isFinite(completedAtMs)
       ? Math.max(completedAtMs - startedAtMs, 0)
       : cell.timeline.durationMs;
+    // A newest-first page may begin halfway through this finished run. Its
+    // totals are unknown until the existing backfill reaches the input; keep
+    // the block visible without publishing partial counts or a partial clock.
+    const totalsUnknown = startsMidTurn && (firstUserCell < 0 || index < firstUserCell);
     return {
       ...cell,
       runId,
       phase: undefined,
+      totalsUnknown,
       timeline: {
         ...cell.timeline,
         status,
-        startedAt,
+        startedAt: totalsUnknown ? undefined : startedAt,
         completedAt: Number.isFinite(completedAtMs) ? new Date(completedAtMs).toISOString() : undefined,
-        durationMs,
+        durationMs: totalsUnknown ? undefined : durationMs,
+        steps: totalsUnknown ? [] : cell.timeline.steps,
+        summary: totalsUnknown ? undefined : cell.timeline.summary,
         durationIsFinal: Boolean(terminal || Number.isFinite(taskCompletedAtMs)),
       },
     };
@@ -2230,7 +2265,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     && !input.messages.some(message => messageRunId(message))
     ? readString(input.activeSession ?? {}, ['runtime_task_id'], '') : null;
   const cells = applyCanonicalRunTerminalEvidence(
-    coalesceProcessCellsByUserTurn(buildCells(input.messages, input.runtimePhase), input.messages),
+    coalesceProcessCellsByUserTurn(buildCells(input.messages), input.messages),
     input.messages,
     null, null, input.sessionWorkbench?.runtime_tasks, sessionRunId,
   );
@@ -2258,19 +2293,23 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const activeRunStatus = CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     ? null : mainTurnActiveRunStatus(input, cells);
   const runtimePhaseValue = String(input.runtimePhase || '').trim();
-  const terminalDeliveryPending = Boolean(input.terminalTranscriptPending) && (runtimePhaseValue === 'done'
+  const terminalDeliveryPending = (Boolean(input.terminalTranscriptPending) || input.isWaiting || input.isStreaming) && (runtimePhaseValue === 'done'
     || runtimeStatusKey(currentRun?.lifecycle || activeRunStatus || '') === 'done')
     && latestUserMessageIndex(input.messages) >= 0
     && !latestTurnAnswered;
   const retainedProcessRun = keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending);
   const trailingUserTurn = cells.at(-1)?.kind === 'user_turn';
-  const interruptedUserTurn = trailingUserTurn && runtimePhaseValue === 'cancelled';
+  const latestUser = input.messages[latestUserMessageIndex(input.messages)];
+  const acceptedUserTurnPending = trailingUserTurn && (latestUser?.sendState === 'sending'
+    || (latestUser?.sessionItem?.kind === 'human_input' && latestUser.sessionItem.lifecycle === 'accepted'));
+  const interruptedUserTurn = trailingUserTurn && runtimePhaseValue === 'cancelled'
+    && !input.isWaiting && !input.isStreaming && !acceptedUserTurnPending;
   const unresolvedUserTurn = trailingUserTurn
     && input.messages[latestUserMessageIndex(input.messages)]?.sendState !== 'failed'
     && !input.isWaiting
     && !input.isStreaming
     && !activeRunStatus
-    && (!runtimePhaseValue || runtimePhaseValue === 'idle');
+    && (!runtimePhaseValue || runtimePhaseValue === 'idle' || acceptedUserTurnPending);
   const pendingRunCell = terminalAnswerOwnsActiveRun || CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     ? null
     : buildPendingRunCell({ ...input, activeRunId }, runtimePhaseValue === 'idle' && !input.activeRunId
@@ -2306,7 +2345,9 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const guidance = runLifecycle === 'needs_reconciliation'
     ? readString(asRecord(blockedRun?.user_blocker) ?? {}, ['next_action'], '') : '';
   const runDisplay = runLifecycle ? runtimeStatusKey(runLifecycle) : null;
-  const terminalStatePending = terminalDeliveryPending || (!runDisplay && !latestTurnAnswered
+  const replyAwaitingTerminal = cells.some(cell => cell.kind === 'active_run' && cell.timeline.status === 'running'
+    && cell.timeline.answerMessageId && !cell.timeline.durationIsFinal);
+  const terminalStatePending = terminalDeliveryPending || replyAwaitingTerminal || (!runDisplay && !latestTurnAnswered
     && input.messages[latestUserMessageIndex(input.messages)]?.sessionItem?.kind === 'human_input'
     && getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus, input.runtimePhase) === 'complete');
   const headerStatus = terminalStatePending ? 'running' : runDisplay
@@ -2328,6 +2369,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
         ? { ...cell, timeline: { ...cell.timeline, status: 'running' as const }, phase: undefined }
         : cell)
       .filter(cell => cell.kind !== 'active_run' || cell.timeline.status !== 'done'
+        || cell.totalsUnknown
         || cell.timeline.steps.length > 0
         || cell.sourceMessages.some(({ message }) => message.artifacts?.length)),
     header: {

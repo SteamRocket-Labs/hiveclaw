@@ -68,6 +68,8 @@ export type SessionItemV2 = {
   occurredAt: string;
   terminalAt?: string;
   terminalSequence?: number;
+  /** In-memory projection at the run terminal, before a late item update. */
+  atRunTerminal?: SessionItemV2;
   first_sequence: number;
   last_sequence: number;
   last_ordinal?: number;
@@ -313,6 +315,13 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
   } else {
     const sourceHeld = Boolean(sourceAccessHold(event.payload));
     const sourceWasHeld = Boolean(prior && sourceAccessHold(prior.payload));
+    const runId = 'run_id' in event.scope ? event.scope.run_id : undefined;
+    const run = runId ? store.items[runId] ?? Object.values(store.items)
+      .find(item => item.kind === 'run' && 'run_id' in item.scope && item.scope.run_id === runId) : undefined;
+    const runFailed = runId && !run?.terminal && Object.values(store.items).some(item => item.kind === 'runtime_failure'
+      && item.scope.level === 'run' && item.scope.run_id === runId && item.lifecycle === 'recorded');
+    const atRunTerminal = sourceHeld ? undefined : prior?.atRunTerminal
+      ?? (prior && (run?.terminal || runFailed) && event.item_kind !== 'run' ? prior : undefined);
     const contentDelta = sessionPayloadContent(event.payload);
     // Snapshots replace, deltas append. A HumanInput revision replaces too:
     // the revised lifecycle carries the item's full new content, not a suffix.
@@ -348,6 +357,7 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
         occurredAt: prior?.occurredAt ?? event.occurred_at,
         terminalAt: isTerminal(event) ? event.occurred_at : undefined,
         terminalSequence: isTerminal(event) ? event.sequence : undefined,
+        ...(atRunTerminal ? { atRunTerminal } : {}),
         first_sequence: prior?.first_sequence ?? event.sequence, last_sequence: event.sequence,
         last_ordinal: ordinal ?? prior?.last_ordinal,
         checkpointEventId:

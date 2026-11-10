@@ -1396,6 +1396,7 @@ function AgentChatSection({
       activeRunStatus: null,
       runtimePhase,
     });
+    const boundaryMessageIndexes = new Set(model.cells.filter(cell => cell.kind === 'boundary').map(cell => cell.index));
 
     model.cells.forEach((cell) => {
       if (cell.kind === 'user_turn') {
@@ -1420,7 +1421,7 @@ function AgentChatSection({
                 ? `${activeSessionId}:${cell.runId || cell.timeline.startedAt}`
                 : null}
             />
-            {cell.sourceMessages.map((entry) => (
+            {cell.sourceMessages.filter(entry => !boundaryMessageIndexes.has(entry.index)).map((entry) => (
               entry.message.role === 'event'
                 ? renderEventMessage(entry.message, entry.index)
                 : isInlineToolCardMessage(entry.message)
@@ -2245,7 +2246,8 @@ function AgentChatSection({
                 goalModeRequested={goalModeRequested}
                 uploading={uploading}
                 uploadProgress={uploadProgress}
-                running={isStreaming || isWaiting || hasUnfinishedRun}
+                running={(isStreaming || isWaiting || hasUnfinishedRun)
+                  && ['running', 'streaming', 'waiting'].includes(threadTimelineModel.header.status)}
                 onChange={onSetChatInput}
                 onPaste={onHandlePaste}
                 onSubmit={sendFromComposer}

@@ -24,6 +24,7 @@ async def test_member_request_only_claims_verified_connections_and_respects_answ
     app_work, owner_sessionmaker, monkeypatch, tmp_path, connection,
 ):
     import app.runtime.invoker as invoker
+    from app.services.pack_policy_service import get_agent_pack_policies
     from app.services.web_chat_runtime import execute_web_chat_run
 
     s = app_work
@@ -51,6 +52,7 @@ async def test_member_request_only_claims_verified_connections_and_respects_answ
         if connection == "none":
             assert await db.scalar(select(func.count()).select_from(ChannelConfig).where(
                 ChannelConfig.tenant_id == s["tenant_id"])) == 0
+            assert await get_agent_pack_policies(db, s["tenant_id"], s["agent_id"]) == {}
 
     client = ScriptedLLMClient([{"content": "我是你的助理，可以帮你分析问题和整理资料。"}])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
@@ -63,6 +65,15 @@ async def test_member_request_only_claims_verified_connections_and_respects_answ
     assert len(client.requests) == 1
     request = client.requests[0]
     prompt = "\n".join(str(message["content"]) for message in request["messages"] if message["role"] == "system")
+    # R9a round 3: the deferred index must agree with the connection facts too,
+    # even with default pack policy. Keep the tools discoverable, condition loading.
+    # The dynamic index travels in its own API message outside the frozen prefix.
+    compiled = "\n".join(str(message["content"]) for message in request["messages"])
+    deferred = compiled.split("## Available Deferred Tools\n", 1)[1].split("\n\n", 1)[0]
+    assert "send_feishu_message" in deferred
+    assert "send_email" in deferred
+    assert ("Feishu and email names in this list are not a connection; load them only after "
+        "Channel Integrations confirms the channel or mailbox access is verified for this member.") in deferred
     assert "Only claim a service capability after verifying its connection for the current tenant and requesting member" in prompt
     assert "tool schemas, deferred catalogs and examples are not connection evidence" in prompt
     assert "including exactly one sentence when asked" in prompt
@@ -100,15 +111,18 @@ async def test_member_request_only_claims_verified_connections_and_respects_answ
     assert "For administrator-requested installation or import" in core["tool_search"]
     assert "Never use installation to resolve a member's missing connection" in core["tool_search"]
     assert "Use an already-present, connected tool directly; do not offer configuration" in normalized
+    search_schema = next(tool["function"] for tool in request["tools"] if tool["function"]["name"] == "tool_search")
+    assert search_schema["parameters"]["properties"]["query"]["description"] == "Optional query like 'web research'"
 
 
 def _account_action(result, name, actions):
     row = next(line for line in result.splitlines() if line.startswith(f"- {name} | mcp_server_id:"))
-    if " | connect_if_account_needed: " in row:
-        return json.loads(row.split(" | connect_if_account_needed: ", 1)[1])
-    # Read round 1's emitted bytes too: its missing questions must reach the
-    # real runtime unchanged in the c08b93a5 red run, without test-side repair.
-    return next(item["connect_action"] for item in actions["account_required"] if item["name"] == name)
+    assert row.endswith(" | connect_if_account_needed"), row
+    action = actions["connect_if_account_needed"]
+    assert action["arguments"]["configuration"] == {"mcp_server_id": "<mcp_server_id from the company_applications row>"}
+    # Apply the template's instructed row-ID substitution, without repairing it.
+    action["arguments"]["configuration"]["mcp_server_id"] = row.split("mcp_server_id: ", 1)[1].split(" |", 1)[0]
+    return action
 
 
 @pytest.mark.parametrize("connection", ["absent", "registered", "connected"])
@@ -122,10 +136,10 @@ async def test_discovery_returns_connection_steps_and_preserves_connected_execut
     server_id, tool_id, calendar_id = uuid4(), uuid4(), uuid4()
     foreign = await _seed_run(owner_sessionmaker, tmp_path / "foreign")
     async with owner_sessionmaker() as db:
+        db.add(MCPServer(id=calendar_id, tenant_id=s["tenant_id"], name="Calendar", server_key="calendar",
+            server_url="https://calendar.test/sse", status="needs_auth"))
         if connection == "absent":
             db.add_all([
-                MCPServer(id=calendar_id, tenant_id=s["tenant_id"], name="Calendar", server_key="calendar",
-                    server_url="https://calendar.test/sse", status="needs_auth"),
                 MCPServer(tenant_id=s["tenant_id"], name="GitHub personal", server_key="personal",
                     owner_user_id=s["user_id"], server_url="https://personal.test/sse", status="needs_auth"),
                 MCPServer(tenant_id=foreign["tenant_id"], name="GitHub", server_key="github",
@@ -162,9 +176,13 @@ async def test_discovery_returns_connection_steps_and_preserves_connected_execut
         assert "import_mcp_server" not in result
         return
 
-    action = _account_action(result, "GitHub", actions)
-    assert action["tool"] == "ask_user_question"
-    assert action["arguments"]["configuration"] == {"mcp_server_id": str(server_id)}
+    # Round 2 required a complete connect call even on configured GitHub,
+    # encoding this defect. Only an unconfigured row may offer the shared call.
+    github = next(line for line in result.splitlines() if line.startswith("- GitHub | mcp_server_id:"))
+    if connection == "connected":
+        assert github == f"- GitHub | mcp_server_id: {server_id}"
+    assert f"- Calendar | mcp_server_id: {calendar_id} | connect_if_account_needed" in result.splitlines()
+    assert result.count('"tool": "ask_user_question"') == 1
     if connection == "registered":
         import app.runtime.invoker as invoker
         from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -173,7 +191,11 @@ async def test_discovery_returns_connection_steps_and_preserves_connected_execut
         from app.tools.handlers.plan_mode import ask_user_question
         from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
-        # Execute the emitted call verbatim, filling only its question text.
+        action = _account_action(result, "GitHub", actions)
+        assert action["tool"] == "ask_user_question"
+        assert action["arguments"]["configuration"] == {"mcp_server_id": str(server_id)}
+        # After substituting the row ID, execute the emitted call verbatim,
+        # filling only its question text.
         # Do not synthesize missing questions: that hid round 1's missing card.
         arguments = action["arguments"]
         if arguments.get("questions"):

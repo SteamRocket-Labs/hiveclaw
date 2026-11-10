@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Iterable
 
 
@@ -122,11 +121,9 @@ def render_tool_search_manifest_sections(manifest: dict[str, Any]) -> str:
             label = _as_text(row.get(label_key))
             detail = _as_text(row.get("description") or row.get("source") or row.get("activation"))
             if section_name == "company_applications":
-                action = {"tool": "ask_user_question", "arguments": {
-                    "questions": [{"question": "<Write a connection question in the member's language>", "options": []}],
-                    "configuration": {"mcp_server_id": row["mcp_server_id"]},
-                }}
-                detail = f"mcp_server_id: {row['mcp_server_id']} | connect_if_account_needed: {json.dumps(action)}"
+                detail = f"mcp_server_id: {row['mcp_server_id']}"
+                if row["auth_status"] != "configured":
+                    detail += " | connect_if_account_needed"
             suffix = f" | {detail}" if detail else ""
             lines.append(f"- {label}{suffix}")
     return "\n".join(lines)

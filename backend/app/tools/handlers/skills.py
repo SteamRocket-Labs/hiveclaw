@@ -344,7 +344,7 @@ async def reconcile_skill_candidate(agent_id: uuid.UUID, workspace: Path, argume
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Optional query like 'feishu', 'web research', or 'email'",
+                    "description": "Optional query like 'web research'",
                 },
             },
         },

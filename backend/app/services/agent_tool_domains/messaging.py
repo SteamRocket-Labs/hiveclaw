@@ -1838,7 +1838,7 @@ async def _delegate_to_local_agent_channel(
                     if message_status == "waiting_approval"
                     else (
                         "The result will be delivered automatically back into this source Agent session. "
-                        "Use check_async_task with message_id only as fallback status inspection. "
+                        "Do not poll to wait. Use check_async_task with message_id only when the member asks for a status check. "
                         "If the computer is offline, the request remains queued until Hive Connect reconnects."
                     )
                 ),

@@ -28,6 +28,18 @@ def test_system_prompt_includes_vendor_neutral_behavior_contract() -> None:
     assert "Karpathy" not in rendered
 
 
+def test_background_colleague_results_resume_without_waiting_mechanisms() -> None:
+    from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
+
+    for scope in ("conversation", "task", "heartbeat"):
+        prompt = " ".join(build_executing_actions_section(scope).split())
+        assert "Background colleague results return automatically and resume you to use the result." in prompt
+        assert "Do not poll, sleep, or set a trigger to wait for them." in prompt
+        assert "need a follow-up mechanism" not in prompt
+        assert "either a manual check or a timed trigger" not in prompt
+        assert "Never fire-and-forget" not in prompt
+
+
 def test_delegation_tool_descriptions_require_structured_briefs() -> None:
     from app.runtime.prompts.delegation import DELEGATION_BRIEF_CONTRACT
     from app.tools.handlers.communication import delegate_to_agent, send_message_to_agent
@@ -42,8 +54,12 @@ def test_delegation_tool_descriptions_require_structured_briefs() -> None:
     sync_description = send_message_to_agent.meta.description
     async_description = delegate_to_agent.meta.description
 
-    assert "short consults" in sync_description
-    assert "Do NOT use this for long-running delegated work" in sync_description
+    assert "colleague consults" in sync_description
+    assert "return immediately" in sync_description
+    assert "Member requests run in the background" in sync_description
+    assert "other runs get the reply inline" in sync_description
+    assert "Completion automatically returns to this conversation" in sync_description
+    assert "Do not sleep, poll, or resend to wait" in sync_description
     assert "task_delegate" not in sync_description
     assert "task_delegate" not in send_message_to_agent.meta.parameters["properties"]["msg_type"]["enum"]
     assert "task_delegate" not in send_message_to_agent.meta.parameters["properties"]["msg_type"]["description"]
@@ -51,7 +67,11 @@ def test_delegation_tool_descriptions_require_structured_briefs() -> None:
         async_description
     )
     assert "session_id/child_session_id" in async_description
-    assert "use `check_async_task` only as a fallback status inspection" in async_description
+    assert "Completion automatically returns to this conversation" in async_description
+    assert "Do not sleep, poll, or resend to wait" in async_description
+    for description in (sync_description, async_description):
+        assert "Start with the task, without a sender self-introduction. The recipient keeps its own display name and identity." in description
+    assert "Use delegate_to_agent for task delegation" not in send_message_to_agent.meta.parameters["properties"]["msg_type"]["description"]
     assert "Do not ask the worker to infer missing scope silently" in async_description
     assert "cross-workspace artifact contract" in async_description
     async_params = delegate_to_agent.meta.parameters["properties"]

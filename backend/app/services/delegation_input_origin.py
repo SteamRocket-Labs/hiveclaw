@@ -28,7 +28,7 @@ async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id, 
                 SessionToolInvocation.session_id == session_id,
                 SessionToolInvocation.run_id == run_id,
                 SessionToolInvocation.provider_tool_use_id == call_id,
-                SessionToolInvocation.tool_name == tool_name,
+                SessionToolInvocation.tool_name.in_((tool_name,) if isinstance(tool_name, str) else tool_name),
                 ChatSession.tenant_id == tenant_id,
                 ChatSession.agent_id == agent_id,
             )
@@ -282,6 +282,7 @@ async def capture_delegation_instruction_origin(context, arguments, *, recipient
                 session_id=session_id,
                 run_id=run_id,
                 call_id=context.tool_call_id,
+                tool_name=("delegate_to_agent", "send_message_to_agent"),
             )
             if parent is None:
                 return None
@@ -385,7 +386,7 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
         session_id=uuid.UUID(row.session_id),
         run_id=row.runtime_task_id,
         call_id=proof.get("call_id"),
-        tool_name="create_employee_from_request" if first_task else "delegate_to_agent",
+        tool_name="create_employee_from_request" if first_task else ("delegate_to_agent", "send_message_to_agent"),
     )
     if parent is None:
         return None
@@ -540,7 +541,7 @@ async def delegation_tool_result_bound(db, *, tenant_id, agent_id, invocation, c
         _delegation_request_hash,
     )
     from app.models.runtime_task import RuntimeTask
-    from app.services.a2a_outcome import queued_delegation_outcome
+    from app.services.a2a_outcome import LEGACY_QUEUED_DELEGATION_NEXT_ACTION, queued_delegation_outcome
 
     try:
         payload = json.loads(content)
@@ -619,6 +620,10 @@ async def delegation_tool_result_bound(db, *, tenant_id, agent_id, invocation, c
             child_session_id=task.child_session_id,
             arguments=invocation.effective_arguments_json or invocation.provider_arguments_json,
         )
-        return payload == expected.to_payload()
+        expected_payload = expected.to_payload()
+        if payload == expected_payload:
+            return True
+        expected_payload["next_action"] = LEGACY_QUEUED_DELEGATION_NEXT_ACTION
+        return payload == expected_payload
     except (AttributeError, KeyError, TypeError, ValueError):
         return False

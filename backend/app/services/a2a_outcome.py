@@ -8,6 +8,14 @@ from typing import Any, Literal
 
 A2AOperation = Literal["consult", "delegate", "notify"]
 
+QUEUED_DELEGATION_NEXT_ACTION = (
+    'The colleague is working in the background. Completion automatically returns to this conversation and resumes you to use the result. Tell the member in one line, then end the turn if no independent work remains. Do not sleep, poll, or resend to wait. Use send_agent_session_message only for additional instructions.'
+)
+# Only for verifying queued results stored before the background-completion guidance changed.
+LEGACY_QUEUED_DELEGATION_NEXT_ACTION = (
+    'Use send_agent_session_message with child_session_id to continue this delegated agent session; use check_async_task only for runtime status.'
+)
+
 
 def queued_delegation_outcome(*, handle, target_agent_id, child_session_id, arguments):
     """Render the native admission facts shared by the emitter and its receipt reader."""
@@ -20,7 +28,7 @@ def queued_delegation_outcome(*, handle, target_agent_id, child_session_id, argu
         'edit_mode': str(arguments.get('edit_mode') or '').strip() or None,
         'trace_id': handle.trace_id, 'receipt': getattr(handle, 'receipt', None),
         'continuation_tool': 'send_agent_session_message',
-        'next_action': 'Use send_agent_session_message with child_session_id to continue this delegated agent session; use check_async_task only for runtime status.',
+        'next_action': QUEUED_DELEGATION_NEXT_ACTION,
     })
 
 

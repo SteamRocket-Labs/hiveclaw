@@ -122,6 +122,8 @@ def render_tool_search_manifest_sections(manifest: dict[str, Any]) -> str:
             detail = _as_text(row.get("description") or row.get("source") or row.get("activation"))
             if section_name == "company_applications":
                 detail = f"mcp_server_id: {row['mcp_server_id']}"
+                if row["auth_status"] != "configured":
+                    detail += " | connect_if_account_needed"
             suffix = f" | {detail}" if detail else ""
             lines.append(f"- {label}{suffix}")
     return "\n".join(lines)

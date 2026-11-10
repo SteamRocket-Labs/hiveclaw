@@ -416,6 +416,8 @@ def _render_deferred_tool_index(deferred_candidates: list[Any], *, budget_chars:
     header = [
         "## Available Deferred Tools",
         "These tools are not loaded yet. To load exactly one schema, call `tool_search` with `select:<tool_name>`.",
+        "Feishu and email names in this list are not a connection; load them only after "
+        "Channel Integrations confirms the channel or mailbox access is verified for this member.",
     ]
     lines = list(header)
     metadata = [

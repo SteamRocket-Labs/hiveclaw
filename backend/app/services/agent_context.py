@@ -415,6 +415,8 @@ async def _load_configured_channel_types(
     try:
         from app.database import tenant_scoped_session
         from app.models.channel_config import ChannelConfig
+        from app.models.tenant_channel_config import TenantChannelConfig
+        from app.services.company_channel_identity import company_channel_ready
         from sqlalchemy import select as sa_select
 
         async with tenant_scoped_session(
@@ -431,12 +433,17 @@ async def _load_configured_channel_types(
                 )
                 .order_by(ChannelConfig.channel_type)
             )
-            values = result.scalars().all()
-            return tuple(
+            values = list(result.scalars().all())
+            company_channels = (await db.execute(sa_select(TenantChannelConfig).where(
+                TenantChannelConfig.tenant_id == tenant_id, TenantChannelConfig.is_active,
+            ))).scalars().all()
+            values.extend(config.channel_type for config in company_channels if config.is_configured and (
+                config.channel_type not in {"dingtalk", "wecom"} or company_channel_ready(config)))
+            return tuple(sorted({
                 str(getattr(value, "channel_type", value))
                 for value in values
                 if str(getattr(value, "channel_type", value)).strip()
-            )
+            }))
     except Exception as exc:
         logger.debug("Failed to query channel configs for agent {}: {}", agent_id, exc)
         return None
@@ -716,11 +723,15 @@ async def build_agent_context(
         context_parts.append("### Channel Integrations\n"
             "Channel configuration is temporarily unavailable. Retry read_context_resource with ref=channels "
             "before relying on configured integrations.")
-    elif channels_resource.content:
+    else:
+        channel_fact = (f"You have {channels_resource.content} channel(s) configured. "
+            if channels_resource.content else "Configured channels: none. ")
         context_parts.append(
             "### Channel Integrations\n"
-            f"You have {channels_resource.content} channel(s) configured. "
-            "Read the matching integration skill before using channel-specific tools."
+            + channel_fact +
+            "This configuration list does not establish mailbox or personal-account access for the requesting member. "
+            "A configured channel does not establish an authorized messaging target for this member. "
+            "Verify that access before claiming it. Read the matching integration skill before using channel-specific tools."
         )
 
     company_intro, company_name = await _load_company_intro(agent_id, tenant_id=_agent_tenant_id)
@@ -802,7 +813,7 @@ async def build_agent_context(
         source_refs.append({"source_kind": "agent_identity", "source_id": f"{agent_id}\nidentity",
             "source_version": canonical_content_hash(agent_identity_content(agent_name, role_description))})
         for resource in (soul_resource, channels_resource, company_resource, organization_resource, a2a_resource):
-            if resource.status == "ok" and resource.content.strip():
+            if resource.status == "ok" and (resource.content.strip() or resource.ref == "channels"):
                 if resource.source_refs:
                     source_refs.extend(dict(source) for source in resource.source_refs)
                 else:

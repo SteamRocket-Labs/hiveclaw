@@ -1807,8 +1807,8 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         tenant_id = await resolve_tenant_for_agent(resolved_agent_id)
         if tenant_id is not None:
             async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
-                company_applications = [{"name": name, "mcp_server_id": str(server_id)}
-                    for server_id, name in await db.execute(select(MCPServer.id, MCPServer.name).where(
+                company_applications = [{"name": name, "mcp_server_id": str(server_id), "auth_status": auth_status}
+                    for server_id, name, auth_status in await db.execute(select(MCPServer.id, MCPServer.name, MCPServer.auth_status).where(
                         MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id.is_(None)).order_by(MCPServer.name, MCPServer.id))]
     capture = getattr(authority_scope, "skill_inputs", None)
     if capture is not None:
@@ -1847,12 +1847,24 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         render_tool_search_manifest_sections(manifest),
     ]
     if company_applications is not None:
+        lines.extend(["Connection actions:", json.dumps({
+            "not_connected": {
+                "when": "The requested service is absent from company_applications.",
+                "connect_action": {"location": "company connections", "actor": "administrator"},
+            },
+            "connect_if_account_needed": {"tool": "ask_user_question", "arguments": {
+                "questions": [{"question": "<Write a connection question in the member's language>", "options": []}],
+                "configuration": {"mcp_server_id": "<mcp_server_id from the company_applications row>"},
+            }},
+        }, ensure_ascii=False)])
         lines.append(
             "company_applications is the complete list of company-registered apps, not a list of personal accounts. "
-            "If the requested app is absent, the company has not connected it: give a brief answer in the member's language "
-            "and ask an administrator to add it in company connections. Do not install, create, or connect anything. "
-            "If the app is registered but needs the member's account, use ask_user_question with configuration.mcp_server_id "
-            "from the matching entry to show the personal-account connection card; never ask for credentials in chat."
+            "If the requested app is absent, it is not connected: say so in one plain sentence in the member's language "
+            "and offer its connect_action. Do not probe browser sessions, email or importable integrations as workarounds. "
+            "Do not install or create a company connection. "
+            "Only for a row marked connect_if_account_needed, copy that call template, substituting configuration.mcp_server_id "
+            "with the row's mcp_server_id and replacing the question text with the member's language to show the existing connection card. "
+            "Registration alone does not mean the member is connected. Never ask for credentials in chat or name internal mechanisms to the member."
         )
     else:
         lines.append("Company application registration is unknown; do not claim that an application is unconnected.")

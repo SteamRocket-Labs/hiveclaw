@@ -686,7 +686,7 @@ async def _load_manifest(
 ) -> WorkspaceResourceManifest | None:
     from app.services.content_input_receipts import _preflight_inputs
 
-    rows = _preflight_inputs(db) if not for_update else None
+    rows = _preflight_inputs(db, authority=True) if not for_update else None
     key = ("manifest", agent_id, path)
     if rows is not None and key in rows:
         return rows[key]
@@ -721,7 +721,7 @@ async def _canonical_root_session(
         return None
     from app.services.content_input_receipts import _preflight_inputs
 
-    rows = _preflight_inputs(db)
+    rows = _preflight_inputs(db, authority=True)
     key = ("workspace_root", agent_id, user.id, resource_tenant_id, session_id)
     if rows is not None and key in rows:
         return rows[key]

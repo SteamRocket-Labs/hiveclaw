@@ -101,21 +101,22 @@ def observe_native_directory_read(tool_name, content, *, outcome):
 
 
 class _DisclosureSourceValidations:
-    def __init__(self, *, batch_inputs=False):
+    def __init__(self, *, batch_inputs=False, cache_authority=True):
         self.active = True
         self.batch_inputs = batch_inputs
+        self.cache_authority = cache_authority
         self.verified = {}
         self.actors = {}
         self.inputs = {}
 
 
 @contextmanager
-def group_source_read(*, batch_inputs=False):
+def group_source_read(*, batch_inputs=False, cache_authority=True):
     """Reuse successful exact source checks only inside one reader disclosure."""
-    scope = _DisclosureSourceValidations(batch_inputs=batch_inputs)
+    scope = _DisclosureSourceValidations(batch_inputs=batch_inputs, cache_authority=cache_authority)
     token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
-        yield
+        yield scope
     finally:
         scope.active = False
         scope.verified.clear()
@@ -131,9 +132,10 @@ class ContentInputReceiptError(ValueError):
         self.status_code = status_code
 
 
-def _preflight_inputs(db):
+def _preflight_inputs(db, *, authority=False):
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is not None and scope.active and scope.batch_inputs:
+    if (scope is not None and scope.active and scope.batch_inputs
+        and (not authority or scope.cache_authority)):
         return scope.inputs.setdefault(db.get_transaction(), {})
     return None
 
@@ -152,7 +154,7 @@ async def _input_row(db, model, source_id, *, populate_existing=True):
 async def _input_agent_access(db, user, agent_id):
     from app.core.permissions import check_agent_access
 
-    rows = _preflight_inputs(db)
+    rows = _preflight_inputs(db, authority=True)
     key = ("agent_access", id(user), agent_id)
     if rows is not None and key in rows:
         return rows[key][1]
@@ -393,6 +395,9 @@ async def _validate_input_dependencies(
             None if scope.batch_inputs else active_workspace_receipts,
             source_key,
         )
+        # Nested children of a top-level source are cached for the same reader
+        # within one round; every top-level model source is walked live.
+        # Nested group membership reflects its first walk, as on A2a's tool path.
         if (
             not scope.active
             or transaction is None
@@ -1471,7 +1476,7 @@ async def _authorize_session_input_source(
 ):
     from app.core.source_read_purpose import current_source_recipient
 
-    cached = _preflight_inputs(db)
+    cached = _preflight_inputs(db, authority=True)
     key = ("session_authority", tenant_id, session.id, id(user), id(runtime_request),
         delegated_user_command, current_source_recipient())
     if cached is not None and key in cached:
@@ -1665,7 +1670,7 @@ async def _runtime_input_actor(db, tenant_id, request):
     from app.core.source_read_purpose import current_source_recipient
 
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is None or not scope.active or not scope.batch_inputs:
+    if scope is None or not scope.active or not scope.batch_inputs or not scope.cache_authority:
         return await _resolve_runtime_input_actor(db, tenant_id, request)
     key = (db.get_transaction(), tenant_id, id(request), current_source_recipient())
     if key in scope.actors:
@@ -2191,7 +2196,7 @@ async def lock_workspace_receipt_write(db, tenant_id: uuid.UUID, agent_id: uuid.
 
 
 async def latest_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path: str):
-    rows = _preflight_inputs(db)
+    rows = _preflight_inputs(db, authority=True)
     key = ("latest", "workspace_artifact", workspace_artifact_ref(agent_id, path))
     if rows is not None and key in rows:
         return rows[key]

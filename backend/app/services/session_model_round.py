@@ -530,7 +530,8 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
     input_bindings, messages, wire_request):
     from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.runtime.context_candidates import ContextMessageOrigin
-    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies, group_source_read
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.services.delegation_context_sources import PERMISSION_INPUT_KEYS
     from app.services.shared_group_authority import validate_shared_group_model_inputs
     from app.services.trigger_read_sources import validate_native_trigger_model_sources
@@ -559,6 +560,10 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
         session_id=session_id, run_id=run_id, input_bindings={**input_bindings, "dependencies": []})
     from app.services.delegation_input_origin import delegated_instruction_memory_reader
 
+    memory_principal = (AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=task.root_user_id,
+        session_id=str(session_id), runtime_task_id=str(task.id), purpose="interactive_session") if task else None)
+    principals = {group_principal: group_principal} if group_principal is not None else {}
+    memory_principal = principals.setdefault(memory_principal, memory_principal)
     memory_readers = {}
     for entry in input_bindings["messages"]:
         if not any(ref["source_kind"] == "explicit_memory" for ref in entry.get("dependencies", [])):
@@ -566,42 +571,45 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
         reader = await delegated_instruction_memory_reader(db, task=task, agent_id=agent_id,
             session_id=session_id, source_ref=entry.get("source_ref", ""))
         if reader is not None:
-            memory_readers[entry["message_index"]] = reader
-    # Each dependency is checked once; an arbitrary retry cap must not turn the
-    # fourth unavailable item into a whole-turn failure.
-    for source in list(input_bindings["dependencies"]) or [None]:
-        if source is not None and source not in input_bindings["dependencies"]:
-            continue
-        dependencies = [source] if source is not None else []
-        try:
-            if group_principal is not None:
-                from app.services.content_input_receipts import _validate_input_dependencies, group_source_read
-
-                with group_source_read():
+            memory_readers[entry["message_index"]] = principals.setdefault(reader, reader)
+    # Reuse source walks and rows; resolve reader authority on each validation.
+    with group_source_read(batch_inputs=True, cache_authority=False) as scope:
+        # Each dependency is checked once; an arbitrary retry cap must not turn the
+        # fourth unavailable item into a whole-turn failure.
+        for source in list(input_bindings["dependencies"]) or [None]:
+            if source is not None and source not in input_bindings["dependencies"]:
+                continue
+            dependencies = [source] if source is not None else []
+            source_key = tuple(source[key] for key in ("source_kind", "source_id", "source_version")) if source else None
+            try:
+                if group_principal is not None:
+                    scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
                     await _validate_input_dependencies(db, tenant_id, dependencies, runtime_request=group_principal)
-            await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
-            if source is not None and source["source_kind"] == "explicit_memory" and memory_readers:
-                readers = {}
-                for entry in input_bindings["messages"]:
-                    if source in entry.get("dependencies", []):
-                        readers.setdefault(memory_readers.get(entry["message_index"]), []).append(entry["message_index"])
-                for reader, indexes in readers.items():
-                    try:
-                        await validate_memory_model_sources(db, task=task, agent_id=agent_id,
-                            session_id=session_id, dependencies=dependencies, principal=reader)
-                    except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
-                        _withhold_model_source(messages, wire_request, input_bindings, source, exc.code, indexes)
-            else:
-                await validate_memory_model_sources(db, task=task, agent_id=agent_id,
-                    session_id=session_id, dependencies=dependencies)
-        except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
-            if source is None or exc.code == "group_model_sources_unavailable":
-                raise
-            if group_principal is not None and not any(source in entry.get("dependencies", [])
-                for entry in input_bindings["messages"]):
-                raise ContentInputReceiptError("group_model_sources_unavailable",
-                    "这次对话暂时无法确认访问范围，请重试。", 503) from exc
-            _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
+                await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
+                if source is not None and source["source_kind"] == "explicit_memory" and memory_readers:
+                    readers = {}
+                    for entry in input_bindings["messages"]:
+                        if source in entry.get("dependencies", []):
+                            readers.setdefault(memory_readers.get(entry["message_index"], memory_principal), []).append(entry["message_index"])
+                    for reader, indexes in readers.items():
+                        try:
+                            scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
+                            await validate_memory_model_sources(db, task=task, agent_id=agent_id,
+                                session_id=session_id, dependencies=dependencies, principal=reader)
+                        except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
+                            _withhold_model_source(messages, wire_request, input_bindings, source, exc.code, indexes)
+                else:
+                    scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
+                    await validate_memory_model_sources(db, task=task, agent_id=agent_id,
+                        session_id=session_id, dependencies=dependencies, principal=memory_principal)
+            except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
+                if source is None or exc.code == "group_model_sources_unavailable":
+                    raise
+                if group_principal is not None and not any(source in entry.get("dependencies", [])
+                    for entry in input_bindings["messages"]):
+                    raise ContentInputReceiptError("group_model_sources_unavailable",
+                        "这次对话暂时无法确认访问范围，请重试。", 503) from exc
+                _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
 
     # Defer non-tool rows within a group, but never cross into the next group.
     wire_messages = wire_request["messages"]

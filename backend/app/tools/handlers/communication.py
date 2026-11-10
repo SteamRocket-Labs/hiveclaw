@@ -168,7 +168,11 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, executi
 
     if (
         _is_user_initiated_delegation(get_execution_identity())
-        # This marks the current chat entry, unlike a token that only marks delegation.
+        # Background only a member's own chat turn. Both checks are needed: the identity is a
+        # member's, and the current SessionContext source/channel is in the chat-surface set
+        # (runtime/session.py _INTERACTIVE_PLAN_CHAT_SURFACES, shared with Plan Mode guidance).
+        # Nested runs (delegated child, workflow node, consulted colleague, subagent) are
+        # agent/internal; adding those to that set would background their consults again.
         and getattr(execution_context, "plan_mode_interactive_available", False) is True
     ):
         return await delegate_to_agent(agent_id, arguments, execution_context=execution_context)

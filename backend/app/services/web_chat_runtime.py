@@ -5365,6 +5365,8 @@ def _clear_interactive_plan_mode(runtime_session_context: Any | None) -> None:
 
 def _history_waits_for_blocking_clarification(history_messages: list[Any] | tuple[Any, ...] | None) -> bool:
     for msg in reversed(history_messages or []):
+        if str(getattr(msg, "id", "")).startswith("session-run-cancelled:"):
+            return False
         if getattr(msg, "role", None) != "assistant":
             continue
         content = getattr(msg, "content", None)

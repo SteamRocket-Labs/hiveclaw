@@ -1468,11 +1468,27 @@ async def read_latest_session_work_ledger_view(
     ]
     active_task_ids = {id(task) for task in active_tasks}
     inactive_tasks = [task for task in tasks if id(task) not in active_task_ids]
+    stopped_at = max((task.completed_at for task in tasks
+        if task.status == "killed" and (task.metadata_json or {}).get("cancel_state") == "cancelled"
+        and task.completed_at is not None), default=None)
+    successor_after_stop = stopped_at is not None and any(
+        task.created_at is not None and task.created_at > stopped_at for task in tasks)
 
     def session_scoped_view(*, active_task: Any | None = None) -> dict[str, Any] | None:
         view = read_agent_work_ledger_view(agent_id=agent_id, session_id=session_key, data_root=data_root)
         if view is None:
             return None
+        if successor_after_stop:
+            # Keep the stopped turn's file intact. Only todos authored or
+            # updated after its stop can belong to the successor's task.
+            todos = [item for item in view["todo_items"]
+                if (updated := _parse_ledger_timestamp(item.get("updated_at"))) is not None and updated > stopped_at]
+            if not todos:
+                return None
+            view["todo_items"] = todos
+            view["counts"].update(todos_total=len(todos),
+                todos_complete=sum(item["status"] in COMPLETE_ITEM_STATUSES for item in todos),
+                todos_open=sum(item["required"] and item["status"] not in COMPLETE_ITEM_STATUSES for item in todos))
         view["session_id"] = session_key
         view["task_type"] = "session_work_ledger"
         if active_task is not None:

@@ -2041,6 +2041,21 @@ def test_preserve_plan_mode_for_blocking_clarification_reply():
     assert context.metadata["plan_mode"]["active"] is True
 
 
+def test_member_stop_ends_previous_plan_clarification():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import PlanModeState, SessionContext
+
+    context = SessionContext(session_id="session-1", source="web_chat", channel="web")
+    context.plan_mode = PlanModeState(active=True, original_request="draft a plan")
+    context.metadata["plan_mode"] = context.plan_mode.to_metadata()
+    runtime._clear_stale_plan_mode_for_new_turn(context, plan_mode_requested=False, history_messages=[
+        SimpleNamespace(role="assistant", content='{"status":"awaiting_user_clarification","blocking":true}'),
+        SimpleNamespace(id="session-run-cancelled:stop-event", role="user", content="Request interrupted by user"),
+    ])
+    assert context.plan_mode.active is False
+    assert "plan_mode" not in context.metadata
+
+
 def test_interactive_pause_summary_accepts_structured_tool_payloads():
     import app.services.web_chat_runtime as runtime
 

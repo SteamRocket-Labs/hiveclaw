@@ -166,7 +166,10 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, executi
     from app.agents.orchestrator import _is_user_initiated_delegation
     from app.core.execution_context import get_execution_identity
 
-    if _is_user_initiated_delegation(get_execution_identity()):
+    if (
+        _is_user_initiated_delegation(get_execution_identity())
+        and getattr(execution_context, "delegation_token", None) is None
+    ):
         return await delegate_to_agent(agent_id, arguments, execution_context=execution_context)
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result
     from app.services.agent_tools import _send_message_to_agent

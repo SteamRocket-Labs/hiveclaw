@@ -1182,9 +1182,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     if invocation.tool_name == "send_message_to_agent":
         try:
             outcome = json.loads(content)
-            queued_consult = isinstance(outcome, dict) and bool(
-                outcome.get("operation") == "delegate" or outcome.get("runtime_task_id") or outcome.get("task_id")
-            )
+            queued_consult = isinstance(outcome, dict) and outcome.get("operation") == "delegate"
         except ValueError:
             queued_consult = False
         if queued_consult:

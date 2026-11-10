@@ -388,6 +388,51 @@ async def test_unattended_consult_keeps_synchronous_reply_without_plan_required(
     assert await _child(owner_sessionmaker, seed) is None
 
 
+@pytest.mark.parametrize("entry", ["delegated-child", "workflow-node"])
+async def test_member_descendant_consult_returns_the_reply_inline(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, entry,
+):
+    from app.runtime.a2a_workflow import A2AWorkflowDefinition
+    from app.services import a2a_workflow_runtime
+    from app.services.workflow_launch import execute_claimed_workflow_run
+
+    seed, parent, child_client = await _setup(owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+        tmp_path, tool="send_message_to_agent")
+    if entry == "delegated-child":
+        await _execute(seed["run_id"], owner_sessionmaker, worker="r11c-consult-parent")
+        root_id = seed["run_id"]
+        parent.script.append({"content": RESULT})
+    else:
+        root_id = uuid4()
+        graph = A2AWorkflowDefinition.model_validate({
+            "name": "Colleague consultation",
+            "participants": {"worker": {"agent_id": str(seed["child_agent_id"])}},
+            "nodes": [{"id": "draft", "type": "agent_handoff_step", "agent_ref": "worker",
+                "task": "Consult My Assistant before drafting the report.",
+                "output_contract": {"artifacts": [{"name": "report", "path": "workspace/report.md"}]}}],
+        })
+        await a2a_workflow_runtime.start_run(tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+            requester_user_id=seed["user_id"], session_id=seed["session_id"], run_id=root_id,
+            definition=graph, args={}, permission_profile={"mode": "bypassPermissions"})
+        result = await execute_claimed_workflow_run(root_id, session_factory=owner_sessionmaker)
+        assert result["status"] == "pending", result
+        parent.script = [{"content": RESULT}]
+    child = await _child(owner_sessionmaker, {**seed, "run_id": root_id})
+    assert child is not None and child.root_user_id == seed["user_id"]
+    child_client.script = [_tool("send_message_to_agent", {"agent_name": "My Assistant",
+        "message": "请核实三点业务进展。", "msg_type": "consult"}), {"content": f"同事回复：{RESULT}"}]
+    child_client.release.set()
+    await _execute(child.id, owner_sessionmaker, worker="r11c-consult-child", delegation=True)
+    outcome = next(message["content"] for message in child_client.requests[1]["messages"]
+        if message["role"] == "tool")
+    assert "plan_required" not in outcome
+    assert RESULT in outcome, outcome
+    assert json.loads(outcome)["operation"] == "consult"
+    async with owner_sessionmaker() as db:
+        assert (await db.get(RuntimeTask, child.id)).status == "completed"
+        assert await db.scalar(select(RuntimeTask.id).where(RuntimeTask.root_runtime_task_id == child.id)) is None
+
+
 def test_completed_synchronous_consult_has_no_running_timeline_item():
     from app.services.web_chat_runtime import _runtime_action_event_from_tool_result
 
@@ -470,6 +515,70 @@ async def _stop_fixture(owner_sessionmaker, app_user_sessionmaker, monkeypatch, 
     event = asyncio.Event()
     monkeypatch.setitem(runtime._CANCEL_EVENTS, seed["run_id"].hex, event)
     return seed, child_id, published, delivered, logs, event
+
+
+async def test_group_member_stop_cancels_another_members_children_and_descendants(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    from app.api.chat_sessions import _get_run_session_and_agent
+    from app.models.channel_config import ChannelConfig
+    from app.models.chat_session import ChatSession
+    from app.models.security_audit import ResourcePermission
+    from app.models.user import User
+    from app.services.external_principal_service import bind_authenticated_self_channel_principal
+    from app.services.feishu_service import FeishuService
+    from app.services.web_chat_runtime import signal_web_chat_cancel
+
+    seed, child_id, published, _, _, event = await _stop_fixture(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    grandchild_id, unrelated_id = uuid4(), uuid4()
+
+    async def live_members(_self, *_args, **_kwargs):
+        return {"sender-a", "sender-b"}
+
+    monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", live_members)
+    async with owner_sessionmaker() as db:
+        member = User(id=uuid4(), tenant_id=seed["tenant_id"], username=f"group-{uuid4().hex}",
+            email=f"{uuid4().hex}@group.test", password_hash="x", display_name="Stopping Member")
+        config = ChannelConfig(id=uuid4(), tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+            channel_type="feishu", app_id="synthetic-group-app", app_secret="synthetic-group-secret",
+            is_configured=True)
+        db.add_all([member, config])
+        await db.flush()
+        grant = ResourcePermission(tenant_id=seed["tenant_id"], principal_type="user", principal_id=member.id,
+            resource_type="agent", resource_id=seed["agent_id"], actions=["read", "execute", "manage"], effect="allow")
+        db.add(grant)
+        await db.flush()
+        for subject, user_id in (("sender-a", seed["user_id"]), ("sender-b", member.id)):
+            await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
+                provider_subject_id=subject, user_id=user_id, actor_user_id=user_id)
+        grant.actions = ["read", "execute"]
+        session = await db.get(ChatSession, seed["session_id"])
+        session.user_id = session.external_principal_id = None
+        session.audience_kind, session.visibility_scope, session.source_channel = "group", "group", "feishu"
+        session.group_installation_ref, session.group_subject_id = str(config.id), "oc_shared"
+        for task_id, root_id in ((grandchild_id, child_id), (unrelated_id, uuid4())):
+            db.add(RuntimeTask(id=task_id, tenant_id=seed["tenant_id"], task_type="delegation", status="pending",
+                parent_agent_id=seed["child_agent_id"], child_agent_id=seed["agent_id"], root_user_id=seed["user_id"],
+                parent_session_id=str(seed["session_id"]), child_session_id=str(uuid4()), root_runtime_task_id=root_id))
+        await db.commit()
+        member_id = member.id
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        _, _, authority = await _get_run_session_and_agent(db=db, agent_id=seed["agent_id"],
+            session_id=seed["session_id"], current_user=await db.get(User, member_id),
+            action="cancel_session_run", require_writable=True)
+        assert authority == "shared_group_web_member"
+    receipt = await signal_web_chat_cancel(run_id=seed["run_id"], agent_id=seed["agent_id"],
+        session_id=seed["session_id"], user_id=member_id)
+    assert receipt.delivery_state == "delivered"
+    assert published and published[0]["user_id"] == str(member_id) and event.is_set()
+    async with owner_sessionmaker() as db:
+        assert (await db.get(RuntimeTask, seed["run_id"])).root_user_id == seed["user_id"]
+        for task_id in (child_id, grandchild_id):
+            child = await db.get(RuntimeTask, task_id)
+            assert child.root_user_id == seed["user_id"] and child.status == "killed"
+        assert (await db.get(RuntimeTask, unrelated_id)).status == "pending"
 
 
 async def test_nonterminal_child_cancel_is_logged_without_changing_parent_receipt(

@@ -3682,13 +3682,11 @@ async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
                 children = select(RuntimeTask.id).where(
                     RuntimeTask.root_runtime_task_id == run_uuid,
                     RuntimeTask.tenant_id == tenant_id,
-                    RuntimeTask.root_user_id == _run_id(user_id),
                     RuntimeTask.task_type == "delegation",
                 ).cte("cancel_delegation_children", recursive=True)
                 children = children.union(select(RuntimeTask.id).join(
                     children, RuntimeTask.root_runtime_task_id == children.c.id,
-                ).where(RuntimeTask.tenant_id == tenant_id,
-                    RuntimeTask.root_user_id == _run_id(user_id), RuntimeTask.task_type == "delegation"))
+                ).where(RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == "delegation"))
                 delegated = list((await db.execute(select(RuntimeTask.id, RuntimeTask.parent_agent_id).where(
                     RuntimeTask.id.in_(select(children.c.id)),
                     RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),

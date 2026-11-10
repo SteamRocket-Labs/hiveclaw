@@ -240,6 +240,7 @@
         "oneAction": "仅本次操作",
         "destructive": "不可撤销的操作",
         "reversible": "可逆或只读",
+        "approvalUncertain": "可能修改内容、读取敏感信息或影响工作区以外",
         "employeePermanent": "创建后可停用，但不能删除。"
       },
       "inspectTechnicalDetails": "查看技术详情",

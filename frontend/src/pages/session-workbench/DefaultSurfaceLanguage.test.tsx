@@ -308,6 +308,44 @@ describe('default screen language (B2)', () => {
     }
   });
 
+  it('describes uncertain command reads in Chinese without changing the approval action', () => {
+    const command = 'env | grep -iE "workspace|sandbox"; find / -name "*.md"';
+    const item = {
+      item_type: 'approval_request', item_status: 'waiting_user', audience: 'user',
+      item_data: { tool_name: 'run_command', arguments: {}, destructive: false },
+      user_action: { kind: 'resolve_approval', impact: '可撤销或只读操作', details: [] },
+    } as unknown as ThreadItem;
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={item} approvalArguments={{ command }}
+      approvalActions={<button>允许本次</button>} />);
+    expect(markup).toContain('可能修改内容、读取敏感信息或影响工作区以外');
+    expect(markup).not.toMatch(/可逆或只读|可撤销或只读操作/);
+    expect(markup).toContain('允许本次');
+  });
+
+  it.each<[string, Record<string, unknown>, boolean, string]>([
+    ['execute_code', { language: 'bash', code: "env | grep -iE key; find / -name '*.pem'" }, false, '可能修改内容、读取敏感信息或影响工作区以外'],
+    ['run_skill_tool', {}, false, '可能修改内容、读取敏感信息或影响工作区以外'],
+    ['send_email', {}, false, '可能修改内容、读取敏感信息或影响工作区以外'],
+    ['write_file', { path: 'report.md' }, false, '可能修改内容、读取敏感信息或影响工作区以外'],
+    ['unknown_tool', {}, false, '可能修改内容、读取敏感信息或影响工作区以外'],
+    ...['ls', 'ls -la', 'wc -l report.csv', 'grep foo workspace/x.md', 'cat report.md']
+      .map((command): [string, Record<string, unknown>, boolean, string] => ['run_command', { command }, false, '可逆或只读']),
+    ['run_command', {}, false, '可能修改内容、读取敏感信息或影响工作区以外'],
+    ['delete_file', { path: 'report.md' }, true, '不可撤销的操作'],
+    ['create_employee_from_request', {}, true, '不可撤销的操作'],
+  ])('localizes the impact of %s with %j', (toolName, toolArguments, destructive, expected) => {
+    for (const userAction of [null, { kind: 'resolve_approval', impact: '可撤销或只读操作', details: [] }]) {
+      const approval = {
+        schema: 'hive.thread_item.v1', schema_version: 1, id: 'approval-impact', sequence: 1,
+        item_type: 'approval_request', item_status: 'waiting_user', audience: 'user',
+        item_data: { tool_name: toolName, arguments: toolArguments, destructive }, user_action: userAction,
+      } as unknown as ThreadItem;
+      const markup = renderToStaticMarkup(<ThreadItemRenderer item={approval} />);
+      expect(markup).toContain(expected);
+      expect(markup).not.toContain('可撤销或只读操作');
+    }
+  });
+
   it('names the exact approval action; a delete or share is never called an edit', () => {
     const approvalFor = (toolName: string): string => {
       const item: ThreadItem = {

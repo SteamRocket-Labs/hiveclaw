@@ -815,12 +815,13 @@ def _user_action(
         return None
     if item_type == "approval_request":
         destructive = bool(data.get("destructive"))
+        impact = "可能产生不可逆影响" if destructive else "可能修改内容、读取敏感信息或影响工作区以外"
         return {
             "kind": "resolve_approval",
             "token": _text(data.get("permission_request_id") or data.get("request_id")),
             "label": "确认后继续",
             "expires_at": _iso(data.get("expires_at")),
-            "impact": "可能产生不可逆影响" if destructive else "可撤销或只读操作",
+            "impact": impact,
             "details": _safe_argument_details(data.get("arguments")),
         }
     if item_type == "error" and bool(data.get("retry_safe", data.get("retryable"))):

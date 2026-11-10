@@ -240,6 +240,7 @@
         "oneAction": "one action",
         "destructive": "destructive",
         "reversible": "reversible or read-only",
+        "approvalUncertain": "May modify content, read sensitive information, or affect areas outside the workspace",
         "employeePermanent": "The employee can be deactivated, but cannot be deleted."
       },
       "inspectTechnicalDetails": "Inspect technical details",

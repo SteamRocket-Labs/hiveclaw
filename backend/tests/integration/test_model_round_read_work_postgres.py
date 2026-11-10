@@ -625,8 +625,8 @@ async def test_nested_memory_is_walked_live_when_it_becomes_top_level(
         row = await writer.get(ContentInputReceipt, parent.id)
         row.dependencies_json = [*row.dependencies_json, source_dependency(child)]
         if change == "revoked":
-            # A distinct top-level revision misses the verified-source key even
-            # on the old implementation, isolating the latest-receipt cache.
+            # A distinct top-level revision misses the verified-source key;
+            # this case checks that the newer revoked revision is withheld.
             child = ContentInputReceipt(id=uuid4(), tenant_id=n.tenant, carrier_kind=child.carrier_kind,
                 carrier_ref=child.carrier_ref, revision=child.revision + 1, content_sha256=child.content_sha256,
                 dependencies_json=child.dependencies_json, authority_json=child.authority_json)
@@ -682,4 +682,79 @@ async def test_nested_memory_is_walked_live_when_it_becomes_top_level(
                 {"role": "system", "content": "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"}]
         assert injected
         assert "CHILD_MEMORY_MARKER" not in json.dumps(wire)
+        await db.rollback()
+
+
+@pytest.mark.parametrize("attached", [True, False])
+@pytest.mark.parametrize("change", ["quarantined", "deleted"])
+async def test_later_top_level_workspace_source_reads_live_manifest(
+    group_memory, owner_sessionmaker, app_user_sessionmaker, monkeypatch, attached, change,  # noqa: F811
+):
+    import hashlib
+
+    from app.database import tenant_scoped_session
+    from app.models.workspace_resource import WorkspaceResourceManifest
+    from app.services import content_input_receipts
+    from app.services.content_input_receipts import ContentInputReceiptError, record_workspace_receipt
+    from app.services.session_model_round import _validate_or_withhold_model_sources
+    from app.services.workspace_resource_authority import register_workspace_path
+    from tests.integration.test_a4c_one_item_withheld import _bindings
+    from tests.integration.test_m4d_group_memory_postgres import save_group
+
+    g = group_memory
+    n = g.n
+    await save_group(g, app_user_sessionmaker)
+    path = "workspace/live-source.md"
+    target = n.root / path
+    target.write_text("WORKSPACE_SOURCE_BYTES")
+    version = hashlib.sha256(target.read_bytes()).hexdigest()
+    async with owner_sessionmaker() as writer:
+        await register_workspace_path(writer, tenant_id=n.tenant, agent_id=n.agent, path=path,
+            owner_user_id=n.user, root_session_id=None, source="fixture", content_hash=version)
+        first = record_workspace_receipt(writer, n.tenant, n.agent, path, version, None)
+        second = record_workspace_receipt(writer, n.tenant, n.agent, path, version, first)
+        await writer.commit()
+    sources = [{"source_kind": "workspace_artifact", "source_id": str(receipt.id),
+        "source_version": version} for receipt in (first, second)]
+    validate = content_input_receipts._validate_input_dependency_batch
+    injected = False
+
+    async def withdraw_after_first(db, tenant_id, dependencies, **kwargs):
+        nonlocal injected
+        await validate(db, tenant_id, dependencies, **kwargs)
+        if dependencies == [sources[0]] and not injected:
+            async with owner_sessionmaker() as writer:
+                manifest = await writer.scalar(select(WorkspaceResourceManifest).where(
+                    WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == path))
+                if change == "quarantined":
+                    manifest.authority_state = "quarantined"
+                else:
+                    manifest.deleted_at = datetime.now(UTC)
+                await writer.commit()
+            injected = True
+
+    monkeypatch.setattr(content_input_receipts, "_validate_input_dependency_batch", withdraw_after_first)
+    messages = [{"role": "system", "content": f"WORKSPACE_SOURCE_{i}"} for i in range(2 if attached else 1)]
+    bindings = _bindings(len(messages), {i: [source] for i, source in enumerate(sources[:len(messages)])})
+    bindings["dependencies"] = sources.copy()
+    wire = {"messages": [dict(message) for message in messages]}
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        if attached:
+            await _validate_or_withhold_model_sources(db, tenant_id=n.tenant, agent_id=n.agent,
+                session_id=g.session, run_id=g.runs[n.user], input_bindings=bindings,
+                messages=messages, wire_request=wire)
+            assert bindings["messages"][0]["status"] == "bound"
+            assert bindings["messages"][1]["status"] == "withheld"
+            assert bindings["messages"][1]["code"] == "content_source_access_denied"
+            assert bindings["dependencies"] == [sources[0]] and bindings["dependency_coverage"]["complete"]
+            assert wire["messages"] == [{"role": "system", "content": "WORKSPACE_SOURCE_0"},
+                {"role": "system", "content": "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"}]
+        else:
+            with pytest.raises(ContentInputReceiptError) as caught:
+                await _validate_or_withhold_model_sources(db, tenant_id=n.tenant, agent_id=n.agent,
+                    session_id=g.session, run_id=g.runs[n.user], input_bindings=bindings,
+                    messages=messages, wire_request=wire)
+            assert caught.value.code == "group_model_sources_unavailable" and caught.value.status_code == 503
+            assert caught.value.__cause__.code == "content_source_access_denied"
+        assert injected
         await db.rollback()

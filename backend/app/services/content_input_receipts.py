@@ -2196,7 +2196,7 @@ async def lock_workspace_receipt_write(db, tenant_id: uuid.UUID, agent_id: uuid.
 
 
 async def latest_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path: str):
-    rows = _preflight_inputs(db)
+    rows = _preflight_inputs(db, authority=True)
     key = ("latest", "workspace_artifact", workspace_artifact_ref(agent_id, path))
     if rows is not None and key in rows:
         return rows[key]

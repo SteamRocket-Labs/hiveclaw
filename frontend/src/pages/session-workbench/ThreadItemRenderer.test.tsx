@@ -175,6 +175,16 @@ describe('ThreadItemRenderer', () => {
     }
   });
 
+  it.each([false, true])('keeps the employee permanence hint on creation cards (destructive: %s)', (destructive) => {
+    // Cards stored before create_employee_from_request became destructive (3a2e61dd) still show the hint, as on base.
+    const approval = {
+      ...commandApproval(undefined),
+      item_data: { ...DATA_BY_TYPE.approval_request, tool_name: 'create_employee_from_request', arguments: {}, destructive },
+    } as ThreadItem;
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={approval} />);
+    expect(markup).toContain('The employee can be deactivated, but cannot be deleted.');
+  });
+
   it.each(['env', 'ls'])('classifies arguments on live items without fetched approval arguments: %s', (command) => {
     const markup = renderToStaticMarkup(<ThreadItemRenderer item={commandApproval(command)} />);
     expect(markup).toContain(command === 'ls' ? 'Reversible or read-only' : uncertainImpact);

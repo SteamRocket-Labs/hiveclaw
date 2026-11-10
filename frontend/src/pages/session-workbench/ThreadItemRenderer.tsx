@@ -74,7 +74,7 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
     return [
       { label: 'tool', value: approvalActionLabel(data.tool_name, t) },
       { label: 'expires', value: expires ? new Date(expires).toLocaleString(language) : null },
-      { label: 'impact', value: data.destructive && data.tool_name === 'create_employee_from_request'
+      { label: 'impact', value: data.tool_name === 'create_employee_from_request'
         ? `${impact} · ${t('sessionWorkbench.threadItem.value.employeePermanent', 'The employee can be deactivated, but cannot be deleted.')}`
         : impact },
       ...proposalDetails,

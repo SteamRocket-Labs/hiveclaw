@@ -16,6 +16,7 @@ them back up — experience silently never enters memory. The sweep contract:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -324,6 +325,41 @@ async def test_sweep_retries_held_job_and_commits_when_llm_recovers(tmp_path: Pa
     assert (package_dir / "manifest.json").exists()
     committed_manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
     assert committed_manifest["lineage"]["root_session_id"] == manifest["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_sweep_job_is_recovered_and_retried(tmp_path: Path, monkeypatch) -> None:
+    from app.memory.t2.job_sweep import sweep_stale_t2_jobs, sweep_t2_jobs
+
+    manifest, manifest_path = await _make_held_job(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    entered = asyncio.Event()
+    _patch_working_llm(monkeypatch)
+
+    async def blocked_llm(**kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.memory.t2.segment_package._run_t2_llm_agent", blocked_llm)
+    task = asyncio.create_task(sweep_t2_jobs(agent_id=manifest["agent_id"], data_root=tmp_path))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    interrupted = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert interrupted["status"] == "running"
+    assert interrupted["job_id"] == manifest["job_id"]
+    assert interrupted["retry_count"] == 1
+
+    later = datetime.now(UTC) + timedelta(hours=2)
+    recovery = sweep_stale_t2_jobs(agent_id=manifest["agent_id"], data_root=tmp_path, now=later)
+    assert recovery.recovered_stale == (manifest["job_id"],)
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["status"] == "held"
+    _patch_working_llm(monkeypatch)
+    report = await sweep_t2_jobs(agent_id=manifest["agent_id"], data_root=tmp_path, now=later)
+    assert report.committed == (manifest["job_id"],)
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["retry_count"] == 2
 
 
 @pytest.mark.asyncio

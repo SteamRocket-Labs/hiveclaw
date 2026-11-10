@@ -17,7 +17,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.daemon_concurrency import run_bounded
+from app.services.daemon_concurrency import get_daemon_semaphore
 from app.core.events import get_redis
 from app.database import enter_rls_bypass, tenant_scoped_session
 from app.memory.t2.read_model import load_t2_package_snapshots, render_t2_package_snapshots
@@ -40,6 +40,7 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 # app/templates/T3_CONSOLIDATOR.md via app.services.heartbeat_t3_core.
 _HEARTBEAT_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
 _HEARTBEAT_LEASE_TTL_SECONDS = 600
+_HEARTBEAT_TIMEOUT_SECONDS = 300
 _heartbeat_leases: dict[uuid.UUID, datetime] = {}
 
 _HEARTBEAT_SCORE_RUBRIC_SUFFIX = """
@@ -314,9 +315,7 @@ async def resume_persisted_heartbeat_runs(*, limit: int = 50) -> list[str]:
                 "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
             },
         )
-        asyncio.create_task(
-            run_bounded("heartbeat", _execute_heartbeat(agent_id, tenant_id=tenant_id, runtime_task_id=run_id))
-        )
+        asyncio.create_task(_execute_heartbeat(agent_id, tenant_id=tenant_id, runtime_task_id=run_id))
         resumed.append(run_id)
     return resumed
 
@@ -1019,15 +1018,11 @@ async def _run_heartbeat_core_and_persist(
     from app.config import get_settings
     from app.models.audit import ChatMessage
 
-    _HEARTBEAT_TIMEOUT_SECONDS = 300
-    result = await asyncio.wait_for(
-        run_heartbeat_t3_core(
-            agent_id=agent.id,
-            tenant_id=tenant_id,
-            data_root=Path(get_settings().AGENT_DATA_DIR),
-            model=model,
-        ),
-        timeout=_HEARTBEAT_TIMEOUT_SECONDS,
+    result = await run_heartbeat_t3_core(
+        agent_id=agent.id,
+        tenant_id=tenant_id,
+        data_root=Path(get_settings().AGENT_DATA_DIR),
+        model=model,
     )
     outcome_type = result.outcome_type
     outcome_lane = _heartbeat_outcome_lane(outcome_type)
@@ -1180,228 +1175,231 @@ async def _execute_heartbeat(
             )
             return
 
-    if runtime_task_id is None:
-        runtime_task_id = await _create_heartbeat_runtime_task(agent_id, tenant_id=tenant_id)
-
     try:
-        from app.models.agent import Agent
-        from app.models.audit import ChatMessage
-        from app.models.chat_session import ChatSession
-        from app.models.participant import Participant
+        if runtime_task_id is None:
+            runtime_task_id = await _create_heartbeat_runtime_task(agent_id, tenant_id=tenant_id)
 
-        async with tenant_scoped_session(tenant_id) as db:
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
-            agent = result.scalar_one_or_none()
-            if not agent:
-                logger.warning(f"[Heartbeat] Agent {agent_id} not found in DB — skipping")
-                await _touch_last_heartbeat(agent_id, tenant_id)
-                await _skip_heartbeat_runtime_task(
-                    runtime_task_id,
-                    skip_reason="agent_not_found",
-                    result_summary=f"Skipped heartbeat because agent {agent_id} was not found.",
-                )
-                return
+        # Bound queueing, preparation and persistence, leaving lease time for failure cleanup.
+        async with asyncio.timeout(_HEARTBEAT_TIMEOUT_SECONDS):
+            from app.models.agent import Agent
+            from app.models.audit import ChatMessage
+            from app.models.chat_session import ChatSession
+            from app.models.participant import Participant
 
-            # Set execution identity — autonomous heartbeat action
-            from app.core.execution_context import set_agent_bot_identity
+            async with get_daemon_semaphore("heartbeat"):
+                async with tenant_scoped_session(tenant_id) as db:
+                    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+                    agent = result.scalar_one_or_none()
+                    if not agent:
+                        logger.warning(f"[Heartbeat] Agent {agent_id} not found in DB — skipping")
+                        await _touch_last_heartbeat(agent_id, tenant_id)
+                        await _skip_heartbeat_runtime_task(
+                            runtime_task_id,
+                            skip_reason="agent_not_found",
+                            result_summary=f"Skipped heartbeat because agent {agent_id} was not found.",
+                        )
+                        return
 
-            set_agent_bot_identity(agent_id, agent.name, source="heartbeat")
+                    # Set execution identity — autonomous heartbeat action
+                    from app.core.execution_context import set_agent_bot_identity
 
-            try:
-                lifecycle_report = _run_memory_lifecycle_maintenance(agent_id)
-                if (
-                    lifecycle_report.get("discarded_expired_count")
-                    or lifecycle_report.get("conflict_hold_count")
-                    or lifecycle_report.get("revalidation_hold_count")
-                ):
-                    logger.info("[Heartbeat] Memory lifecycle maintenance for {}: {}", agent_id, lifecycle_report)
-            except Exception as _lifecycle_err:
-                logger.warning("[Heartbeat] Memory lifecycle maintenance failed for {}: {}", agent_id, _lifecycle_err)
+                    set_agent_bot_identity(agent_id, agent.name, source="heartbeat")
 
-            try:
-                sweep_report = await _run_t2_job_sweep(agent_id, tenant_id)
-                if sweep_report.recovered_stale or sweep_report.retried or sweep_report.alerted:
-                    logger.info(
-                        "[Heartbeat] T2 job sweep for {}: recovered={} retried={} committed={} exhausted={} deferred={}",
-                        agent_id,
-                        list(sweep_report.recovered_stale),
-                        list(sweep_report.retried),
-                        list(sweep_report.committed),
-                        list(sweep_report.exhausted),
-                        list(sweep_report.deferred),
+                    try:
+                        lifecycle_report = _run_memory_lifecycle_maintenance(agent_id)
+                        if (
+                            lifecycle_report.get("discarded_expired_count")
+                            or lifecycle_report.get("conflict_hold_count")
+                            or lifecycle_report.get("revalidation_hold_count")
+                        ):
+                            logger.info("[Heartbeat] Memory lifecycle maintenance for {}: {}", agent_id, lifecycle_report)
+                    except Exception as _lifecycle_err:
+                        logger.warning("[Heartbeat] Memory lifecycle maintenance failed for {}: {}", agent_id, _lifecycle_err)
+
+                    try:
+                        sweep_report = await _run_t2_job_sweep(agent_id, tenant_id)
+                        if sweep_report.recovered_stale or sweep_report.retried or sweep_report.alerted:
+                            logger.info(
+                                "[Heartbeat] T2 job sweep for {}: recovered={} retried={} committed={} exhausted={} deferred={}",
+                                agent_id,
+                                list(sweep_report.recovered_stale),
+                                list(sweep_report.retried),
+                                list(sweep_report.committed),
+                                list(sweep_report.exhausted),
+                                list(sweep_report.deferred),
+                            )
+                    except Exception as _sweep_err:
+                        logger.warning("[Heartbeat] T2 job sweep failed for {}: {}", agent_id, _sweep_err)
+
+                    try:
+                        debt_report = await _run_consolidation_debt_refresh(agent_id)
+                        if debt_report.stalled:
+                            logger.warning(
+                                "[Heartbeat] Memory consolidation stalled for {}: reasons={} pending={} oldest_age_h={}",
+                                agent_id,
+                                list(debt_report.stall_reasons),
+                                debt_report.pending_packages,
+                                debt_report.oldest_pending_age_hours,
+                            )
+                    except Exception as _debt_err:
+                        logger.warning("[Heartbeat] Consolidation debt refresh failed for {}: {}", agent_id, _debt_err)
+
+                    try:
+                        retention_report = await _run_t2_retention(agent_id)
+                        if retention_report.archived:
+                            logger.info(
+                                "[Heartbeat] T2 retention for {}: archived={} kept_referenced={} kept_pipeline={}",
+                                agent_id,
+                                list(retention_report.archived),
+                                retention_report.kept_referenced,
+                                retention_report.kept_pipeline,
+                            )
+                    except Exception as _retention_err:
+                        logger.warning("[Heartbeat] T2 retention failed for {}: {}", agent_id, _retention_err)
+
+                    try:
+                        artifact_gc_report = await _run_chat_artifact_snapshot_retention(agent_id, db=db)
+                        if artifact_gc_report.get("removed_count"):
+                            logger.info(
+                                "[Heartbeat] Chat artifact snapshot retention for {}: removed={} bytes={}",
+                                agent_id,
+                                artifact_gc_report.get("removed_count"),
+                                artifact_gc_report.get("removed_bytes"),
+                            )
+                    except Exception as _artifact_gc_err:
+                        logger.warning(
+                            "[Heartbeat] Chat artifact snapshot retention failed for {}: {}", agent_id, _artifact_gc_err
+                        )
+
+                    try:
+                        dirtiness_report = await _run_convergence_dirtiness_refresh(agent_id)
+                        if dirtiness_report.dirty_files:
+                            logger.info(
+                                "[Heartbeat] Convergence needed for {}: {}",
+                                agent_id,
+                                [item["target"] for item in dirtiness_report.dirty_files],
+                            )
+                    except Exception as _convergence_err:
+                        logger.warning(
+                            "[Heartbeat] Convergence dirtiness refresh failed for {}: {}", agent_id, _convergence_err
+                        )
+
+                    if not (agent.primary_model_id or agent.fallback_model_id):
+                        logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")
+                        await _touch_last_heartbeat(agent_id, tenant_id)
+                        await _skip_heartbeat_runtime_task(
+                            runtime_task_id,
+                            skip_reason="no_model",
+                            result_summary=f"Skipped heartbeat because agent {agent.name} has no primary or fallback model configured.",
+                        )
+                        return
+
+                    from app.services.model_resolution import resolve_agent_runtime_models
+
+                    selection = await resolve_agent_runtime_models(db, agent)
+                    model = selection.model
+                    if model is None:
+                        skip_reason = "primary_model_unavailable" if agent.primary_model_id else "model_not_found"
+                        logger.warning(
+                            f"[Heartbeat] Model for agent {agent.name} ({agent_id}) unavailable ({skip_reason}) — skipping"
+                        )
+                        await _touch_last_heartbeat(agent_id, tenant_id)
+                        await _skip_heartbeat_runtime_task(
+                            runtime_task_id,
+                            skip_reason=skip_reason,
+                            result_summary=f"Skipped heartbeat because configured model was not found for {agent.name}.",
+                            metadata_json={
+                                "primary_model_id": str(agent.primary_model_id) if agent.primary_model_id else None,
+                                "fallback_model_id": str(agent.fallback_model_id) if agent.fallback_model_id else None,
+                            },
+                        )
+                        return
+
+                    tick_count = _heartbeat_tick_counts.get(agent_id, 0) + 1
+                    _heartbeat_tick_counts[agent_id] = tick_count
+
+                    from app.services.agent_identity_lifecycle import resolve_live_effect_principal
+
+                    principal = await resolve_live_effect_principal(db, agent)
+                    if principal.block_reason or principal.user_id is None:
+                        logger.warning(
+                            "[Heartbeat] Responsible principal for {} cannot authorize a new effect ({})",
+                            agent.name,
+                            principal.block_reason or "responsible_principal_missing",
+                        )
+                        await _touch_last_heartbeat(agent_id, tenant_id)
+                        await _skip_heartbeat_runtime_task(
+                            runtime_task_id,
+                            skip_reason=principal.block_reason or "responsible_principal_missing",
+                            result_summary="Skipped heartbeat because the responsible principal cannot authorize a new effect.",
+                        )
+                        return
+                    effect_user_id = principal.user_id
+
+                    # Resolve participant for DB session
+                    p_result = await db.execute(
+                        select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
                     )
-            except Exception as _sweep_err:
-                logger.warning("[Heartbeat] T2 job sweep failed for {}: {}", agent_id, _sweep_err)
+                    agent_participant = p_result.scalar_one_or_none()
+                    agent_participant_id = agent_participant.id if agent_participant else None
 
-            try:
-                debt_report = await _run_consolidation_debt_refresh(agent_id)
-                if debt_report.stalled:
-                    logger.warning(
-                        "[Heartbeat] Memory consolidation stalled for {}: reasons={} pending={} oldest_age_h={}",
-                        agent_id,
-                        list(debt_report.stall_reasons),
-                        debt_report.pending_packages,
-                        debt_report.oldest_pending_age_hours,
+                    session = ChatSession(
+                        agent_id=agent_id,
+                        tenant_id=tenant_id,
+                        user_id=effect_user_id,
+                        participant_id=agent_participant_id,
+                        source_channel="heartbeat",
+                        session_kind="agent_internal_maintenance",
+                        actor_type="platform",
+                        runtime_source="heartbeat",
+                        visibility_scope="agent_internal",
+                        listed_surface="hidden",
+                        title=f"Heartbeat T3: {agent.name}"[:200],
                     )
-            except Exception as _debt_err:
-                logger.warning("[Heartbeat] Consolidation debt refresh failed for {}: {}", agent_id, _debt_err)
-
-            try:
-                retention_report = await _run_t2_retention(agent_id)
-                if retention_report.archived:
-                    logger.info(
-                        "[Heartbeat] T2 retention for {}: archived={} kept_referenced={} kept_pipeline={}",
-                        agent_id,
-                        list(retention_report.archived),
-                        retention_report.kept_referenced,
-                        retention_report.kept_pipeline,
+                    db.add(session)
+                    await db.flush()
+                    session_id = session.id
+                    heartbeat_session_id = str(session_id)
+                    tick_msg = f"Heartbeat direct T3 core tick #{tick_count} at {datetime.now(timezone.utc).isoformat()}"
+                    db.add(
+                        ChatMessage(
+                            agent_id=agent_id,
+                            tenant_id=tenant_id,
+                            conversation_id=str(session_id),
+                            role="user",
+                            content=tick_msg,
+                            user_id=effect_user_id,
+                            participant_id=agent_participant_id,
+                        )
                     )
-            except Exception as _retention_err:
-                logger.warning("[Heartbeat] T2 retention failed for {}: {}", agent_id, _retention_err)
+                    await db.commit()
+                    if runtime_task_id:
+                        await update_runtime_task_record(
+                            runtime_task_id,
+                            status="running",
+                            child_session_id=str(session_id),
+                            result_summary="Heartbeat direct T3 core started.",
+                            metadata_json={
+                                "session_id": str(session_id),
+                                "session_bound": False,
+                                "runtime": "direct_t3_core",
+                            },
+                        )
+                    logger.info("[Heartbeat] Tick #{} direct T3 core for {}", tick_count, agent.name)
 
-            try:
-                artifact_gc_report = await _run_chat_artifact_snapshot_retention(agent_id, db=db)
-                if artifact_gc_report.get("removed_count"):
-                    logger.info(
-                        "[Heartbeat] Chat artifact snapshot retention for {}: removed={} bytes={}",
-                        agent_id,
-                        artifact_gc_report.get("removed_count"),
-                        artifact_gc_report.get("removed_bytes"),
+                    heartbeat_continuation = _run_heartbeat_core_and_persist(
+                        agent=agent,
+                        tenant_id=tenant_id,
+                        model=model,
+                        session_id=session_id,
+                        runtime_task_id=runtime_task_id,
+                        heartbeat_session_id=heartbeat_session_id,
+                        agent_participant_id=agent_participant_id,
+                        tick_count=tick_count,
+                        effect_user_id=effect_user_id,
                     )
-            except Exception as _artifact_gc_err:
-                logger.warning(
-                    "[Heartbeat] Chat artifact snapshot retention failed for {}: {}", agent_id, _artifact_gc_err
-                )
 
-            try:
-                dirtiness_report = await _run_convergence_dirtiness_refresh(agent_id)
-                if dirtiness_report.dirty_files:
-                    logger.info(
-                        "[Heartbeat] Convergence needed for {}: {}",
-                        agent_id,
-                        [item["target"] for item in dirtiness_report.dirty_files],
-                    )
-            except Exception as _convergence_err:
-                logger.warning(
-                    "[Heartbeat] Convergence dirtiness refresh failed for {}: {}", agent_id, _convergence_err
-                )
-
-            if not (agent.primary_model_id or agent.fallback_model_id):
-                logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")
-                await _touch_last_heartbeat(agent_id, tenant_id)
-                await _skip_heartbeat_runtime_task(
-                    runtime_task_id,
-                    skip_reason="no_model",
-                    result_summary=f"Skipped heartbeat because agent {agent.name} has no primary or fallback model configured.",
-                )
-                return
-
-            from app.services.model_resolution import resolve_agent_runtime_models
-
-            selection = await resolve_agent_runtime_models(db, agent)
-            model = selection.model
-            if model is None:
-                skip_reason = "primary_model_unavailable" if agent.primary_model_id else "model_not_found"
-                logger.warning(
-                    f"[Heartbeat] Model for agent {agent.name} ({agent_id}) unavailable ({skip_reason}) — skipping"
-                )
-                await _touch_last_heartbeat(agent_id, tenant_id)
-                await _skip_heartbeat_runtime_task(
-                    runtime_task_id,
-                    skip_reason=skip_reason,
-                    result_summary=f"Skipped heartbeat because configured model was not found for {agent.name}.",
-                    metadata_json={
-                        "primary_model_id": str(agent.primary_model_id) if agent.primary_model_id else None,
-                        "fallback_model_id": str(agent.fallback_model_id) if agent.fallback_model_id else None,
-                    },
-                )
-                return
-
-            tick_count = _heartbeat_tick_counts.get(agent_id, 0) + 1
-            _heartbeat_tick_counts[agent_id] = tick_count
-
-            from app.services.agent_identity_lifecycle import resolve_live_effect_principal
-
-            principal = await resolve_live_effect_principal(db, agent)
-            if principal.block_reason or principal.user_id is None:
-                logger.warning(
-                    "[Heartbeat] Responsible principal for {} cannot authorize a new effect ({})",
-                    agent.name,
-                    principal.block_reason or "responsible_principal_missing",
-                )
-                await _touch_last_heartbeat(agent_id, tenant_id)
-                await _skip_heartbeat_runtime_task(
-                    runtime_task_id,
-                    skip_reason=principal.block_reason or "responsible_principal_missing",
-                    result_summary="Skipped heartbeat because the responsible principal cannot authorize a new effect.",
-                )
-                return
-            effect_user_id = principal.user_id
-
-            # Resolve participant for DB session
-            p_result = await db.execute(
-                select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
-            )
-            agent_participant = p_result.scalar_one_or_none()
-            agent_participant_id = agent_participant.id if agent_participant else None
-
-            session = ChatSession(
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-                user_id=effect_user_id,
-                participant_id=agent_participant_id,
-                source_channel="heartbeat",
-                session_kind="agent_internal_maintenance",
-                actor_type="platform",
-                runtime_source="heartbeat",
-                visibility_scope="agent_internal",
-                listed_surface="hidden",
-                title=f"Heartbeat T3: {agent.name}"[:200],
-            )
-            db.add(session)
-            await db.flush()
-            session_id = session.id
-            heartbeat_session_id = str(session_id)
-            tick_msg = f"Heartbeat direct T3 core tick #{tick_count} at {datetime.now(timezone.utc).isoformat()}"
-            db.add(
-                ChatMessage(
-                    agent_id=agent_id,
-                    tenant_id=tenant_id,
-                    conversation_id=str(session_id),
-                    role="user",
-                    content=tick_msg,
-                    user_id=effect_user_id,
-                    participant_id=agent_participant_id,
-                )
-            )
-            await db.commit()
-            if runtime_task_id:
-                await update_runtime_task_record(
-                    runtime_task_id,
-                    status="running",
-                    child_session_id=str(session_id),
-                    result_summary="Heartbeat direct T3 core started.",
-                    metadata_json={
-                        "session_id": str(session_id),
-                        "session_bound": False,
-                        "runtime": "direct_t3_core",
-                    },
-                )
-            logger.info("[Heartbeat] Tick #{} direct T3 core for {}", tick_count, agent.name)
-
-            heartbeat_continuation = _run_heartbeat_core_and_persist(
-                agent=agent,
-                tenant_id=tenant_id,
-                model=model,
-                session_id=session_id,
-                runtime_task_id=runtime_task_id,
-                heartbeat_session_id=heartbeat_session_id,
-                agent_participant_id=agent_participant_id,
-                tick_count=tick_count,
-                effect_user_id=effect_user_id,
-            )
-
-        await heartbeat_continuation
+                await heartbeat_continuation
 
     except Exception as e:
         error_text = _format_heartbeat_exception(e)
@@ -1487,11 +1485,7 @@ async def _heartbeat_tick():
                     continue
                 logger.info(f"💓 Triggering heartbeat for {agent.name}")
                 await write_audit_log("heartbeat_fire", {"agent_name": agent.name}, agent_id=agent.id)
-                asyncio.create_task(
-                    run_bounded(
-                        "heartbeat", _execute_heartbeat(agent.id, tenant_id=agent.tenant_id, lease_acquired=True)
-                    )
-                )
+                asyncio.create_task(_execute_heartbeat(agent.id, tenant_id=agent.tenant_id, lease_acquired=True))
                 triggered += 1
 
             logger.info(

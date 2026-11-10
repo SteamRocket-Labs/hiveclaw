@@ -3,40 +3,13 @@ instead of stampeding the shared DB pool."""
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
 
 
 @pytest.mark.asyncio
-async def test_run_bounded_caps_concurrency_and_completes_all(monkeypatch) -> None:
-    from app.config import get_settings
-    from app.services.daemon_concurrency import reset_daemon_semaphores_for_tests, run_bounded
-
-    monkeypatch.setattr(get_settings(), "HEARTBEAT_MAX_CONCURRENT", 2)
-    reset_daemon_semaphores_for_tests()
-
-    in_flight = 0
-    peak = 0
-    done: list[int] = []
-
-    async def work(index: int) -> None:
-        nonlocal in_flight, peak
-        in_flight += 1
-        peak = max(peak, in_flight)
-        await asyncio.sleep(0.01)
-        in_flight -= 1
-        done.append(index)
-
-    await asyncio.gather(*(run_bounded("heartbeat", work(i)) for i in range(6)))
-
-    assert peak <= 2, f"expected at most 2 concurrent heartbeat executions, saw {peak}"
-    assert sorted(done) == list(range(6)), "queued tasks must run, not drop"
-
-
-@pytest.mark.asyncio
-async def test_run_bounded_families_are_independent(monkeypatch) -> None:
+async def test_daemon_semaphore_families_are_independent(monkeypatch) -> None:
     from app.config import get_settings
     from app.services.daemon_concurrency import get_daemon_semaphore, reset_daemon_semaphores_for_tests
 
@@ -62,7 +35,7 @@ def test_fanout_settings_have_env_defaults() -> None:
 
 
 def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
-    """Wiring pin: every per-agent create_task dispatch goes through run_bounded.
+    """Every per-agent dispatch reaches its family's shared concurrency cap.
 
     Trigger runs are deliberately absent: a bounded in-process fanout still had
     no lease and no completion callback, which is how 2,107 trigger rows sat in
@@ -83,7 +56,15 @@ def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
     def bounded_count(source: str, family: str) -> int:
         return len(re.findall(rf'run_bounded\(\s*"{family}"', source))
 
-    assert bounded_count(heartbeat_source, "heartbeat") >= 2, "heartbeat resume + tick dispatch must be bounded"
+    from app.services.heartbeat import _execute_heartbeat
+    import inspect
+
+    heartbeat_entry = inspect.getsource(_execute_heartbeat)
+    assert 'async with get_daemon_semaphore("heartbeat"):' in heartbeat_entry
+    assert heartbeat_entry.index("asyncio.timeout(") < heartbeat_entry.index('get_daemon_semaphore("heartbeat")')
+    assert heartbeat_source.count("asyncio.create_task(_execute_heartbeat(") == 2, (
+        "heartbeat resume + tick must both enter the deadline and shared concurrency cap"
+    )
     assert bounded_count(trigger_source, "trigger") == 0, "trigger runs must be queued for the worker, not fanned out"
     assert "_queue_trigger_run_for_worker(" in trigger_source
     assert 'task.task_type == "trigger"' in runtime_worker_source
@@ -94,7 +75,6 @@ def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
     assert "reconcile_due_dream_runtime_tasks" in evolution_source
     assert 'task.task_type == "dream"' in runtime_worker_source
     assert "_dispatch_async_runtime_task(" in runtime_worker_source
-    assert "asyncio.create_task(_execute_heartbeat(" not in heartbeat_source
     assert "asyncio.create_task(_invoke_agent_for_triggers(" not in trigger_source
     assert "asyncio.create_task(run_dream(" not in trigger_source
     assert "asyncio.create_task(run_dream(" not in evolution_source

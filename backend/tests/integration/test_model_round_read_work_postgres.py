@@ -525,3 +525,161 @@ async def test_mid_walk_deactivation_withholds_multi_memory_tool_message_without
     assert bindings["messages"][-1]["status"] == "bound"
     for marker in ("GROUP_RELEASE_MARKER", "MULTI_MEMORY_SECOND_MARKER", "TEAM_PROJECT_RELEASE_MARKER"):
         assert marker not in json.dumps(wire)
+
+
+@pytest.fixture
+async def round_memory_pair(group_memory, app_user_sessionmaker):  # noqa: F811
+    from uuid import uuid5
+
+    from app.database import tenant_scoped_session
+    from app.models.organization_identity import ContentInputReceipt
+    from tests.integration.test_m4d_group_memory_postgres import group_call, save_group
+
+    g = group_memory
+    first = await save_group(g, app_user_sessionmaker)
+    saved, second = await group_call(g, app_user_sessionmaker, "save_memory",
+        {"content": "Remember the second round decision SECOND_ROUND_MEMORY_MARKER", "category": "project"})
+    assert "Saved memory" in saved, saved
+    async with tenant_scoped_session(g.n.tenant, session_factory=app_user_sessionmaker) as db:
+        receipts = [await db.get(ContentInputReceipt, uuid5(invocation.id, "explicit-memory-source"))
+            for invocation in (first, second)]
+    assert receipts[0].id != receipts[1].id
+    return g, receipts
+
+
+@pytest.mark.parametrize("change", ["grant", "retired"])
+async def test_later_top_level_memory_refreshes_agent_access(
+    round_memory_pair, owner_sessionmaker, app_user_sessionmaker, monkeypatch, change,
+):
+    from sqlalchemy import delete
+
+    from app.database import tenant_scoped_session
+    from app.models.agent import Agent, AgentPermission
+    from app.models.security_audit import ResourcePermission
+    from app.services import content_input_receipts
+    from app.services.explicit_memory_authority import source_dependency
+    from app.services.session_model_round import _validate_or_withhold_model_sources
+    from tests.integration.test_a4c_one_item_withheld import _bindings
+
+    g, receipts = round_memory_pair
+    n = g.n
+    sources = [source_dependency(r) for r in receipts]
+    async with owner_sessionmaker() as writer:
+        grant = await writer.scalar(select(AgentPermission).where(AgentPermission.agent_id == n.agent))
+        grant.scope_type, grant.scope_id = "user", n.foreign
+        await writer.execute(delete(ResourcePermission).where(ResourcePermission.resource_id == n.agent,
+            ResourcePermission.principal_id == n.foreign))
+        await writer.commit()
+    validate = content_input_receipts._validate_input_dependency_batch
+    injected = False
+
+    async def withdraw_after_first(db, tenant_id, dependencies, **kwargs):
+        nonlocal injected
+        await validate(db, tenant_id, dependencies, **kwargs)
+        if dependencies == [sources[0]] and not injected:
+            async with owner_sessionmaker() as writer:
+                if change == "grant":
+                    await writer.execute(delete(AgentPermission).where(AgentPermission.agent_id == n.agent,
+                        AgentPermission.scope_type == "user", AgentPermission.scope_id == n.foreign))
+                else:
+                    (await writer.get(Agent, n.agent)).deactivated_at = datetime.now(UTC)
+                await writer.commit()
+            injected = True
+
+    monkeypatch.setattr(content_input_receipts, "_validate_input_dependency_batch", withdraw_after_first)
+    messages = [{"role": "system", "content": f"AUTHORIZED_MEMORY_{i}"} for i in range(2)]
+    bindings = _bindings(2, {i: [source] for i, source in enumerate(sources)})
+    wire = {"messages": [dict(message) for message in messages]}
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        await _validate_or_withhold_model_sources(db, tenant_id=n.tenant, agent_id=n.agent,
+            session_id=g.s.second_session, run_id=g.s.second_run, input_bindings=bindings,
+            messages=messages, wire_request=wire)
+        await db.rollback()
+    assert injected
+    assert bindings["messages"][0]["status"] == "bound"
+    assert bindings["messages"][1]["status"] == "withheld"
+    assert bindings["messages"][1]["code"] == "content_source_access_denied"
+    assert bindings["dependencies"] == [sources[0]] and bindings["dependency_coverage"]["complete"]
+    assert wire["messages"] == [{"role": "system", "content": "AUTHORIZED_MEMORY_0"},
+        {"role": "system", "content": "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"}]
+
+
+@pytest.mark.parametrize("audience", ["private", "group"])
+@pytest.mark.parametrize("change", ["inactive", "membership", "revoked"])
+async def test_nested_memory_is_walked_live_when_it_becomes_top_level(
+    round_memory_pair, owner_sessionmaker, app_user_sessionmaker, monkeypatch, audience, change,
+):
+    from app.database import tenant_scoped_session
+    from app.models.organization_identity import ContentInputReceipt
+    from app.models.user import User
+    from app.services import content_input_receipts
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.explicit_memory_authority import source_dependency
+    from app.services.session_model_round import _validate_or_withhold_model_sources
+    from tests.integration.test_a4c_one_item_withheld import _bindings
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import new_owner_work
+
+    g, (child, parent) = round_memory_pair
+    n = g.n
+    async with owner_sessionmaker() as writer:
+        row = await writer.get(ContentInputReceipt, parent.id)
+        row.dependencies_json = [*row.dependencies_json, source_dependency(child)]
+        if change == "revoked":
+            # A distinct top-level revision misses the verified-source key even
+            # on the old implementation, isolating the latest-receipt cache.
+            child = ContentInputReceipt(id=uuid4(), tenant_id=n.tenant, carrier_kind=child.carrier_kind,
+                carrier_ref=child.carrier_ref, revision=child.revision + 1, content_sha256=child.content_sha256,
+                dependencies_json=child.dependencies_json, authority_json=child.authority_json)
+            writer.add(child)
+        await writer.commit()
+    sources = [source_dependency(parent), source_dependency(child)]
+    session, run = ((g.session, g.runs[n.user]) if audience == "group"
+        else await new_owner_work(n, owner_sessionmaker))
+    validate = content_input_receipts._validate_input_dependency_batch
+    injected = False
+
+    async def withdraw_after_parent(db, tenant_id, dependencies, **kwargs):
+        nonlocal injected
+        await validate(db, tenant_id, dependencies, **kwargs)
+        if dependencies == [sources[0]] and not injected:
+            if change == "membership":
+                g.members.remove("memory-author")
+            else:
+                async with owner_sessionmaker() as writer:
+                    if change == "inactive":
+                        (await writer.get(User, n.user)).is_active = False
+                    else:
+                        writer.add(ContentInputReceipt(id=uuid4(), tenant_id=n.tenant,
+                            carrier_kind=child.carrier_kind, carrier_ref=child.carrier_ref,
+                            revision=child.revision + 1, content_sha256=child.content_sha256,
+                            dependencies_json=child.dependencies_json,
+                            authority_json={**child.authority_json, "state": "revoked"}))
+                    await writer.commit()
+            injected = True
+
+    monkeypatch.setattr(content_input_receipts, "_validate_input_dependency_batch", withdraw_after_parent)
+    messages = [{"role": "system", "content": "PARENT_MEMORY_MARKER"}]
+    if audience == "private":
+        messages.append({"role": "system", "content": "CHILD_MEMORY_MARKER"})
+    bindings = _bindings(len(messages), {i: [source] for i, source in enumerate(sources[:len(messages)])})
+    bindings["dependencies"] = sources.copy()
+    wire = {"messages": [dict(message) for message in messages]}
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        if audience == "group":
+            with pytest.raises(ContentInputReceiptError) as caught:
+                await _validate_or_withhold_model_sources(db, tenant_id=n.tenant, agent_id=n.agent,
+                    session_id=session, run_id=run, input_bindings=bindings, messages=messages, wire_request=wire)
+            assert caught.value.code == "group_model_sources_unavailable" and caught.value.status_code == 503
+        else:
+            await _validate_or_withhold_model_sources(db, tenant_id=n.tenant, agent_id=n.agent,
+                session_id=session, run_id=run, input_bindings=bindings, messages=messages, wire_request=wire)
+            assert bindings["messages"][0]["status"] == "bound"
+            assert bindings["messages"][1]["status"] == "withheld"
+            assert bindings["messages"][1]["code"] == {"inactive": "content_source_access_denied",
+                "membership": "group_membership_required", "revoked": "explicit_memory_source_revoked"}[change]
+            assert bindings["dependencies"] == [sources[0]] and bindings["dependency_coverage"]["complete"]
+            assert wire["messages"] == [{"role": "system", "content": "PARENT_MEMORY_MARKER"},
+                {"role": "system", "content": "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"}]
+        assert injected
+        assert "CHILD_MEMORY_MARKER" not in json.dumps(wire)
+        await db.rollback()

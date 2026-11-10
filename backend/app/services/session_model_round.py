@@ -573,15 +573,17 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
         if reader is not None:
             memory_readers[entry["message_index"]] = principals.setdefault(reader, reader)
     # Reuse source walks and rows; resolve reader authority on each validation.
-    with group_source_read(batch_inputs=True, cache_authority=False):
+    with group_source_read(batch_inputs=True, cache_authority=False) as scope:
         # Each dependency is checked once; an arbitrary retry cap must not turn the
         # fourth unavailable item into a whole-turn failure.
         for source in list(input_bindings["dependencies"]) or [None]:
             if source is not None and source not in input_bindings["dependencies"]:
                 continue
             dependencies = [source] if source is not None else []
+            source_key = tuple(source[key] for key in ("source_kind", "source_id", "source_version")) if source else None
             try:
                 if group_principal is not None:
+                    scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
                     await _validate_input_dependencies(db, tenant_id, dependencies, runtime_request=group_principal)
                 await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
                 if source is not None and source["source_kind"] == "explicit_memory" and memory_readers:
@@ -591,11 +593,13 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                             readers.setdefault(memory_readers.get(entry["message_index"], memory_principal), []).append(entry["message_index"])
                     for reader, indexes in readers.items():
                         try:
+                            scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
                             await validate_memory_model_sources(db, task=task, agent_id=agent_id,
                                 session_id=session_id, dependencies=dependencies, principal=reader)
                         except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
                             _withhold_model_source(messages, wire_request, input_bindings, source, exc.code, indexes)
                 else:
+                    scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
                     await validate_memory_model_sources(db, task=task, agent_id=agent_id,
                         session_id=session_id, dependencies=dependencies, principal=memory_principal)
             except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:

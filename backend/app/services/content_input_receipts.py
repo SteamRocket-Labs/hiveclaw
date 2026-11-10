@@ -116,7 +116,7 @@ def group_source_read(*, batch_inputs=False, cache_authority=True):
     scope = _DisclosureSourceValidations(batch_inputs=batch_inputs, cache_authority=cache_authority)
     token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
-        yield
+        yield scope
     finally:
         scope.active = False
         scope.verified.clear()
@@ -154,7 +154,7 @@ async def _input_row(db, model, source_id, *, populate_existing=True):
 async def _input_agent_access(db, user, agent_id):
     from app.core.permissions import check_agent_access
 
-    rows = _preflight_inputs(db)
+    rows = _preflight_inputs(db, authority=True)
     key = ("agent_access", id(user), agent_id)
     if rows is not None and key in rows:
         return rows[key][1]
@@ -395,9 +395,9 @@ async def _validate_input_dependencies(
             None if scope.batch_inputs else active_workspace_receipts,
             source_key,
         )
-        # A nested source already verified for this reader is not re-walked.
-        # Its group membership is as of its first walk in this round, as on
-        # A2a's tool path; disabling authority caches does not change that limit.
+        # Nested children of a top-level source are cached for the same reader
+        # within one round; every top-level model source is walked live.
+        # Nested group membership reflects its first walk, as on A2a's tool path.
         if (
             not scope.active
             or transaction is None

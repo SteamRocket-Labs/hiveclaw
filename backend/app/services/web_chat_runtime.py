@@ -105,6 +105,7 @@ _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconci
 _TERMINAL_TRANSCRIPT_EVENT_TYPES = ("assistant_message", "run_completed", "done", "error", "quota_exceeded")
 _CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 _TASKS: dict[str, asyncio.Task] = {}
+_DELEGATION_CANCEL_TASKS: set[asyncio.Task] = set()
 _CURRENT_BROADCAST_RUN_ID: ContextVar[str | None] = ContextVar("_CURRENT_BROADCAST_RUN_ID", default=None)
 _PERMISSION_METADATA_KEYS = (
     "permission_mode",
@@ -1064,6 +1065,8 @@ def _runtime_action_event_from_tool_result(data: dict[str, Any]) -> dict[str, An
 
     if tool_name in {"delegate_to_agent", "send_message_to_agent"}:
         runtime_task_id = str(payload.get("runtime_task_id") or payload.get("task_id") or "").strip()
+        if tool_name == "send_message_to_agent" and not runtime_task_id:
+            return None
         if not child_session_id and not runtime_task_id:
             return None
         target_agent_name = str(args.get("agent_name") or payload.get("agent_name") or "target agent").strip()
@@ -3696,19 +3699,16 @@ async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
                 await asyncio.wait(tasks)
         except Exception as exc:  # noqa: BLE001 - child lookup is best-effort too.
             logger.warning("[WebChatRun] child cancel unavailable for {}: error_class={}", run_uuid, type(exc).__name__)
-        finally:
-            for task, child_id in tasks.items():
-                if not task.done():
-                    logger.warning("[WebChatRun] child {} cancel exceeded stop time budget", child_id)
-                    task.cancel()
 
     batch = asyncio.create_task(cancel_batch())
-    try:
-        await asyncio.wait({batch}, timeout=3.0)
-    finally:
-        if not batch.done():
-            logger.warning("[WebChatRun] child cancel time budget exceeded for {}", run_uuid)
-            batch.cancel()
+    _DELEGATION_CANCEL_TASKS.add(batch)
+    batch.add_done_callback(_DELEGATION_CANCEL_TASKS.discard)
+    await asyncio.wait({batch}, timeout=3.0)
+    if not batch.done():
+        logger.warning("[WebChatRun] child cancel time budget exceeded for {}", run_uuid)
+        for task, child_id in tasks.items():
+            if not task.done():
+                logger.warning("[WebChatRun] child {} cancel exceeded stop time budget", child_id)
 
 
 async def signal_web_chat_cancel(
@@ -3728,7 +3728,6 @@ async def signal_web_chat_cancel(
     run_uuid = _run_id(run_id)
     cancel_event = _CANCEL_EVENTS.get(run_uuid.hex)
     local_delivered = cancel_event is not None
-    cross_process_delivered = False
     if cancel_event is not None:
         cancel_event.set()
     try:
@@ -3742,7 +3741,7 @@ async def signal_web_chat_cancel(
         )
     except Exception as exc:  # noqa: BLE001 - returned as a typed retryable delivery failure.
         logger.warning(
-            "[WebChatRun] cancel delivery unavailable for {}: error_class={}",
+            "[WebChatRun] cross-process cancel delivery unavailable for {}: error_class={}",
             run_uuid.hex,
             type(exc).__name__,
         )
@@ -3750,7 +3749,7 @@ async def signal_web_chat_cancel(
             run_id=run_uuid.hex,
             delivery_state="unavailable",
             local_delivered=local_delivered,
-            cross_process_delivered=cross_process_delivered,
+            cross_process_delivered=False,
             retryable=True,
             error_class=type(exc).__name__,
         )

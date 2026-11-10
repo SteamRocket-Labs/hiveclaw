@@ -131,6 +131,8 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "jina_search" not in tools
     assert "jina_read" not in tools
     assert "return immediately" in tools["send_message_to_agent"]
+    assert "Member requests run in the background" in tools["send_message_to_agent"]
+    assert "other runs get the reply inline" in tools["send_message_to_agent"]
     assert "Completion automatically returns to this conversation" in tools["send_message_to_agent"]
     assert "Digital Employee Colleagues" not in tools["send_message_to_agent"]
     assert "same-owner agents" in tools["send_message_to_agent"]

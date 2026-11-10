@@ -322,7 +322,8 @@ async def test_stored_queued_outcome_binds_and_session_can_delegate_again(
         invocation = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == seed["run_id"]))
         assert await delegation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
             invocation=invocation, content=content)
-        for field, value in (("next_action", "Unrecognized guidance"), ("target_agent_id", str(uuid4()))):
+        for field, value in (("next_action", "Unrecognized guidance"), ("target_agent_id", str(uuid4())),
+            ("operation", "consult")):
             tampered = {**json.loads(content), field: value}
             assert not await delegation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
                 invocation=invocation, content=json.dumps(tampered))
@@ -344,10 +345,14 @@ async def test_stored_queued_outcome_binds_and_session_can_delegate_again(
         assert models and all(model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for model in models)
 
 
-@pytest.mark.parametrize("origin", ["trigger", "heartbeat"])
+@pytest.mark.parametrize("origin,identity_type", [
+    ("trigger", "agent_bot"), ("heartbeat", "agent_bot"), ("web", "agent_bot"),
+    ("feishu", "external_principal"), ("feishu", "external_principal_bound"),
+], ids=["trigger", "heartbeat", "native-trigger-web", "external-principal", "bound-channel-member"])
 async def test_unattended_consult_keeps_synchronous_reply_without_plan_required(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, origin,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, origin, identity_type,
 ):
+    from app.core.execution_context import ExecutionIdentity, clear_execution_identity, get_execution_identity, set_execution_identity
     from app.tools.handlers.communication import send_message_to_agent
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
     from app.tools.adapters import adapt_and_call
@@ -356,7 +361,10 @@ async def test_unattended_consult_keeps_synchronous_reply_without_plan_required(
     seed, _, child = await _setup(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
         tool="send_message_to_agent")
     child.release.set()
-    context = ToolExecutionContext(agent_id=seed["agent_id"], user_id=None, tenant_id=str(seed["tenant_id"]),
+    identity = ExecutionIdentity(identity_type=identity_type,
+        identity_id=seed["agent_id"] if identity_type == "agent_bot" else uuid4(), label=origin)
+    context = ToolExecutionContext(agent_id=seed["agent_id"], user_id=seed["user_id"],
+        tenant_id=str(seed["tenant_id"]), execution_identity=identity,
         workspace=seed["data_root"], origin_channel=origin)
     invoked = []
 
@@ -365,14 +373,62 @@ async def test_unattended_consult_keeps_synchronous_reply_without_plan_required(
         return SimpleNamespace(content=RESULT, failed=False)
 
     monkeypatch.setattr(messaging, "_invoke_agent_message_runtime", colleague_reply)
-    result = await adapt_and_call(send_message_to_agent.meta, send_message_to_agent,
-        ToolExecutionRequest(tool_name="send_message_to_agent", arguments={"agent_name": COLLEAGUE,
-            "message": "请核实三点业务进展。", "msg_type": "consult"}, context=context))
+    previous = get_execution_identity()
+    set_execution_identity(identity)
+    try:
+        result = await adapt_and_call(send_message_to_agent.meta, send_message_to_agent,
+            ToolExecutionRequest(tool_name="send_message_to_agent", arguments={"agent_name": COLLEAGUE,
+                "message": "请核实三点业务进展。", "msg_type": "consult"}, context=context))
+    finally:
+        set_execution_identity(previous) if previous else clear_execution_identity()
     (tmp_path / "unattended-result.txt").write_text(result)
     assert "plan_required" not in result
     assert RESULT in result, result
     assert len(invoked) == 1 and invoked[0]["execution_principal"] is None
     assert await _child(owner_sessionmaker, seed) is None
+
+
+def test_completed_synchronous_consult_has_no_running_timeline_item():
+    from app.services.web_chat_runtime import _runtime_action_event_from_tool_result
+
+    assert _runtime_action_event_from_tool_result({"status": "done", "name": "send_message_to_agent",
+        "args": {"agent_name": COLLEAGUE}, "result": {"ok": True, "operation": "consult",
+            "status": "completed", "session_id": str(uuid4()), "reply": RESULT}}) is None
+
+
+async def test_queued_consult_source_requires_the_exact_canonical_outcome(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.session_model_inputs import _hash, _origin_dependencies
+    from app.services.session_semantic_history import _event_payload
+
+    seed, _, _ = await _setup(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        tool="send_message_to_agent")
+    await _execute(seed["run_id"], owner_sessionmaker, worker="r11c-consult-binding")
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        invocation = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == seed["run_id"]))
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        payload = _event_payload(event)
+        original = json.loads(payload["content"])
+        assert original["operation"] == "delegate" and original["status"] == "queued"
+
+        async def binds():
+            _, complete = await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+                ref=f"session-tool-result:{invocation.id}")
+            return complete
+
+        assert await binds()
+        for field, value in (("next_action", "Unrecognized guidance"), ("target_agent_id", str(uuid4()))):
+            content = json.dumps({**original, field: value}, ensure_ascii=False)
+            content_hash = _hash(content)
+            invocation.receipt_ref = f"tool-frame:{content_hash}"
+            event.content_hash = content_hash
+            event.metadata_json = {**event.metadata_json, "v2_payload": {**payload, "content": content,
+                "content_hash": content_hash, "content_or_error_ref": invocation.receipt_ref}}
+            await db.flush()
+            assert not await binds(), field
 
 
 @pytest.mark.parametrize("tool", ["send_message_to_agent", "delegate_to_agent"])
@@ -482,6 +538,59 @@ async def test_member_stop_returns_within_bound_when_child_teardown_ignores_canc
         assert published and event.is_set() and delivered[0].delivery_state == "delivered"
         await asyncio.sleep(0)
         assert any(str(child_id) in line and "time budget" in line for line in logs)
+        assert orchestrator._async_tasks[child_id.hex].task is child_task
+        async with owner_sessionmaker() as db:
+            assert (await db.get(RuntimeTask, child_id)).status == "running"
     finally:
         release.set()
         await asyncio.wait_for(asyncio.gather(child_task, *cancellations, return_exceptions=True), 5)
+
+
+async def test_child_teardown_near_stop_budget_retains_terminal_evidence(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    seed, child_id, _, delivered, logs, _ = await _stop_fixture(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    started, teardown_finished, settle = (asyncio.Event() for _ in range(3))
+    cancellations = []
+    terminal_summary = "Child teardown completed and terminal evidence committed."
+
+    async def child_work():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(2.7)
+            teardown_finished.set()
+            await settle.wait()
+            async with owner_sessionmaker() as db:
+                child = await db.get(RuntimeTask, child_id)
+                child.status, child.result_summary = "killed", terminal_summary
+                await db.commit()
+
+    child_task = asyncio.create_task(child_work())
+    await started.wait()
+    cancel = orchestrator.cancel_async_delegation
+
+    async def capture_cancel(*args, **kwargs):
+        cancellations.append(asyncio.current_task())
+        return await cancel(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "cancel_async_delegation", capture_cancel)
+    monkeypatch.setitem(orchestrator._async_tasks, child_id.hex, SimpleNamespace(task=child_task,
+        parent_agent_id=seed["agent_id"], trace_id=f"r11c-near-budget:{child_id}", child_session_id=None,
+        child_agent_name=COLLEAGUE, receipt=None))
+    try:
+        async with owner_sessionmaker() as db:
+            receipt = await asyncio.wait_for(_cancel(db, seed["agent_id"], seed["session_id"],
+                seed["run_id"], seed["user_id"]), 4.5)
+        assert receipt["status"] == "applying" and delivered[0].delivery_state == "delivered"
+        assert teardown_finished.is_set() and not child_task.done()
+        assert orchestrator._async_tasks[child_id.hex].task is child_task
+        assert any(str(child_id) in line and "time budget" in line for line in logs)
+    finally:
+        settle.set()
+        await asyncio.wait_for(asyncio.gather(child_task, *cancellations, return_exceptions=True), 5)
+    async with owner_sessionmaker() as db:
+        child = await db.get(RuntimeTask, child_id)
+        assert child.status == "killed" and child.result_summary == terminal_summary

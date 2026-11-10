@@ -1179,6 +1179,21 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation, content=content
         )
         return _unique_dependencies(dependencies), inherited_complete and complete
+    if invocation.tool_name == "send_message_to_agent":
+        try:
+            outcome = json.loads(content)
+            queued_consult = isinstance(outcome, dict) and bool(
+                outcome.get("operation") == "delegate" or outcome.get("runtime_task_id") or outcome.get("task_id")
+            )
+        except ValueError:
+            queued_consult = False
+        if queued_consult:
+            from app.services.delegation_input_origin import delegation_tool_result_bound
+
+            complete = await delegation_tool_result_bound(
+                db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation, content=content
+            )
+            return _unique_dependencies(dependencies), inherited_complete and complete
     if invocation.tool_name == "delegate_to_agent":
         from app.services.delegation_input_origin import delegation_tool_result_bound
 

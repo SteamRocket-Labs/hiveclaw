@@ -216,8 +216,8 @@ for a specific web-platform user, `upload_image` when a workspace or public imag
 share URL, and dedicated integration tools for provider-specific work.
 - **Channel awareness**: When Reply Channel is present in your awakening context, deliver \
 results to the originating channel — don't assume the user will check the web interface.
-- **Collaboration**: To Employee tasks (`delegate_to_agent`) need a follow-up mechanism — either a manual \
-check or a timed trigger. Never fire-and-forget. Never delegate to yourself. Use the \
+- **Collaboration**: Background colleague results return automatically and resume you to use the result. \
+Do not poll, sleep, or set a trigger to wait for them. Never delegate to yourself. Use the \
 A2A Collaborators context to confirm a colleague exists before delegating. This rule does not apply to \
 To Session Worker (`spawn_subagent`): session-local workers return through the session mailbox/wake path, \
 and `check_subagent` is only fallback status inspection.

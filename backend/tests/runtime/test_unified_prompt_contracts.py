@@ -28,6 +28,18 @@ def test_system_prompt_includes_vendor_neutral_behavior_contract() -> None:
     assert "Karpathy" not in rendered
 
 
+def test_background_colleague_results_resume_without_waiting_mechanisms() -> None:
+    from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
+
+    for scope in ("conversation", "task", "heartbeat"):
+        prompt = " ".join(build_executing_actions_section(scope).split())
+        assert "Background colleague results return automatically and resume you to use the result." in prompt
+        assert "Do not poll, sleep, or set a trigger to wait for them." in prompt
+        assert "need a follow-up mechanism" not in prompt
+        assert "either a manual check or a timed trigger" not in prompt
+        assert "Never fire-and-forget" not in prompt
+
+
 def test_delegation_tool_descriptions_require_structured_briefs() -> None:
     from app.runtime.prompts.delegation import DELEGATION_BRIEF_CONTRACT
     from app.tools.handlers.communication import delegate_to_agent, send_message_to_agent
@@ -44,6 +56,8 @@ def test_delegation_tool_descriptions_require_structured_briefs() -> None:
 
     assert "colleague consults" in sync_description
     assert "return immediately" in sync_description
+    assert "Member requests run in the background" in sync_description
+    assert "other runs get the reply inline" in sync_description
     assert "Completion automatically returns to this conversation" in sync_description
     assert "Do not sleep, poll, or resend to wait" in sync_description
     assert "task_delegate" not in sync_description

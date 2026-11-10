@@ -18,8 +18,7 @@ from app.services.session_model_inputs import _hash, model_output_dependencies
 from app.tools.runtime import ToolExecutionContext
 
 
-async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id,
-    tool_name="delegate_to_agent"):
+async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id, tool_name="delegate_to_agent"):
     invocation = (
         await db.scalars(
             select(SessionToolInvocation)

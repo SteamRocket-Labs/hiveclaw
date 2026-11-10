@@ -867,8 +867,9 @@ def _summary_breaker_record_success(tenant_id: uuid.UUID) -> None:
 def _wrap_compressed_summary(summary: str) -> dict:
     """Build the post-compaction summary message (CC getCompactUserSummaryMessage).
 
-    Auto-compaction resumes in the running loop; the wrapper does not reopen
-    a stopped request. The recovery pointer is system-injected here
+    Auto-compaction is implicit, so the wrapper keeps CC's continue-without-recap
+    directive, scoped to the current request: it must not reopen a request the
+    user interrupted. The recovery pointer is system-injected here
     (CC transcriptPath pattern) rather than LLM-written: the summary model has
     no knowledge of real log paths and would only hallucinate them.
     """
@@ -880,7 +881,8 @@ def _wrap_compressed_summary(summary: str) -> dict:
         f"{summary}\n\n"
         "If you need specific pre-compaction detail, raw session evidence lives under "
         "memory/t0/sessions/<session_id>/segments/<segment_id>/source.md in your workspace.\n"
-        "This summary is historical context for the current request, subject to any recorded user interruption."
+        "Continue the current request without acknowledging or recapping this summary. "
+        "A request the user interrupted stays stopped unless the user asks to resume it."
     )
     return {"role": "system", "content": content}
 

@@ -275,8 +275,8 @@ async def test_auto_compaction_returns_context_without_reopening_stopped_work(mo
     content = wrapper["content"]
     assert content.startswith("[Previous conversation summary]")  # stable marker
     assert "fine summary" in content  # the LLM summary body
-    assert "historical context for the current request" in content
-    assert "recorded user interruption" in content
+    assert "Continue the current request without acknowledging or recapping this summary." in content
+    assert "A request the user interrupted stays stopped unless the user asks to resume it." in content
     assert "Resume directly" not in content
     assert "Pick up the last task" not in content
     assert "Continue the conversation from where it left off" not in content

@@ -1253,9 +1253,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             return _unique_dependencies(dependencies), inherited_complete and bound == pointer
         except (ContentInputReceiptError, ValueError, TypeError):
             return _unique_dependencies(dependencies), False
-    if invocation.tool_name in {"read_file", "read_document", "fs_read", "exit_plan_mode"} and (
-        "native_read_denial_receipt" in (payload.get("metadata") or {})
-    ):
+    if "native_read_denial_receipt" in (payload.get("metadata") or {}):
         from app.services.content_input_receipts import load_native_read_denial_evidence
 
         pointer = payload["metadata"]["native_read_denial_receipt"]

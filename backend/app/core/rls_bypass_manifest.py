@@ -907,7 +907,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # recovery_action rows, withholding-notice origin); still 122 callsites, no scope change.
 # Land14 fixes: the withholding-notice origin attaches only to internal LLMMessage rows
 # (one condition and one comment line in session_model_round); still 122 callsites.
-RLS_BYPASS_SCOPES_SHA256 = "75e0d5c2a3bb21af4471b7923f318263870417f0ddec3f67474b4393d93c43a4"
+# R10a validates workspace sources at read time and reuses exact no-body refusal proofs.
+# Three source/function entries change; all 122 bypass callsites and grants remain identical.
+RLS_BYPASS_SCOPES_SHA256 = "183947051106232bc5adf295f36a93c2c92c9fc59316a6cfc38b1b1e5124a05c"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

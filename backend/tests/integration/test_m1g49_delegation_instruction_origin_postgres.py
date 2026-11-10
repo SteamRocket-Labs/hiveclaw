@@ -261,6 +261,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         "first_task_parent_result_denial",
         "first_task_parent_public_directory",
         "first_task_child_readback",
+        "first_task_parent_workspace_child_readback",
         "first_task_child_glob",
         "first_task_workspace_listing",
         "first_task_workspace_listing_alias",
@@ -401,8 +402,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     parity_list_case = input_case == "first_task_parity_list"
     parity_sequence_case = input_case in {"first_task_parity_ledger", "first_task_parity_ledger_unknown"}
     parity_unknown = input_case == "first_task_parity_ledger_unknown"
+    parent_workspace_child_readback = input_case == "first_task_parent_workspace_child_readback"
     child_readback_case = (
-        grep_case
+        parent_workspace_child_readback
+        or grep_case
         or child_missing_file_case
         or parent_missing_file_case
         or creator_task_inventory_case
@@ -1361,6 +1364,17 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 return await native_parity_stream(**kwargs)
 
             monkeypatch.setattr(creator_client, "stream", continue_parity_ledger)
+        if parent_workspace_child_readback:
+            from tests.integration.test_artifact_publication_transactions import stage_report
+
+            parent_input_path = "workspace/delegation-input.md"
+            async with owner_sessionmaker() as db:
+                await stage_report(db, tenant=seed["tenant_id"], agent=seed["agent_id"], user=seed["user_id"],
+                    session=seed["session_id"], root=seed["agent_root"], path=parent_input_path)
+                await db.commit()
+            creator_client.script.insert(0, {"tool_calls": [{"id": "parent-workspace-read", "type": "function",
+                "function": {"name": "read_file", "arguments": json.dumps({"path": parent_input_path})}}],
+                "finish_reason": "tool_calls"})
         if input_case == "first_task_explicit_unverified_memory":
             creator_client.script.insert(
                 0,
@@ -1439,7 +1453,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             after_read = json.dumps(creator_client.requests[2]["messages"])
             assert prior_body in after_read and "workspace_content_unverified" not in after_read
         if discovery_case:
-            if creator_readiness_case:
+            if parent_workspace_child_readback:
+                assert len(creator_client.requests) == 4
+            elif creator_readiness_case:
                 assert len(creator_client.requests) == 4
             elif parity_sequence_case:
                 assert len(creator_client.requests) == 4
@@ -1449,7 +1465,15 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert len(creator_client.requests) == 3
         if ledger_unknown_case:
             assert "LEGACY_PRIVATE_LEDGER_WITHOUT_NATIVE_RECEIPT" not in json.dumps(creator_client.requests[1]["messages"])
-        if input_case != "first_task_explicit_unverified_memory" and not discovery_case:
+        if parent_workspace_child_readback:
+            assert len(creator_client.requests) == 4
+            assert "COMPANY_SOURCE_MARKER" in json.dumps(creator_client.requests[1]["messages"])
+            async with owner_sessionmaker() as db:
+                parent_models = list(await db.scalars(select(SessionModelResult).where(
+                    SessionModelResult.run_id == seed["run_id"])))
+                assert any(ref["source_kind"] == "workspace_artifact" for model in parent_models
+                    for ref in model.model_request_snapshot_json["input_bindings"]["dependencies"])
+        elif input_case != "first_task_explicit_unverified_memory" and not discovery_case:
             assert len(creator_client.requests) == 2 and "NATIVE_PARENT_CONTEXT" in json.dumps(
                 creator_client.requests[0]["messages"]
             )
@@ -1604,7 +1628,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                         for row in creating_rounds
                     )
                 else:
-                    assert len(creating_rounds) == 3 and all(
+                    assert len(creating_rounds) == (4 if parent_workspace_child_readback else 3) and all(
                         row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
                         for row in creating_rounds
                     )

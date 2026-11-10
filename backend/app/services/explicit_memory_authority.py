@@ -441,12 +441,12 @@ async def save_scoped_explicit_memory(request, *, data_root, session_factory=Non
 
 
 async def validate_memory_model_sources(db, *, task, agent_id, session_id, dependencies, principal=None):
-    """Recheck source-bound recalled memory at the actual provider boundary."""
+    """Recheck bound memory and workspace sources at the actual provider boundary."""
     from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
     sources = [ref for ref in dependencies if ref["source_kind"] in {
-        "explicit_memory", "team_memory", "learned_skill_candidate", "learned_skill_file", "skill_evolution_observation", "session_model_result"}]
+        "explicit_memory", "team_memory", "learned_skill_candidate", "learned_skill_file", "skill_evolution_observation", "session_model_result", "workspace_artifact"}]
     from app.models.config_revision import ConfigRevision
 
     for ref in dependencies:

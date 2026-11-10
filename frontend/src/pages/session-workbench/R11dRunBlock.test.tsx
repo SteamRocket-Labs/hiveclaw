@@ -62,6 +62,52 @@ it('does not publish partial terminal totals while older transcript pages are lo
   expect(complete).toEqual(runs(build(events))[0].timeline);
 });
 
+it('keeps a completed run while older transcript pages are loading without publishing partial totals', () => {
+  const events = [user(), event(2, 'run', 'queued', 0), ...Array.from({ length: 69 }, (_, i) => work(i + 3, i + 1)),
+    event(72, 'run', 'completed', 897)];
+  const project = (snapshot: Event[]) => projectCanonicalTranscriptSnapshot({ existing: [],
+    snapshot: snapshot as unknown as ChatTranscriptEventPayload[], session: { id: 'session' } as any,
+    parseMessage: message => message }).messages;
+  const partialRuns = runs(build([], { messages: project(events.slice(-52)) }));
+  expect(partialRuns).toHaveLength(1);
+  const partial = partialRuns[0].timeline;
+  expect(partial).toMatchObject({ status: 'done', steps: [] });
+  expect(partial.startedAt).toBeUndefined();
+  expect(partial.durationMs).toBeUndefined();
+  expect(partial.summary).toBeUndefined();
+  const view = render(<RunDisclosureBlock timeline={partial} />);
+  expect(view.getAllByTestId('run-disclosure-block')).toHaveLength(1);
+  const complete = runs(build([], { messages: project(events) }))[0].timeline;
+  expect(complete.steps).toHaveLength(69);
+  expect(complete.durationMs).toBe(897_000);
+  expect(complete).toEqual(runs(build(events))[0].timeline);
+});
+
+it('keeps the hello block when the newest transcript page starts inside its run', () => {
+  const events = [user(), event(2, 'run', 'queued', 0),
+    event(3, 'assistant_text', 'completed', 24, 'run-1', { content: 'Hello.' }, 'hello-text'),
+    event(4, 'assistant_final', 'completed', 25, 'run-1',
+      { source_blocks: [{ item_id: 'hello-text', block_index: 0, content_hash: 'hello-hash' }] }),
+    event(5, 'run', 'completed', 26)];
+  const project = (snapshot: Event[]) => projectCanonicalTranscriptSnapshot({ existing: [],
+    snapshot: snapshot as unknown as ChatTranscriptEventPayload[], session: { id: 'session' } as any,
+    parseMessage: message => message }).messages;
+  const partial = build([], { messages: project(events.slice(-3)) });
+  expect(runs(partial)).toHaveLength(1);
+  expect(runs(partial)[0].timeline).toMatchObject({ status: 'done', steps: [] });
+  expect(runs(partial)[0].timeline.startedAt).toBeUndefined();
+  expect(runs(partial)[0].timeline.durationMs).toBeUndefined();
+  expect(runs(partial)[0].timeline.summary).toBeUndefined();
+  expect(partial.cells.filter(cell => cell.kind === 'assistant_final')).toHaveLength(1);
+  const view = render(<RunDisclosureBlock timeline={runs(partial)[0].timeline} />);
+  expect(view.getAllByTestId('run-disclosure-block')).toHaveLength(1);
+  const complete = build([], { messages: project(events) });
+  expect(runs(complete)).toHaveLength(1);
+  expect(runs(complete)[0].timeline.steps.map(step => step.id)).toEqual(['hello-text']);
+  expect(runs(complete)[0].timeline.durationMs).toBe(26_000);
+  expect(complete.cells.filter(cell => cell.kind === 'assistant_final')).toHaveLength(1);
+});
+
 // Reduced sequences of the run8 observations: late activation adds 69 -> 71,
 // 74 -> 75 and 92 -> 94 steps without any new run.
 it.each([[69, 2], [74, 1], [92, 2]])('freezes %i steps across %i late compatibility events', (count, late) => {

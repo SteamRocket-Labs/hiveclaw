@@ -39,6 +39,7 @@ export type ThreadTimelineCell =
       /** Canonical run identity used to bind later run-terminal evidence. */
       runId?: string;
       timeline: RunTimelineSnapshot;
+      totalsUnknown?: boolean;
       sourceMessages: Array<{ message: AgentChatMessage; index: number }>;
       /** Live RuntimePhase for the open run (§3 seam 3); settled runs carry none. */
       phase?: string;
@@ -2151,6 +2152,7 @@ function applyCanonicalRunTerminalEvidence(
       ...cell,
       runId,
       phase: undefined,
+      totalsUnknown,
       timeline: {
         ...cell.timeline,
         status,
@@ -2367,6 +2369,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
         ? { ...cell, timeline: { ...cell.timeline, status: 'running' as const }, phase: undefined }
         : cell)
       .filter(cell => cell.kind !== 'active_run' || cell.timeline.status !== 'done'
+        || cell.totalsUnknown
         || cell.timeline.steps.length > 0
         || cell.sourceMessages.some(({ message }) => message.artifacts?.length)),
     header: {

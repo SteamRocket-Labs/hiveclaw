@@ -76,7 +76,9 @@ it.each(['zh', 'en'])('localizes the backend default conversation title in heade
 
 it.each([
   ['save_memory', '保存记忆'], ['search_memory', '查找记忆'], ['load_memory', '读取记忆'],
-  ['update_memory', '更新记忆'], ['retire_memory', '忘记记忆'], ['unknown_tool', '工具'],
+  ['update_memory', '更新记忆'], ['retire_memory', '忘记记忆'],
+  // R11g row 10: a nameless tool step reads 处理请求.
+  ['unknown_tool', '处理请求'],
 ])('names a completed %s group through the shared mapping', (toolName, label) => {
   const timeline = buildRunTimelineFromMessages([
     { id: 'tool', role: 'tool_call', content: '', toolName, toolStatus: 'done' },
@@ -88,6 +90,7 @@ it.each([
   expect(group.textContent).toContain(toolName === 'unknown_tool' ? '其他操作' : label);
   expect(group.textContent).not.toContain('…');
   fireEvent.click(group);
+  // R11g row 10: a nameless tool step reads 处理请求.
   expect(container.querySelector('.run-tool-history-title')?.textContent).toBe(label);
 });
 
@@ -99,25 +102,26 @@ it.each(['done', 'running'] as const)('describes a %s thinking step with its own
   expect(container.querySelector('.run-step-title')?.textContent).toBe(status === 'done' ? '已思考' : '思考中');
 });
 
-it.each(['zh', 'en'])('localizes command wrappers and clipping without translating stdout (%s)', language => {
+it.each(['zh', 'en'])('shows a completed command status without stdout or clipping (%s)', language => {
   locale.language = language;
   const stdout = ['Output: member stdout', ...Array.from({ length: 64 }, (_, i) => `line-${i + 1}`)];
   const output = `📤 Output:\n${stdout.join('\n')}`;
+  const details = { toolName: 'run_command', args: { command: 'print-report' }, result: output, exit_code: 0 };
   const { container } = render(<RunDisclosureBlock timeline={{ id: 'command', status: 'running', steps: [
     { id: 'cmd', kind: 'command', title: 'Run command', status: 'done', visibility: 'visible',
-      details: { toolName: 'run_command', args: { command: 'print-report' }, result: output } },
+      details },
   ] }} />);
   fireEvent.click(container.querySelector('.run-step-toggle')!);
-  const preview = container.querySelector('.exec-pre')?.textContent || '';
-  expect(preview).toContain(language === 'zh' ? '输出：' : 'Output:');
-  expect(preview).toContain(language === 'zh' ? '… 省略 56 行 …' : '… 56 lines …');
-  if (language === 'zh') expect(preview).not.toMatch(/📤 Output:|56 lines/);
-  expect(preview).toContain('Output: member stdout');
-  expect(container.querySelector('.exec-complete-pre')?.textContent).toContain(stdout.join('\n'));
+  // R11g: structured exit_code: 0 confirms completion without showing command stdout.
+  expect(container.querySelector('.run-step-body p')?.textContent).toBe(language === 'zh' ? '运行命令。完成' : 'Run command. Done');
+  // R11g: member step details never show command stdout.
+  expect(container.textContent).not.toMatch(/Output: member stdout|line-1|📤 Output:|56 lines|省略 56 行/);
+  // R11g: hiding command stdout must preserve the original result bytes.
+  expect(details.result).toBe(output);
   expect(output).toBe(`📤 Output:\n${stdout.join('\n')}`);
 });
 
-it('removes the exact command envelope even for multiline commands and preserves structured stdout', () => {
+it('hides wrapped multiline commands and structured stdout behind neutral status sentences', () => {
   const command = "printf 'first\\n'\nprintf 'last\\n'";
   const stdout = '📤 Output:\nThis header belongs to stdout.';
   const timeline = { id: 'raw-command', status: 'running' as const, steps: [
@@ -128,12 +132,15 @@ it('removes the exact command envelope even for multiline commands and preserves
   ] };
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
   for (const button of container.querySelectorAll('.run-step-toggle')) fireEvent.click(button);
-  const outputs = container.querySelectorAll('.exec-pre');
-  expect(outputs[0].textContent).toBe(`输出：\n${stdout}`);
-  expect(outputs[1].textContent).toBe(stdout);
+  // R11g: done steps without structured exit codes keep their outcomes unconfirmed.
+  expect(Array.from(container.querySelectorAll('.run-step-body p'), node => node.textContent)).toEqual([
+    '运行命令。结果尚未确认。', '运行命令。结果尚未确认。',
+  ]);
+  // R11g: member step details never show command stdout.
+  expect(container.textContent).not.toMatch(/This header belongs to stdout\.|📤 Output:|💻 Command:|printf/);
 });
 
-it('localizes the recorded Session V2 command result when admission exposes only an args hash', () => {
+it('shows a neutral Session V2 command status without stdout when admission exposes only an args hash', () => {
   const common = { schema: 'hive.session_event', schema_version: 2, tenant_id: 'tenant',
     run_id: 'run', invocation_id: 'invocation', provider_tool_use_id: 'call', result_id: 'model-result',
     scope: { level: 'round', run_id: 'run', turn_id: 'turn', round_id: 'round', session_id: 'work', thread_id: 'work' },
@@ -159,7 +166,9 @@ it('localizes the recorded Session V2 command result when admission exposes only
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
   fireEvent.click(container.querySelector('.run-disclosure-header')!);
   fireEvent.click(container.querySelector('.run-step-toggle')!);
-  expect(container.querySelector('.exec-pre')?.textContent).toBe(`输出：\n${stdout}`);
-  expect(container.querySelector('.exec-command')?.textContent).toBe(`$ ${command}`);
+  // R11g: outcome: success without a structured exit code leaves command success unconfirmed.
+  expect(container.querySelector('.run-step-body p')?.textContent).toBe('运行命令。结果尚未确认。');
+  // R11g: member step details never show command stdout.
+  expect(container.textContent).not.toMatch(/Original stdout|📤 Output:|💻 Command:|printf report/);
   expect(events[2].payload?.content).toBe(result);
 });

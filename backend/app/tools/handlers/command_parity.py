@@ -157,7 +157,7 @@ async def task_update(request: ToolExecutionRequest) -> str:
 @tool(
     ToolMeta(
         name="task_list",
-        description="List current cognitive Work Ledger tasks.",
+        description="List recorded cognitive Work Ledger tasks. Resume user-stopped work only if asked.",
         parameters={"type": "object", "properties": {}},
         category="command_task",
         display_name="Task List",
@@ -177,7 +177,7 @@ async def task_list(request: ToolExecutionRequest) -> str:
 @tool(
     ToolMeta(
         name="task_get",
-        description="Get one cognitive Work Ledger task by id.",
+        description="Get one recorded cognitive Work Ledger task by id. Resume user-stopped work only if asked.",
         parameters={"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
         category="command_task",
         display_name="Task Get",

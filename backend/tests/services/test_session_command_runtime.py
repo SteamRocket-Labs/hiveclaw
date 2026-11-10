@@ -14,6 +14,20 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.memory.t0.ledger import T0SessionEvent
 
 
+@pytest.fixture
+def compact_origin_recorder(monkeypatch):
+    """Capture the persistence boundary for handler tests with an in-memory DB.
+
+    Real binding and provider consumption are covered by the PostgreSQL suites.
+    """
+    records = []
+    async def record(*_args, **kwargs):
+        if kwargs.get("name") == "compaction_checkpoint_installed":
+            records.append(kwargs)
+    monkeypatch.setattr("app.services.invocation_trace.record_invocation_span", record)
+    return records
+
+
 async def _run_session_command(owner, **kwargs):
     from app.services.session_command_runtime import SessionCommandContext
 
@@ -1240,7 +1254,7 @@ async def test_workspace_rewind_rolls_back_deferred_swap_when_control_event_fail
 
 
 @pytest.mark.asyncio
-async def test_compact_command_installs_compacted_projection_and_session_compact_event(monkeypatch):
+async def test_compact_command_installs_compacted_projection_and_session_compact_event(monkeypatch, compact_origin_recorder):
     import app.services.session_command_runtime as runtime
 
     agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
@@ -1335,9 +1349,11 @@ async def test_compact_command_installs_compacted_projection_and_session_compact
     assert len(hooks) == 2
     assert hooks[0][0][0] == runtime.HookEvent.PRE_COMPACTION
     assert hooks[0][1]["messages"] == [
-        {"role": "user", "content": "Please build the report"},
-        {"role": "assistant", "content": "Report drafted"},
+        {"role": "user", "content": "Please build the report", "source_ref": "legacy-0"},
+        {"role": "assistant", "content": "Report drafted", "source_ref": "legacy-1"},
     ]
+    assert len(compact_origin_recorder) == 1
+    assert compact_origin_recorder[0]["metadata"]["compaction_source"]["inputs"] == hooks[0][1]["messages"]
     assert hooks[1][0][0] == runtime.HookEvent.POST_COMPACTION
 
 
@@ -1940,7 +1956,7 @@ def _v2_tool_row(session: ChatSession, *, sequence: int, item_id, kind: str) -> 
 
 
 @pytest.mark.asyncio
-async def test_compact_summary_includes_authoritative_v2_user_prompt_with_exact_content(monkeypatch):
+async def test_compact_summary_includes_authoritative_v2_user_prompt_with_exact_content(monkeypatch, compact_origin_recorder):
     """Compact summary input comes from the canonical semantic-history reader:
     the revised HumanInput wins over its superseded accepted bytes, state
     facts never enter, and an assistant_final without a committed provider
@@ -2003,7 +2019,9 @@ async def test_compact_summary_includes_authoritative_v2_user_prompt_with_exact_
     )
 
     assert result["action"] == "compacted_context_installed"
-    assert captured["messages"] == [{"role": "user", "content": "first revised exact"}]
+    assert captured["messages"] == [{"role": "user", "content": "first revised exact",
+        "source_ref": f"session-input:{item}"}]
+    assert compact_origin_recorder[0]["metadata"]["compaction_source"]["inputs"] == captured["messages"]
 
 
 @pytest.mark.asyncio
@@ -2153,7 +2171,7 @@ async def test_resume_recognizes_zero_copy_assistant_final_tail_without_inline_c
 
 
 @pytest.mark.asyncio
-async def test_compact_summary_preserves_exact_v2_user_bytes(monkeypatch):
+async def test_compact_summary_preserves_exact_v2_user_bytes(monkeypatch, compact_origin_recorder):
     """The canonical reader renders the checkpoint's exact bytes; compact
     passes them to the summary model unchanged (strip decides emptiness only
     at the reader boundary; here bytes are non-empty and stay verbatim)."""
@@ -2204,4 +2222,6 @@ async def test_compact_summary_preserves_exact_v2_user_bytes(monkeypatch):
     )
 
     assert result["action"] == "compacted_context_installed"
-    assert captured["messages"] == [{"role": "user", "content": exact_text}]
+    assert captured["messages"] == [{"role": "user", "content": exact_text,
+        "source_ref": f"session-input:{accepted.item_id}"}]
+    assert compact_origin_recorder[0]["metadata"]["compaction_source"]["inputs"] == captured["messages"]

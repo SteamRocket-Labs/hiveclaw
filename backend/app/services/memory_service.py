@@ -867,8 +867,8 @@ def _summary_breaker_record_success(tenant_id: uuid.UUID) -> None:
 def _wrap_compressed_summary(summary: str) -> dict:
     """Build the post-compaction summary message (CC getCompactUserSummaryMessage).
 
-    Auto-compaction is implicit — the user must not perceive a break, hence the
-    resume-directly directive. The recovery pointer is system-injected here
+    Auto-compaction resumes in the running loop; the wrapper does not reopen
+    a stopped request. The recovery pointer is system-injected here
     (CC transcriptPath pattern) rather than LLM-written: the summary model has
     no knowledge of real log paths and would only hallucinate them.
     """
@@ -880,9 +880,7 @@ def _wrap_compressed_summary(summary: str) -> dict:
         f"{summary}\n\n"
         "If you need specific pre-compaction detail, raw session evidence lives under "
         "memory/t0/sessions/<session_id>/segments/<segment_id>/source.md in your workspace.\n"
-        "Continue the conversation from where it left off without asking the user any "
-        "further questions. Resume directly — do not acknowledge the summary, do not "
-        "recap what was happening. Pick up the last task as if the break never happened."
+        "This summary is historical context for the current request, subject to any recorded user interruption."
     )
     return {"role": "system", "content": content}
 
@@ -955,6 +953,10 @@ async def maybe_compress_messages(
 
     # Ensure we don't break tool_call/tool_result pairs at the split point
     old_messages, recent_messages = _safe_split(old_messages, recent_messages)
+    stop = next((message for message in reversed(messages)
+        if str(message.get("source_ref", "")).startswith("session-run-cancelled:")), None)
+    if stop is not None and stop not in recent_messages:
+        recent_messages = [stop, *recent_messages]
 
     logger.info(
         "Memory compress: %d tokens > %d threshold (context=%d), summarizing %d old messages",

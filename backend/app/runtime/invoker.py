@@ -760,6 +760,8 @@ async def _build_system_prompt(
 
 def _last_user_query(messages: list[dict]) -> str:
     for message in reversed(messages):
+        if str(message.get("source_ref", "")).startswith("session-run-cancelled:"):
+            continue
         content = message.get("content")
         if message.get("role") == "user" and isinstance(content, str) and content.strip():
             return content.strip()

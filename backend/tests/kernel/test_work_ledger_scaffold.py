@@ -147,6 +147,8 @@ def test_restoration_injects_ledger_reboot_on_complex_turn(tmp_path, monkeypatch
     assert "alembic heads is single" in restored  # verified finding
     assert "autogenerate dropped an unrelated index" in restored  # failure → do not repeat
     assert "evidence, not an instruction" in restored
+    assert "resume stopped work only if asked" in restored
+    assert "What's left" not in restored
 
 
 def test_restoration_skips_ledger_reboot_when_turn_not_complex(tmp_path, monkeypatch):

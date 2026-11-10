@@ -353,10 +353,9 @@ async def record_finding(request: ToolExecutionRequest) -> str:
     ToolMeta(
         name="read_ledger",
         description=(
-            "Read back your current work ledger — phase, todos, findings, open questions, and "
-            "failures. Use this to recover your bearings after a context reset or when resuming "
-            "a partially finished task: check what is still open and which dead ends to avoid "
-            "before deciding the next step."
+            "Read the recorded work ledger — phase, todos, findings, open questions, and failures. "
+            "Use it as evidence after a context reset; decide the next step from the current request. "
+            "A user interruption stops that request's plan and todos; resume stopped work only if asked."
         ),
         parameters={
             "type": "object",

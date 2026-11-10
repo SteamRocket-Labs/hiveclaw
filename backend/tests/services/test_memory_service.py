@@ -149,7 +149,7 @@ def _clean_breaker():
     memory_service._summary_breaker.clear()
 
 
-async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool):
+async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool, messages=None):
     """Run maybe_compress_messages with a stubbed summary LLM.
 
     Test Double rationale: summary model resolution (DB) and the LLM call are
@@ -175,7 +175,7 @@ async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool)
     monkeypatch.setattr(summarizer_mod, "_llm_summarize", fake_llm_summarize)
 
     return await memory_service.maybe_compress_messages(
-        _breaker_test_messages(),
+        _breaker_test_messages() if messages is None else messages,
         "openai",
         "m",
         1000,  # max_input_tokens_override → tiny window, forces compression
@@ -251,22 +251,35 @@ async def test_summary_breaker_opens_after_consecutive_failures(monkeypatch, cap
 
 
 @pytest.mark.asyncio
-async def test_compressed_summary_wrapper_aligns_cc(monkeypatch, _clean_breaker):
-    """P3-2 (docs/compaction-cc-alignment.md): the post-compaction wrapper carries
-    CC's resume-directly directive (auto-compaction is implicit — the user must not
-    perceive a break) and a system-injected recovery pointer (never LLM-written)."""
+@pytest.mark.parametrize("stopped", [True, False])
+async def test_auto_compaction_returns_context_without_reopening_stopped_work(monkeypatch, _clean_breaker, stopped):
+    """Auto-compaction returns to its caller without directing stopped work to resume."""
     tenant_id = uuid4()
     llm_calls: list = []
 
-    result = await _compress_once(monkeypatch, tenant_id, llm_calls, fail=False)
+    messages = _breaker_test_messages()
+    stop = {
+        "role": "user",
+        "content": "[Request interrupted by user; its plan and todos are stopped. Resume only if asked.]",
+        "source_ref": f"session-run-cancelled:{uuid4()}",
+    }
+    if stopped:
+        messages.insert(1, stop)
+    result = await _compress_once(monkeypatch, tenant_id, llm_calls, fail=False, messages=messages)
+    assert result[-10:] == messages[-10:]
+    if stopped:
+        assert result[1] == stop
 
     wrapper = result[0]
     assert wrapper["role"] == "system"
     content = wrapper["content"]
     assert content.startswith("[Previous conversation summary]")  # stable marker
     assert "fine summary" in content  # the LLM summary body
-    assert "Resume directly" in content
-    assert "do not acknowledge the summary" in content
+    assert "historical context for the current request" in content
+    assert "recorded user interruption" in content
+    assert "Resume directly" not in content
+    assert "Pick up the last task" not in content
+    assert "Continue the conversation from where it left off" not in content
     assert "memory/t0/sessions/<session_id>/segments/<segment_id>/source.md" in content
     assert "logs/" not in content  # Native session readers cannot authorize legacy log names.
 

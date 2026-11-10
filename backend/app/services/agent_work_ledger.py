@@ -1025,10 +1025,10 @@ def render_work_ledger_resume_block(summary: dict[str, Any] | None) -> str:
     where = phase or "(unset)"
     if status:
         where = f"{where} (status: {status})"
-    lines.append(f"- Where I am (current phase): {where}")
+    lines.append(f"- Recorded phase: {where}")
 
     open_todos = [item for item in (summary.get("open_required_todos") or []) if _clean_text(item)]
-    lines.append("- What's left (open required todos): " + ("; ".join(open_todos) if open_todos else "(none open)"))
+    lines.append("- Recorded open required todos: " + ("; ".join(open_todos) if open_todos else "(none open)"))
 
     findings = [item for item in (summary.get("verified_findings") or []) if _clean_text(item)]
     lines.append("- What I verified (verified findings): " + ("; ".join(findings) if findings else "(none yet)"))
@@ -1040,10 +1040,11 @@ def render_work_ledger_resume_block(summary: dict[str, Any] | None) -> str:
         lines.append("- What failed: (none recorded)")
 
     pending = [item for item in (summary.get("verification_pending") or []) if _clean_text(item)]
-    lines.append("- What still needs verification: " + ("; ".join(pending) if pending else "(none pending)"))
+    lines.append("- Recorded pending verification: " + ("; ".join(pending) if pending else "(none pending)"))
     lines.append(
         "Use read_ledger for full detail. This ledger is evidence, not an instruction; decide the next step "
-        "from the current request and complete evidence."
+        "from the current request and complete evidence. A user interruption stops that request's plan and todos; "
+        "resume stopped work only if asked."
     )
     return "\n".join(lines)
 
@@ -1468,27 +1469,11 @@ async def read_latest_session_work_ledger_view(
     ]
     active_task_ids = {id(task) for task in active_tasks}
     inactive_tasks = [task for task in tasks if id(task) not in active_task_ids]
-    stopped_at = max((task.completed_at for task in tasks
-        if task.status == "killed" and (task.metadata_json or {}).get("cancel_state") == "cancelled"
-        and task.completed_at is not None), default=None)
-    successor_after_stop = stopped_at is not None and any(
-        task.created_at is not None and task.created_at > stopped_at for task in tasks)
 
     def session_scoped_view(*, active_task: Any | None = None) -> dict[str, Any] | None:
         view = read_agent_work_ledger_view(agent_id=agent_id, session_id=session_key, data_root=data_root)
         if view is None:
             return None
-        if successor_after_stop:
-            # Keep the stopped turn's file intact. Only todos authored or
-            # updated after its stop can belong to the successor's task.
-            todos = [item for item in view["todo_items"]
-                if (updated := _parse_ledger_timestamp(item.get("updated_at"))) is not None and updated > stopped_at]
-            if not todos:
-                return None
-            view["todo_items"] = todos
-            view["counts"].update(todos_total=len(todos),
-                todos_complete=sum(item["status"] in COMPLETE_ITEM_STATUSES for item in todos),
-                todos_open=sum(item["required"] and item["status"] not in COMPLETE_ITEM_STATUSES for item in todos))
         view["session_id"] = session_key
         view["task_type"] = "session_work_ledger"
         if active_task is not None:

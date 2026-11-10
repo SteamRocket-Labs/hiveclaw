@@ -1515,6 +1515,9 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
             {
                 "role": message.role,
                 "content": message.content,
+                "source_ref": message.id,
+                **({"reasoning_content": message.thinking} if message.thinking is not None else {}),
+                **({"reasoning_signature": message.thinking_signature} if message.thinking_signature is not None else {}),
                 **({"tool_calls": message.tool_calls} if message.tool_calls else {}),
                 **({"tool_call_id": message.tool_call_id} if message.tool_call_id else {}),
             }
@@ -1565,6 +1568,20 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
     if recent:
         _, recent = _safe_split(messages[:-keep_recent], recent)
     replacement = [_wrap_compressed_summary(summary), *recent]
+    if semantic_receipt is not None:
+        # Manual compact uses the same summary-origin binding as in-run
+        # compaction, so the wrapper and retained stop do not lose their source.
+        from app.services.invocation_trace import record_invocation_span
+        from app.services.session_model_inputs import message_snapshot
+
+        source_id = uuid.uuid4()
+        replacement[0]["source_ref"] = f"session-compaction:{source_id}"
+        await record_invocation_span(db=context.db, tenant_id=session.tenant_id, agent_id=agent.id,
+            user_id=user.id, runtime_task_id=None, session_id=str(session.id), request_id=None,
+            trace_id=str(session.id), span_id=f"compaction-source:{source_id}", parent_span_id=None,
+            parent_trace_id=None, span_type="compaction", name="compaction_checkpoint_installed", status="ok",
+            duration_ms=0, metadata={"compaction_source": {"schema": "hive.compaction_source.v1",
+                "source_id": str(source_id), "message": message_snapshot(replacement[0]), "inputs": messages}})
     projection = {
         "projection_reason": "compact",
         "applied_at": datetime.now(timezone.utc).isoformat(),

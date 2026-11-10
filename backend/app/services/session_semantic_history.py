@@ -362,8 +362,11 @@ def _user_messages(
     return messages
 
 
-def _cancelled_run_messages(views: list[_EventView], *, current_run_id: uuid.UUID | None) -> list[SessionSemanticMessage]:
+def _cancelled_run_messages(
+    views: list[_EventView], *, current_run_id: uuid.UUID | None,
+) -> tuple[list[SessionSemanticMessage], list[tuple[int, int]]]:
     messages = {}
+    stop_windows = []
     for view in views:
         source = view.source
         run_id = _source_scope_run_id(source)
@@ -373,12 +376,22 @@ def _cancelled_run_messages(views: list[_EventView], *, current_run_id: uuid.UUI
             or source.item_kind != "run" or source.lifecycle != "cancelled"
             or not _event_payload(source).get("control_id")):
             continue
+        control_id = _event_payload(source)["control_id"]
+        stop = next((candidate for candidate in views
+            if _source_scope_run_id(candidate.source) == run_id
+            and candidate.source.item_kind == "run" and candidate.source.lifecycle == "cancelling"
+            and _event_payload(candidate.source).get("control_id") == control_id), view)
+        point = max([stop, *(candidate for candidate in views
+            if _source_scope_run_id(candidate.source) == run_id
+            and candidate.source.item_kind == "result_commit" and candidate.source.lifecycle == "round_committed")],
+            key=lambda candidate: candidate.sequence)
+        stop_windows.append((stop.sequence, point.sequence))
         messages[run_id] = SessionSemanticMessage(
             id=f"session-run-cancelled:{source.id}", role="user", content=_USER_STOP_MARKER,
-            created_at=view.created_at, sequence_start=view.sequence, sequence_end=view.sequence,
+            created_at=point.created_at, sequence_start=point.sequence, sequence_end=point.sequence,
             group_id=f"run-stop:{run_id}", source_event_ids=(view.target_event_id,),
         )
-    return list(messages.values())
+    return list(messages.values()), stop_windows
 
 
 async def _committed_round_messages(
@@ -811,14 +824,20 @@ async def load_session_semantic_history(
             evidence_refs=("chat_transcript_events", "session_model_results", "session_tool_invocations"),
         ) from exc
 
-    messages = [*users, *rounds, *legacy, *remote, *_cancelled_run_messages(views, current_run_id=current_run_id)]
-    messages.sort(
-        key=lambda message: (
-            message.sequence_start,
-            0 if message.role == "user" else (1 if message.role == "assistant" else 2),
-            message.id,
-        )
-    )
+    cancelled, stop_windows = _cancelled_run_messages(views, current_run_id=current_run_id)
+    messages = [*users, *rounds, *legacy, *remote, *cancelled]
+
+    def history_order(message):
+        sequence = message.sequence_start
+        if message.id.startswith("session-input:"):
+            # A round can finish committing during cancellation. Later inputs
+            # follow both that round and the stop, retaining admission order.
+            sequence = max([sequence, *(end for start, end in stop_windows if sequence > start)])
+        rank = 2 if message.id.startswith("session-run-cancelled:") else (
+            3 if message.id.startswith("session-input:") else (0 if message.role == "assistant" else 1))
+        return sequence, rank, message.sequence_start, message.id
+
+    messages.sort(key=history_order)
     reader_run = reader_run_id or current_run_id
     if reader_run is not None:
         session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id,

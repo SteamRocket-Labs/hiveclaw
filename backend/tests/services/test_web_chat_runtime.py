@@ -1873,6 +1873,24 @@ async def test_active_compact_projection_replaces_prior_history_and_keeps_later_
 
 
 @pytest.mark.asyncio
+async def test_stop_line_is_never_the_latest_user_query():
+    from app.runtime.invoker import _last_user_query
+    from app.services.web_chat_run_orchestrator import _replace_latest_user_prompt
+
+    marker = {"role": "user", "content": "[Request interrupted by user]",
+        "source_ref": f"session-run-cancelled:{uuid4()}"}
+    assert _last_user_query([marker]) == ""
+    conversation = [{"role": "user", "content": "Original request"}, marker.copy()]
+    assert _last_user_query(conversation) == "Original request"
+    _replace_latest_user_prompt(conversation, "Current request")
+    assert conversation[0]["content"] == "Current request"
+    assert conversation[1] == marker
+    only_stop = [marker.copy()]
+    _replace_latest_user_prompt(only_stop, "New request")
+    assert only_stop == [marker, {"role": "user", "content": "New request"}]
+
+
+@pytest.mark.asyncio
 async def test_active_rewind_projection_excludes_selected_user_checkpoint_and_keeps_later_tail():
     import app.services.web_chat_runtime as runtime
 

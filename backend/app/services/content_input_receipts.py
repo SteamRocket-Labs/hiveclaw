@@ -107,6 +107,7 @@ class _DisclosureSourceValidations:
         self.cache_authority = cache_authority
         self.verified = {}
         self.visiting = set()
+        self.revisiting = set()
         self.actors = {}
         self.inputs = {}
 
@@ -122,6 +123,7 @@ def group_source_read(*, batch_inputs=False, cache_authority=True):
         scope.active = False
         scope.verified.clear()
         scope.visiting.clear()
+        scope.revisiting.clear()
         scope.actors.clear()
         scope.inputs.clear()
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
@@ -397,16 +399,18 @@ async def _validate_input_dependencies(
             source_key,
         )
         if reader_key in scope.visiting:
-            if source_key[0] in {
-                "workspace_artifact", "explicit_memory", "team_memory", "project_resource",
-                "trigger_write", "trigger_snapshot", "native_trigger_context",
-            } or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get()):
-                # Let the source's active-chain check preserve its error class.
+            # Re-enter a gray source once so its own active-chain check can classify
+            # the cycle; a second re-entry means no kind check fires on this cycle.
+            if reader_key in scope.revisiting:
+                raise ContentInputReceiptError(
+                    "content_source_unavailable", "The source dependency chain is cyclic.", 503
+                )
+            scope.revisiting.add(reader_key)
+            try:
                 await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
-                continue
-            raise ContentInputReceiptError(
-                "content_source_unavailable", "The source dependency chain is cyclic.", 503
-            )
+            finally:
+                scope.revisiting.discard(reader_key)
+            continue
         # Nested children of a top-level source are cached for the same reader
         # within one round; every top-level model source is walked live.
         # Nested group membership reflects its first walk, as on A2a's tool path.

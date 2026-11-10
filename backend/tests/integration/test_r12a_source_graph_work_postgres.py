@@ -6,6 +6,7 @@ import time
 import uuid
 from collections import Counter
 from contextlib import contextmanager
+from copy import deepcopy
 
 import pytest
 from sqlalchemy import event, select
@@ -62,6 +63,8 @@ async def _measure(n, path, operation):
     row = {"path": path, "N": n.size, "nodes": n.nodes, "edges": n.edges,
         "statements": len(statements), "seconds": round(time.perf_counter() - started, 4),
         "timed_out": timed_out}
+    if path == "heartbeat_t2":
+        row["events"] = n.t2_events
     print("R12A_GRAPH_SQL", json.dumps(row), flush=True)
     return result, row
 
@@ -161,6 +164,10 @@ async def _graph(n, size, owner_sessionmaker, app_user_sessionmaker, monkeypatch
     assert sealed
     events = replay_t0_session_events(agent_id=n.agent, session_id=n.session, data_root=n.root.parent)
     n.segment = next(event.segment_id for event in events if event.content == DERIVED)
+    from app.memory.t2.segment_package import select_t2_segment_events
+
+    n.t2_events = sum(event.event_type != "segment_boundary"
+        for event in select_t2_segment_events(events, t0_segment_id=n.segment).source_events)
     # Include the retained commands/tools and their producer model results.
     n.nodes = size + len(shared) + 2 + 1 + 3 + int(deep_source)
     n.edges = sum(len(row.dependencies_json) for row in n.receipts) + 10
@@ -429,11 +436,15 @@ async def test_source_graph_statement_work(native_workspace, owner_sessionmaker,
     # One source costs a bounded number of indexed authority/source lookups;
     # edges must not multiply completed descendant walks. Tightened from the
     # measured green numbers, with fixed request overhead.
-    # T2 checks every event with live authority: N=4 costs 1097 statements,
-    # below 24 * (14 nodes + 28 edges) + 100. No authority snapshot is needed.
-    bounds = {"download": 3, "content": 3, "heartbeat_t2": 24, "web_model": 3}
+    # T2 at N=4/6/8/10/16: 1097/1277/1457/1637/2177 SQL, 53 events.
+    # The endpoint slope is ceil(1080 / 174) = 7 per node+edge. The largest
+    # residual is 869 / 53 = 16.4 per event; round up and reserve 2 => 19.
+    # This leaves 138..342 statements of margin without an authority snapshot.
+    graph_size = n.nodes + n.edges
+    bounds = {"download": 3 * graph_size + 100, "content": 3 * graph_size + 100,
+        "heartbeat_t2": 19 * n.t2_events + 7 * graph_size, "web_model": 3 * graph_size + 100}
     violations = [row for row in rows if row["timed_out"]
-        or row["statements"] > bounds[row["path"]] * (n.nodes + n.edges) + 100]
+        or row["statements"] > bounds[row["path"]]]
     assert not violations, violations
 
 
@@ -507,7 +518,11 @@ async def test_large_graph_deep_source_change_withholds(native_workspace, owner_
                 assert origin["model_result_id"] == str(model.id)
                 assert old_source in origin["dependencies"]
                 dependencies, complete = await _origin_dependencies(db, tenant_id=n.tenant, agent_id=n.agent,
-                    ref=f"session-model-result:{n.model}")
+                    ref=entry["source_ref"])
+                assert complete and old_source in dependencies
+                retained = next(source for source in dependencies if source == old_source)
+                dependencies, complete = await _origin_dependencies(db, tenant_id=n.tenant, agent_id=n.agent,
+                    ref=f"session-model-result:{retained['source_id']}")
                 assert complete and _source(n.receipts[-1]) in dependencies
 
 
@@ -562,7 +577,10 @@ async def test_sources_are_validated_once_and_authority_checks_stay_live(native_
     assert observed == {tuple(_source(receipt).values()) for receipt in expected}
     # R12a review round 1: authority reads stay live within one request.
     assert checks and all(resolutions[key] == count for key, count in checks.items()), (checks, resolutions)
-    assert authority and max(authority.values()) > 1, authority
+    # N=10: live Agent checks peak at 4 on download, 26 per T2 event,
+    # and 37 in the new model round; a one-check authority snapshot must fail.
+    assert authority and max(authority.values()) == {
+        "download": 4, "heartbeat_t2": 26, "web_model": 37}[path], authority
 
 
 @pytest.mark.parametrize("path", ["download", "content", "heartbeat_t2", "web_model", "run_read"])
@@ -700,8 +718,10 @@ async def test_source_back_edge_preserves_each_kind_error(native_workspace, owne
     source = {"source_kind": kind, "source_id": str(identity), "source_version": "f" * 64}
     async with owner_sessionmaker() as db:
         if kind in {"workspace_artifact", "explicit_memory", "team_memory"}:
+            carrier_ref = (f"business_team:{uuid.uuid4()}\ncycle" if kind == "team_memory"
+                else f"{n.agent}\nworkspace/cycle.md")
             db.add(ContentInputReceipt(id=identity, tenant_id=n.tenant, carrier_kind=kind,
-                carrier_ref=f"{n.agent}\ncycle", revision=1, content_sha256=source["source_version"],
+                carrier_ref=carrier_ref, revision=1, content_sha256=source["source_version"],
                 dependencies_json=[source], authority_json={"schema": AUTHORITY_SCHEMA, "state": "active",
                     "tenant_id": str(n.tenant), "agent_id": str(n.agent), "audience_kind": "private",
                     "owner_user_id": str(n.user), "source_session_id": str(n.session)}))
@@ -733,7 +753,18 @@ async def test_source_back_edge_preserves_each_kind_error(native_workspace, owne
             with pytest.raises(receipts.ContentInputReceiptError) as denied:
                 await receipts._validate_input_dependencies(db, n.tenant, [source], user=user)
             assert (denied.value.code, denied.value.status_code) == (code, status)
+            if kind == "workspace_artifact":
+                assert str(denied.value) == "The workspace source dependency chain is cyclic."
+            causes = {"team_memory": "team_memory_receipt_unavailable",
+                "trigger_write": "cyclic_trigger_write", "trigger_snapshot": "cyclic_trigger_sources",
+                "native_trigger_context": "cyclic_context_source"}
+            if kind in causes:
+                # The team row and carrier are structurally valid; only the
+                # active id can enter its unavailable-row branch. The other
+                # kinds must preserve the cycle cause, not an invalid-row one.
+                assert str(denied.value.__cause__) == causes[kind]
             assert not scope.verified and not getattr(scope, "visiting", ())
+            assert not getattr(scope, "revisiting", ())
 
 
 async def test_unclassified_model_cycle_fails_without_recursing_forever(native_workspace,  # noqa: F811
@@ -808,3 +839,125 @@ async def test_t2_omits_cyclic_team_event_and_keeps_its_sibling(readable_team_me
     result = await _heartbeat(n)
     assert codes and set(codes) == {("team_memory_source_unverified", 403)}, codes
     assert result is not None and good in json.dumps(result) and bad not in json.dumps(result), result
+
+
+async def test_t2_model_trigger_back_edge_keeps_its_class_and_sibling(native_workspace,  # noqa: F811
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.memory.t0.ledger import replay_t0_session_events, seal_t0_session_segment
+    from app.models.invocation_span import InvocationSpan
+    from app.services import content_input_receipts as receipts, trigger_context_sources
+    from app.services.learned_skill_sources import model_source
+    from app.services.runtime_control_bus import bridge_transcript_event_to_t0
+    from app.services.session_model_inputs import _hash
+    from app.services.session_model_round import prepare_model_request
+
+    n = await _graph(native_workspace, 4, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    bad, good = "MODEL_TRIGGER_CYCLE_MARKER", "MODEL_TRIGGER_SAFE_SIBLING"
+    async with owner_sessionmaker() as db:
+        invocation = await db.get(SessionToolInvocation, n.newest_read.id)
+        # TW's previous-source inventory is a tool-origin pointer, independent
+        # of the model-source hash. Inject its corrupt edge below while keeping
+        # the real model, trigger validator, active check and T2 packaging path.
+        proof = {"schema": "hive.trigger_write.v1", "invocation_id": str(invocation.id),
+            "owner_user_id": str(n.user), "effective_args_hash": invocation.effective_args_hash,
+            "previous_sources": {field: {"kind": "tool", "invocation_id": str(invocation.id)}
+                for field in ("name", "type", "config", "reason")}}
+        identity = uuid.uuid5(invocation.id, "trigger-write-evidence")
+        db.add(InvocationSpan(id=identity, tenant_id=n.tenant, agent_id=n.agent, user_id=n.user,
+            session_id=str(n.session), runtime_task_id=n.run, trace_id=f"r12a:{identity}",
+            span_id=f"trigger-write:{identity}", span_type="trigger_write", name="trigger_write",
+            status="captured", duration_ms=0, started_at=datetime.now(timezone.utc), metadata_json={"write": proof}))
+        trigger_source = {"source_kind": "trigger_write", "source_id": str(identity), "source_version": _hash(proof)}
+        model = await db.get(SessionModelResult, n.model)
+        snapshot = deepcopy(model.model_request_snapshot_json)
+        snapshot["input_bindings"]["dependencies"] = [trigger_source]
+        model.model_request_snapshot_json, model.model_request_hash = snapshot, _hash(snapshot)
+        source = model_source(model)
+        await db.commit()
+    cyclic = False
+    resolve_origin = trigger_context_sources._origin_dependencies
+
+    async def original_sources(db, *, tenant_id, agent_id, ref):
+        if ref == f"session-tool-result:{n.newest_read.id}":
+            assert tenant_id == n.tenant and agent_id == n.agent
+            return ([source] if cyclic else []), True
+        return await resolve_origin(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
+
+    monkeypatch.setattr(trigger_context_sources, "_origin_dependencies", original_sources)
+    for index, content, dependency in [(5, bad, source), (6, good, _source(n.receipts[0]))]:
+        async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+            message = LLMMessage(role="system", content=content, context_origin=ContextMessageOrigin.capture(
+                kind="history", role="system", content=content, sources=[dependency], unbound=()))
+            request = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
+                run_id=n.run, turn_id=f"turn-{n.run.hex}", round_index=index, messages=[message], tools=[],
+                provider="synthetic", model="local-reference")
+            await _seal_round(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session, run_id=n.run,
+                turn_id=f"turn-{n.run.hex}", round_index=index, provider_request_id=request, content=content)
+            model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
+            transcript = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.result_id == model.id,
+                ChatTranscriptEvent.item_kind == "assistant_text"))
+            transcript_id = transcript.id
+            await db.commit()
+        assert await bridge_transcript_event_to_t0(transcript_event_id=transcript_id)
+    assert seal_t0_session_segment(agent_id=n.agent, session_id=n.session, reason="turn_stop")
+    events = replay_t0_session_events(agent_id=n.agent, session_id=n.session, data_root=n.root.parent)
+    n.segment = next(event.segment_id for event in events if event.content == bad)
+    assert next(event.segment_id for event in events if event.content == good) == n.segment
+    before = await _heartbeat(n)
+    assert before is not None and all(marker in json.dumps(before) for marker in (bad, good))
+    cyclic = True
+    validate, codes = receipts._validate_input_dependencies, []
+
+    async def observe_denial(*args, **kwargs):
+        try:
+            return await validate(*args, **kwargs)
+        except receipts.ContentInputReceiptError as exc:
+            codes.append((exc.code, exc.status_code, str(exc.__cause__)))
+            raise
+
+    monkeypatch.setattr(receipts, "_validate_input_dependencies", observe_denial)
+    result = await asyncio.wait_for(_heartbeat(n), TIMEOUT)
+    assert codes and set(codes) == {("trigger_context_access_denied", 403, "cyclic_trigger_write")}, codes
+    assert result is not None and good in json.dumps(result) and bad not in json.dumps(result), result
+
+
+async def test_loop_command_back_edge_reaches_explicit_memory_cycle(shared_memory,  # noqa: F811
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch):
+    from app.models.organization_identity import ContentInputReceipt
+    from app.models.user import User
+    from app.services import trigger_instruction_sources
+    from app.services.content_input_receipts import ContentInputReceiptError, validate_browser_input_dependencies
+    from app.services.explicit_memory_authority import latest_memory_receipt, source_dependency
+    from app.services.session_model_inputs import _hash
+
+    s, n = shared_memory, shared_memory.n
+    async with owner_sessionmaker() as db:
+        memory = await latest_memory_receipt(db, n.tenant, n.agent, s.entry_id)
+        explicit = source_dependency(memory)
+        command = await db.scalar(select(SessionCommand).where(
+            SessionCommand.session_id == n.session, SessionCommand.namespace == "human_input"))
+        command.target_json = {**command.target_json, "runtime_metadata": {"source": "loop_same_session"}}
+        command.target_hash = _hash(command.target_json)
+        source = {"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash}
+        (await db.get(ContentInputReceipt, memory.id)).dependencies_json = [source]
+        await db.commit()
+    extracted = []
+
+    async def cyclic_original_sources(db, *, tenant_id, agent_id, row, command):
+        # Inject the corrupt edge at the scheduled-origin inventory boundary;
+        # the real command validation must pass its active set on re-entry.
+        assert tenant_id == n.tenant and agent_id == n.agent and row.command_id == command.id
+        assert command.target_json["runtime_metadata"]["source"] == "loop_same_session"
+        extracted.append(str(command.id))
+        return [explicit], True
+
+    monkeypatch.setattr(trigger_instruction_sources, "native_trigger_input_sources", cyclic_original_sources)
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        user = await db.get(User, n.user)
+        with pytest.raises(ContentInputReceiptError) as denied:
+            await asyncio.wait_for(validate_browser_input_dependencies(db, n.tenant, user, [source]), TIMEOUT)
+        assert (denied.value.code, denied.value.status_code) == ("explicit_memory_source_cycle", 409)
+        assert str(denied.value) == "The memory source chain is cyclic."
+        assert extracted == [source["source_id"], source["source_id"]]

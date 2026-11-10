@@ -46,8 +46,13 @@ const preview = {
 
 describe('HrBlueprintPreviewCard', () => {
   it('renders the user decision surface without raw hashes or JSON', () => {
+    const client = new QueryClient();
+    client.setQueryData(['hr-creation-draft', 'hr-agent', preview.blueprintId, undefined], {
+      blueprint_id: preview.blueprintId, blueprint_version: preview.blueprintVersion,
+      blueprint_hash: preview.blueprintHash, draft_status: 'awaiting_confirmation', blueprint: {},
+    });
     const markup = renderToStaticMarkup(
-      <QueryClientProvider client={new QueryClient()}>
+      <QueryClientProvider client={client}>
         <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} />
       </QueryClientProvider>,
     );

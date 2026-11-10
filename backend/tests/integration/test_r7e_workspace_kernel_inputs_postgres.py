@@ -267,9 +267,12 @@ async def test_session_learning_without_a_fitting_receipt_stays_withheld(
     assert "UNBOUND_SESSION_LESSON" not in json.dumps(snapshot["wire_request"])
 
 
-async def test_shared_withholding_notice_loses_its_origin_before_the_next_round(
-    native_workspace, app_user_sessionmaker,
+@pytest.mark.parametrize("skill_catalog", [False, True])
+async def test_shared_withholding_notice_is_bound_in_the_next_round_without_the_original_source(
+    native_workspace, app_user_sessionmaker, skill_catalog,
 ):
+    """R9b binds the platform notice; the original source stays withheld."""
+    from app.runtime.context_candidates import ContextMessageOrigin
     from app.services.llm_client import LLMMessage
     from app.services.session_model_round import seal_model_response, commit_sealed_model_round
 
@@ -277,15 +280,26 @@ async def test_shared_withholding_notice_loses_its_origin_before_the_next_round(
     await _create(n, "workspace/report.md", "LOCAL_SEARCH")
     await _tool_round(n, app_user_sessionmaker, "grep_search", {"pattern": "LOCAL_SEARCH", "root": "workspace"})
     messages = [LLMMessage(role="system", content="UNPROVEN_COMPILER_INPUT")]
+    if skill_catalog:
+        messages[0].context_origin = ContextMessageOrigin.capture(
+            kind="dynamic_prompt", role="system", content=messages[0].content,
+            sections=[{"name": "skill_catalog"}], unbound=("skill_catalog_sources_unbound",))
+    expected_notice = ("技能目录内容暂时无法核实，已略过；请使用其余内容继续，需要时向用户询问。" if skill_catalog
+        else "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。")
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
         scope = dict(tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
             run_id=n.run, turn_id=f"turn-{n.run.hex}")
         request = await prepare_model_request(db, **scope, round_index=2, messages=messages,
             tools=[], provider="openai", model="synthetic-no-provider")
+        row = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
+        original = row.model_request_snapshot_json["input_bindings"]["messages"][0]
+        assert original["status"] == "withheld" and original["code"] == "model_input_source_unbound"
+        assert original["dependencies"] == []
+        assert "UNPROVEN_COMPILER_INPUT" not in json.dumps(row.model_request_snapshot_json)
         notice = messages[0]
-        assert notice.role == "system" and notice.content != "UNPROVEN_COMPILER_INPUT"
-        assert notice.context_origin is None and notice.source_ref is None
+        assert notice.role == "system" and notice.content == expected_notice
+        assert notice.source_ref is None
         await seal_model_response(db, **scope, round_index=2, provider_request_id=request,
             response={"content": "Continue safely", "tool_calls": [], "finish_reason": "stop", "usage": {}})
         await commit_sealed_model_round(db, **scope, round_index=2, provider_request_id=request)
@@ -293,6 +307,12 @@ async def test_shared_withholding_notice_loses_its_origin_before_the_next_round(
             tools=[], provider="openai", model="synthetic-no-provider")
         row = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
         entry = row.model_request_snapshot_json["input_bindings"]["messages"][0]
-        assert entry["status"] == "withheld" and entry["code"] == "model_input_source_unbound"
-        assert "source_ref" not in entry
+        assert entry["status"] == "bound" and entry["dependency_status"] == "resolved", entry
+        assert isinstance(notice.context_origin, ContextMessageOrigin)
+        assert notice.context_origin.sources == () and notice.context_origin.unbound == ()
+        assert entry["dependencies"] == []
+        assert entry["source_ref"].startswith("session-kernel-context:")
+        assert row.model_request_snapshot_json["wire_request"]["messages"] == [
+            {"role": "system", "content": expected_notice}]
+        assert "UNPROVEN_COMPILER_INPUT" not in json.dumps(row.model_request_snapshot_json)
         await db.commit()

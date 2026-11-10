@@ -59,6 +59,7 @@ async def heartbeat_run(owner_sessionmaker, monkeypatch):
     original_create_task = asyncio.create_task
     monkeypatch.setattr(daemon_concurrency, "_semaphores", {})
     state.semaphore = daemon_concurrency.get_daemon_semaphore("heartbeat")
+    starting_slots = state.semaphore._value
 
     @asynccontextmanager
     async def tracked_session(*args, **kwargs):
@@ -101,6 +102,7 @@ async def heartbeat_run(owner_sessionmaker, monkeypatch):
         return T2JobSweepReport(agent_id=str(agent_id))
 
     async def core(**kwargs):
+        assert state.semaphore._value == starting_slots - 1, "T3 must hold a heartbeat concurrency slot"
         state.core_calls += 1
         await block("t3")
         return HeartbeatT3CoreResult(
@@ -111,6 +113,7 @@ async def heartbeat_run(owner_sessionmaker, monkeypatch):
         )
 
     async def growth(*args, **kwargs):
+        assert state.semaphore._value == starting_slots - 1, "persistence must hold a heartbeat concurrency slot"
         await block("persistence")
 
     async def noop(*args, **kwargs):
@@ -188,7 +191,6 @@ async def test_deadline_prevents_expired_lease_overlap(heartbeat_run):
     # Let a newly admitted run reach the same blocked sweep on the baseline.
     await asyncio.sleep(0.1)
     tasks, agent, idle_transactions = await state.records()
-    print("after lease:", [task.status for task in tasks], "sessions:", state.sessions)
     assert len(tasks) == 1, "an expired lease must never overlap a previous heartbeat"
     assert tasks[0].status == "failed"
     assert "TimeoutError" in tasks[0].result_summary
@@ -228,6 +230,38 @@ async def test_deadline_preserves_normal_heartbeat(heartbeat_run):
     assert tasks[0].child_session_id
     assert agent.last_heartbeat_at is not None
     assert state.core_calls == 1
+    assert state.sessions == idle_transactions == 0
+    assert not await state.redis.exists(f"heartbeat_lease:{state.agent_id}")
+
+
+async def test_deadline_starts_after_runtime_task_creation(heartbeat_run, monkeypatch):
+    from app.services import heartbeat
+
+    state = heartbeat_run
+    create_task = heartbeat._create_heartbeat_runtime_task
+    creation_committed = asyncio.Event()
+    release_creation = asyncio.Event()
+
+    async def delayed_create_task(*args, **kwargs):
+        task_id = await create_task(*args, **kwargs)
+        creation_committed.set()
+        await release_creation.wait()
+        return task_id
+
+    monkeypatch.setattr(heartbeat, "_create_heartbeat_runtime_task", delayed_create_task)
+    task = asyncio.create_task(heartbeat._execute_heartbeat(state.agent_id, tenant_id=state.tenant_id))
+    try:
+        await asyncio.wait_for(creation_committed.wait(), timeout=1)
+        done, _ = await asyncio.wait([task], timeout=0.4)
+        assert task not in done, "the heartbeat deadline must not cancel a committed task before its id returns"
+        tasks, _, _ = await state.records()
+        assert [record.status for record in tasks] == ["running"]
+    finally:
+        release_creation.set()
+
+    await asyncio.wait_for(task, timeout=1)
+    tasks, _, idle_transactions = await state.records()
+    assert [record.status for record in tasks] == ["completed"]
     assert state.sessions == idle_transactions == 0
     assert not await state.redis.exists(f"heartbeat_lease:{state.agent_id}")
 

@@ -10,8 +10,6 @@ instead of dropping.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
-from typing import Any
 
 from app.config import get_settings
 
@@ -38,9 +36,3 @@ def get_daemon_semaphore(family: str) -> asyncio.Semaphore:
 
 def reset_daemon_semaphores_for_tests() -> None:
     _semaphores.clear()
-
-
-async def run_bounded(family: str, awaitable: Awaitable[Any]) -> Any:
-    """Await ``awaitable`` once a slot in the family's semaphore frees up."""
-    async with get_daemon_semaphore(family):
-        return await awaitable

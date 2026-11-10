@@ -3,40 +3,13 @@ instead of stampeding the shared DB pool."""
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
 
 
 @pytest.mark.asyncio
-async def test_run_bounded_caps_concurrency_and_completes_all(monkeypatch) -> None:
-    from app.config import get_settings
-    from app.services.daemon_concurrency import reset_daemon_semaphores_for_tests, run_bounded
-
-    monkeypatch.setattr(get_settings(), "HEARTBEAT_MAX_CONCURRENT", 2)
-    reset_daemon_semaphores_for_tests()
-
-    in_flight = 0
-    peak = 0
-    done: list[int] = []
-
-    async def work(index: int) -> None:
-        nonlocal in_flight, peak
-        in_flight += 1
-        peak = max(peak, in_flight)
-        await asyncio.sleep(0.01)
-        in_flight -= 1
-        done.append(index)
-
-    await asyncio.gather(*(run_bounded("heartbeat", work(i)) for i in range(6)))
-
-    assert peak <= 2, f"expected at most 2 concurrent heartbeat executions, saw {peak}"
-    assert sorted(done) == list(range(6)), "queued tasks must run, not drop"
-
-
-@pytest.mark.asyncio
-async def test_run_bounded_families_are_independent(monkeypatch) -> None:
+async def test_daemon_semaphore_families_are_independent(monkeypatch) -> None:
     from app.config import get_settings
     from app.services.daemon_concurrency import get_daemon_semaphore, reset_daemon_semaphores_for_tests
 

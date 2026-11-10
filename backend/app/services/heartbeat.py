@@ -1176,11 +1176,11 @@ async def _execute_heartbeat(
             return
 
     try:
+        if runtime_task_id is None:
+            runtime_task_id = await _create_heartbeat_runtime_task(agent_id, tenant_id=tenant_id)
+
         # Bound queueing, preparation and persistence, leaving lease time for failure cleanup.
         async with asyncio.timeout(_HEARTBEAT_TIMEOUT_SECONDS):
-            if runtime_task_id is None:
-                runtime_task_id = await _create_heartbeat_runtime_task(agent_id, tenant_id=tenant_id)
-
             from app.models.agent import Agent
             from app.models.audit import ChatMessage
             from app.models.chat_session import ChatSession

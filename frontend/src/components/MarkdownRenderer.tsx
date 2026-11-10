@@ -25,6 +25,9 @@ const CREDENTIAL_QUERY_KEYS = new Set([
 // CommonMark treats a full-width closing punctuation mark before ** as an
 // opening delimiter when the following character is a letter or digit.
 // Extend the native tokenizer so escaped markers and code keep native rules.
+// Compatibility ceiling: this relies on the attention tokenizer's _close flag
+// in micromark-core-commonmark 2.0.3. If an upgrade changes it, the row-8 render
+// test fails; replace this extension with remark-cjk-friendly for that upgrade.
 function remarkChineseStrong(this: Processor) {
   const data = this.data() as { micromarkExtensions?: Extension[] };
   const extension: Extension = { text: { 42: {

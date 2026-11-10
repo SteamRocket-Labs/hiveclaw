@@ -7,6 +7,13 @@ import MarkdownRenderer from './MarkdownRenderer';
 // 不再内嵌 inline style —— 视觉全部由 index.css 承担。
 
 describe('MarkdownRenderer', () => {
+  it('renders the recorded row-8 CJK strong delimiter through the real renderer', () => {
+    const content = '**核心结论：**2026-10-01';
+    const html = renderToStaticMarkup(<MarkdownRenderer content={content} />);
+    expect(html).toContain('<strong>核心结论：</strong>2026-10-01');
+    expect(html).not.toContain('**');
+  });
+
   it('wraps output in md-content and renders semantic classes', () => {
     const html = renderToStaticMarkup(
       <MarkdownRenderer content={'# Title\n\nBody with `code` and **bold**.\n\n- item one\n- item two'} />,

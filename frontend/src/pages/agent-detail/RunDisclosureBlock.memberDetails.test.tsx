@@ -31,7 +31,7 @@ it.each(['send_message_to_agent', 'save_memory', 'unknown_tool'])(
   },
 );
 
-it('summarizes an untyped failure without exposing its raw result', () => {
+it('shows a plain-text failure reason once when a generic step is expanded', () => {
   const { container } = render(<RunDisclosureBlock timeline={{ id: 'failed-run', status: 'failed', steps: [{
     id: 'failed-tool', kind: 'tool', title: 'Working', status: 'failed', visibility: 'visible',
     details: { toolName: 'send_message_to_agent', args: { agent_id: 'private-id' },
@@ -40,8 +40,7 @@ it('summarizes an untyped failure without exposing its raw result', () => {
   const row = container.querySelector('.run-step-toggle') as HTMLButtonElement;
   expect(container.textContent).not.toContain('对方数字员工暂不可用');
   fireEvent.click(row);
-  expect(container.textContent).toContain('操作未能完成，结果尚未确认。');
-  expect(container.textContent).not.toContain('对方数字员工暂不可用');
+  expect(screen.getAllByText('对方数字员工暂不可用')).toHaveLength(1);
   expect(container.querySelectorAll('p')).toHaveLength(1);
   expect(container.textContent).not.toMatch(/send_message_to_agent|agent_id|rawResult|internal_error|private-/);
 });
@@ -52,7 +51,8 @@ it('summarizes command execution while keeping raw output internal', () => {
     details: { command: 'wc -l report.md', output: '106', exit_code: 0 },
   }] }} />);
   fireEvent.click(screen.getByRole('button', { name: /运行命令/ }));
-  expect(container.textContent).toContain('运行命令。已返回结果');
+  expect(container.textContent).toContain('运行命令。完成');
+  expect(container.textContent).not.toContain('已返回结果');
   expect(container.textContent).not.toMatch(/106|wc -l|exit/);
   expect(container.querySelector('.session-tui-exec-output')).toBeNull();
 });

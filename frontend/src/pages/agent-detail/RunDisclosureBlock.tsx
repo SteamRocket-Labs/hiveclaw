@@ -165,19 +165,71 @@ function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
   return <IconTool size={size} stroke={2.1} />;
 }
 
+function commandOutcome(details: unknown): 'done' | 'failed' | null {
+  const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
+  const values = [details, record.result, record.rawResult];
+  const records = values.flatMap(value => {
+    if (typeof value === 'string') {
+      try { value = JSON.parse(value); } catch { return []; }
+    }
+    return value && typeof value === 'object' && !Array.isArray(value) ? [value as Record<string, unknown>] : [];
+  });
+  const texts = values.filter((value): value is string => typeof value === 'string');
+  const exitCodes = records.flatMap(value => typeof value.exit_code === 'number' && Number.isFinite(value.exit_code)
+    ? [value.exit_code] : []);
+  if (exitCodes.some(code => code !== 0)
+    || records.some(value => value.ok === false || value.error || value.error_class || value.timed_out === true)
+    // Native text results append a nonzero exit footer; zero needs a
+    // structured result rather than a successful-looking stdout line.
+    || texts.some(text => [...text.matchAll(/^Exit code: (-?\d+)\s*$/gm)].some(match => Number(match[1]) !== 0))
+    // Run 8 captured this shell failure in output even though the tool event
+    // itself was marked done. Do not mistake that event status for success.
+    || texts.some(text => /^(?:bash|sh|zsh): (?:line \d+: )?[^\r\n]+: command not found\s*$/m.test(text)
+      || /^❌ Execution error:/m.test(text))) return 'failed';
+  return exitCodes.includes(0) ? 'done' : null;
+}
+
+function plainToolResult(result: string, toolName: string | null): boolean {
+  if (!result.trim()) return false;
+  try { JSON.parse(result); return false; } catch { /* Preserve ordinary result prose. */ }
+  // These are tool-output formats, never filters on model-authored prose.
+  return !(toolName && result.includes(toolName))
+    && !/(?:^|[^a-z0-9_/.<])(?:\/[^\s/]|[a-z]:\\|\\\\)/iu.test(result)
+    && !/^\s*[\[{]|\{\s*'[^']+'\s*:|^\s*(?:True|False|None)\s*$|\b(?:call_|toolu_)[\w-]+/m.test(result)
+    && !/^(?:Traceback \(most recent call last\):|\s*File "[^"]+", line \d+|\w*(?:Error|Exception):|(?:bash|sh|zsh):|stderr:)/mi.test(result)
+    && !/^(?:✅ Written to |Saved memory \[|📤 Output:|💻 Command:|⚠️ Stderr:)/m.test(result);
+}
+
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   if (toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)) {
     const summary = toolOutputForDisplay(step.details, t, step.status);
     if (summary) return <p>{summary}</p>;
-    const details = step.details as { args?: Record<string, unknown> } | null;
+    const details = step.details as { args?: Record<string, unknown>; result?: unknown } | null;
+    const result = typeof step.details === 'string' ? step.details : details?.result;
+    const toolName = toolNameOf(step);
+    const command = step.kind === 'command' || ['run_command', 'execute_code', 'run_skill_tool'].includes(toolName || '');
+    const receipt = typeof result === 'string' && ((toolName === 'write_file' && result.startsWith('已写入文件「'))
+      || (toolName === 'save_memory' && result.startsWith('已记住：')));
+    if (typeof result === 'string' && (receipt || (!command && plainToolResult(result, toolName)))) {
+      const lines = result.trim().split(/\r?\n/);
+      return <p>{lines.map((line, index) => (
+        <React.Fragment key={index}>
+          {index > 0 && <br />}
+          <PastedCredentialText content={line} />
+          {line && index < lines.length - 1 && ' '}
+        </React.Fragment>
+      ))}</p>;
+    }
     const path = step.kind === 'file' ? details?.args?.path ?? details?.args?.file_path : null;
     const file = typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).pop() : undefined;
-    const status = step.status === 'done'
-      ? t('agent.chat.disclosure.resultReturned', 'Result returned')
-      : step.status === 'failed'
-        ? t('agent.chat.disclosure.failure.generic', 'The operation did not complete; the outcome is unconfirmed.')
-        : runtimeStatusLabel(step.status, t);
+    const outcome = command ? commandOutcome(step.details) : null;
+    const status = step.status === 'failed' || outcome === 'failed'
+      ? t('agent.chat.disclosure.failure.generic', 'The operation did not complete; the outcome is unconfirmed.')
+      : outcome === 'done' ? runtimeStatusLabel('done', t)
+        : step.status !== 'done' ? runtimeStatusLabel(step.status, t)
+          : command ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
+            : t('agent.chat.disclosure.resultReturned', 'Result returned');
     const action = localizedToolTitle(step, t);
     return <p>{file
       ? t('agent.chat.disclosure.resultFile', '{{action}}: {{file}}. {{status}}', { action, file, status })

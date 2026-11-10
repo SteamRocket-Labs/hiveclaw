@@ -2612,6 +2612,7 @@
         "contextCompacted": "Context was automatically compacted",
         "toolRunning": "Using {{tool}}",
         "resultReturned": "Result returned",
+        "resultUnconfirmed": "The outcome is unconfirmed.",
         "resultFile": "{{action}}: {{file}}. {{status}}",
         "resultAction": "{{action}}. {{status}}",
         "toolCompleted": "Used tools: {{tools}}",

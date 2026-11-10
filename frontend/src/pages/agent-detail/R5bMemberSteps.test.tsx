@@ -81,8 +81,7 @@ it.each([
   }] }} />);
   fireEvent.click(container.querySelector('.run-tool-group-toggle') as HTMLElement);
   fireEvent.click(container.querySelector('.run-tool-history-toggle') as HTMLButtonElement);
-  expect(container.textContent).toContain('已返回结果');
-  expect(container.textContent).not.toContain(result);
+  expect(container.textContent).toContain(result.replace(/\s+/g, ' '));
   expect(details.result).toBe(result);
   expect(container.textContent).not.toContain('操作等待超时');
   expect(container.textContent).not.toContain('请稍后再试');

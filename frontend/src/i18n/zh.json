@@ -2612,6 +2612,7 @@
         "contextCompacted": "上下文已自动压缩",
         "toolRunning": "正在调用 {{tool}}",
         "resultReturned": "已返回结果",
+        "resultUnconfirmed": "结果尚未确认。",
         "resultFile": "{{action}}：{{file}}。{{status}}",
         "resultAction": "{{action}}。{{status}}",
         "toolCompleted": "本次操作：{{tools}}",

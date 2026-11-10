@@ -22,22 +22,80 @@ function expand(container: HTMLElement) {
 
 // Run 8 output snippets plus a None stdout counterexample from the brief.
 it.each([
-  ['write_file', { path: 'workspace/sales-report-sales-run8.md' }, '✅ Written to workspace/sales-report-sales-run8.md (3123 chars)', 'sales-report-sales-run8.md'],
-  ['execute_code', { code: 'print(summary)' }, "📤 Output:\n{'file': 'sales-run8.csv', 'rows': 20, 'cols': ['日期', '地区', '产品', '数量', '单价', '销售额'], 'dates': ('2026-10-01', '2026-10-20'), 'region_product_1to1': True, 'qty_diffs': {'华南': [4.0], '华北': [4.0], '华东': [4.0], '西部': [4.0]}, 'qty_is_arith': True, 'price_constant_per_product': True, 'prices': {'基础版': ['100'], '进阶版': ['150'], '专业版': ['200'], '企业版': ['250']}}", '运行命令'],
-  ['execute_code', { code: "print({'error': None})" }, "📤 Output:\n{'error': None}", '运行命令'],
-  ['run_command', { command: 'pwd; which gh git' }, '📤 Output:\n/vercel/sandbox/workspace\n/opt/git/bin/git\nbash: line 1: gh: command not found', '运行命令'],
-  ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。', '保存记忆'],
-] as const)('projects recorded %s output into a member summary without mutating the model payload', (toolName, toolArgs, toolResult, label) => {
+  ['write_file', { path: 'workspace/sales-report-sales-run8.md' }, '✅ Written to workspace/sales-report-sales-run8.md (3123 chars)', 'sales-report-sales-run8.md', '已返回结果'],
+  ['execute_code', { code: 'print(summary)' }, "📤 Output:\n{'file': 'sales-run8.csv', 'rows': 20, 'cols': ['日期', '地区', '产品', '数量', '单价', '销售额'], 'dates': ('2026-10-01', '2026-10-20'), 'region_product_1to1': True, 'qty_diffs': {'华南': [4.0], '华北': [4.0], '华东': [4.0], '西部': [4.0]}, 'qty_is_arith': True, 'price_constant_per_product': True, 'prices': {'基础版': ['100'], '进阶版': ['150'], '专业版': ['200'], '企业版': ['250']}}", '运行命令', '结果尚未确认。'],
+  ['execute_code', { code: "print({'error': None})" }, "📤 Output:\n{'error': None}", '运行命令', '结果尚未确认。'],
+  ['run_command', { command: 'which gh git curl 2>/dev/null; echo "---gh auth---"; gh auth status 2>&1 | head -20; echo "---gh api---"; gh api notifications --jq \'.[].subject.title\' 2>&1 | head -20' }, '📤 Output:\n/opt/git/bin/git\n/usr/bin/curl\n---gh auth---\nbash: line 1: gh: command not found\n---gh api---\nbash: line 1: gh: command not found', '运行命令', '操作未能完成，结果尚未确认。'],
+  ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。', '保存记忆', '已返回结果'],
+] as const)('projects recorded %s output into a member summary without mutating the model payload', (toolName, toolArgs, toolResult, label, status) => {
   const message: AgentChatMessage = { id: toolName, role: 'tool_call', content: '', toolName, toolArgs, toolResult, toolStatus: 'done' };
   const before = JSON.stringify(message);
   const timeline = buildRunTimelineFromMessages([message]);
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
   expand(container);
   expect(container.textContent).toContain(label);
-  expect(container.textContent).toContain('已返回结果');
+  expect(container.textContent).toContain(status);
+  if (status !== '已返回结果') expect(container.textContent).not.toContain('已返回结果');
   expect(container.textContent).not.toMatch(/Written to|Saved memory|True|None|workspace|\/opt\/git|command not found|pwd;|3123/);
   expect(JSON.stringify(message)).toBe(before);
   expect((timeline.steps[0].details as { result: string }).result).toBe(toolResult);
+});
+
+it.each([
+  ['write_file', { path: 'workspace/run8-count.md' }, '已写入文件「run8-count.md」。', '✅ Written to workspace/run8-count.md (106 chars)'],
+  ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, '已记住：用户的 E2E 测试代号是 白鹭-8。', 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。'],
+] as const)('shows the member receipt of %s and preserves its model envelope', (toolName, toolArgs, text, model_visible_text) => {
+  const envelope = { text, model_visible_text };
+  const message: AgentChatMessage = { role: 'tool_call', content: '', toolName, toolArgs,
+    toolResult: envelope.text, toolRawResult: JSON.stringify(envelope), toolStatus: 'done' };
+  const before = JSON.stringify(message);
+  const timeline = buildRunTimelineFromMessages([message]);
+  const { container } = render(<RunDisclosureBlock timeline={timeline} />);
+  expand(container);
+  expect(container.querySelector('p')?.textContent).toBe(text);
+  expect(container.textContent).not.toMatch(/Written to|Saved memory|workspace|106|model_visible_text/);
+  expect(JSON.stringify(message)).toBe(before);
+  expect((timeline.steps[0].details as { rawResult: string }).rawResult).toBe(JSON.stringify(envelope));
+});
+
+it.each([
+  ['run_command', { exit_code: 0, output: 'PRIVATE_STDOUT', stderr: 'PRIVATE_STDERR' }, '完成'],
+  ['execute_code', { exit_code: 7, output: 'PRIVATE_STDOUT' }, '操作未能完成，结果尚未确认。'],
+  ['run_skill_tool', { exit_code: 0, error: 'PRIVATE_ERROR' }, '操作未能完成，结果尚未确认。'],
+  ['run_command', { ok: false, error: 'PRIVATE_ERROR' }, '操作未能完成，结果尚未确认。'],
+  ['execute_code', { timed_out: true }, '操作未能完成，结果尚未确认。'],
+  ['run_command', { exit_code: '0', output: 'PRIVATE_STDOUT' }, '结果尚未确认。'],
+  ['run_command', '{broken PRIVATE_STDOUT', '结果尚未确认。'],
+  ['run_command', '📤 Output:\nExit code: 0', '结果尚未确认。'],
+  ['run_command', undefined, '结果尚未确认。'],
+  ['run_skill_tool', '报告内容已读取。', '结果尚未确认。'],
+  ['execute_code', '📤 Output:\nPRIVATE_STDOUT\n\nExit code: 1', '操作未能完成，结果尚未确认。'],
+] as const)('uses execution facts for %s with result %j', (toolName, rawResult, status) => {
+  const message: AgentChatMessage = { role: 'tool_call', content: '', toolName,
+    toolArgs: { command: 'PRIVATE_COMMAND' }, toolStatus: 'done',
+    toolResult: typeof rawResult === 'object' ? JSON.stringify(rawResult) : rawResult,
+    toolRawResult: typeof rawResult === 'object' ? JSON.stringify(rawResult) : rawResult };
+  const before = JSON.stringify(message);
+  const timeline = buildRunTimelineFromMessages([message]);
+  const { container } = render(<RunDisclosureBlock timeline={timeline} />);
+  expand(container);
+  expect(container.querySelector('p')?.textContent).toContain(status);
+  expect(container.textContent).not.toMatch(/PRIVATE_|报告内容已读取|已返回结果|exit_code|Exit code|timed_out/);
+  expect(JSON.stringify(message)).toBe(before);
+});
+
+it.each([
+  '/vercel/sandbox/workspace/report.md', '已读取：/private/tmp/report.md', 'C:\\workspace\\report.md',
+  '报告位于/var/tmp/report.md',
+  "{'rows': 20, 'ok': True}", '{"rows": 20, "ok": True}', 'Traceback (most recent call last):\nValueError: PRIVATE_ERROR',
+  'send_message_to_agent failed', 'call_private123',
+])('keeps unsafe non-command result bytes internal: %s', toolResult => {
+  const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
+    { role: 'tool_call', content: '', toolName: 'send_message_to_agent', toolResult, toolStatus: 'done' },
+  ])} />);
+  expand(container);
+  expect(container.textContent).not.toContain(toolResult);
+  expect(container.querySelector('p')?.textContent).toContain('已返回结果');
 });
 
 it('names the recorded generic step and readiness event with everyday words', () => {

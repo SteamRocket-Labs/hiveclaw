@@ -32,7 +32,6 @@ import type {
 // One Session turn owns one disclosure. Live or failed work opens for immediate
 // inspection; terminal successful work folds behind its processed summary.
 
-const EXEC_CLIP_LINES = 5;
 type RunRenderItem =
   | { kind: 'tool_group'; id: string; steps: RunStepSnapshot[] }
   | { kind: 'step'; id: string; step: RunStepSnapshot };
@@ -166,130 +165,72 @@ function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
   return <IconTool size={size} stroke={2.1} />;
 }
 
-type ExecDetails = {
-  command?: string;
-  output?: string;
-  exit_code?: number;
-  duration_ms?: number;
-};
-
-function asExecDetails(details: unknown, kind: RunStepKind, t: TFunction): ExecDetails | null {
-  if (!details || typeof details !== 'object') return null;
-  const record = details as Record<string, unknown>;
-  const hasExecShape =
-    typeof record.output === 'string' || typeof record.command === 'string' || typeof record.exit_code === 'number';
-  if (!hasExecShape && kind === 'command') {
-    const args = record.args && typeof record.args === 'object'
-      ? record.args as Record<string, unknown>
-      : {};
-    let command = typeof args.cmd === 'string'
-      ? args.cmd
-      : typeof args.command === 'string'
-        ? args.command
-        : undefined;
-    const output = typeof record.result === 'string'
-      ? record.result
-      : typeof record.rawResult === 'string'
-        ? record.rawResult
-        : undefined;
-    if (!command && !output) return null;
-    // Translate only the execution renderer's envelope, never command stdout.
-    const outputHeader = '📤 Output:\n';
-    const commandHeader = '💻 Command: ';
-    let result = output;
-    if (result?.startsWith(commandHeader)) {
-      const boundary = result.indexOf(`\n\n${outputHeader}`);
-      if (boundary >= 0) {
-        command ||= result.slice(commandHeader.length, boundary);
-        result = result.slice(boundary + 2);
-      }
+function commandOutcome(details: unknown): 'done' | 'failed' | null {
+  const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
+  const values = [details, record.result, record.rawResult];
+  const records = values.flatMap(value => {
+    if (typeof value === 'string') {
+      try { value = JSON.parse(value); } catch { return []; }
     }
-    const displayOutput = result?.startsWith(outputHeader)
-      ? `${t('agent.chat.disclosure.commandOutput', 'Output:')}\n${result.slice(outputHeader.length)}` : result;
-    return { command, output: displayOutput };
-  }
-  if (!hasExecShape) return null;
-  return {
-    command: typeof record.command === 'string' ? record.command : undefined,
-    output: typeof record.output === 'string' ? record.output : undefined,
-    exit_code: typeof record.exit_code === 'number' ? record.exit_code : undefined,
-    duration_ms: typeof record.duration_ms === 'number' ? record.duration_ms : undefined,
-  };
-}
-
-function clipLines(text: string, limit: number): { head: string[]; tail: string[]; clipped: number } {
-  const lines = text.split('\n');
-  if (lines.length <= limit * 2) return { head: lines, tail: [], clipped: 0 };
-  return {
-    head: lines.slice(0, limit),
-    tail: lines.slice(lines.length - limit),
-    clipped: lines.length - limit * 2,
-  };
-}
-
-function ExecOutput({ exec }: { exec: ExecDetails }) {
-  const { t } = useTranslation();
-  const output = exec.output ?? '';
-  const { head, tail, clipped } = clipLines(output, EXEC_CLIP_LINES);
-  const exitCode = exec.exit_code;
-  const duration = formatDuration(exec.duration_ms);
-  return (
-    <div className="session-tui-exec-output">
-      {(exec.command || exitCode != null || duration) && (
-        <div className="exec-meta">
-          {exec.command && <span className="exec-command">$ {exec.command}</span>}
-          {exitCode != null && (
-            <span className={exitCode === 0 ? 'exec-exit-ok' : 'exec-exit-bad'}>exit {exitCode}</span>
-          )}
-          {duration && <span className="exec-duration">{duration}</span>}
-        </div>
-      )}
-      {output && (
-        <>
-          <pre className="exec-pre">
-            {head.join('\n')}
-            {clipped > 0 && <span className="exec-clip">{'\n'}{t('agent.chat.disclosure.clippedLines', '… {{count}} lines …', { count: clipped })}{'\n'}</span>}
-            {tail.length > 0 && tail.join('\n')}
-          </pre>
-          {clipped > 0 && (
-            <details className="exec-complete">
-              <summary>{t('agent.chat.disclosure.showCompleteOutput', 'Show complete output')}</summary>
-              <pre className="exec-pre exec-complete-pre">{output}</pre>
-            </details>
-          )}
-        </>
-      )}
-    </div>
-  );
+    return value && typeof value === 'object' && !Array.isArray(value) ? [value as Record<string, unknown>] : [];
+  });
+  const texts = values.filter((value): value is string => typeof value === 'string');
+  const exitCodes = records.flatMap(value => typeof value.exit_code === 'number' && Number.isFinite(value.exit_code)
+    ? [value.exit_code] : []);
+  if (exitCodes.some(code => code !== 0)
+    || records.some(value => value.ok === false || value.error || value.error_class || value.timed_out === true)
+    // Native text results append a nonzero exit footer; zero needs a
+    // structured result rather than a successful-looking stdout line.
+    || texts.some(text => [...text.matchAll(/^Exit code: (-?\d+)\s*$/gm)].some(match => Number(match[1]) !== 0))
+    // Run 8 captured this shell failure in output even though the tool event
+    // itself was marked done. Do not mistake that event status for success.
+    || texts.some(text => /^(?:bash|sh|zsh): (?:line \d+: )?[^\r\n]+: command not found\s*$/m.test(text)
+      || /^❌ Execution error:/m.test(text))) return 'failed';
+  return exitCodes.includes(0) ? 'done' : null;
 }
 
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
-  const summary = toolOutputForDisplay(step.details, t, step.status);
-  if (summary) return <p>{summary}</p>;
-  const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind, t) : null;
-  if (exec) return <ExecOutput exec={exec} />;
-  if (step.kind === 'tool' || step.kind === 'file' || step.kind === 'search' || typeof step.details !== 'string') {
-    const result = typeof step.details === 'string' ? step.details : (step.details as { result?: unknown } | null)?.result;
-    if (typeof result !== 'string' || !result.trim()) return null;
-    try {
-      JSON.parse(result);
-      return null;
-    } catch {
-      // Native breaks retain line layout while DOM text reads as a sentence.
-      const lines = result.trim().split(/\r?\n/);
-      return <p>{lines.map((line, index) => (
-        <React.Fragment key={index}>
-          {index > 0 && <br />}
-          <PastedCredentialText content={line} />
-          {line && index < lines.length - 1 && ' '}
-        </React.Fragment>
-      ))}</p>;
+  if (toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)) {
+    const toolName = toolNameOf(step);
+    const command = step.kind === 'command' || ['run_command', 'execute_code', 'run_skill_tool'].includes(toolName || '');
+    const summary = toolOutputForDisplay(step.details, t, step.status, !command);
+    if (summary) return <p>{summary}</p>;
+    const details = step.details as { args?: Record<string, unknown>; result?: unknown } | null;
+    const result = typeof step.details === 'string' ? step.details : details?.result;
+    // Raw non-command tool text can reach members as on production; backend per-tool member summaries will replace it.
+    if (!command && typeof result === 'string' && result.trim()) {
+      try {
+        JSON.parse(result);
+      } catch {
+        // Native breaks retain line layout while DOM text reads as a sentence.
+        const lines = result.trim().split(/\r?\n/);
+        return <p>{lines.map((line, index) => (
+          <React.Fragment key={index}>
+            {index > 0 && <br />}
+            <PastedCredentialText content={line} />
+            {line && index < lines.length - 1 && ' '}
+          </React.Fragment>
+        ))}</p>;
+      }
     }
+    const path = step.kind === 'file' ? details?.args?.path ?? details?.args?.file_path : null;
+    const file = typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).pop() : undefined;
+    const outcome = command ? commandOutcome(step.details) : null;
+    const status = step.status === 'failed' || outcome === 'failed'
+      ? t('agent.chat.disclosure.failure.generic', 'The operation did not complete; the outcome is unconfirmed.')
+      : outcome === 'done' ? runtimeStatusLabel('done', t)
+        : step.status !== 'done' ? runtimeStatusLabel(step.status, t)
+          : command ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
+            : t('agent.chat.disclosure.resultReturned', 'Result returned');
+    const action = localizedToolTitle(step, t);
+    return <p>{file
+      ? t('agent.chat.disclosure.resultFile', '{{action}}: {{file}}. {{status}}', { action, file, status })
+      : t('agent.chat.disclosure.resultAction', '{{action}}. {{status}}', { action, status })}</p>;
   }
-  const detailText = step.details;
-  if (!detailText) return null;
-  return <pre className="run-detail-pre"><PastedCredentialText content={detailText} /></pre>;
+  const detailText = typeof step.details === 'string' ? step.details : '';
+  if (detailText.includes('[REDACTED_SECRET]')) return <pre className="run-detail-pre"><PastedCredentialText content={detailText} /></pre>;
+  return detailText ? <MarkdownRenderer content={detailText} /> : null;
 }
 
 function RunStepRow({ step }: { step: RunStepSnapshot }) {
@@ -431,8 +372,6 @@ function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
 function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
-  const exec = step.kind === 'command' && !toolOutputForDisplay(step.details, t, step.status)
-    ? asExecDetails(step.details, step.kind, t) : null;
   const hasDetails = step.details != null;
   const row = (
     <>
@@ -444,21 +383,6 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
     </>
   );
 
-  if (exec) {
-    return (
-      <div className="run-tool-history-item has-exec" role="listitem" data-status={step.status}>
-        <details className="run-tool-history-exec" open={step.status === 'running' || step.status === 'failed'}>
-          <summary className="run-tool-history-exec-summary">
-            {row}
-            <IconChevronRight className="run-tool-history-exec-chevron" size={12} stroke={2.2} aria-hidden="true" />
-          </summary>
-          <ExecOutput exec={exec} />
-        </details>
-      </div>
-    );
-  }
-
-  // Generic tools expose plain-text results without dumping structured payloads.
   return (
     <div className="run-tool-history-item" role="listitem" data-status={step.status}>
       <button

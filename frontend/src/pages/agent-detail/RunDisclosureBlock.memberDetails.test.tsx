@@ -25,8 +25,9 @@ it.each(['send_message_to_agent', 'save_memory', 'unknown_tool'])(
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('.run-detail-pre')).toBeNull();
     expect(container.textContent).not.toMatch(/toolName|rawResult|PRIVATE_RAW_RESULT|send_message_to_agent|unknown_tool/);
-    expect(container.textContent).toMatch(/工具|交给其他数字员工|保存记忆/);
-    expect(container.querySelector('.run-tool-history-item')?.querySelector('p')).toBeNull();
+    expect(container.textContent).toMatch(/处理请求|交给其他数字员工|保存记忆/);
+    expect(container.querySelector('.run-tool-history-item')?.querySelector('p')?.textContent).toContain('运行中');
+    expect(details.result).toContain('PRIVATE_RAW_RESULT');
   },
 );
 
@@ -44,13 +45,16 @@ it('shows a plain-text failure reason once when a generic step is expanded', () 
   expect(container.textContent).not.toMatch(/send_message_to_agent|agent_id|rawResult|internal_error|private-/);
 });
 
-it('keeps the dedicated command output renderer', () => {
-  render(<RunDisclosureBlock timeline={{ id: 'command-run', status: 'running', steps: [{
+it('summarizes command execution while keeping raw output internal', () => {
+  const { container } = render(<RunDisclosureBlock timeline={{ id: 'command-run', status: 'running', steps: [{
     id: 'cmd', kind: 'command', title: 'Run command', status: 'done', visibility: 'visible',
     details: { command: 'wc -l report.md', output: '106', exit_code: 0 },
   }] }} />);
   fireEvent.click(screen.getByRole('button', { name: /运行命令/ }));
-  expect(screen.getByText('106')).toBeTruthy();
+  expect(container.textContent).toContain('运行命令。完成');
+  expect(container.textContent).not.toContain('已返回结果');
+  expect(container.textContent).not.toMatch(/106|wc -l|exit/);
+  expect(container.querySelector('.session-tui-exec-output')).toBeNull();
 });
 
 it('does not turn a generic tool payload into command output', () => {

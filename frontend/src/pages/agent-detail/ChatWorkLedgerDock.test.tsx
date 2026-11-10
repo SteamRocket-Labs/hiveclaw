@@ -3,9 +3,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
+import zh from '../../i18n/zh.json';
+import { translateFromCatalog } from '../../test/i18nMock';
 import type { RuntimeWorkLedgerView } from '../../api/domains/autonomy';
 
 const queryHarness = vi.hoisted(() => ({
+  language: 'en',
   calls: [] as Array<{
     queryKey: unknown[];
     enabled?: boolean;
@@ -24,6 +27,7 @@ const queryHarness = vi.hoisted(() => ({
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: string, values?: Record<string, string | number>) => {
+      if (queryHarness.language === 'zh') return translateFromCatalog(zh, _key, fallback, values);
       let output = fallback || _key;
       Object.entries(values || {}).forEach(([key, value]) => {
         output = output.replace(new RegExp(`{{\\s*${key}\\s*}}`, 'g'), String(value));
@@ -76,11 +80,24 @@ function ledger(runtimeTaskId: string, title: string): RuntimeWorkLedgerView {
 
 describe('ChatWorkLedgerDock', () => {
   beforeEach(() => {
+    queryHarness.language = 'en';
     queryHarness.calls.length = 0;
     queryHarness.sessionData = undefined;
     queryHarness.runtimeData = undefined;
     queryHarness.sessionError = false;
     queryHarness.runtimeError = false;
+  });
+
+  it('localizes the recorded assistant owner without adding mentions or changing items', () => {
+    queryHarness.language = 'zh';
+    queryHarness.sessionData = ledger('r11g', '核对华东区数据');
+    queryHarness.sessionData.todo_items[0].owner = 'My Assistant';
+    const original = JSON.stringify(queryHarness.sessionData);
+    const markup = renderToStaticMarkup(<ChatWorkLedgerDock agentId="agent" sessionId="session" />);
+    expect(markup).toContain('（我的助理）');
+    expect(markup).not.toContain('My Assistant');
+    expect(markup).not.toContain('(@');
+    expect(JSON.stringify(queryHarness.sessionData)).toBe(original);
   });
 
   it.each(['killed', 'failed', 'completed'])('uses terminal %s even when live is stale', (runStatus) => {

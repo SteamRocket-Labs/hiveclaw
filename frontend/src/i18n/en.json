@@ -2612,6 +2612,10 @@
         "contextCompacting": "Automatically compacting context",
         "contextCompacted": "Context was automatically compacted",
         "toolRunning": "Using {{tool}}",
+        "resultReturned": "Result returned",
+        "resultUnconfirmed": "The outcome is unconfirmed.",
+        "resultFile": "{{action}}: {{file}}. {{status}}",
+        "resultAction": "{{action}}. {{status}}",
         "toolCompleted": "Used tools: {{tools}}",
         "toolHistory": "Tool call history",
         "system": {
@@ -2651,6 +2655,12 @@
         },
         "toolTitle": {
           "goalUpdated": "Goal updated",
+          "readContext": "Read work context",
+          "searchPersonal": "Search personal documents",
+          "readPersonal": "Read personal documents",
+          "searchCompany": "Search company documents",
+          "readCompany": "Read company documents",
+          "useConnection": "Use a connected app",
           "saveMemory": "Save memory",
           "searchMemory": "Search memory",
           "loadMemory": "Load memory",

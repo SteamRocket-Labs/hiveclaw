@@ -1463,7 +1463,10 @@ def _write_file(
     try:
         observation = authority_scope.output_write(rel_path) if isinstance(authority_scope, WorkspaceAuthorityScope) else None
         write_workspace_file(ws, rel_path, content.encode("utf-8"), observation=observation)
-        return f"✅ Written to {rel_path} ({len(content)} chars)"
+        return ToolContentEnvelope(
+            text=f"已写入文件「{PurePosixPath(rel_path).name}」。",
+            model_visible_text=f"✅ Written to {rel_path} ({len(content)} chars)",
+        )
     except WorkspaceAuthorityError as exc:
         return _workspace_storage_error(tool_name, exc, mutation=True)
     except Exception as e:

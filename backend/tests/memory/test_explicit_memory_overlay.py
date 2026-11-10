@@ -45,7 +45,8 @@ async def test_save_memory_writes_explicit_overlay_not_accepted_t3(
         )
 
     mem_dir = tmp_path / str(agent_id) / "memory"
-    assert "Saved memory [feedback] (user):" in result
+    assert "Saved memory [feedback] (user):" in result.model_visible_text
+    assert str(result).startswith("已记住：")
     assert (mem_dir / "explicit" / "MEMORY.md").exists()
     assert (mem_dir / "explicit" / "manifest.jsonl").exists()
 
@@ -301,6 +302,7 @@ async def test_explicit_overlay_does_not_invent_pl4_from_secret_shaped_prose(
             },
         )
 
-    assert result.startswith("Saved memory [reference] (capabilities):")
+    assert result.model_visible_text.startswith("Saved memory [reference] (capabilities):")
+    assert str(result).startswith("已记住：")
     entry = next((tmp_path / str(agent_id) / "memory" / "explicit" / "entries").glob("*.md"))
     assert "sk-live-abcdef1234567890abcdef" in entry.read_text(encoding="utf-8")

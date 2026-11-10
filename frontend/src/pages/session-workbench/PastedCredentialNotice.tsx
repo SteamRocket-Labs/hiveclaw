@@ -1,4 +1,5 @@
 import React from 'react';
+import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { useTranslation } from 'react-i18next';
 import './PastedCredentialNotice.css';
 import type { AgentChatMessage } from '../agent-detail/chatRuntime';
@@ -6,7 +7,9 @@ import type { AgentChatMessage } from '../agent-detail/chatRuntime';
 export function MemberMessageBody({ message }: { message: AgentChatMessage }) {
   const noticed = message.role === 'user' && message.pastedCredentialNotice;
   return <>
-    <div style={{ whiteSpace: 'pre-wrap' }}><PastedCredentialText content={message.content} /></div>
+    {message.content.includes('[REDACTED_SECRET]')
+      ? <div style={{ whiteSpace: 'pre-wrap' }}><PastedCredentialText content={message.content} /></div>
+      : <MarkdownRenderer content={message.content} />}
     {noticed && <PastedCredentialNotice />}
   </>;
 }

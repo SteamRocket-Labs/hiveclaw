@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { IconCheck, IconChevronRight, IconSquare, IconSquareFilled } from '@tabler/icons-react';
 
 import { autonomyApi, type RuntimeWorkLedgerItem, type RuntimeWorkLedgerView } from '../../api/domains/autonomy';
+import { assistantNameForDisplay } from '../assistant/assistantScope';
 import { runtimeStatusKey, runtimeStatusLabel } from './runtimeStatus';
 
 interface ChatWorkLedgerDockProps {
@@ -196,6 +197,7 @@ function TaskList({
   items: RuntimeWorkLedgerItem[];
   prioritizeActive?: boolean;
 }) {
+  const { t } = useTranslation();
   if (items.length === 0) return null;
 
   const statusOrder: Record<CanonicalTaskStatus, number> = {
@@ -233,7 +235,7 @@ function TaskList({
                 {item.owner && (
                   <span className="chat-work-ledger-item-meta">
                     {' '}
-                    (@{item.owner})
+                    （{assistantNameForDisplay(item.owner, t('assistant.title', 'My Assistant'))}）
                   </span>
                 )}
                 {isBlocked && (

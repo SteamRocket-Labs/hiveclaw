@@ -62,7 +62,7 @@ async def group_memory(shared_memory, owner_sessionmaker, app_user_sessionmaker,
 
 
 async def group_call(g, app_user_sessionmaker, tool_name, arguments, *, user_id=None, command=None, include_history=False):
-    from app.kernel.engine import _mid_run_items_to_user_messages
+    from app.kernel.engine import _mid_run_items_to_user_messages, _normalize_tool_result_for_llm
     from app.runtime.hooks import HookResult
     from app.services.session_human_input import queue_admitted_human_input
     from app.services.session_input_admission import run_user_prompt_admission
@@ -141,9 +141,10 @@ async def group_call(g, app_user_sessionmaker, tool_name, arguments, *, user_id=
     raw = await n.service.execute(tool_name, arguments, agent_id=n.agent, user_id=user_id, session_id=str(g.session),
         runtime_task_id=str(run_id), turn_id=turn, tool_call_id=call_id, emit_runtime_hooks=False, trace_metadata_sink=trace)
     await _persist_tool_call(agent_id=n.agent, user_id=user_id, session_id=str(g.session), data={
-        "name": tool_name, "args": arguments, "status": "done", "result": str(raw), "tool_call_id": call_id,
+        "name": tool_name, "args": arguments, "status": "done", "result": str(raw),
+            "model_visible_content": _normalize_tool_result_for_llm(raw), "tool_call_id": call_id,
         "provider_request_id": request_id, "runtime_task_id": str(run_id), "tool_execution_evidence": _execution_evidence(trace)})
-    return str(raw), invocation
+    return _normalize_tool_result_for_llm(raw), invocation
 
 
 async def save_group(g, factory):

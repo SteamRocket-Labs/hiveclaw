@@ -76,7 +76,8 @@ async def test_save_memory_writes_explicit_overlay_not_accepted_t3(tmp_path: Pat
     memory_dir = tmp_path / str(agent_id) / "memory"
     overlay_index = memory_dir / "explicit" / "MEMORY.md"
 
-    assert "Saved memory [feedback]" in result
+    assert str(result) == "已记住：User prefers concise answers"
+    assert result.model_visible_text.startswith("Saved memory [feedback]")
     assert overlay_index.exists()
     assert "User prefers concise answers" in overlay_index.read_text(encoding="utf-8")
     assert not (memory_dir / "feedback.md").exists()
@@ -151,7 +152,8 @@ async def test_save_memory_never_uses_regex_to_reject_episodic_semantics(tmp_pat
         result = await save_memory(agent_id, {"content": content, "category": "reference"})
 
     assert captured["content"] == content
-    assert result.startswith("Saved memory")
+    assert str(result).startswith("已记住：")
+    assert result.model_visible_text.startswith("Saved memory")
     assert "[Skipped]" not in result
 
 
@@ -174,7 +176,8 @@ async def test_save_memory_does_not_reject_secret_shaped_documentation_before_mo
             {"content": "Production API key is sk-live-abcdef1234567890abcdef", "category": "reference"},
         )
 
-    assert result.startswith("Saved memory")
+    assert str(result).startswith("已记住：")
+    assert result.model_visible_text.startswith("Saved memory")
     entry = next((tmp_path / str(agent_id) / "memory" / "explicit" / "entries").glob("*.md"))
     assert "sk-live-abcdef1234567890abcdef" in entry.read_text(encoding="utf-8")
 

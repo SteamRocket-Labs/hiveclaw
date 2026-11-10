@@ -8,6 +8,7 @@ from pathlib import Path
 from app.memory.rendering import quote_memory_text
 from app.services.session_recall import SessionRecallError, search_session_history
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
+from app.tools.result_envelope import ToolContentEnvelope
 
 
 # -- save_memory ---------------------------------------------------------------
@@ -176,7 +177,10 @@ async def save_memory(
             f"in {result.target_hint}: {result.content}"
         )
 
-    content = f"Saved memory [{result.category}] ({result.target_hint}): {result.content}"
+    content = ToolContentEnvelope(
+        text=f"已记住：{result.content}",
+        model_visible_text=f"Saved memory [{result.category}] ({result.target_hint}): {result.content}",
+    )
     if execution_context is not None:
         return await _record_memory_output(
             "save_memory", agent_id, arguments, execution_context, content, entry_id=result.entry_id
@@ -201,7 +205,7 @@ async def _record_memory_output(
                 )
         await record_memory_result(
             ToolExecutionRequest(tool_name, arguments, context),
-            content=content,
+            content=str(content),
             entries=entries,
             team_entries=team_entries,
             unbound=unbound,
@@ -818,7 +822,10 @@ async def reconcile_memory_write(agent_id, arguments, tenant_id=None, *, executi
             agent_id,
             arguments,
             execution_context,
-            f"Saved memory [{result.category}] ({result.target_hint}): {result.content}",
+            ToolContentEnvelope(
+                text=f"已记住：{result.content}",
+                model_visible_text=f"Saved memory [{result.category}] ({result.target_hint}): {result.content}",
+            ),
             entry_id=result.entry_id,
         )
     except Exception as exc:

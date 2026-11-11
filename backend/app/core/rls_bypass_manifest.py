@@ -934,7 +934,14 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # produce_terminal_task_completion_notification and the module source of
 # runtime_notification_outbox). R15a: module source of session_model_round. Still 122
 # callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "4aa206d8a0886ee4e88c29849a299495b4088ce0e6f98fb4c7dc34f032442799"
+# Land20 (R15b, P1s) versus land19: still 794 entries. R15b: both settlement lock helpers
+# also lock the delegation child session (sorted, before the task row), settlement emits
+# the colleague's run item (lock_runtime_task_with_session_authority,
+# lock_runtime_task_batch_with_session_authority, settle_and_enqueue_runtime_task_terminal,
+# module source of runtime_terminal_settlement); the terminal boundary processor ignores
+# those display items (_latest_run_event and its module source). P1s is frontend only.
+# Still 122 callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "c8f81b0ff44f3555a4eeae918337f7170a8e059b576bcff9f5be5cf3a03eb0b1"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

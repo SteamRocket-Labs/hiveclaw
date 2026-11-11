@@ -5,6 +5,10 @@ from __future__ import annotations
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from asyncpg import PostgresError
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.database import PostgresTextContractError
 from app.kernel.contracts import (
     ContextDependencyUnavailable,
     ExecutionAuthorityUnavailable,
@@ -2299,6 +2303,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         SessionRestartRecoveryRequired,
                         ToolLifecyclePersistenceError,
                         ExecutionAuthorityUnavailable,
+                        SQLAlchemyError,
+                        PostgresError,
+                        PostgresTextContractError,
                     ):
                         raise
                     except ContextDependencyUnavailable as exc:

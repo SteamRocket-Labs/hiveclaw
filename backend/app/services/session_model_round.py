@@ -684,6 +684,11 @@ async def prepare_model_request(
 ) -> str:
     """Persist the exact post-transform provider request before any bytes are sent."""
 
+    from app.services.chat_transcript import lock_transcript_session
+
+    # Next-round planning locks RuntimeTask and flushes FK-bearing rows. Take
+    # the transcript advisory first, as completion input/event writers do.
+    await lock_transcript_session(db, session_id=session_id)
     round_id = _round_id(run_id, round_index, continuation_index)
     result_id = _result_id(run_id, round_id)
     from app.services.session_model_inputs import build_model_input_bindings, capture_context_message_origins, message_snapshot

@@ -48,6 +48,6 @@ export function runtimeFailurePresentation(
   }
   return {
     kind: 'unavailable',
-    fallback: 'The model service could not finish this task. Check the configuration before retrying.',
+    fallback: 'This task did not finish. Please try again later.',
   };
 }

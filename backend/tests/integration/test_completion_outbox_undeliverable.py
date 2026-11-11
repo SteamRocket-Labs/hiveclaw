@@ -11,6 +11,11 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.models.runtime_task import COMPLETION_OUTBOX_RETRY_SECONDS, TERMINAL_BOUNDARY_RECENT_WINDOW, RuntimeTask
 from app.services import runtime_notification_outbox as outbox
+from tests.services.test_a2a_continuation_completion_return import (
+    _continuation_task,
+    _drive_terminal_seam,
+    _seed_a2a_parent_child,
+)
 from tests.services.test_runtime_notification_outbox import _clear_outbox, _seed_parent_session
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -116,6 +121,11 @@ async def test_permanent_route_settles_once_without_delivery(
         stored = await db.get(RuntimeTask, task.id)
         settled_at = stored.completion_outbox_settled_at
         attempts = stored.completion_outbox_attempt_count
+        if reason == "parent_user_id_invalid":
+            # A NULL session owner can be linked later; this reason keeps the existing retryable hold.
+            assert first == 0 and settled_at is None and attempts == 1
+            assert stored.completion_outbox_attempted_at == clock.current
+            assert stored.completion_outbox_last_error == reason
     clock.current += timedelta(seconds=COMPLETION_OUTBOX_RETRY_SECONDS + 1)
     second = await service.reconcile_terminal_tasks_once()
     async with owner_sessionmaker() as db:
@@ -127,12 +137,112 @@ async def test_permanent_route_settles_once_without_delivery(
             )
             == 0
         )
-    assert (first, second) == (1, 0)
-    assert settled_at is not None and stored.completion_outbox_settled_at == settled_at
-    assert stored.completion_outbox_attempt_count == attempts
-    assert stored.completion_outbox_last_error is None
-    assert stored.metadata_json["completion_delivery_disposition"] == f"undeliverable:{reason}"
+    if reason == "parent_user_id_invalid":
+        assert second == 0 and stored.completion_outbox_settled_at is None
+        assert stored.completion_outbox_attempt_count == attempts + 1
+        assert stored.completion_outbox_attempted_at == clock.current
+        assert stored.completion_outbox_last_error == reason
+        assert "completion_delivery_disposition" not in stored.metadata_json
+    else:
+        assert (first, second) == (1, 0)
+        assert settled_at is not None and stored.completion_outbox_settled_at == settled_at
+        assert stored.completion_outbox_attempt_count == attempts
+        assert stored.completion_outbox_last_error is None
+        assert stored.metadata_json["completion_delivery_disposition"] == f"undeliverable:{reason}"
     assert stored.metadata_json.get("keep") == task.metadata_json.get("keep")
+
+
+async def test_a2a_continuation_unlinked_parent_owner_delivers_once_after_link(
+    owner_sessionmaker, clock, monkeypatch, owned_tasks
+):
+    monkeypatch.setattr("app.services.runtime_budget_service.async_session", owner_sessionmaker)
+    await _clear_outbox(owner_sessionmaker)
+    (
+        tenant_id,
+        user_id,
+        parent_agent_id,
+        child_agent_id,
+        parent_session_id,
+        child_session_id,
+    ) = await _seed_a2a_parent_child(owner_sessionmaker)
+    task_id, task = _continuation_task(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        parent_agent_id=parent_agent_id,
+        child_agent_id=child_agent_id,
+        parent_session_id=parent_session_id,
+        child_session_id=child_session_id,
+        status="running",
+    )
+    owned_tasks.append(task_id)
+    async with owner_sessionmaker() as db:
+        parent = await db.get(ChatSession, parent_session_id)
+        parent.user_id = None
+        db.add(task)
+        await db.commit()
+
+    await _drive_terminal_seam(owner_sessionmaker, tenant_id=tenant_id, task_id=task_id)
+    async with owner_sessionmaker() as db:
+        stored = await db.get(RuntimeTask, task_id)
+        assert stored.status == "completed"
+        assert stored.completion_outbox_settled_at is None
+        assert stored.completion_outbox_last_error == "parent_user_id_invalid"
+        assert stored.completion_outbox_attempt_count == 1
+        attempted_at = stored.completion_outbox_attempted_at
+        assert attempted_at is not None
+        assert await db.scalar(select(func.count()).select_from(RuntimeNotificationOutbox)) == 0
+
+    service = outbox.RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    assert await service.reconcile_terminal_tasks_once() == 0
+    async with owner_sessionmaker() as db:
+        stored = await db.get(RuntimeTask, task_id)
+        assert stored.completion_outbox_attempt_count == 1
+        parent = await db.get(ChatSession, parent_session_id)
+        parent.user_id = user_id
+        await db.commit()
+
+    clock.current = attempted_at + timedelta(seconds=COMPLETION_OUTBOX_RETRY_SECONDS + 1)
+    assert await service.reconcile_terminal_tasks_once() == 1
+    delivered = await service.drain_once(worker_id="r15g-owner-linked")
+    async with owner_sessionmaker() as db:
+        parent_runs = list(
+            await db.scalars(
+                select(RuntimeTask.id).where(
+                    RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.parent_session_id == str(parent_session_id),
+                )
+            )
+        )
+        owned_tasks.extend(parent_runs)
+        row = (
+            await db.scalars(
+                select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.source_run_id == str(task_id))
+            )
+        ).one()
+        assert delivered["delivered"] == 1, (delivered, row.last_error)
+        assert row.status == "delivered" and row.delivered_at is not None
+        assert row.parent_session_id == parent_session_id and row.parent_user_id == user_id
+        assert len(parent_runs) == 1
+        stored = await db.get(RuntimeTask, task_id)
+        assert stored.completion_outbox_settled_at is not None
+        assert stored.completion_outbox_last_error is None
+
+    clock.current += timedelta(seconds=COMPLETION_OUTBOX_RETRY_SECONDS + 1)
+    assert await service.reconcile_terminal_tasks_once() == 0
+    assert (await service.drain_once(worker_id="r15g-owner-linked"))["delivered"] == 0
+    async with owner_sessionmaker() as db:
+        assert await db.scalar(select(func.count()).select_from(RuntimeNotificationOutbox)) == 1
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == parent_session_id,
+                    ChatTranscriptEvent.event_type == "agent_task_notification",
+                )
+            )
+            == 1
+        )
 
 
 @pytest.mark.parametrize("terminal_age", [None, timedelta(0), TERMINAL_BOUNDARY_RECENT_WINDOW])

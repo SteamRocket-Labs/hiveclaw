@@ -277,7 +277,7 @@ def _hold_runtime_task_completion_outbox(task: RuntimeTask, *, reason: str, atte
 
 
 def _record_completion_route_failure(task: RuntimeTask, *, reason: str, attempted_at: datetime) -> None:
-    invalid_id = reason in {"parent_session_id_invalid", "parent_agent_id_invalid", "parent_user_id_invalid"}
+    invalid_id = reason in {"parent_session_id_invalid", "parent_agent_id_invalid"}
     # Trigger session bindings commit before the session INSERT. Preserve the
     # existing recovery window for a late commit; unknown terminal ages still hold.
     missing_session_expired = (

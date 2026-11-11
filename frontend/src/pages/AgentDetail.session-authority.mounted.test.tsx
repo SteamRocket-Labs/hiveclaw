@@ -1321,6 +1321,36 @@ it('keeps attachments on a refusal and resends their original bytes', async () =
   expect(mocks.chatProps.attachedFiles).toEqual([]);
 });
 
+it('R14a sends a delayed upload with its own message and bubble, then leaves the next payload empty', async () => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const upload = deferred<any>();
+  mocks.upload.mockReturnValueOnce(upload.promise);
+  mocks.startSessionRun.mockResolvedValue({ run_id: 'accepted', status: 'pending' });
+  await composeOrdinaryMessage('Analyze sales');
+  fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(['sales'], 'sales.csv')] } });
+  await act(async () => {
+    fireEvent.click(screen.getByTestId('session-composer-send'));
+    fireEvent.keyDown(screen.getByTestId('session-composer-input'), { key: 'Enter' });
+  });
+  await act(async () => { upload.resolve({ filename: 'sales.csv', extracted_text: 'sales', workspace_path: 'workspace/uploads/sales.csv' }); });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(1));
+  expect(mocks.startSessionRun.mock.calls[0][2].attachments).toEqual([
+    expect.objectContaining({ name: 'sales.csv', path: 'workspace/uploads/sales.csv' }),
+  ]);
+  await waitFor(() => expect(screen.queryByTestId('session-composer-attachments')).toBeNull());
+  expect(screen.getByText('sales.csv')).toBeTruthy();
+  expect(mocks.chatProps.chatMessages.find((message: any) => message.role === 'user').inputAttachments)
+    .toEqual([expect.objectContaining({ name: 'sales.csv' })]);
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'A different request' } });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(2));
+  expect(mocks.startSessionRun.mock.calls[1][2].attachments).toEqual([]);
+  expect(mocks.startSessionRun.mock.calls[1][2].file_name).toBe('');
+  expect(mocks.startSessionRun.mock.calls[1][2].content).toBe('A different request');
+});
+
 it('keeps synchronous compact visible when polling finds no run after the absence grace', async () => {
   mocks.realChat = true;
   mocks.userRole = 'member';

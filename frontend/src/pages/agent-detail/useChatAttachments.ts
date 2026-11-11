@@ -12,6 +12,7 @@ export function useChatAttachments(
     const [uploading, setUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(-1);
     const uploadAbortRef = useRef<(() => void) | null>(null);
+    const pendingUploadsRef = useRef(new Set<{ count: number; cancel: () => void }>());
     const [attachedFiles, setAttachedFiles] = useState<{
         originalAttachment?: UploadedChatFile['original_attachment'];
         name: string;
@@ -27,27 +28,34 @@ export function useChatAttachments(
     }[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const handleChatFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const files = Array.from(e.target.files || []);
+    const uploadFiles = async (files: File[]) => {
         if (!files.length) return;
-        const allowedFiles = files.slice(0, 10 - attachedFiles.length);
+        const pendingCount = [...pendingUploadsRef.current].reduce((count, batch) => count + batch.count, 0);
+        const allowedFiles = files.slice(0, Math.max(0, 10 - attachedFiles.length - pendingCount));
         if (!allowedFiles.length) {
             onToast(t('agent.upload.limit', 'Limit of 10 attached files reached.'), 'error');
             return;
         }
 
-        setUploading(true); setUploadProgress(0);
+        let cancelled = false;
+        const uploads = allowedFiles.map(file => uploadFileWithProgress(
+            '/chat/upload', file, undefined, id ? { agent_id: id } : undefined,
+        ));
+        const batch = { count: allowedFiles.length, cancel: () => {
+            cancelled = true;
+            uploads.forEach(upload => upload.abort());
+        } };
+        pendingUploadsRef.current.add(batch);
+        setUploading(true); setUploadProgress(101);
+        uploadAbortRef.current = () => {
+            pendingUploadsRef.current.forEach(pending => pending.cancel());
+            pendingUploadsRef.current.clear();
+            setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null;
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        };
         try {
-            const uploadPromises = allowedFiles.map(file => {
-                const { promise } = uploadFileWithProgress(
-                    `/chat/upload`,
-                    file,
-                    () => {}, // Avoid updating progress per file to prevent flickering, could implement total progress
-                    id ? { agent_id: id } : undefined,
-                );
-                return promise;
-            });
-            const results = await Promise.all(uploadPromises);
+            const results = await Promise.all(uploads.map(upload => upload.promise));
+            if (cancelled) return;
             const newAttached = results.map(data => ({
                 originalAttachment: data.original_attachment,
                 name: data.filename,
@@ -63,12 +71,20 @@ export function useChatAttachments(
             }));
             setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
         } catch (err: any) {
-            if (err?.message !== 'Upload cancelled') onToast(t('agent.upload.failed'), 'error');
+            if (!cancelled) {
+                batch.cancel();
+                if (err?.message !== 'Upload cancelled') onToast(t('agent.upload.failed'), 'error');
+            }
         } finally {
-            setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null;
-            if (fileInputRef.current) fileInputRef.current.value = '';
+            pendingUploadsRef.current.delete(batch);
+            if (!pendingUploadsRef.current.size) {
+                setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null;
+                if (fileInputRef.current) fileInputRef.current.value = '';
+            }
         }
     };
+
+    const handleChatFile = (e: React.ChangeEvent<HTMLInputElement>) => uploadFiles(Array.from(e.target.files || []));
 
     // Clipboard paste handler — auto-upload pasted images
     const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -89,41 +105,7 @@ export function useChatAttachments(
 
         if (!filesToUpload.length) return;
         e.preventDefault();
-        const allowedFiles = filesToUpload.slice(0, 10 - attachedFiles.length);
-        if (!allowedFiles.length) {
-            onToast(t('agent.upload.limit', 'Limit of 10 attached files reached.'), 'error');
-            return;
-        }
-
-        setUploading(true); setUploadProgress(0);
-        try {
-            const uploadPromises = allowedFiles.map(file => {
-                const { promise } = uploadFileWithProgress(
-                    `/chat/upload`,
-                    file,
-                    () => {},
-                    id ? { agent_id: id } : undefined,
-                );
-                return promise;
-            });
-            const results = await Promise.all(uploadPromises);
-            const newAttached = results.map(data => ({
-                originalAttachment: data.original_attachment,
-                name: data.filename,
-                text: data.extracted_text,
-                path: data.workspace_path,
-                imageUrl: data.image_data_url || undefined,
-                conversion: data.conversion ? {
-                    status: data.conversion.status,
-                    markdownPath: data.conversion.markdown_path,
-                    metadataPath: data.conversion.metadata_path,
-                    engine: data.conversion.engine,
-                } : undefined,
-            }));
-            setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
-        } catch (err: any) {
-            if (err?.message !== 'Upload cancelled') onToast(t('agent.upload.failed'), 'error');
-        } finally { setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; }
+        await uploadFiles(filesToUpload);
     };
 
     return { uploading, uploadProgress, uploadAbortRef, attachedFiles, setAttachedFiles,

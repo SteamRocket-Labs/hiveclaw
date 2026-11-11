@@ -593,17 +593,30 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                     await _validate_input_dependencies(db, tenant_id, dependencies, runtime_request=group_principal)
                 await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
                 if source is not None and source["source_kind"] == "explicit_memory" and memory_readers:
-                    readers = {}
+                    readers, inherited_indexes = {}, []
                     for entry in input_bindings["messages"]:
                         if source in entry.get("dependencies", []):
-                            readers.setdefault(memory_readers.get(entry["message_index"], memory_principal), []).append(entry["message_index"])
-                    for reader, indexes in readers.items():
+                            reader = memory_readers.get(entry["message_index"])
+                            if reader is None and entry.get("source_ref", "").startswith((
+                                "session-model-result:", "session-tool-result:")):
+                                inherited_indexes.append(entry["message_index"])
+                            else:
+                                readers.setdefault(reader or memory_principal, []).append(entry["message_index"])
+                    # Own history can reuse only this exact source's successful
+                    # parent-reader check for an instruction in this request.
+                    inherited_verified = False
+                    for reader, indexes in [*readers.items(), (None, inherited_indexes)]:
+                        if not indexes or (reader is None and inherited_verified):
+                            continue
+                        reader = reader or memory_principal
                         try:
                             scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
                             await validate_memory_model_sources(db, task=task, agent_id=agent_id,
                                 session_id=session_id, dependencies=dependencies, principal=reader)
                         except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
                             _withhold_model_source(messages, wire_request, input_bindings, source, exc.code, indexes)
+                        else:
+                            inherited_verified = inherited_verified or reader in memory_readers.values()
                 else:
                     scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
                     await validate_memory_model_sources(db, task=task, agent_id=agent_id,

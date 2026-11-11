@@ -394,22 +394,31 @@ def test_terminal_reads_keep_different_failed_tasks_separate():
                 machine_outcome="succeeded", side_effect_free=True) is None
 
 
+@pytest.mark.parametrize("shape", ["coded", "plain"])
 @pytest.mark.parametrize("active_status", ["pending", "running"])
-def test_listed_failure_does_not_count_while_another_task_is_active(active_status):
+def test_listed_failure_does_not_count_while_another_task_is_active(active_status, shape):
     from app.kernel.loop_guard import LoopGuard
-    from app.services.runtime_display_status import runtime_failure_observation
+    from app.services.runtime_display_status import delegation_failure_result_page, runtime_failure_observation
+
+    # R16b: list_async_tasks now sends failed entries as the plain page; stored
+    # records may still carry the coded observation. Both must wait while
+    # another listed task is active.
+    def failed_entry(task_id):
+        if shape == "plain":
+            return delegation_failure_result_page(task_id=task_id, status="failed",
+                metadata={"error_code": "provider_error"})
+        return {"task_id": task_id, **runtime_failure_observation("failed", {"error_code": "provider_error"})}
 
     own_id = uuid4()
     guard = LoopGuard(runtime_task_id=own_id.hex)
-    failure = runtime_failure_observation("failed", {"error_code": "provider_error"})
-    tasks = [{"task_id": str(uuid4()), **failure},
+    tasks = [failed_entry(str(uuid4())),
         {"task_id": str(uuid4()), "task_type": "web_chat_turn", "status": active_status},
         {"task_id": str(own_id), "task_type": "web_chat_turn", "status": "running"}]
     for _ in range(10):
-        assert guard.observe_tool_result("list_async_tasks", {}, json.dumps(tasks),
+        assert guard.observe_tool_result("list_async_tasks", {}, json.dumps(tasks, ensure_ascii=False),
             machine_outcome="succeeded", side_effect_free=True) is None
 
-    tasks[1].update(failure)
+    tasks[1] = failed_entry(tasks[1]["task_id"])
     for index in range(guard.identical_tool_threshold):
         decision = guard.observe_tool_result("list_async_tasks", {}, json.dumps(tasks),
             machine_outcome="succeeded", side_effect_free=True)

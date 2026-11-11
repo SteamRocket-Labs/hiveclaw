@@ -251,7 +251,9 @@ class LoopGuard:
             # records. Recognize both fixed projections so identical terminal
             # reads still stop the turn.
             plain_result_page = is_delegation_failure_result_page(observation)
-            if not running and not plain_result_page and (active_listing or not is_runtime_failure_observation(observation)):
+            # A failed entry in a listing that still shows an active task is not
+            # counted, whichever fixed projection carries it.
+            if not running and (active_listing or not (plain_result_page or is_runtime_failure_observation(observation))):
                 continue
             identity = observation.get("task_id") or observation.get("result_ref")
             if not isinstance(identity, str) or not identity:

@@ -2341,8 +2341,9 @@ async def _delegate_after_cycle_check(
         reconciliation_required = isinstance(
             exc, (ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired, ToolLifecyclePersistenceError)
         )
-        # The full exception type, trace, and depth stay in server logs and task
-        # metadata; the member line carries the fixed plain sentence only.
+        # The full exception type, trace, and depth stay in the server log below
+        # (not in task metadata); the member line carries the fixed plain
+        # sentence only.
         logger.error(
             "[Orchestrator] Child agent %s failed (depth=%d, trace=%s): %s",
             request.target.name,

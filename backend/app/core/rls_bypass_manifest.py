@@ -921,7 +921,14 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # deadline, run_bounded removed); still 122 callsites, no new bypass scope.
 # Land16 fix: content_input_receipts.py discards (not removes) the visiting key after
 # a scope closes mid-validation; module source only, still 122 callsites.
-RLS_BYPASS_SCOPES_SHA256 = "2b904e9c52ac97f8c2fe0b3dfa934b3f2910665fb76c42f8ed950b722d37449c"
+# Land17 (R13a-R13e, A2d) versus land16: 790 -> 794 entries. A2d: runtime reader and
+# employee read merged into one live statement (user narrowed by an explicit tenant
+# predicate); ACL body extracted unchanged into _agent_access_for_loaded; 4 consumer
+# entries added in permissions. R13b: enqueue_completion_notification reads the root
+# task's budget_run_id under an explicit tenant predicate. R13c/R13d: module sources of
+# session_tool_runtime, session_permission_runtime, session_model_round and
+# web_chat_runtime. Still 122 callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "587b071b0df6223539c5784b28e243d706bbb5910f55da7b389afe092cc6a1aa"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -225,15 +225,55 @@ async def _unprojected_predecessor_transcript_event_ids(
 
 
 # Deterministic prefix for mechanical terminal-owner recovery. Canonical
-# owners can reopen after their boundary, so their key also names the segment.
+# owners can reopen after their boundary, so later seals also name the segment.
 TERMINAL_OWNER_SEGMENT_RECOVERY_IDEMPOTENCY_KEY = "t0-terminal-owner-recovery"
 
 
-def _terminal_transcript_recovery_tasks(transcript_event: Any, *, canonical_owner: bool = False) -> Any:
+def _terminal_transcript_recovery_boundaries(task: Any, transcript_event: Any, active_segment_id: Any) -> Any:
+    from sqlalchemy import String, Uuid, cast, func, or_
+    from sqlalchemy.orm import aliased
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox as Boundary
+
+    def session_key(value):
+        return func.lower(func.replace(value, "-", ""))
+
+    terminal = aliased(ChatTranscriptEvent)
+    terminal_in_segment = select(terminal.id).where(
+        terminal.id == cast(Boundary.binding_json["terminal_event_id"].astext, Uuid),
+        terminal.tenant_id == Boundary.tenant_id,
+        terminal.agent_id == transcript_event.agent_id,
+        terminal.session_id == transcript_event.session_id,
+        terminal.run_id == task.id,
+        terminal.projection_status == "projected",
+        terminal.metadata_json["t0_bridge_segment_id"].astext == active_segment_id,
+    ).correlate(Boundary, ChatTranscriptEvent, RuntimeTask).exists()
+    session_id = transcript_event.session_id
+    session_id = str(session_id) if isinstance(session_id, UUID) else session_id
+    return select(Boundary).where(
+        Boundary.runtime_task_id == task.id,
+        Boundary.tenant_id == task.tenant_id,
+        Boundary.terminal_status == task.status,
+        Boundary.status.in_(("delivered", "dead_letter")),
+        Boundary.agent_id.in_((task.parent_agent_id, task.child_agent_id)),
+        session_key(Boundary.session_id).in_((session_key(task.parent_session_id),
+            session_key(task.child_session_id))),
+        # A dead letter still owes its canonical consumers the segment that
+        # contains the terminal event. Never give its identity to a prefix.
+        or_(Boundary.status == "delivered", (
+            (Boundary.agent_id == transcript_event.agent_id)
+            & (session_key(Boundary.session_id) == session_key(cast(session_id, String)))
+            & terminal_in_segment)),
+    )
+
+
+def _terminal_transcript_recovery_tasks(transcript_event: Any, *, canonical_owner: bool = False,
+    active_segment_id: Any = None) -> Any:
     """The existing terminal/scope proof, optionally backed by a committed boundary."""
     from sqlalchemy import String, and_, cast, func, or_
+    from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import TERMINAL_BOUNDARY_TERMINAL_STATUSES, RuntimeTask
-    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox as Boundary
 
     def session_key(value):
         return func.lower(func.replace(value, "-", ""))
@@ -245,14 +285,11 @@ def _terminal_transcript_recovery_tasks(transcript_event: Any, *, canonical_owne
         RuntimeTask.terminal_boundary_enqueued_at.is_(None))
     boundary_proof = no_boundary
     if canonical_owner:
-        committed_boundary = select(Boundary.id).where(
-            Boundary.runtime_task_id == RuntimeTask.id,
-            Boundary.tenant_id == RuntimeTask.tenant_id,
-            Boundary.terminal_status == RuntimeTask.status,
-            Boundary.agent_id.in_((RuntimeTask.parent_agent_id, RuntimeTask.child_agent_id)),
-            session_key(Boundary.session_id).in_((session_key(RuntimeTask.parent_session_id),
-                session_key(RuntimeTask.child_session_id))),
-        ).correlate(RuntimeTask).exists()
+        if active_segment_id is None:
+            active_segment_id = func.split_part(func.split_part(transcript_event.projection_error,
+                "active_segment_id=", 2), " ", 1)
+        committed_boundary = _terminal_transcript_recovery_boundaries(RuntimeTask, transcript_event,
+            active_segment_id).correlate(RuntimeTask, ChatTranscriptEvent).exists()
         boundary_proof = or_(no_boundary, and_(RuntimeTask.terminal_boundary_generation.is_not(None),
             RuntimeTask.terminal_boundary_enqueued_at.is_not(None), committed_boundary))
     return select(RuntimeTask).where(
@@ -278,28 +315,47 @@ async def _seal_terminal_boundary_pending_owner(
     A canonical processor drains the transcript before sealing; a mismatching
     run in that prefix can prevent it from reaching the seal. A late event
     can also reopen a finished owner's segment. Prove the same terminal and
-    scope facts as nonboundary recovery, plus a committed canonical outbox
-    when the owner has that lane. This mechanical seal neither acknowledges
-    the outbox nor invents semantic success. Unproven facts still fail closed.
+    scope facts as nonboundary recovery, plus a finished canonical outbox
+    when the owner has that lane. Dead letters retain their canonical seal
+    identity only for the segment containing the projected terminal event.
+    This seal does not acknowledge delivery or invent semantic success.
     """
 
     from app.memory.t0.ledger import seal_t0_session_segment
+    from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
 
     owner_uuid = _uuid_or_none(getattr(boundary_error, "active_runtime_task_id", None))
     if owner_uuid is None:
         return False
     owner_task = (
-        await db.execute(_terminal_transcript_recovery_tasks(transcript_event, canonical_owner=True)
-            .where(RuntimeTask.id == owner_uuid).with_for_update())
+        await db.execute(_terminal_transcript_recovery_tasks(transcript_event, canonical_owner=True,
+            active_segment_id=boundary_error.active_segment_id)
+            .where(RuntimeTask.id == owner_uuid))
     ).scalar_one_or_none()
     if owner_task is None:
         return False
     canonical_owner = owner_task.terminal_boundary_generation is not None
+    boundary = None
+    if canonical_owner:
+        # redrive_dead_letter locks the outbox before RuntimeTask. Keep that
+        # order and hold the outbox lock through the filesystem seal/commit;
+        # after a redrive wins, the status predicate rejects its pending row.
+        boundary = (await db.execute(_terminal_transcript_recovery_boundaries(owner_task, transcript_event,
+            boundary_error.active_segment_id)
+            .with_for_update())).scalars().first()
+        if boundary is None:
+            return False
+    owner_task = (await db.execute(_terminal_transcript_recovery_tasks(transcript_event, canonical_owner=True,
+        active_segment_id=boundary_error.active_segment_id)
+        .where(RuntimeTask.id == owner_uuid).with_for_update()
+        .execution_options(populate_existing=True))).scalar_one_or_none()
+    if owner_task is None:
+        return False
     recovery_key = f"{TERMINAL_OWNER_SEGMENT_RECOVERY_IDEMPOTENCY_KEY}:{owner_uuid}"
     if canonical_owner:
         recovery_key += f":{boundary_error.active_segment_id}"
-    seal_t0_session_segment(
+    seal_args = dict(
         agent_id=transcript_event.agent_id,
         session_id=transcript_event.session_id,
         reason="terminal_owner_segment_recovery",
@@ -315,7 +371,17 @@ async def _seal_terminal_boundary_pending_owner(
         idempotency_key=recovery_key,
         expected_runtime_task_id=owner_uuid,
     )
-    return True
+    if boundary is not None and boundary.status == "dead_letter":
+        terminal = await db.get(ChatTranscriptEvent, UUID(boundary.binding_json["terminal_event_id"]))
+        seal_args.update(boundary_id=boundary.id, idempotency_key=boundary.idempotency_key,
+            expected_turn_id=str(terminal.turn_id or (owner_task.metadata_json or {}).get("turn_id")
+                or f"turn-{owner_uuid.hex}"))
+    sealed = seal_t0_session_segment(**seal_args)
+    if not canonical_owner and sealed is not None and sealed.segment_id != boundary_error.active_segment_id:
+        # Preserve the old receipt; a late event opened a different segment.
+        seal_args["idempotency_key"] = f"{recovery_key}:{boundary_error.active_segment_id}"
+        sealed = seal_t0_session_segment(**seal_args)
+    return sealed is not None and sealed.segment_id == boundary_error.active_segment_id
 
 
 async def _incoming_transcript_run_is_orphan(
@@ -740,7 +806,7 @@ async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts:
     from sqlalchemy.orm import aliased
 
     from app.database import async_session, enter_rls_bypass, tenant_scoped_session
-    from app.memory.t0.ledger import replay_t0_session_events_tail
+    from app.memory.t0.ledger import get_t0_active_segment_id
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
 
@@ -820,11 +886,10 @@ async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts:
                     # leave the frontier dormant while that exact segment is
                     # still the open tail; a changed ledger gets the normal
                     # append/recovery checks again.
-                    tail = replay_t0_session_events_tail(agent_id=frontier.agent_id,
-                        session_id=session_id, limit=1)
+                    active_segment = get_t0_active_segment_id(agent_id=frontier.agent_id, session_id=session_id)
                     stalled_segment = str(frontier.projection_error or "").partition(
                         "active_segment_id=")[2].partition(" ")[0]
-                    if tail and tail[-1].segment_id == stalled_segment and tail[-1].event_type != "segment_boundary":
+                    if active_segment == stalled_segment:
                         continue
                 rows = list((await db.scalars(select(ChatTranscriptEvent).where(
                     ChatTranscriptEvent.session_id == session_id,

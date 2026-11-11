@@ -1261,8 +1261,11 @@ def runtime_result_denial_bound(*, invocation, payload, content):
             return True  # Native absence feedback contains no result body or source grant.
         from app.services.runtime_display_status import runtime_failure_observation
 
-        failure = runtime_failure_observation(body.get("status"), {"error_code": body.get("reason_code")})
-        if failure and body == {"schema": "hive.runtime_result_page.v1", "result_ref": arguments["result_ref"], **failure}:
+        failure = runtime_failure_observation(body.get("status"), {"error_code": body.get("reason_code")},
+            result_summary=body.get("reason"))
+        task_identity = {"task_id": str(uuid.UUID(str(body["task_id"])))} if "task_id" in body else {}
+        if failure and body == {"schema": "hive.runtime_result_page.v1", "result_ref": arguments["result_ref"],
+            **task_identity, **failure}:
             return True  # Only the native reader's fixed execution status, never failed result bytes.
         return (
             set(body) == {"schema", "status", "reason_code", "result_ref", "retryable", "recovery_action"}

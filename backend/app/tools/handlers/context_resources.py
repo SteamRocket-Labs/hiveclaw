@@ -430,9 +430,10 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                     RuntimeTask.tenant_id == tenant_id,
                     RuntimeTask.task_type == "delegation",
                 ))
-                failure = runtime_failure_observation(task.status, task.metadata_json or {}) if task else None
+                failure = runtime_failure_observation(task.status, task.metadata_json or {},
+                    result_summary=task.result_summary) if task else None
                 if failure:
-                    return _json({"schema": schema, "result_ref": result_ref, **failure})
+                    return _json({"schema": schema, "result_ref": result_ref, "task_id": str(task.id), **failure})
             from app.services.content_input_receipts import ContentInputReceiptError
             from app.services.runtime_result_sources import validate_runtime_result_sources
 

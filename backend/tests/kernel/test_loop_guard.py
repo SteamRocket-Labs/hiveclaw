@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+from uuid import uuid4
+
+import pytest
+
 
 def test_loop_guard_detects_identical_tool_args() -> None:
     from app.kernel.loop_guard import LoopGuard
@@ -294,7 +299,7 @@ def test_loop_guard_warns_on_repeated_provider_cost_pressure() -> None:
     assert decision.outcome.next_action == "self_correct_and_continue"
 
 
-def test_terminal_read_abort_requires_identical_task_and_complete_body():
+def test_terminal_read_abort_requires_same_task_and_reason():
     import json
 
     from app.kernel.loop_guard import LoopGuard
@@ -327,8 +332,83 @@ def test_pending_read_observations_do_not_abort_or_count_as_terminal_failures():
     from app.kernel.loop_guard import LoopGuard
 
     guard = LoopGuard()
-    for status in ("running", "pending"):
+    for status in ("running", "pending", "completed"):
         for _ in range(guard.identical_tool_threshold + 1):
             assert guard.observe_tool_result("check_async_task", {"task_id": "live"},
                 json.dumps({"ok": True, "status": status, "result": None}),
                 machine_outcome="succeeded", side_effect_free=True) is None
+
+
+@pytest.mark.parametrize("mode", ["id_format", "rotation", "pagination", "listing"])
+def test_terminal_reads_count_observed_task_across_tools_and_arguments(mode):
+    from app.kernel.loop_guard import LoopGuard
+    from app.services.runtime_display_status import runtime_failure_observation
+
+    guard, task_id = LoopGuard(), uuid4()
+    ref = f"runtime-result://{uuid4()}/{'a' * 64}"
+    failure = {"task_id": str(task_id), "task_type": "delegation",
+        **runtime_failure_observation("failed", {"error_code": "provider_error"})}
+    for index in range(guard.identical_tool_threshold):
+        name, args, body = "check_async_task", {"task_id": str(task_id)}, failure
+        if mode == "id_format":
+            args["task_id"] = task_id.hex if index % 2 else str(task_id)
+            body = {**failure, "task_id": args["task_id"]}
+        elif mode == "rotation":
+            name = ("check_async_task", "task_output", "read_runtime_result")[index % 3]
+            args = {"result_ref": ref} if name == "read_runtime_result" else {"runtime_task_id": task_id.hex}
+            body = {"task": failure} if name == "task_output" else {**failure, "result_ref": ref}
+        elif mode == "pagination":
+            name, args = "read_runtime_result", {"result_ref": ref, "offset": index, "limit": index + 1,
+                "expected_sha256": str(index) * 64}
+            body = {**failure, "result_ref": ref}
+        elif mode == "listing":
+            name, args, body = "list_async_tasks", {"limit": index + 1}, [failure]
+        decision = guard.observe_tool_result(name, args, json.dumps(body),
+            machine_outcome="succeeded", side_effect_free=True)
+        if index < guard.identical_tool_threshold - 1:
+            assert decision is None
+        else:
+            assert decision is not None and decision.severity == "abort"
+            assert decision.reason == "identical_terminal_task_read"
+            assert decision.trace_event["identical_terminal_read_count"] == guard.identical_tool_threshold
+    assert guard.failed_tool_calls == 0
+
+
+def test_terminal_reads_keep_different_failed_tasks_separate():
+    from app.kernel.loop_guard import LoopGuard
+    from app.services.runtime_display_status import runtime_failure_observation
+
+    guard, tasks = LoopGuard(), [uuid4(), uuid4()]
+    failure = runtime_failure_observation("failed", {"error_code": "provider_error"})
+    for _ in range(guard.identical_tool_threshold - 1):
+        for task_id in tasks:
+            assert guard.observe_tool_result("list_async_tasks", {},
+                json.dumps([{**failure, "task_id": str(task_id), "task_type": "delegation"}]),
+                machine_outcome="succeeded", side_effect_free=True) is None
+
+
+@pytest.mark.parametrize("status", ["skipped", "needs_reconciliation", "killed"])
+@pytest.mark.parametrize("task_type", ["delegation", "web_chat_turn"])
+def test_terminal_read_stop_uses_neutral_wording(status, task_type):
+    from app.kernel.loop_guard import LoopGuard
+    from app.services.runtime_display_status import runtime_failure_observation
+
+    guard, task_id = LoopGuard(), uuid4()
+    body = {"task_id": str(task_id), "task_type": task_type, **runtime_failure_observation(status, {})}
+    for _ in range(guard.identical_tool_threshold):
+        decision = guard.observe_tool_result("task_output", {"runtime_task_id": str(task_id)},
+            json.dumps({"ok": True, "task": body}), machine_outcome="succeeded", side_effect_free=True)
+    assert decision is not None
+    assert body["reason"] in decision.message
+    assert "同事" not in decision.message and "失败" not in decision.message
+
+
+@pytest.mark.parametrize("partial", ["PRIVATE_PARTIAL_BODY", {"content": "PRIVATE_PARTIAL_BODY"}])
+def test_terminal_read_failure_projection_keeps_only_fixed_runtime_copy(partial):
+    from app.services.runtime_display_status import is_runtime_failure_observation, runtime_failure_observation
+
+    failure = runtime_failure_observation("failed", {"error_code": "identical_terminal_task_read"},
+        result_summary=partial)
+    assert failure["reason"] == "任务结果未变化，已停止本次处理。"
+    assert is_runtime_failure_observation(failure)
+    assert not is_runtime_failure_observation({**failure, "reason": partial})

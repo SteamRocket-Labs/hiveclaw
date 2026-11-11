@@ -3,7 +3,7 @@
 import json
 import sys
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
@@ -18,6 +18,7 @@ from tests.integration import test_web_chat_worker_restart_kernel_recovery as ke
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 FAILURE = "同事这次用完了用量预算，没有完成。"
+STOP_REASON = "任务结果未变化，已停止本次处理：这次用完了用量预算，没有完成。"
 
 
 def _call(name, arguments, identity):
@@ -42,7 +43,8 @@ async def _execute(owner, run_id, worker):
         reset_runtime_task_fence(token)
 
 
-async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rounds=8, parent_tokens=30):
+async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rounds=8, parent_tokens=30,
+    child_reads_terminal=False):
     import app.database as database
     import app.runtime.invoker as invoker
     import app.services.tenant_resolver as tenant_resolver
@@ -139,11 +141,44 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
         seed["child_id"] = child.id
         child.status, child.claimed_by, child.claim_version, child.attempt_count = "running", "r13b-child", 1, 1
         child.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        if child_reads_terminal:
+            # The colleague's own failed sub-delegation, scoped to its child session.
+            nested_agent = Agent(id=uuid4(), tenant_id=seed["tenant_id"], name="Nested colleague",
+                creator_id=seed["user_id"], owner_user_id=seed["user_id"], primary_model_id=model.id)
+            db.add(nested_agent)
+            await db.flush()
+            nested = RuntimeTask(id=uuid4(), task_type="delegation", status="failed",
+                tenant_id=child.tenant_id, parent_agent_id=child.child_agent_id,
+                child_agent_id=nested_agent.id, parent_session_id=str(UUID(child.child_session_id)),
+                child_session_id=str(uuid4()), root_user_id=child.root_user_id,
+                root_session_id=child.root_session_id, root_runtime_task_id=child.root_runtime_task_id,
+                delegation_chain_json=[*(child.delegation_chain_json or []), str(nested_agent.id)],
+                result_summary="PRIVATE_PARTIAL_BODY", metadata_json={"error_code": "turn_token_budget_exhausted"})
+            db.add(nested)
+            seed["nested_id"] = nested.id
         await db.commit()
     child_client = kernel_cases.ScriptedLLMClient([{
         "tool_calls": [_call("get_current_time", {}, "child-check")],
         "usage": {"total_tokens": 1_000_001}, "finish_reason": "tool_calls",
     }])
+    if child_reads_terminal:
+        from functools import wraps
+
+        native_execute = invoker.execute_tool
+        child_observed = []
+
+        @wraps(native_execute)
+        async def capture_child_tool(*args, **kwargs):
+            result = await native_execute(*args, **kwargs)
+            child_observed.append(str(result))
+            return result
+
+        monkeypatch.setattr(invoker, "execute_tool", capture_child_tool)
+        child_client = kernel_cases.ScriptedLLMClient([
+            {"tool_calls": [_call("check_async_task", {"task_id": str(seed["nested_id"])}, f"nested-{index}")],
+                "usage": {"total_tokens": 1}, "finish_reason": "tool_calls"}
+            for index in range(parent_rounds)
+        ] + [{"content": "The terminal read stop did not fire."}])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: child_client)
     from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
 
@@ -154,8 +189,23 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
         reset_runtime_task_fence(token)
     async with owner() as db:
         child = await db.get(RuntimeTask, seed["child_id"])
-        assert child.status == "failed" and child.metadata_json["terminal_reason"] == "tool_budget", child.metadata_json
-        assert len(child_client.requests) == 1
+        if child_reads_terminal:
+            from app.kernel.loop_guard import LoopGuard
+
+            print("R13B3_NESTED_READS", json.dumps(child_observed, ensure_ascii=False))
+            print("R13B3_DELEGATED_STOP", child.status, child.result_summary, len(child_client.requests))
+            assert child.status == "failed", (child.status, child.result_summary)
+            assert child.metadata_json["terminal_reason"] == "loop_guard"
+            assert child.metadata_json["error_code"] == "identical_terminal_task_read"
+            assert child.result_summary == STOP_REASON
+            assert len(child_client.requests) == LoopGuard().identical_tool_threshold
+            assert len(child_observed) == LoopGuard().identical_tool_threshold
+            for content in child_observed:
+                assert json.loads(content)["reason"] == "这次用完了用量预算，没有完成。"
+                assert "PRIVATE_PARTIAL_BODY" not in content
+        else:
+            assert child.status == "failed" and child.metadata_json["terminal_reason"] == "tool_budget", child.metadata_json
+            assert len(child_client.requests) == 1
 
     from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
     from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
@@ -253,7 +303,7 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
     await _assert_member_final(app_user_sessionmaker, seed, member_text)
 
 
-async def _assert_member_final(app_user_sessionmaker, seed, expected, *, provider_final=True):
+async def _assert_member_final(app_user_sessionmaker, seed, expected, *, provider_final=True, failed=False):
     # Native finals reference the text blocks delivered by the member API.
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
@@ -279,6 +329,15 @@ async def _assert_member_final(app_user_sessionmaker, seed, expected, *, provide
         response = await client.get(f"/agents/{seed['agent_id']}/sessions/{seed['session_id']}/transcript",
             params={"schema_version": 2, "limit": 1000})
     assert response.status_code == 200, response.text
+    if failed:
+        failures = [event for event in response.json() if event.get("item_kind") == "runtime_failure"
+            and event.get("run_id", event.get("scope", {}).get("run_id")) == str(seed["return_id"])]
+        assert len(failures) == 1, response.json()
+        assert failures[0]["payload"]["content"] == expected
+        assert failures[0]["payload"]["failure_code"] == "identical_terminal_task_read"
+        assert sum(event.get("payload", {}).get("content") == expected for event in response.json()) == 1
+        assert "[Runtime Limit]" not in json.dumps(response.json())
+        return
     if not provider_final:
         # A runtime stop uses the existing runtime-authored terminal message;
         # it must not invent a sealed provider final or disappear as a tool-card pause.
@@ -329,12 +388,14 @@ async def test_continuation_has_own_kernel_limits_under_the_shared_root_budget(
         assert returned.metadata_json["turn_tokens_used"] == (40_000 if bound == "tokens" else 4)
 
 
-@pytest.mark.parametrize("reader", ["check_async_task", "task_output", "read_runtime_result", "all"])
+@pytest.mark.parametrize("reader", ["check_async_task", "task_output", "read_runtime_result", "all",
+    "id_format", "rotation", "pagination", "list_async_tasks"])
 async def test_identical_terminal_child_reads_end_the_turn(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, reader,
 ):
     import app.runtime.invoker as invoker
     from app.kernel.loop_guard import LoopGuard
+    from app.tools.handlers.context_resources import _MIN_PAGE_CHARS
 
     threshold = LoopGuard().identical_tool_threshold
     seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
@@ -344,12 +405,25 @@ async def test_identical_terminal_child_reads_end_the_turn(
         "task_output": {"runtime_task_id": str(seed["child_id"])},
         "read_runtime_result": {"result_ref": seed["result_ref"]},
     }
-    readers = list(arguments) if reader == "all" else [reader]
-    client = kernel_cases.ScriptedLLMClient([
-        {"tool_calls": [_call(name, arguments[name], f"repeat-{index}-{name}") for name in readers],
-            "usage": {"total_tokens": 1}, "finish_reason": "tool_calls"}
-        for index in range(threshold + 5)
-    ])
+    script = []
+    for index in range(threshold + 5):
+        readers = list(arguments) if reader == "all" else [reader]
+        round_args = {name: dict(args) for name, args in arguments.items()}
+        if reader == "id_format":
+            readers = ["check_async_task"]
+            round_args["check_async_task"]["task_id"] = seed["child_id"].hex if index % 2 else str(seed["child_id"])
+        elif reader == "rotation":
+            readers = [list(arguments)[index % len(arguments)]]
+        elif reader == "pagination":
+            readers = ["read_runtime_result"]
+            round_args["read_runtime_result"].update(offset=index, limit=_MIN_PAGE_CHARS + index)
+            if index % 2:
+                round_args["read_runtime_result"]["expected_sha256"] = seed["result_ref"].rsplit("/", 1)[1]
+        elif reader == "list_async_tasks":
+            round_args[reader] = {"limit": index + 1}
+        script.append({"tool_calls": [_call(name, round_args[name], f"repeat-{index}-{name}") for name in readers],
+            "usage": {"total_tokens": 1}, "finish_reason": "tool_calls"})
+    client = kernel_cases.ScriptedLLMClient(script)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
     await _execute(owner_sessionmaker, seed["return_id"], "r13b-repeat-reader")
     async with owner_sessionmaker() as db:
@@ -358,10 +432,40 @@ async def test_identical_terminal_child_reads_end_the_turn(
             SessionModelResult.run_id == seed["return_id"])))
         print("R13B_IDENTICAL_TERMINAL", reader, "calls", len(client.requests), "rounds", len(models),
             "status", returned.status, "summary", returned.result_summary)
-        assert len(client.requests) == len(models) == threshold
-        assert returned.result_summary == "同事的任务失败了：这次用完了用量预算，没有完成。"
-        assert returned.status == "completed"
-    await _assert_member_final(app_user_sessionmaker, seed, "同事的任务失败了：这次用完了用量预算，没有完成。", provider_final=False)
+        assert len(client.requests) == len(models) == ((threshold + 2) // 3 if reader == "all" else threshold)
+        assert returned.status == "failed"
+        assert returned.metadata_json["terminal_reason"] == "loop_guard"
+        assert returned.metadata_json["error_code"] == "identical_terminal_task_read"
+    await _assert_member_final(app_user_sessionmaker, seed, STOP_REASON, failed=True)
+
+
+async def test_delegated_child_terminal_read_failure_reaches_parent(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    import app.runtime.invoker as invoker
+    from app.kernel.loop_guard import LoopGuard
+
+    seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        parent_rounds=LoopGuard().identical_tool_threshold + 5, child_reads_terminal=True)
+    reads = [
+        _call("check_async_task", {"task_id": str(seed["child_id"])}, "parent-status"),
+        _call("task_output", {"runtime_task_id": str(seed["child_id"])}, "parent-output"),
+        _call("read_runtime_result", {"result_ref": seed["result_ref"]}, "parent-result"),
+    ]
+    parent_answer = "同事返回的原因：" + STOP_REASON
+    client = kernel_cases.ScriptedLLMClient([
+        {"tool_calls": reads, "finish_reason": "tool_calls"}, {"content": parent_answer}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    await _execute(owner_sessionmaker, seed["return_id"], "r13b3-parent-reader")
+    observed = [message["content"] for message in client.requests[1]["messages"]
+        if message.get("role") == "tool" and message.get("tool_call_id") in {call["id"] for call in reads}]
+    assert len(observed) == len(reads)
+    for content in observed:
+        assert STOP_REASON in content and '"failed"' in content
+        assert "needs_reconciliation" not in content and "Delegation terminal output" not in content
+        assert "PRIVATE_PARTIAL_BODY" not in content
+    print("R13B3_PARENT_READS", json.dumps(observed, ensure_ascii=False))
+    await _assert_member_final(app_user_sessionmaker, seed, parent_answer)
 
 
 async def test_identical_running_child_reads_do_not_end_the_turn(

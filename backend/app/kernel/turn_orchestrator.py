@@ -1106,6 +1106,45 @@ async def _project_loop_guard_warning(
     )
 
 
+async def _project_loop_guard_terminal_evidence(
+    decision: LoopGuardDecision, *, api_messages: list, _context_message: Any, _emit_event: Any
+) -> None:
+    import json
+
+    _terminal_evidence = {
+        "schema": "hive.loop_guard_terminal_evidence.v1",
+        **decision.trace_event,
+    }
+    api_messages.append(
+        _context_message(
+            role="system",
+            kind="runtime_reminder",
+            content=(
+                "<loop_guard_terminal_evidence>"
+                + json.dumps(_terminal_evidence, ensure_ascii=False, sort_keys=True)
+                + "</loop_guard_terminal_evidence>\n"
+                "The governed runtime has recorded that this side-effect-free retry path is exhausted "
+                "without state progress. Treat this as evidence, not as a platform-authored semantic "
+                "conclusion. Decide whether another available capability can make progress or whether "
+                "to answer now; preserve uncertainty and cite the most useful recovery action."
+            ),
+        )
+    )
+    await _emit_event(
+        {
+            "type": "loop_guard",
+            "part": {
+                "type": "event",
+                "event_type": "loop_guard_terminal_evidence",
+                "title": "Retry evidence available",
+                "text": "The model received typed non-progress evidence with its authorized tools intact.",
+                "status": "warning",
+                **decision.trace_event,
+            },
+        }
+    )
+
+
 async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> InvocationResult:
     # Bind an explicit per-call dependency snapshot so tests, DI, and runtime
     # overrides observe the same facade values without copying a module namespace.
@@ -3520,42 +3559,16 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         message = _loop_guard_terminal_decision.message
                         await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, message, api_messages)
-                        return InvocationResult(
-                            content=message, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
-                            parts=collected_parts + build_done_event(message)["parts"],
+                        result = _build_error_result(
+                            message, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
+                            terminal_reason=TerminalReason.LOOP_GUARD, failure_code="identical_terminal_task_read",
                         )
+                        result.parts = collected_parts + result.parts
+                        return result
                     _loop_guard_summary_pending = True
-                    _terminal_evidence = {
-                        "schema": "hive.loop_guard_terminal_evidence.v1",
-                        **_loop_guard_terminal_decision.trace_event,
-                    }
-                    api_messages.append(
-                        _context_message(
-                            role="system",
-                            kind="runtime_reminder",
-                            content=(
-                                "<loop_guard_terminal_evidence>"
-                                + json.dumps(_terminal_evidence, ensure_ascii=False, sort_keys=True)
-                                + "</loop_guard_terminal_evidence>\n"
-                                "The governed runtime has recorded that this side-effect-free retry path is exhausted "
-                                "without state progress. Treat this as evidence, not as a platform-authored semantic "
-                                "conclusion. Decide whether another available capability can make progress or whether "
-                                "to answer now; preserve uncertainty and cite the most useful recovery action."
-                            ),
-                        )
-                    )
-                    await _emit_event(
-                        {
-                            "type": "loop_guard",
-                            "part": {
-                                "type": "event",
-                                "event_type": "loop_guard_terminal_evidence",
-                                "title": "Retry evidence available",
-                                "text": "The model received typed non-progress evidence with its authorized tools intact.",
-                                "status": "warning",
-                                **_loop_guard_terminal_decision.trace_event,
-                            },
-                        }
+                    await _project_loop_guard_terminal_evidence(
+                        _loop_guard_terminal_decision, api_messages=api_messages,
+                        _context_message=_context_message, _emit_event=_emit_event,
                     )
                     _loop_guard_terminal_decision = None
 

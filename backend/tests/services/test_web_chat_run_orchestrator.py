@@ -1816,7 +1816,26 @@ async def test_committed_outcome_is_not_rewritten_when_sidecars_fail(monkeypatch
 async def test_turn_budget_debug_event_stays_out_of_member_output():
     from app.services.web_chat_run_orchestrator import _WebChatCallbacks
 
-    # This event is excluded before persistence or broadcast; other debug events persist.
-    callbacks = _WebChatCallbacks(SimpleNamespace(ports=SimpleNamespace(events=SimpleNamespace(
-        stream_batcher_type=_NoopStreamBatcher))))
-    await callbacks.runtime_event({"type": "turn_token_budget_exhausted", "visibility": "debug"})
+    persisted, broadcasts = [], []
+    committed = {"event_id": str(uuid4()), "visibility": {"audience": "direct_user"}}
+
+    async def persist(**kwargs):
+        persisted.append(kwargs["data"])
+        return committed
+
+    async def broadcast(_agent_id, _session_id, payload):
+        broadcasts.append(payload)
+
+    state = SimpleNamespace(phase_emitter=None, summary_turn_mode=False,
+        agent=SimpleNamespace(id=uuid4()), actor_user_id=uuid4(), actor_external_principal_id=None,
+        session_id=str(uuid4()), run_uuid=uuid4(), ports=SimpleNamespace(events=SimpleNamespace(
+            stream_batcher_type=_NoopStreamBatcher, should_persist_runtime_event=lambda _data: True,
+            persist_runtime_event=persist, broadcast=broadcast)))
+    callbacks = _WebChatCallbacks(state)
+    budget = {"type": "turn_token_budget_exhausted", "visibility": "debug"}
+    debug = {"type": "session_context", "event_type": "provider_call_ledger", "visibility": "debug"}
+    await callbacks.runtime_event(budget)
+    assert persisted == [] and broadcasts == []
+    await callbacks.runtime_event(debug)
+    assert persisted == [{**debug, "runtime_task_id": str(state.run_uuid)}]
+    assert broadcasts == [committed]

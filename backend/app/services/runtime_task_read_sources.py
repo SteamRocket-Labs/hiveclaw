@@ -252,7 +252,7 @@ async def record_task_read(request, content, *, capture=None):
                     )
                 from app.services.runtime_display_status import runtime_failure_observation
 
-                failure = runtime_failure_observation(record["status"], record["metadata"])
+                failure = runtime_failure_observation(record["status"], record["metadata"], result_summary=record["result"])
                 if failure:
                     # This is a scoped SQL status observation, not a grant to
                     # consume a failed child's prompt, partial output or metadata.

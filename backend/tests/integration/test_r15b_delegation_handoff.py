@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import pytest
 from sqlalchemy import select
@@ -19,6 +19,64 @@ RETRY_GUIDANCE = (
     "Explain the failure reason to the member in their language and offer to retry. "
     "Do not delegate again unless the member asks."
 )
+
+
+async def test_in_memory_completion_check_records_task_type_and_read_proof(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    from datetime import datetime, timezone
+
+    from app.agents import orchestrator
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.invocation_span import InvocationSpan
+    from app.models.session_v2 import SessionToolInvocation
+
+    seed, parent, child_client = await lifecycle._setup(owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+        tmp_path, tool="delegate_to_agent", paused=True)
+    parent_task = asyncio.create_task(lifecycle._execute(seed["run_id"], owner_sessionmaker,
+        worker="r15b-fallback-parent"))
+    try:
+        await asyncio.wait_for(parent.started.wait(), 20)
+        child = await lifecycle._child(owner_sessionmaker, seed)
+        child_client.release.set()
+        await lifecycle._execute(child.id, owner_sessionmaker, worker="r15b-fallback-child", delegation=True)
+        async with owner_sessionmaker() as db:
+            terminal = await db.get(RuntimeTask, child.id)
+        completed = asyncio.get_running_loop().create_future()
+        completed.set_result(orchestrator.AgentDelegationResult(content=lifecycle.RESULT,
+            child_session_id=child.child_session_id, trace_id=child.trace_id, depth=1))
+        monkeypatch.setitem(orchestrator._async_tasks, child.id.hex, orchestrator.AsyncDelegationState(
+            task=completed, parent_agent_id=seed["agent_id"], child_agent_name=lifecycle.COLLEAGUE,
+            child_session_id=child.child_session_id, trace_id=child.trace_id,
+            started_at=datetime.now(timezone.utc), receipt=terminal.metadata_json.get("execution_receipt")))
+
+        async def unavailable(_task_id):
+            return None
+
+        monkeypatch.setattr(orchestrator, "get_runtime_task_record", unavailable)
+        parent.script = [lifecycle._tool("check_async_task", {"task_id": child.id.hex}),
+            {"content": "The colleague result was checked."}]
+        parent.release.set()
+        await asyncio.wait_for(parent_task, 20)
+        async with owner_sessionmaker() as db:
+            call = await db.scalar(select(SessionToolInvocation).where(
+                SessionToolInvocation.run_id == seed["run_id"], SessionToolInvocation.tool_name == "check_async_task"))
+            assert call is not None
+            event = await db.get(ChatTranscriptEvent, call.result_event_id)
+            payload = event.metadata_json["v2_payload"]
+            body = json.loads(payload["content"])
+            assert body["task_type"] == "delegation"
+            assert body["parent_session_id"] == str(seed["session_id"])
+            proof = await db.get(InvocationSpan, uuid5(call.id, "runtime-task-read"))
+            assert proof is not None, "the completion fallback must carry a recorded read proof"
+            assert proof.metadata_json["runtime_task_read"]["task_ids"] == [str(child.id)]
+            assert proof.metadata_json["runtime_task_read"]["unbound"] == []
+    finally:
+        parent.release.set()
+        child_client.release.set()
+        if not parent_task.done():
+            parent_task.cancel()
+        await asyncio.gather(parent_task, return_exceptions=True)
 
 
 async def test_running_colleague_reads_end_parent_without_waiting_for_child(

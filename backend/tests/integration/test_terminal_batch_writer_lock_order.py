@@ -516,3 +516,50 @@ async def test_malformed_child_session_does_not_rollback_colleague_stop(owner_se
         run = await db.get(RuntimeTask, seed["run_id"])
         assert run.status == "killed"
         assert run.metadata_json["terminal_committed_status"] == "killed"
+
+
+async def test_projection_repair_locks_delegation_child_before_task_row(owner_sessionmaker, monkeypatch, tmp_path):
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import _patch_runtime_seams, _seed_run
+
+    import app.services.chat_transcript as transcript
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_reconciliation import repair_ambiguous_provider_send_terminal_projections
+
+    seed = await _seed_run(owner_sessionmaker, tmp_path)
+    _patch_runtime_seams(monkeypatch, seed, owner_sessionmaker)
+    child_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(ChatSession(id=child_id, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+            user_id=seed["user_id"], source_channel="agent", session_kind="delegation_run",
+            runtime_source="delegation"))
+        task = await db.get(RuntimeTask, seed["run_id"])
+        task.task_type, task.child_session_id, task.status = "delegation", str(child_id), "needs_reconciliation"
+        task.metadata_json = {**task.metadata_json,
+            "session_v2_reconciliation": {"reason": "ambiguous_provider_send"}}
+        await db.commit()
+
+    acquired = []
+    original_lock = transcript.lock_transcript_session
+
+    async def observe_lock(db, *, session_id):
+        await original_lock(db, session_id=session_id)
+        acquired.append(session_id)
+
+    monkeypatch.setattr(transcript, "lock_transcript_session", observe_lock)
+    async with owner_sessionmaker() as db:
+        execute = db.execute
+        row_locks = []
+
+        async def observe_execute(statement, *args, **kwargs):
+            if getattr(statement, "_for_update_arg", None) is not None:
+                assert child_id in acquired, "delegation child advisory must precede the task row lock"
+                row_locks.append(statement)
+            return await execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(db, "execute", observe_execute)
+        result = await repair_ambiguous_provider_send_terminal_projections(
+            db, tenant_id=seed["tenant_id"], actor_user_id=seed["user_id"])
+        await db.commit()
+    assert row_locks
+    assert result == {"examined": 1, "repaired_task_ids": [str(seed["run_id"])]}

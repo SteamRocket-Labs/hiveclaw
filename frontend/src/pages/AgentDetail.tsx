@@ -365,7 +365,7 @@ function AgentDetailInner() {
         : [];
     const visibleBranchLineage = activeOperatorSessionAuthorized ? branchLineage : [];
     const isLiveDelegationSession = (session: any) => session?.session_kind === 'delegation_run'
-        && session.runtime_source === 'delegation' && String(session.agent_id) === id && !session.operator_view;
+        && session.runtime_source === 'delegation' && String(session.agent_id) === id && !session.operator_view && !agent?.is_expired;
     const liveDelegationSession = isLiveDelegationSession(activeSession);
     const {
         wsConnected,

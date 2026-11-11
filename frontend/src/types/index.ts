@@ -31,6 +31,7 @@ export interface Agent {
     owner_user_id?: string;
     deactivated_at?: string | null;
     deactivation_reason?: string | null;
+    is_expired?: boolean;
     access_level?: 'use' | 'manage' | 'read' | 'operator';
     is_owner?: boolean;
     action_capabilities?: {

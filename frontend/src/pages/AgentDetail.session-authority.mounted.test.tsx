@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   hash: '',
   accessLevel: 'manage',
   agentType: 'cloud',
+  agentExpired: false,
   operatorCap: false,
   agentError: null as unknown,
   userRole: 'platform_admin' as string,
@@ -90,6 +91,7 @@ vi.mock('@tanstack/react-query', async importOriginal => {
           name: 'EventPilot',
           status: 'running',
           agent_type: mocks.agentType,
+          is_expired: mocks.agentExpired,
           access_level: mocks.accessLevel,
           action_capabilities: {
             can_manage: mocks.accessLevel === 'manage',
@@ -260,6 +262,7 @@ beforeEach(() => {
   mocks.hash = '';
   mocks.accessLevel = 'manage';
   mocks.agentType = 'cloud';
+  mocks.agentExpired = false;
   mocks.operatorCap = false;
   mocks.agentError = null;
   mocks.userRole = 'platform_admin';
@@ -1690,10 +1693,12 @@ it.each([
   ['parent page', { agent_id: 'colleague-agent', peer_agent_id: 'agent-1' }],
   ['remote A2A', { runtime_source: 'remote_a2a' }],
   ['operator view', { operator_view: true, user_id: 'another-user' }],
+  ['expired colleague', {}],
 ])('R15b retains colleague history without subscribing from %s', async (_entry, overrides) => {
   mocks.sessionId = 'colleague-history';
   mocks.hash = '#chat';
   mocks.realTransport = true;
+  mocks.agentExpired = _entry === 'expired colleague';
   const opened = vi.fn();
   vi.stubGlobal('WebSocket', class {
     static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;

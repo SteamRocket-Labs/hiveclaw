@@ -1921,7 +1921,9 @@ async def _check_async_task(
             from app.services.remote_a2a_delegation import inspect_employee_task
 
             return json.dumps(await inspect_employee_task(task_id=task_id, principal=principal), ensure_ascii=False)
-        status = await check_async_delegation(task_id, parent_agent_id=from_agent_id)
+        status = await check_async_delegation(
+            task_id, parent_agent_id=from_agent_id, parent_session_id=record.get("parent_session_id")
+        )
         if status.get("status") == "forbidden":
             return "❌ This task does not belong to the current agent"
         return json.dumps(status, ensure_ascii=False)

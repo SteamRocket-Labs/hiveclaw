@@ -335,3 +335,222 @@ async def test_agent_proposed_update_cannot_publish_the_unchanged_baseline_docum
             valid_until=None,
             trace_id="trace-publish-agent-proposal",
         )
+
+
+class _DualShapeResult:
+    """Query result serving both scalar_one_or_none() and scalars().all() shapes."""
+
+    def __init__(self, *, scalar=None, rows: tuple = ()) -> None:
+        self._scalar = scalar
+        self._rows = list(rows)
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class _DualShapeSessionContext:
+    def __init__(self, result: _DualShapeResult) -> None:
+        self._result = result
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def execute(self, _statement):
+        return self._result
+
+
+_EMPTY_NOTE = (
+    "Nothing in the company library matched; rewording the query will not find material "
+    "that is not there, so tell the member what was not found."
+)
+_REJECTION_NEXT_ACTION = (
+    "The company library only takes proposals backed by company material an administrator "
+    "imported, so you cannot submit the member's own file; tell the member, and if they want "
+    "it in the company library they can submit their own document for company review from "
+    "the Personal Knowledge page (「提交公司审核」)."
+)
+
+
+@pytest.mark.asyncio
+async def test_empty_company_kb_search_result_states_outcome_instead_of_asking_to_search_again(
+    monkeypatch,
+) -> None:
+    from app.services.company_knowledge_gateway import CompanyKnowledgeSearchResult
+    from app.tools.handlers import knowledge as knowledge_handler
+
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    user = SimpleNamespace(
+        id=user_id,
+        tenant_id=tenant_id,
+        role="member",
+        department_id=None,
+        is_active=True,
+    )
+
+    class _EmptyGateway:
+        async def search(self, _session, *, principal, request):
+            return CompanyKnowledgeSearchResult(status="empty", results=())
+
+    monkeypatch.setattr(knowledge_handler, "tenant_scoped_session", lambda _t: _SessionContext(user))
+    monkeypatch.setattr(knowledge_handler, "CompanyKnowledgeGateway", _EmptyGateway)
+
+    payload = json.loads(
+        await knowledge_handler.search_company_kb(
+            ToolExecutionRequest(
+                tool_name="search_company_kb",
+                arguments={"query": "sales report"},
+                context=_context(tenant_id=tenant_id, agent_id=agent_id, user_id=user_id),
+            )
+        )
+    )
+
+    assert payload["status"] == "empty"
+    assert payload["results"] == []
+    assert "required_actions" not in json.dumps(payload)
+    assert payload["note"] == _EMPTY_NOTE
+
+
+@pytest.mark.asyncio
+async def test_non_empty_company_kb_search_result_keeps_its_current_authority_fields(
+    monkeypatch,
+) -> None:
+    from app.services.company_knowledge_gateway import (
+        CompanyKnowledgeSearchHit,
+        CompanyKnowledgeSearchResult,
+    )
+    from app.tools.handlers import knowledge as knowledge_handler
+
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    user = SimpleNamespace(
+        id=user_id,
+        tenant_id=tenant_id,
+        role="member",
+        department_id=None,
+        is_active=True,
+    )
+    hit = CompanyKnowledgeSearchHit(
+        publication_id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        segment_id=uuid.uuid4(),
+        version=1,
+        title="Employee Handbook",
+        namespace="company/policies",
+        snippet="20 days of leave",
+        source_ref="company-publication://fixture#segment=1",
+        sensitivity="PL2_pii",
+        score=0.5,
+        score_trace={"channel": "postgres_fts"},
+    )
+
+    class _OkGateway:
+        async def search(self, _session, *, principal, request):
+            return CompanyKnowledgeSearchResult(status="ok", results=(hit,))
+
+    monkeypatch.setattr(knowledge_handler, "tenant_scoped_session", lambda _t: _SessionContext(user))
+    monkeypatch.setattr(knowledge_handler, "CompanyKnowledgeGateway", _OkGateway)
+
+    payload = json.loads(
+        await knowledge_handler.search_company_kb(
+            ToolExecutionRequest(
+                tool_name="search_company_kb",
+                arguments={"query": "leave"},
+                context=_context(tenant_id=tenant_id, agent_id=agent_id, user_id=user_id),
+            )
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["authority"]["required_actions"] == ["discover", "search"]
+    assert "note" not in payload
+
+
+@pytest.mark.asyncio
+async def test_rejected_company_kb_proposal_with_workspace_path_source_names_the_member_route() -> None:
+    from app.tools.handlers import knowledge as knowledge_handler
+
+    payload = json.loads(
+        await knowledge_handler.propose_company_kb_update(
+            ToolExecutionRequest(
+                tool_name="propose_company_kb_update",
+                arguments={
+                    "source_refs": ["workspace/sales-report.md"],
+                    "proposed_change": {"replace": {"q4_sales": "up"}},
+                    "reason": "publish the member's sales report",
+                },
+                context=_context(
+                    tenant_id=uuid.uuid4(),
+                    agent_id=uuid.uuid4(),
+                    user_id=uuid.uuid4(),
+                ),
+            )
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["reason_codes"] == ["company_evidence_source_refs_required"]
+    assert payload["next_action"] == _REJECTION_NEXT_ACTION
+
+
+@pytest.mark.asyncio
+async def test_rejected_company_kb_proposal_without_accepted_company_evidence_names_the_member_route(
+    monkeypatch,
+) -> None:
+    from app.tools.handlers import knowledge as knowledge_handler
+
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    user = SimpleNamespace(
+        id=user_id,
+        tenant_id=tenant_id,
+        role="member",
+        department_id=None,
+        is_active=True,
+    )
+    session_context = _DualShapeSessionContext(_DualShapeResult(scalar=user, rows=()))
+    monkeypatch.setattr(knowledge_handler, "tenant_scoped_session", lambda _t: session_context)
+
+    payload = json.loads(
+        await knowledge_handler.propose_company_kb_update(
+            ToolExecutionRequest(
+                tool_name="propose_company_kb_update",
+                arguments={
+                    "source_refs": [f"company-evidence://{uuid.uuid4()}"],
+                    "proposed_change": {"replace": {"q4_sales": "up"}},
+                    "reason": "publish the member's sales report",
+                },
+                context=_context(tenant_id=tenant_id, agent_id=agent_id, user_id=user_id),
+            )
+        )
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["reason_codes"] == ["complete_accessible_company_evidence_required"]
+    assert payload["next_action"] == _REJECTION_NEXT_ACTION
+
+
+def test_company_kb_tool_descriptions_as_registered_explain_empty_results_and_accepted_sources() -> None:
+    from app.tools.collector import collect_tools
+
+    descriptions = {
+        tool["function"]["name"]: tool["function"]["description"]
+        for tool in collect_tools().openai_tools
+    }
+
+    assert "An empty result means nothing in the company library matched" in descriptions["search_company_kb"]
+    assert "rewording the query will not find material that is not there" in descriptions["search_company_kb"]
+    assert "accepted company material an administrator imported" in descriptions["propose_company_kb_update"]
+    assert "a member's own file cannot" in descriptions["propose_company_kb_update"]

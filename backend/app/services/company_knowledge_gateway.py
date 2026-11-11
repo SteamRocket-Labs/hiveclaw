@@ -213,6 +213,16 @@ class CompanyKnowledgeSearchHit:
         }
 
 
+# An empty retrieval result must tell the model the outcome instead of echoing
+# the discover/search actions the policy evaluated; a literal action list here
+# reads as an instruction to keep searching (E2E run 13: 61 identical empty
+# results drove a 15-minute loop).
+EMPTY_COMPANY_LIBRARY_NOTE = (
+    "Nothing in the company library matched; rewording the query will not find material that "
+    "is not there, so tell the member what was not found."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class CompanyKnowledgeSearchResult(_JsonResult):
     status: str
@@ -220,18 +230,23 @@ class CompanyKnowledgeSearchResult(_JsonResult):
     warnings: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        authority: dict[str, Any] = {
+            "schema": "hive.company_knowledge_retrieval_authority.v1",
+            "scope": "company",
+            "evaluation": "per_result_fresh",
+            "required_actions": ["discover", "search"],
+            "publication_state": "active_valid_only",
+        }
+        payload: dict[str, Any] = {
             "status": self.status,
             "results": [result.as_dict() for result in self.results],
-            "authority": {
-                "schema": "hive.company_knowledge_retrieval_authority.v1",
-                "scope": "company",
-                "evaluation": "per_result_fresh",
-                "required_actions": ["discover", "search"],
-                "publication_state": "active_valid_only",
-            },
+            "authority": authority,
             "warnings": list(self.warnings),
         }
+        if not self.results:
+            del authority["required_actions"]
+            payload["note"] = EMPTY_COMPANY_LIBRARY_NOTE
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,18 +352,23 @@ class CompanyKnowledgeDocumentListResult(_JsonResult):
     warnings: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        authority: dict[str, Any] = {
+            "schema": "hive.company_knowledge_retrieval_authority.v1",
+            "scope": "company",
+            "evaluation": "per_result_fresh",
+            "required_actions": ["discover", "search"],
+            "publication_state": "active_valid_only",
+        }
+        payload: dict[str, Any] = {
             "status": self.status,
             "documents": [document.as_dict() for document in self.documents],
-            "authority": {
-                "schema": "hive.company_knowledge_retrieval_authority.v1",
-                "scope": "company",
-                "evaluation": "per_result_fresh",
-                "required_actions": ["discover", "search"],
-                "publication_state": "active_valid_only",
-            },
+            "authority": authority,
             "warnings": list(self.warnings),
         }
+        if not self.documents:
+            del authority["required_actions"]
+            payload["note"] = EMPTY_COMPANY_LIBRARY_NOTE
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

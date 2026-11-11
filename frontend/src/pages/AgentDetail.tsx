@@ -891,12 +891,10 @@ function AgentDetailInner() {
             if (publishedCanonicalSnapshot) {
                 console.error('Failed to load session messages:', err);
                 sessionEventFullHydrationKeysRef.current.add(runtimeKey);
-                setTransportNotice(
-                    t(
-                        'agent.chat.sessionBackfillIncomplete',
-                        'Latest activity is visible, but older session evidence is still recovering.',
-                    ),
-                );
+                const sequences = (transcriptEventsRef.current[runtimeKey] || []).map(event => Number(event.sequence)).filter(sequence => sequence > 0);
+                const hasEarlierHistory = sequences.length > 0 && Math.min(...sequences) > 1;
+                setTransportNotice(current => nextSessionBackfillNotice(current,
+                    t('agent.chat.sessionBackfillIncomplete', 'Earlier messages are still loading. Please wait.'), hasEarlierHistory));
                 return;
             }
             console.error('Failed to load session messages:', err);

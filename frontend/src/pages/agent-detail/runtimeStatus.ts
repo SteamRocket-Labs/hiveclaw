@@ -15,7 +15,8 @@ export function runtimeStatusKey(status: unknown): RuntimeDisplayStatus {
 export function userFacingRuntimeStatus(status: unknown): string {
   return labels[runtimeStatusKey(status)];
 }
-export function runtimeStatusLabel(status: unknown, t: (key: string, fallback: string) => string): string {
+export function runtimeStatusLabel(status: unknown, t: (key: string, fallback: string) => string, phase?: string): string {
+  if (phase === 'queued') return t('agent.aware.workQueued', 'Queued');
   const key = runtimeStatusKey(status);
   return t(`agent.runtimeStatus.${key}`, labels[key]);
 }

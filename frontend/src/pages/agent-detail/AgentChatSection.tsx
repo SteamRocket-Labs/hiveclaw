@@ -2273,6 +2273,7 @@ function AgentChatSection({
           activeRunStatus={activeRunStatus}
           activeRunId={activeRunId}
           presentationStatus={threadTimelineModel.header.status}
+          presentationPhase={threadTimelineModel.header.phase}
           collapsed={runtimePanelCollapsed}
           onToggleCollapsed={() => setRuntimePanelCollapsed((value) => !value)}
           onOpenDocument={openArtifact}

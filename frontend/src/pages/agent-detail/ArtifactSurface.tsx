@@ -377,7 +377,7 @@ export function ArtifactCards({
                 ? <><span className="chat-artifact-stem">{artifact.name.slice(0, artifact.name.lastIndexOf('.'))}</span><span className="chat-artifact-extension">{artifact.name.slice(artifact.name.lastIndexOf('.'))}</span></>
                 : artifact.name}</span>
               <span className="chat-artifact-meta">
-                {[artifact.source === 'human_input' ? artifact.mimeType || artifact.previewKind || artifact.name.split('.').pop()
+                {[artifact.source === 'human_input' ? artifact.previewKind || artifact.name.split('.').pop()?.toLowerCase()
                   : getEffectiveArtifactPreviewKind(artifact) === 'html' ? t('agent.chat.artifacts.preview', 'Preview') : artifact.previewKind, size].filter(Boolean).join(' · ')}
               </span>
             </button>

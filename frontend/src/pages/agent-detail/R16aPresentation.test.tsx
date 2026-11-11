@@ -43,10 +43,17 @@ it('R16a.1 gives uploaded cards their own phone layout with a two-line name and 
     { name: 'sales-run12.csv', path: 'workspace/uploads/sales-run12.csv', source: 'human_input', mimeType: 'text/csv', size: 849 },
   ]} />);
   expect(container.querySelector('.chat-artifact-row.is-upload')).toBeTruthy();
-  expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('text/csv · 849 B');
+  expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('csv · 849 B');
   expect(css).toMatch(/@media\s*\(max-width:\s*600px\)[\s\S]*\.chat-artifact-row\.is-upload\s*\{[^}]*flex-wrap:\s*wrap/);
   expect(css).toMatch(/\.is-upload\s+\.chat-artifact-stem\s*\{[^}]*-webkit-line-clamp:\s*2/);
   expect(container.querySelector('.chat-artifact-extension')?.textContent).toBe('.csv');
+});
+
+it('R16a.1 round2 uses the delivered-card preview kind for uploads when available', () => {
+  const { container } = render(<ArtifactCards agentId="bot" artifacts={[
+    { name: 'notes.md', path: 'workspace/uploads/notes.md', source: 'human_input', mimeType: 'text/markdown', previewKind: 'markdown', size: 32 },
+  ]} />);
+  expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('markdown · 32 B');
 });
 
 it('R16a.1 retains available upload size in the composer card', () => {

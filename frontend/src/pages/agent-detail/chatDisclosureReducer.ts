@@ -75,6 +75,8 @@ export interface RunAggregateSummary {
 export interface RunTimelineSnapshot {
   id: string;
   status: 'idle' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled' | 'interrupted';
+  /** Pending input presentation; the run lifecycle keeps its existing status. */
+  phase?: 'queued';
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;

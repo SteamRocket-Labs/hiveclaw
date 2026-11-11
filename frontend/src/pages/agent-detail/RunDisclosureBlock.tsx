@@ -491,7 +491,7 @@ export default function RunDisclosureBlock({
   }, [opensForAttention, timeline.id, timeline.status]);
 
   const title = resultsKept ? t('agent.chat.disclosure.system.resultsAvailable', 'Task results received')
-    : runtimeStatusLabel(timeline.status, t);
+    : runtimeStatusLabel(timeline.status, t, timeline.phase);
   const interruptedHint = t(
     'agent.chat.disclosure.interruptedHint',
     'This turn has no completion record; send a new message to continue.',

@@ -228,6 +228,7 @@ export function SessionRuntimePanel({
   activeRunStatus,
   activeRunId,
   presentationStatus,
+  presentationPhase,
   collapsed = false,
   onToggleCollapsed,
   onOpenDocument,
@@ -252,6 +253,7 @@ export function SessionRuntimePanel({
   activeRunStatus?: string | null;
   activeRunId?: string | null;
   presentationStatus?: SessionWorkbenchStatus | null;
+  presentationPhase?: string;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   onOpenDocument?: (artifact: ChatArtifactPart) => void | Promise<unknown>;
@@ -879,7 +881,7 @@ export function SessionRuntimePanel({
 
         <div data-testid="session-runtime-console" className="session-runtime-console">
           {!isAdmin ? <div data-testid="session-runtime-waiters" className="session-runtime-waiters">
-            {presentationStatus && <span className="session-runtime-status">{runtimeStatusLabel(presentationStatus, t)}</span>}
+            {presentationStatus && <span className="session-runtime-status">{runtimeStatusLabel(presentationStatus, t, presentationPhase)}</span>}
             {memberWaiters.map(renderRuntimeWaiter)}
           </div> : consoleIsEmpty ? (
             <div data-testid="session-runtime-console-empty" className="session-runtime-empty">
@@ -896,7 +898,7 @@ export function SessionRuntimePanel({
                   <span className="session-runtime-summary-dot" aria-hidden="true" />
                   <span>
                     <strong>
-                      {runtimeStatusLabel(presentationStatus || runtimeConsole.summary.state, t)}
+                      {runtimeStatusLabel(presentationStatus || runtimeConsole.summary.state, t, presentationPhase)}
                     </strong>
                     <small>
                       <PastedCredentialText content={sessionWindow

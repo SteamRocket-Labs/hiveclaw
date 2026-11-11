@@ -800,6 +800,52 @@ function disclosureStates() {
   return screen.queryAllByTestId('run-disclosure-block').map(block => block.getAttribute('data-status'));
 }
 
+it('R16a.3 round2 adopts the 201 run and its later terminal after a pending send', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  await mountOwnedArtifactWork();
+  const history = completedRunEvents(1, 'old-run').slice(0, 3);
+  history.push(activeRunEvent(4, 'run', 'cancelled', 'old-run'));
+  await receiveRunEvents(history);
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Fresh request' } });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(1));
+  expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ sendState: 'sending' });
+  expectMemberRunState('运行中');
+  expect(disclosureStates().at(-1)).toBe('running');
+  // startSessionRun resolves the parsed body of POST /runs (201).
+  await act(async () => request.resolve({ run_id: 'new-run', status: 'running' }));
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBe('new-run'));
+  expect(mocks.chatProps.chatMessages.find((message: any) => message.content === 'Fresh request')?.sendState).toBeUndefined();
+  expectMemberRunState('运行中');
+  expect(disclosureStates().at(-1)).toBe('running');
+  const nextEvents = [
+    activeRunEvent(5, 'run', 'running', 'new-run'),
+    activeRunEvent(6, 'assistant_commentary', 'completed', 'new-run', { content: 'Checking the new request.' }),
+    activeRunEvent(7, 'run', 'failed', 'new-run'),
+  ];
+  await receiveRunEvents(nextEvents, [...history, ...nextEvents]);
+  expectMemberRunState('失败');
+  expect(disclosureStates().at(-1)).toBe('failed');
+});
+
+it.each([1, 2])('R16a.9 round2 only announces earlier history after a load failure when the first sequence is %s', async firstSequence => {
+  mocks.language = 'zh';
+  await mountOwnedArtifactWork();
+  const error = new ApiError(422, 'Earlier page unavailable');
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const page = Array.from({ length: 1000 }, (_, i) => activeRunEvent(i + firstSequence, 'human_input', 'accepted', null,
+    { content_parts: [{ type: 'text', text: `Message ${i}` }] }));
+  mocks.getSessionTranscript.mockResolvedValueOnce(page).mockRejectedValue(error);
+  await act(async () => { await mocks.chatProps.onSelectSession(mocks.chatProps.activeSession); });
+  await waitFor(() => expect(logged).toHaveBeenCalledWith('Failed to load session messages:', error));
+  expect(mocks.chatProps.chatMessages).toHaveLength(1000);
+  expect(mocks.chatProps.transportNotice).toBe(firstSequence > 1 ? '较早的消息还在加载，请稍候。' : null);
+});
+
 it('R16a.3 keeps header, runtime panel and new run through an older-history refetch during POST', async () => {
   mocks.realChat = true;
   mocks.language = 'zh';
@@ -932,7 +978,8 @@ it.each(['deferred', 'successor'])('R13a keeps finished blocks finished and a %s
   mocks.activeRunObservedAt += 1;
   await act(async () => { mocks.chatProps.onSetChatInput('Next draft'); });
   expect.soft(disclosureStates()).toEqual(['done', 'done', 'running']);
-  expectMemberRunState('运行中');
+  expectMemberRunState('排队中');
+  expect(screen.getAllByTestId('run-disclosure-block').at(-1)?.querySelector('.run-disclosure-title')?.textContent).toBe('排队中');
   expect(screen.getByTestId('message-send-status').textContent).toBe('排队中');
   history.push(activeRunEvent(12, 'run', 'queued', 'queued-run', { input_id: inputId }));
   await receiveRunEvents(history, terminalRead.promise);
@@ -941,6 +988,7 @@ it.each(['deferred', 'successor'])('R13a keeps finished blocks finished and a %s
   await act(async () => { mocks.chatProps.onSetChatInput('Preserve this draft'); });
   expect(disclosureStates()).toEqual(['done', 'done', 'running']);
   expect(screen.queryByTestId('message-send-status')).toBeNull();
+  expectMemberRunState('运行中');
   await act(async () => terminalRead.resolve(history));
 });
 
@@ -978,7 +1026,7 @@ it('R13a clears the old stop notice and state before the next run POST settles',
   expect(screen.queryByText(zh.agent.chat.stopRecorded)).toBeNull();
 });
 
-it('R13a keeps a queued resend after stop running when its deferred receipt has no run id', async () => {
+it('R13a keeps a queued resend after stop visible when its deferred receipt has no run id', async () => {
   mocks.realChat = true;
   mocks.language = 'zh';
   mocks.userRole = 'member';
@@ -1007,7 +1055,8 @@ it('R13a keeps a queued resend after stop running when its deferred receipt has 
   await waitFor(() => expect(screen.getByTestId('message-send-status').textContent).toBe('排队中'));
   expect(mocks.chatProps.activeRunId).toBeNull();
   expect.soft(disclosureStates()).toEqual(['cancelled', 'running']);
-  expectMemberRunState('运行中');
+  expectMemberRunState('排队中');
+  expect(screen.getAllByTestId('run-disclosure-block').at(-1)?.querySelector('.run-disclosure-title')?.textContent).toBe('排队中');
   expect(screen.queryByText(zh.agent.chat.stopRecorded)).toBeNull();
 });
 

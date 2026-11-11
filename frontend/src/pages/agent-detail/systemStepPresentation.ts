@@ -2,6 +2,13 @@ import type { TFunction } from 'i18next';
 import { runtimeStatusLabel } from './runtimeStatus';
 import type { RunStepSnapshot } from './chatDisclosureReducer';
 
+export function isKeptResultStep(step: RunStepSnapshot): boolean {
+  const event = step.systemEvent;
+  return event?.type === 'agent_task_notification'
+    && (event.metadata.runtime_result_integration_page === true || event.metadata.task_type === 'runtime_result_integration')
+    && ['denied', 'needs_reconciliation'].includes(String(event.metadata.continuation_status));
+}
+
 // Match only known producer templates. Unmatched sentences and model prose
 // stay as stored, including specific approval and delegation outcomes.
 export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepSnapshot {
@@ -10,6 +17,18 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
   const metadata = event.metadata;
   const text = typeof step.details === 'string' ? step.details : step.summary || '';
   const display = (title: string, summary?: string): RunStepSnapshot => ({ ...step, title, titleIsLocalized: true, summary, details: summary });
+  if (step.status === 'failed') {
+    const actor = metadata.target_agent_name;
+    const prefix = event.type === 'runtime_action_failed' && metadata.action_kind === 'a2a_delegation'
+      && typeof actor === 'string' && text.startsWith(`${actor} 的委派任务失败：`)
+      ? `${actor} 的委派任务失败：` : '';
+    const reason = text.slice(prefix.length);
+    const localized = /^\[Runtime Limit\] This turn stopped because the configured token budget was exhausted \(\d+\/\d+ tokens used\)\.$/.test(reason)
+      ? t('agent.chat.disclosure.failure.tokenBudget', 'This turn used up its usage budget and did not finish.')
+      : /^I reached the configured tool-round limit \(\d+\) before I could finish\. The current state has been saved; continue the task to resume from here, or raise max_tool_rounds for this agent\.$/.test(reason)
+        ? t('agent.chat.disclosure.failure.toolRound', 'This turn reached its round limit and did not finish. Retry to continue.') : null;
+    if (localized) return { ...step, summary: prefix + localized, details: prefix + localized };
+  }
   const statusLabel = (status: unknown) => status === 'needs_reconciliation'
     ? t('agent.businessTasks.status.needs_reconciliation', 'Review required')
     : runtimeStatusLabel(status, t);
@@ -20,7 +39,7 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
     const title = typeof count === 'number' && Number.isInteger(count) && count >= 0
       ? t('agent.chat.disclosure.system.resultsReceived', 'Received {{count}} task results', { count })
       : t('agent.chat.disclosure.system.resultsAvailable', 'Task results received');
-    const review = metadata.continuation_status === 'denied' || metadata.continuation_status === 'needs_reconciliation'
+    const review = isKeptResultStep(step)
       ? t('agent.chat.disclosure.system.resultsKept', 'Results are kept for review; this conversation did not continue.')
       : undefined;
     return display(title, review);

@@ -1,5 +1,6 @@
 import { runtimeStatusLabel } from './runtimeStatus';
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
 import i18n, { type TFunction } from 'i18next';
 import {
@@ -20,7 +21,7 @@ import { approvalActionFor } from '../session-workbench/approvalActionPresentati
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { toolOutputForDisplay } from './toolFailurePresentation';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
-import { presentSystemStep } from './systemStepPresentation';
+import { isKeptResultStep, presentSystemStep } from './systemStepPresentation';
 import type {
   RunStepKind,
   RunStepPresentation,
@@ -232,13 +233,15 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   return detailText ? <MarkdownRenderer content={detailText} /> : null;
 }
 
-function RunStepRow({ step }: { step: RunStepSnapshot }) {
+function RunStepRow({ step, resultPreview }: { step: RunStepSnapshot; resultPreview: boolean }) {
   const { t } = useTranslation();
   const running = step.status === 'running';
   // Commands, arguments and output wait behind this toggle: the default layer
   // shows the localized action and its state only (B2 r2).
   const [expanded, setExpanded] = React.useState(false);
   const hasDetails = step.details != null;
+  const preview = resultPreview && step.systemEvent?.type === 'child_session' && typeof step.details === 'string'
+    ? step.details : step.summary;
   return (
     <div
       data-testid="run-disclosure-step"
@@ -262,7 +265,11 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
             <span className="run-step-caret" />
           )}
           <span className="run-step-title">{localizedToolTitle(step, t)}</span>
-          {step.summary && <span className="run-step-summary"><PastedCredentialText content={step.summary} /></span>}
+          {preview && !(expanded && step.status === 'failed') && <span className="run-step-summary">{
+            resultPreview && !preview.includes('[REDACTED_SECRET]')
+              ? <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown>
+              : <PastedCredentialText content={preview} />
+          }</span>}
         </button>
         {expanded && <RunStepDetails step={step} />}
       </div>
@@ -341,7 +348,7 @@ function isGenericToolStep(step: RunStepSnapshot): boolean {
 function localizedAggregateSummary(
   summary: RunAggregateSummary,
   t: TFunction,
-): string {
+): string[] {
   const parts: string[] = [];
   if (summary.files > 0) {
     parts.push(t('agent.chat.disclosure.aggregate.files', 'Read {{count}} files', { count: summary.files }));
@@ -352,7 +359,7 @@ function localizedAggregateSummary(
   if (summary.commands > 0) {
     parts.push(t('agent.chat.disclosure.aggregate.commands', 'Ran {{count}} commands', { count: summary.commands }));
   }
-  return parts.join(' · ');
+  return parts;
 }
 
 function toolStepLabel(step: RunStepSnapshot, t: TFunction): string {
@@ -432,11 +439,11 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
   );
 }
 
-function RunTimelineItem({ item }: { item: RunRenderItem }) {
+function RunTimelineItem({ item, resultPreview }: { item: RunRenderItem; resultPreview: boolean }) {
   if (item.kind === 'tool_group') return <ToolActivityGroup steps={item.steps} />;
   if (item.step.kind === 'commentary' || item.step.kind === 'prose') return <RunProse step={item.step} />;
   if (item.step.kind === 'compaction') return <RunCompactionBoundary step={item.step} />;
-  return <RunStepRow step={item.step} />;
+  return <RunStepRow step={item.step} resultPreview={resultPreview} />;
 }
 
 export default function RunDisclosureBlock({
@@ -448,7 +455,9 @@ export default function RunDisclosureBlock({
 }) {
   const { t } = useTranslation();
   const running = timeline.status === 'running';
-  const duration = useRunDuration(timeline, presentationKey);
+  const resultsKept = timeline.status === 'done' && !timeline.answerMessageId && timeline.steps.some(isKeptResultStep);
+  const runDuration = useRunDuration(timeline, presentationKey);
+  const duration = resultsKept ? '' : runDuration;
   const opensForAttention = running || timeline.status === 'blocked' || timeline.status === 'failed';
   const [expanded, setExpanded] = React.useState(opensForAttention);
   const previousTimeline = React.useRef({ id: timeline.id, status: timeline.status });
@@ -461,13 +470,27 @@ export default function RunDisclosureBlock({
     }
   }, [opensForAttention, timeline.id, timeline.status]);
 
-  const title = runtimeStatusLabel(timeline.status, t);
+  const title = resultsKept ? t('agent.chat.disclosure.system.resultsAvailable', 'Task results received')
+    : runtimeStatusLabel(timeline.status, t);
   const interruptedHint = t(
     'agent.chat.disclosure.interruptedHint',
     'This turn has no completion record; send a new message to continue.',
   );
   const visibleSteps = timeline.steps
     .filter((step) => getRunStepPresentation(step) !== 'external')
+    .filter((step, _index, steps) => {
+      const event = step.systemEvent;
+      const taskId = event?.metadata.runtime_task_id;
+      if (event?.type !== 'child_session' || step.status !== 'failed' || !taskId) return true;
+      // The runtime status already carries this child's exact failure sentence.
+      return !steps.some(other => {
+        const source = other.systemEvent;
+        return other.status === 'failed' && source?.type === 'runtime_action_failed'
+          && source.metadata.runtime_task_id === taskId && source.metadata.action_kind === 'a2a_delegation'
+          && typeof source.metadata.target_agent_name === 'string' && typeof step.details === 'string'
+          && other.details === `${source.metadata.target_agent_name} 的委派任务失败：${step.details}`;
+      });
+    })
     .map((step) => presentSystemStep(step, t));
   if (visibleSteps.length === 0) {
     if (timeline.status === 'idle') return null;
@@ -509,14 +532,16 @@ export default function RunDisclosureBlock({
             <span className="run-disclosure-summary">{interruptedHint}</span>
           ) : (
             timeline.summary && (
-              <span className="run-disclosure-summary">{localizedAggregateSummary(timeline.summary, t)}</span>
+              <span className="run-disclosure-summary is-aggregate">{localizedAggregateSummary(timeline.summary, t).map((part, index) => (
+                <span className="run-disclosure-stat" key={index}>{index > 0 && ' · '}{part}</span>
+              ))}</span>
             )
           )}
           <span className="run-disclosure-count">{stepCount}</span>
         </button>
         {expanded && (
           <div className="run-disclosure-steps">
-            {renderItems.map((item) => <RunTimelineItem key={item.id} item={item} />)}
+            {renderItems.map((item) => <RunTimelineItem key={item.id} item={item} resultPreview={resultsKept} />)}
           </div>
         )}
       </div>

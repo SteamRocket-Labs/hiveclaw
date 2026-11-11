@@ -18,15 +18,23 @@ export function sidebarAgentLink(agent: { id: string; access_level?: string; age
     : agent.agent_type === 'local_agent' ? `/agents/${agent.id}` : `/agents/${agent.id}#chat`;
 }
 
+export function assistantBindingQuery(userId: string | null, tenantId: string | null, role: string | null) {
+  return {
+    queryKey: ['assistant', userId || '', tenantId || '', role || ''],
+    queryFn: ({ signal }: { signal: AbortSignal }) => assistantApi.get({
+      expected_user_id: userId || undefined, expected_tenant_id: tenantId || undefined,
+    }, { signal }),
+    staleTime: 30_000,
+    retry: false as const,
+  };
+}
+
 export function useAssistantAgentId(user: { id?: string; tenant_id?: string | null; role?: string } | null, company?: string) {
   const homeTenant = useAssistantTenant(user?.role === 'platform_admin' ? null : user?.tenant_id ?? null);
   const tenantId = company ?? homeTenant;
   const { data } = useQuery({
-    queryKey: ['assistant', user?.id || '', tenantId, user?.role || ''],
-    queryFn: ({ signal }) => assistantApi.get(undefined, { signal }),
+    ...assistantBindingQuery(user?.id || null, tenantId || null, user?.role || null),
     enabled: Boolean(user?.id && tenantId),
-    staleTime: 30_000,
-    retry: false,
   });
   return data?.agent?.id || null;
 }

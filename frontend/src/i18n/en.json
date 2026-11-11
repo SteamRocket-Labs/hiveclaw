@@ -2635,6 +2635,8 @@
           "filesUpdated_other": "Updated {{count}} files"
         },
         "failure": {
+          "tokenBudget": "This turn used up its usage budget and did not finish.",
+          "toolRound": "This turn reached its round limit and did not finish. Retry to continue.",
           "arguments": "Required information is missing or incorrect.",
           "permission": "You do not have permission for this operation.",
           "authority": "The required authorization could not be confirmed.",

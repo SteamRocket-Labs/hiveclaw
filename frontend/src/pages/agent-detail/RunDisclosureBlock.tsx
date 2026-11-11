@@ -214,10 +214,9 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
     }
     const path = step.kind === 'file' ? details?.args?.path ?? details?.args?.file_path : null;
     const file = typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).pop() : undefined;
-    const status = command && step.status === 'failed' ? runtimeStatusLabel('failed', t)
-      : outcome === 'unknown' ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
+    const status = outcome === 'unknown' ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
       : outcome === 'done' ? t('agent.chat.disclosure.resultSucceeded', 'Succeeded')
-      : step.status === 'failed' || outcome === 'failed'
+      : outcome === 'failed' || step.status === 'failed'
         ? command ? runtimeStatusLabel('failed', t)
           : t('agent.chat.disclosure.failure.generic', 'The operation did not complete; the outcome is unconfirmed.')
       : step.status !== 'done' ? runtimeStatusLabel(step.status, t)

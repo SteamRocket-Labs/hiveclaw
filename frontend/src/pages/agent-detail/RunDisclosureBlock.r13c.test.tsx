@@ -14,14 +14,31 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
 }) }));
 afterEach(cleanup);
 
+// Denied, exception and cancelled paths have no recorded command outcome.
 it.each(['denied', 'exception', 'cancelled'])('keeps failed command calls failed (%s)', reason => {
   const { container } = render(<RunDisclosureBlock timeline={{ id: 'failed-run', status: 'failed', steps: [
     { id: reason, kind: 'command', title: 'Run command', status: 'failed', visibility: 'visible',
-      details: { toolName: 'run_command', rawResult: `PRIVATE_${reason}`, executionResult: { exit_code: null, timed_out: false } } },
+      details: { toolName: 'run_command', rawResult: `PRIVATE_${reason}` } },
   ] }} />);
   fireEvent.click(container.querySelector('.run-step-toggle')!);
   expect(container.querySelector('p')?.textContent).toBe('运行命令。失败');
   expect(container.textContent).not.toContain('PRIVATE_');
+});
+
+it.each([
+  ['exit-0', { exit_code: 0, timed_out: false }, '成功'],
+  ['non-zero', { exit_code: 7, timed_out: false }, '失败'],
+  ['timeout', { exit_code: null, timed_out: true }, '结果尚未确认。'],
+  ['null exit code', { exit_code: null, timed_out: false }, '结果尚未确认。'],
+] as const)('renders recorded %s before a failed step flag', (_reason, executionResult, status) => {
+  const { container } = render(<RunDisclosureBlock timeline={{ id: 'recorded-run', status: 'failed', steps: [
+    { id: 'command', kind: 'command', title: 'Run command', status: 'failed', visibility: 'visible',
+      details: { toolName: 'run_command', rawResult: '<tool_error>PRIVATE_LOG</tool_error>', executionResult } },
+  ] }} />);
+  fireEvent.click(container.querySelector('.run-step-toggle')!);
+  // Stdout containing <tool_error> can mark an exit-0 call failed; recorded facts decide the outcome.
+  expect(container.querySelector('p')?.textContent).toBe(`运行命令。${status}`);
+  expect(container.textContent).not.toContain('PRIVATE_LOG');
 });
 
 it.each([

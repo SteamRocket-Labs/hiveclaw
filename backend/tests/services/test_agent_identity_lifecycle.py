@@ -274,6 +274,8 @@ async def test_terminate_agent_runtime_tasks_settles_native_work_without_deletin
         claim_expires_at=object(),
         parent_session_id=None,
         parent_agent_id=None,
+        child_session_id=None,
+        task_type="delegation",
     )
     settlements = []
 

@@ -26,11 +26,13 @@ const mocks = vi.hoisted(() => ({
   hash: '',
   accessLevel: 'manage',
   agentType: 'cloud',
+  agentExpired: false,
   operatorCap: false,
   agentError: null as unknown,
   userRole: 'platform_admin' as string,
   projectActiveTimeline: false,
   realChat: false,
+  realTransport: false,
   startSessionRun: vi.fn(),
   createSessionRun: vi.fn(),
   cancelSessionRun: vi.fn(),
@@ -89,6 +91,7 @@ vi.mock('@tanstack/react-query', async importOriginal => {
           name: 'EventPilot',
           status: 'running',
           agent_type: mocks.agentType,
+          is_expired: mocks.agentExpired,
           access_level: mocks.accessLevel,
           action_capabilities: {
             can_manage: mocks.accessLevel === 'manage',
@@ -166,9 +169,12 @@ vi.mock('../api/domains/activity', () => ({
   },
 }));
 
-vi.mock('./agent-detail/useSessionTransportController', () => ({
+vi.mock('./agent-detail/useSessionTransportController', async importOriginal => {
+  const actual = await importOriginal<typeof import('./agent-detail/useSessionTransportController')>();
+  return ({
   useSessionTransportController: (options: any) => {
     mocks.transport = options;
+    if (mocks.realTransport) return actual.useSessionTransportController(options);
     return ({
     wsConnected: false,
     transportPhase: 'initializing',
@@ -180,7 +186,8 @@ vi.mock('./agent-detail/useSessionTransportController', () => ({
     syncActiveSocketState: vi.fn(),
     });
   },
-}));
+});
+});
 
 vi.mock('../components/ConfirmModal', () => ({ default: ({ open, confirmLabel, message, onConfirm }: any) => open
   ? <div role="dialog">{message}<button onClick={onConfirm}>{confirmLabel}</button></div> : null }));
@@ -206,7 +213,7 @@ vi.mock('./agent-detail/AgentChatSection', async (importOriginal) => {
   default: (props: any) => {
     const { activeSession, chatMessages, historyMsgs, allSessions, chatMessagesSessionId, historyMessagesSessionId, onSendMessage,
     activeRunId, activeRunStatus, onAbortGeneration, ...composer } = props;
-    mocks.chatProps = { activeSession, onSendMessage, chatMessages, activeRunId, activeRunStatus, onAbortGeneration, ...composer };
+    mocks.chatProps = props;
     if (mocks.realChat) return <ActualChat {...props} />;
     return (
     <div data-testid="fabricated-session-shell">
@@ -255,11 +262,13 @@ beforeEach(() => {
   mocks.hash = '';
   mocks.accessLevel = 'manage';
   mocks.agentType = 'cloud';
+  mocks.agentExpired = false;
   mocks.operatorCap = false;
   mocks.agentError = null;
   mocks.userRole = 'platform_admin';
   mocks.projectActiveTimeline = false;
   mocks.realChat = false;
+  mocks.realTransport = false;
   mocks.executedActivityQueries.clear();
   mocks.activityList.mockResolvedValue([]);
   mocks.toolFailures.mockResolvedValue(undefined);
@@ -280,7 +289,7 @@ beforeEach(() => {
   mocks.messageStore = null;
 });
 
-afterEach(() => { cleanup(); mocks.activeRunQueryClient?.clear(); vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); mocks.activeRunQueryClient?.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 it('reuses one input id for three failed retries on the child conversation answer control', async () => {
   mocks.sessionId = 'child-session';
@@ -1643,4 +1652,82 @@ it('keeps the read-only conversation the member opened after leaving and returni
   view.rerender(<AgentDetail />);
   await waitFor(() => expect(mocks.listSessions.mock.calls.length).toBeGreaterThan(1));
   expect(mocks.chatProps.activeSession.id).toBe('delegated');
+});
+
+it.each(['failed', 'completed'])('R15b updates a read-only colleague live to %s with its actual duration', async status => {
+  mocks.sessionId = 'owned-artifact-work';
+  mocks.hash = '#chat';
+  mocks.language = 'zh';
+  mocks.realChat = true;
+  const child = { id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
+    title: '周报助手', session_kind: 'delegation_run', runtime_source: 'delegation', read_only: true, runtime_task_id: 'child-run' };
+  mocks.listSessions.mockResolvedValue([child]);
+  const started = activeRunEvent(1, 'run', 'running', 'child-run');
+  const progress = activeRunEvent(2, 'assistant_commentary', 'completed', 'child-run', { content: '正在核对工作记录。' });
+  mocks.getSessionTranscript.mockResolvedValue([started, progress]);
+  render(<AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe(child.id));
+  expect(mocks.transport.readableSession).toBe(true);
+  expect(mocks.transport.writableSession).toBe(false);
+  expect(await screen.findByText('正在核对工作记录。')).toBeTruthy();
+  expect(screen.getAllByTestId('run-disclosure-block')[0].getAttribute('data-status')).toBe('running');
+  const terminal = activeRunEvent(3, 'run', status, 'child-run', {
+    task_type: 'delegation',
+    started_at: started.occurred_at, completed_at: new Date(Date.parse(started.occurred_at) + 591_000).toISOString(),
+    ...(status === 'failed' ? { reason_code: 'tool_budget', message: '这次用完了用量预算，没有完成。' } : {}),
+  });
+  terminal.occurred_at = terminal.payload.completed_at as string;
+  mocks.getSessionTranscript.mockResolvedValue([started, progress, terminal]);
+  await act(async () => { receiveLiveMessage(terminal); });
+  await waitFor(() => expect(screen.getAllByTestId('run-disclosure-block')[0].getAttribute('data-status'))
+    .toBe(status === 'failed' ? 'failed' : 'done'));
+  expect(screen.getAllByTestId('run-disclosure-block')[0].querySelector('.run-disclosure-duration')?.textContent).toBe('9m 51s');
+  if (status === 'failed') {
+    expect(screen.getAllByText('这次用完了用量预算，没有完成。')).toHaveLength(1);
+    expect(screen.getAllByTestId('run-disclosure-block')[0].textContent).not.toContain('完成');
+  }
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['parent page', { agent_id: 'colleague-agent', peer_agent_id: 'agent-1' }],
+  ['remote A2A', { runtime_source: 'remote_a2a' }],
+  ['operator view', { operator_view: true, user_id: 'another-user' }],
+  ['expired colleague', {}],
+])('R15b retains colleague history without subscribing from %s', async (_entry, overrides) => {
+  mocks.sessionId = 'colleague-history';
+  mocks.hash = '#chat';
+  mocks.realTransport = true;
+  mocks.agentExpired = _entry === 'expired colleague';
+  const opened = vi.fn();
+  vi.stubGlobal('WebSocket', class {
+    static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+    readyState = 0;
+    constructor() { opened(); }
+    close() { this.readyState = 3; }
+  });
+  const child = { id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
+    source_channel: 'agent', session_kind: 'delegation_run', runtime_source: 'delegation',
+    title: 'Colleague history', read_only: true, ...overrides };
+  if ('operator_view' in child && child.operator_view) {
+    mocks.search = '?manage=true';
+    mocks.accessLevel = 'operator';
+    mocks.operatorCap = true;
+  }
+  mocks.listSessions.mockResolvedValue([child]);
+  mocks.getSessionTranscript.mockResolvedValue([activeRunEvent(1, 'assistant_commentary', 'completed', 'child-run',
+    { content: 'The already loaded colleague transcript.' })]);
+  render(<AgentDetail />);
+  if ('operator_view' in child && child.operator_view) {
+    fireEvent.change(screen.getByLabelText('Operator inspection reason'), { target: { value: 'Review this conversation' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Begin inspection' }));
+  }
+  await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe(child.id));
+  expect(mocks.transport.readableSession).toBe(false);
+  expect(mocks.transport.writableSession).toBe(false);
+  expect(await screen.findByText('The already loaded colleague transcript.')).toBeTruthy();
+  expect(opened).not.toHaveBeenCalled();
+  expect(mocks.chatProps.historyMessagesSessionId).toBe(child.id);
+  expect(mocks.chatProps.historyMsgs.some((message: any) => message.content === 'The already loaded colleague transcript.')).toBe(true);
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
 });

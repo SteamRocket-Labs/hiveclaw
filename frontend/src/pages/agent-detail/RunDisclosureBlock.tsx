@@ -191,6 +191,20 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   if (toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)) {
     const toolName = toolNameOf(step);
+    const toolDetails = step.details as { rawResult?: unknown; result?: unknown } | null;
+    const raw = toolDetails?.rawResult ?? toolDetails?.result;
+    if (['delegate_to_agent', 'send_message_to_agent', 'check_async_task', 'list_async_tasks', 'task_output'].includes(toolName || '') && typeof raw === 'string') {
+      try {
+        const envelope = JSON.parse(raw);
+        const tasks = toolName === 'list_async_tasks' ? envelope
+          : toolName === 'task_output' ? [envelope?.task] : toolName === 'check_async_task' ? [envelope] : [];
+        if ((envelope?.ok === true && envelope.operation === 'delegate'
+          && ['queued', 'pending', 'running'].includes(envelope.status))
+          || (Array.isArray(tasks) && tasks.some(task => task?.task_type === 'delegation' && ['pending', 'running'].includes(task.status)))) {
+          return <p>{t('agent.chat.disclosure.colleagueWorking', 'The colleague is working. The result will return here.')}</p>;
+        }
+      } catch { /* Unstructured colleague replies retain their existing presentation. */ }
+    }
     const command = step.kind === 'command' || ['run_command', 'execute_code', 'run_skill_tool'].includes(toolName || '');
     const outcome = command ? commandOutcome(step.details) : null;
     const summary = command && outcome !== null ? null : toolOutputForDisplay(step.details, t, step.status, !command);

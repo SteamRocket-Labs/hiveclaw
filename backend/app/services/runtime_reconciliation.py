@@ -766,7 +766,8 @@ async def repair_ambiguous_provider_send_terminal_projections(
     prescan = (
         await db.execute(
             candidate_statement.with_only_columns(
-                RuntimeTask.id, RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id
+                RuntimeTask.id, RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id,
+                RuntimeTask.task_type, RuntimeTask.child_session_id
             )
         )
     ).all()
@@ -774,7 +775,10 @@ async def repair_ambiguous_provider_send_terminal_projections(
     await lock_transcript_sessions(
         db,
         session_ids=[
-            row.parent_session_id for row in prescan if row.parent_session_id and row.parent_agent_id is not None
+            session_id for row in prescan for session_id in (
+                row.parent_session_id if row.parent_agent_id is not None else None,
+                row.child_session_id if row.task_type == "delegation" else None,
+            ) if session_id
         ],
     )
     rows = [

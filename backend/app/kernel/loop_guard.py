@@ -5,7 +5,8 @@ must not decide that legitimate work is finished.  A hard loop outcome is
 available only when a tool explicitly reports retry exhaustion, the operation
 is side-effect-free, and the same progress token proves that state did not
 advance. Native task-status reads may also stop at the existing identical-call
-threshold when the same task's fixed terminal reason is unchanged across readers.
+threshold when the same task's fixed terminal reason is unchanged across readers,
+or when a delegated colleague is still running.
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ from typing import Any
 from uuid import UUID
 
 from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
-from app.services.runtime_display_status import TERMINAL_TASK_READ_PREFIX, is_runtime_failure_observation
+from app.services.runtime_display_status import (
+    DELEGATED_TASK_RUNNING_MESSAGE, TERMINAL_TASK_READ_PREFIX, is_runtime_failure_observation,
+)
 
 _ABORT_MULTIPLIER = 1.5  # abort threshold = ceil(warn threshold × 1.5)
 
@@ -233,14 +236,16 @@ class LoopGuard:
         if tool_name == "task_output" and isinstance(body, dict):
             body = body.get("task")
         observations = body if isinstance(body, list) else [body]
-        if tool_name == "list_async_tasks" and any(
+        active_listing = tool_name == "list_async_tasks" and any(
             isinstance(item, dict) and item.get("status") in {"pending", "running"}
             and str(item.get("task_id") or "").replace("-", "") != self._runtime_task_id
             for item in observations
-        ):
-            return None
+        )
         for observation in observations:
-            if not is_runtime_failure_observation(observation):
+            if not isinstance(observation, dict):
+                continue
+            running = observation.get("status") in {"pending", "running"} and observation.get("task_type") == "delegation"
+            if not running and (active_listing or not is_runtime_failure_observation(observation)):
                 continue
             identity = observation.get("task_id") or observation.get("result_ref")
             if not isinstance(identity, str) or not identity:
@@ -249,13 +254,15 @@ class LoopGuard:
                 identity = str(UUID(identity))
             except ValueError:
                 pass  # An opaque result_ref is already a stable native identity.
-            key = (identity, observation["reason_code"])
+            if identity.replace("-", "") == self._runtime_task_id:
+                continue
+            key = (identity, "running" if running else observation["reason_code"])
             self._terminal_read_counts[key] = self._terminal_read_counts.get(key, 0) + 1
             if self._terminal_read_counts[key] >= self.identical_tool_threshold:
-                message = observation["reason"]
-                if observation["reason_code"] != "identical_terminal_task_read":
+                message = DELEGATED_TASK_RUNNING_MESSAGE if running else observation["reason"]
+                if not running and observation["reason_code"] != "identical_terminal_task_read":
                     message = TERMINAL_TASK_READ_PREFIX + message
-                check = _PatternCheck(reason="identical_terminal_task_read", detail=message,
+                check = _PatternCheck(reason="identical_running_task_read" if running else "identical_terminal_task_read", detail=message,
                     warn_key=f"terminal:{identity}:{key[1]}", count=self._terminal_read_counts[key],
                     warn_threshold=self.identical_tool_threshold)
                 return self._decision(check, severity="abort", tool_name=tool_name,
@@ -400,7 +407,7 @@ def _runtime_outcome_for_loop_guard(
         "severity": severity,
         "count": count,
         "warn_threshold": warn_threshold,
-        "abort_threshold": warn_threshold if reason == "identical_terminal_task_read" else _abort_threshold(warn_threshold),
+        "abort_threshold": warn_threshold if reason in {"identical_terminal_task_read", "identical_running_task_read"} else _abort_threshold(warn_threshold),
     }
     if severity == "warn":
         return RuntimeOutcome(

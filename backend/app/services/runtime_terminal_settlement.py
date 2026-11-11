@@ -63,22 +63,26 @@ async def lock_runtime_task_with_session_authority(
     ``FOR UPDATE`` row first and reached this module's entry advisory (or
     ``append_session_events``' own advisory) afterwards — the exact edge that
     kills a concurrent transcript append of the same session. This helper
-    reads the row's immutable session binding unlocked, acquires that session
-    advisory, and only then takes the row lock. Refresh existing identity-map
+    reads the row's session bindings unlocked, acquires the parent and delegation
+    child advisories in sorted order, and only then takes the row lock. Refresh existing identity-map
     entries: another writer may have committed while this caller held no lock.
     The query's autoflush preserves any valid pending writes before that read.
     """
 
-    from app.services.chat_transcript import lock_transcript_session
+    from app.services.chat_transcript import lock_transcript_sessions
 
     binding = (
         await db.execute(
-            select(RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id).where(RuntimeTask.id == task_id)
+            select(RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id,
+                RuntimeTask.task_type, RuntimeTask.child_session_id).where(RuntimeTask.id == task_id)
         )
     ).first()
     session_id_raw = str(binding.parent_session_id or "") if binding is not None else ""
-    if binding is not None and session_id_raw and binding.parent_agent_id is not None:
-        await lock_transcript_session(db, session_id=uuid.UUID(session_id_raw))
+    if binding is not None:
+        await lock_transcript_sessions(db, session_ids=[
+            binding.parent_session_id if binding.parent_agent_id is not None else None,
+            binding.child_session_id if binding.task_type == "delegation" else None,
+        ])
     task = (
         await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id)
             .with_for_update().execution_options(populate_existing=True))
@@ -133,7 +137,8 @@ async def lock_runtime_task_batch_with_session_authority(
 
     from app.services.chat_transcript import lock_transcript_sessions
 
-    prescan = statement.with_only_columns(RuntimeTask.id, RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id)
+    prescan = statement.with_only_columns(RuntimeTask.id, RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id,
+        RuntimeTask.task_type, RuntimeTask.child_session_id)
     for _ in range(max(1, int(rounds))):
         bindings = (await db.execute(prescan)).all()
         prescan_ids = {row.id for row in bindings}
@@ -141,7 +146,10 @@ async def lock_runtime_task_batch_with_session_authority(
         await lock_transcript_sessions(
             db,
             session_ids=[
-                row.parent_session_id for row in bindings if row.parent_session_id and row.parent_agent_id is not None
+                session_id for row in bindings for session_id in (
+                    row.parent_session_id if row.parent_agent_id is not None else None,
+                    row.child_session_id if row.task_type == "delegation" else None,
+                ) if session_id
             ],
         )
         locked_statement = statement.with_for_update(skip_locked=skip_locked).execution_options(populate_existing=True)
@@ -289,11 +297,29 @@ async def settle_and_enqueue_runtime_task_terminal(
         return terminal_fence
 
     from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES
+    from app.services.runtime_terminal_boundary_outbox import enqueue_required_terminal_boundary_for_task
 
-    if task.task_type in EXECUTABLE_CHAT_TASK_TYPES:
-        if task.tenant_id is None or task.parent_agent_id is None or not str(task.parent_session_id or "").strip():
+    delegation_session = None
+    if task.task_type == "delegation" and task.tenant_id and task.child_agent_id and task.child_session_id:
+        from app.models.chat_session import ChatSession
+
+        try:
+            child_session_id = uuid.UUID(str(task.child_session_id))
+        except (ValueError, TypeError):
+            child_session_id = None
+        if child_session_id is not None:
+            delegation_session = await db.scalar(select(ChatSession.id).where(
+                ChatSession.id == child_session_id,
+                ChatSession.tenant_id == task.tenant_id, ChatSession.agent_id == task.child_agent_id,
+            ))
+    # Legacy/orphan runs still stop even when no child conversation exists
+    # to receive a display event. Their terminal evidence stays on the Run.
+    if task.task_type in EXECUTABLE_CHAT_TASK_TYPES or delegation_session is not None:
+        agent_id = task.child_agent_id if task.task_type == "delegation" else task.parent_agent_id
+        session_id_raw = task.child_session_id if task.task_type == "delegation" else task.parent_session_id
+        if task.tenant_id is None or agent_id is None or not str(session_id_raw or "").strip():
             raise ValueError("web_terminal_runtime_authority_required")
-        session_id = uuid.UUID(str(task.parent_session_id))
+        session_id = uuid.UUID(str(session_id_raw))
         # Transcript lifecycle vocabulary: the session event contract has no
         # ``run.killed``; the product's canonical phase mapping (see
         # ``_phase_for_terminal_status``) presents a killed run as cancelled,
@@ -306,7 +332,7 @@ async def settle_and_enqueue_runtime_task_terminal(
             select(ChatTranscriptEvent.id)
             .where(
                 ChatTranscriptEvent.tenant_id == task.tenant_id,
-                ChatTranscriptEvent.agent_id == task.parent_agent_id,
+                ChatTranscriptEvent.agent_id == agent_id,
                 ChatTranscriptEvent.session_id == session_id,
                 ChatTranscriptEvent.run_id == task.id,
                 ChatTranscriptEvent.event_type == event_type,
@@ -317,11 +343,20 @@ async def settle_and_enqueue_runtime_task_terminal(
             from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
             metadata = dict(task.metadata_json or {})
+            from app.services.runtime_display_status import runtime_failure_observation
+
+            failure = runtime_failure_observation(task.status, metadata, result_summary=task.result_summary)
+            delegation_payload = {
+                "task_type": "delegation",
+                "started_at": task.started_at.isoformat() if task.started_at else None,
+                "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+                **({"message": failure["reason"], "failure_code": failure["reason_code"]} if failure else {}),
+            } if task.task_type == "delegation" else {}
             turn_id = str(metadata.get("turn_id") or f"turn-{task.id.hex}")
             await append_session_events(
                 db,
                 tenant_id=task.tenant_id,
-                agent_id=task.parent_agent_id,
+                agent_id=agent_id,
                 session_id=session_id,
                 drafts=[
                     SessionEventDraft(
@@ -337,13 +372,13 @@ async def settle_and_enqueue_runtime_task_terminal(
                         },
                         actor={"type": "runtime"},
                         payload={"reason_code": str(root_reason_code or terminal_source),
+                            **delegation_payload,
                             **({"runtime_status": "skipped", "local_abandoned": bool(
                                 (metadata.get("remote_a2a") or {}).get("abandoned"))} if task.status == "skipped" else {})},
+                        **({"occurred_at": task.completed_at} if task.task_type == "delegation" and task.completed_at else {}),
                     )
                 ],
             )
-    from app.services.runtime_terminal_boundary_outbox import enqueue_required_terminal_boundary_for_task
-
     await enqueue_required_terminal_boundary_for_task(db, task)
     return terminal_fence
 

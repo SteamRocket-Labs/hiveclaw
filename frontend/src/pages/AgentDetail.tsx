@@ -364,6 +364,9 @@ function AgentDetailInner() {
         ? allSessions
         : [];
     const visibleBranchLineage = activeOperatorSessionAuthorized ? branchLineage : [];
+    const isLiveDelegationSession = (session: any) => session?.session_kind === 'delegation_run'
+        && session.runtime_source === 'delegation' && String(session.agent_id) === id && !session.operator_view && !agent?.is_expired;
+    const liveDelegationSession = isLiveDelegationSession(activeSession);
     const {
         wsConnected,
         transportPhase,
@@ -381,6 +384,7 @@ function AgentDetailInner() {
         token,
         activeSession,
         writableSession: !isDraftHumanChatSession(activeSession) && shouldUseWritableSessionSurface(activeSession, currentUser?.id),
+        readableSession: !isDraftHumanChatSession(activeSession) && (shouldUseWritableSessionSurface(activeSession, currentUser?.id) || liveDelegationSession),
         isRunActive: (key) => Boolean(activeRunStateRef.current[key]),
         shouldKeepalive: (key) => {
             const uiState = sessionUiStateRef.current[key];
@@ -704,6 +708,7 @@ function AgentDetailInner() {
         const runtimeState = sessionUiStateRef.current[runtimeKey] || uiForPhase('idle');
         const activeRunState = activeRunStateRef.current[runtimeKey];
         const writableSession = isWritableSession(sess);
+        const liveTranscript = writableSession || isLiveDelegationSession(sess);
         const draftSession = isDraftHumanChatSession(sess);
         const operatorOptions = operatorSessionRequestOptions(Boolean(sess?.operator_view), normalizedOperatorReason);
         const authorityIsCurrent = () => !sess?.operator_view || Boolean(
@@ -711,7 +716,7 @@ function AgentDetailInner() {
             && operatorAuthorityScopeRef.current === operatorScopeAtRequest
             && activeOperatorAuthorityScopeRef.current === operatorScopeAtRequest,
         );
-        const transcriptSurface = writableSession ? 'chat' : 'history';
+        const transcriptSurface = liveTranscript ? 'chat' : 'history';
         const nextTranscriptLoad: SessionTranscriptLoadDescriptor = {
             key: runtimeKey,
             surface: transcriptSurface,
@@ -720,7 +725,7 @@ function AgentDetailInner() {
         activeSessionIdRef.current = sessionId;
         activeOperatorAuthorityScopeRef.current = operatorScopeAtRequest;
         setCreatedAgentId(null);
-        if (writableSession) {
+        if (liveTranscript) {
             setHistoryMessagesSessionId(null);
             setChatMessagesSessionId((current) => (current === sessionId ? current : null));
         } else {
@@ -737,7 +742,7 @@ function AgentDetailInner() {
         setSessionPermissionMode(sessionPermissionModeFromSession(sess));
         setActiveSession(sess);
         setAgentExpired(false);
-        syncActiveSocketState(sess, targetAgentId, !isDraftHumanChatSession(sess) && shouldUseWritableSessionSurface(sess, currentUser?.id));
+        syncActiveSocketState(sess, targetAgentId, !isDraftHumanChatSession(sess) && liveTranscript);
 
         if (draftSession) {
             sessionMsgAbortRef.current?.abort();
@@ -793,7 +798,7 @@ function AgentDetailInner() {
                     }
                 }
                 publishedCanonicalSnapshot = true;
-                if (writableSession) {
+                if (liveTranscript) {
                     setChatMessagesSessionId(sessionId);
                     setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed));
                 } else {
@@ -860,7 +865,7 @@ function AgentDetailInner() {
                 sessionVisibilityBoundariesRef.current[runtimeKey] = activeProjection.checkpointEventId
                     ? buildSessionVisibilityBoundary(activeProjection.checkpointEventId, storedParsed, activeProjection.messages)
                     : null;
-                if (writableSession) {
+                if (liveTranscript) {
                     setChatMessagesSessionId(sessionId);
                     setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed));
                 } else {
@@ -900,7 +905,7 @@ function AgentDetailInner() {
                     'Conversation failed to load. Please retry this session or refresh the page.',
                 ),
             );
-            if (writableSession) {
+            if (liveTranscript) {
                 setChatMessagesSessionId(sessionId);
                 setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, [failureMessage]));
             } else {
@@ -2386,7 +2391,7 @@ function AgentDetailInner() {
         (m: any) => m.id === agent.primary_model_id && m.supports_vision
     );
 
-    const activeTimelineMessages = activeSession && isWritableSession(activeSession) ? chatMessages : historyMsgs;
+    const activeTimelineMessages = activeSession && (isWritableSession(activeSession) || liveDelegationSession) ? chatMessages : historyMsgs;
     const currentActiveRunState = id && activeSession?.id
         ? activeRunStateBySession[buildSessionRuntimeKey(id, String(activeSession.id))] || null
         : null;
@@ -2403,7 +2408,7 @@ function AgentDetailInner() {
             agentPrimaryModelId: agent?.primary_model_id,
             agentContextWindowSize: agent?.context_window_size,
             messages: activeTimelineMessages,
-            connected: isWritableSession(activeSession) ? wsConnected : false,
+            connected: (isWritableSession(activeSession) || liveDelegationSession) ? wsConnected : false,
         });
     }, [activeSession, activeTimelineMessages, agent?.context_window_size, agent?.primary_model_id, llmModels, persistedRuntimeSummary, wsConnected]);
 
@@ -2674,8 +2679,8 @@ function AgentDetailInner() {
                             onDeleteSession={deleteSession}
                             historyContainerRef={historyContainerRef}
                             onHistoryScroll={handleHistoryScroll}
-                            historyMsgs={activeOperatorSessionAuthorized ? historyMsgs : []}
-                            historyMessagesSessionId={activeOperatorSessionAuthorized ? historyMessagesSessionId : null}
+                            historyMsgs={activeOperatorSessionAuthorized ? (liveDelegationSession ? chatMessages : historyMsgs) : []}
+                            historyMessagesSessionId={activeOperatorSessionAuthorized ? (liveDelegationSession ? chatMessagesSessionId : historyMessagesSessionId) : null}
                             showHistoryScrollBtn={showHistoryScrollBtn}
                             onScrollHistoryToBottom={scrollHistoryToBottom}
                             chatContainerRef={chatContainerRef}

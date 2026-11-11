@@ -34,6 +34,34 @@ const work = (seq: number, seconds: number, runId = 'run-1') => event(seq, 'assi
   seconds, runId, { content: 'Preparing the report.' });
 const final = (seq: number, seconds: number, runId = 'run-1') => event(seq, 'assistant_final', 'completed', seconds,
   runId, { content: 'The report is ready.' });
+
+it('R15b freezes the colleague clock at its actual execution rather than admission', () => {
+  const model = build([user(), event(2, 'run', 'running', 10), work(3, 11),
+    event(4, 'run', 'failed', 601, 'run-1', { task_type: 'delegation', started_at: at(10), completed_at: at(601),
+      failure_code: 'tool_budget', message: '这次用完了用量预算，没有完成。' })]);
+  expect(runs(model)[0].timeline).toMatchObject({ status: 'failed', startedAt: at(10), durationMs: 591_000, durationIsFinal: true });
+});
+
+it('R15b leaves duration unknown when the original run has no start time', () => {
+  const model = build([user(), work(2, 10), event(3, 'run', 'failed', 601, 'run-1', {
+    task_type: 'delegation', started_at: null, failure_code: 'tool_budget', message: '没有完成。' })]);
+  expect(runs(model)[0].timeline.status).toBe('failed');
+  expect(runs(model)[0].timeline.durationMs).toBeUndefined();
+});
+
+it('R15b presents one failure when the child has both legacy reply and canonical terminal evidence', () => {
+  const reason = '这次用完了用量预算，没有完成。';
+  const legacy = compatibility(4, 591, 'assistant_message', 'run-1');
+  legacy.payload = { content: reason, legacy_run_id: 'run-1',
+    metadata: { runtime_task_id: 'run-1', status: 'error', failed: true } };
+  const events = [user(), event(2, 'run', 'running', 0), work(3, 1), legacy,
+    event(5, 'run', 'failed', 591, 'run-1', { task_type: 'delegation', started_at: at(0),
+      failure_code: 'tool_budget', message: reason })];
+  const messages = hydrateSessionTranscriptEvents(events as unknown as ChatTranscriptEventPayload[]).messages;
+  expect(messages.filter(message => message.content === reason)).toHaveLength(1);
+  expect(messages.find(message => message.content === reason)?.threadItem?.item_type).toBe('error');
+  expect(runs(build(events))[0].timeline.status).toBe('failed');
+});
 function compatibility(seq: number, seconds: number, type: string, runId?: string): SessionCompatibilityEvent {
   return { schema: 'hive.session_event_compatibility', schema_version: 1, compatibility_status: 'needs_reconciliation',
     event_id: `event-${seq}`, sequence: seq, reason: 'legacy_event_scope_unprovable', session_id: 'session', tenant_id: 'tenant',

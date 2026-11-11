@@ -6,6 +6,7 @@ RUNTIME_LIMIT_MESSAGES = {
     "tool_round_limit": "这次已达到运行轮次上限，没有完成。可以重试继续。",
 }
 TERMINAL_TASK_READ_PREFIX = "任务结果未变化，已停止本次处理："
+DELEGATED_TASK_RUNNING_MESSAGE = "同事正在处理，结果回来后会在这里继续。"
 
 _FAILURE_MESSAGES = {
     **RUNTIME_LIMIT_MESSAGES,
@@ -18,6 +19,12 @@ _FAILURE_MESSAGES = {
 }
 _TERMINAL_READ_MESSAGES = frozenset(TERMINAL_TASK_READ_PREFIX + reason for reason in _FAILURE_MESSAGES.values())
 _FAILURE_MESSAGES["identical_terminal_task_read"] = "任务结果未变化，已停止本次处理。"
+
+
+FAILED_DELEGATION_MODEL_INSTRUCTION = (
+    "Explain the failure reason to the member in their language and offer to retry. "
+    "Do not delegate again unless the member asks."
+)
 
 
 def runtime_failure_observation(status: str, metadata: dict, *, result_summary: str | None = None) -> dict | None:

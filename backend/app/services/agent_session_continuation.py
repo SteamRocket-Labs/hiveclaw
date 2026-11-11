@@ -21,6 +21,7 @@ from app.models.user import User
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.runtime_root_ledger import RuntimeRootIntentSpec
+from app.services.runtime_display_status import FAILED_DELEGATION_MODEL_INSTRUCTION
 
 # The strict durable triple (session_kind + runtime_source + source_channel)
 # used by the Session V2 authority plane — intentionally NOT the broad
@@ -406,6 +407,9 @@ def build_result_integration_runtime_context(manifest: dict[str, Any]) -> str:
         "Resume the original parent task from these results and give the user a current delivery/status update. "
         "Do not replay completed child work merely because this notification arrived."
     )
+    if any(isinstance(item, dict) and item.get("terminal_status") == "failed"
+        and item.get("task_type") in {"delegation", "a2a_delegation"} for item in manifest.get("items", [])):
+        lines.append(FAILED_DELEGATION_MODEL_INSTRUCTION)
     return "\n".join(lines)
 
 

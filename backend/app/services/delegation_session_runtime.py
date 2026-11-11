@@ -178,6 +178,24 @@ class DelegationSessionRuntime:
                 if origin is not None:
                     invocation.messages[0]["context_origin"] = origin
             history, round_index, tokens, receipt = await _session_restart_resume_history(db, task)
+            from app.models.chat_transcript_event import ChatTranscriptEvent
+            from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+            # A recovered worker may already have a start item. Project the
+            # same Run once, including when the claim set started_at earlier.
+            if not await db.scalar(select(ChatTranscriptEvent.id).where(
+                ChatTranscriptEvent.session_id == session_id, ChatTranscriptEvent.run_id == run_id,
+                ChatTranscriptEvent.item_kind == "run").limit(1)):
+                await append_session_events(db, tenant_id=invocation.tenant_id, agent_id=invocation.agent_id,
+                    session_id=session_id, drafts=[SessionEventDraft(
+                        item_id=run_id, item_kind="run", lifecycle="running",
+                        scope={"level": "run", "session_id": str(session_id), "thread_id": str(session_id),
+                            "turn_id": str((task.metadata_json or {}).get("turn_id") or f"turn-{run_id.hex}"),
+                            "run_id": str(run_id)}, actor={"type": "runtime"},
+                        payload={"task_type": "delegation",
+                            "started_at": task.started_at.isoformat() if task.started_at else None},
+                        **({"occurred_at": task.started_at} if task.started_at else {}),
+                    )])
             await db.commit()
             turn_id = str((task.metadata_json or {}).get("turn_id") or f"turn-{run_id.hex}")
             runtime = cls(scope={"tenant_id": invocation.tenant_id, "agent_id": invocation.agent_id,

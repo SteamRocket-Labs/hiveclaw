@@ -2091,7 +2091,7 @@ function applyCanonicalRunTerminalEvidence(
   const firstSequence = messages.reduce((first, message) => Math.min(first,
     message.sessionItem?.first_sequence ?? message.threadItem?.sequence ?? Infinity), Infinity);
   const startsMidTurn = Number.isFinite(firstSequence) && firstSequence > 1;
-  const terminalByRunId = new Map<string, { sequence: number; startedAt: string; completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
+  const terminalByRunId = new Map<string, { sequence: number; startedAt: string; runtimeStartedAt?: string; clockUnknown?: boolean; completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
   messages.forEach((message) => {
     const item = message.sessionItem;
     const lifecycle = item?.kind === 'runtime_failure' ? 'failed' : item?.kind === 'run' ? item.lifecycle : null;
@@ -2106,8 +2106,11 @@ function applyCanonicalRunTerminalEvidence(
       : lifecycle === 'cancelled' || lifecycle === 'killed'
         ? 'cancelled'
         : 'done';
-    terminalByRunId.set(runId, { sequence, startedAt: item?.kind === 'run' && item.first_sequence < sequence
-      ? item.occurredAt : '', completedAtMs, status });
+    terminalByRunId.set(runId, { sequence, startedAt: readString(item?.payload ?? {}, ['started_at'], '')
+      || (item?.kind === 'run' && item.first_sequence < sequence ? item.occurredAt : ''),
+      runtimeStartedAt: item?.payload?.task_type === 'delegation' ? readString(item.payload, ['started_at'], '') : undefined,
+      clockUnknown: item?.payload?.task_type === 'delegation' && item.payload.started_at == null,
+      completedAtMs, status });
   });
   return cells.map((cell, index) => {
     if (cell.kind !== 'active_run') return cell;
@@ -2130,7 +2133,7 @@ function applyCanonicalRunTerminalEvidence(
     if (!status) return cell;
     // Keep the accepted input / queued clock when a later task-row start
     // appears. Terminal events alone freeze the completed run's clock.
-    const startedAt = [terminal?.startedAt, cell.timeline.startedAt,
+    const startedAt = terminal?.runtimeStartedAt || [terminal?.startedAt, cell.timeline.startedAt,
       ...(!terminal ? [readString(task ?? {}, ['started_at', 'created_at'], '')] : [])]
       .filter((value): value is string => Boolean(value && Number.isFinite(Date.parse(value))))
       .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
@@ -2141,7 +2144,7 @@ function applyCanonicalRunTerminalEvidence(
     const completedAtMs = terminal?.completedAtMs ?? (Number.isFinite(taskCompletedAtMs)
       ? taskCompletedAtMs : Date.parse(cell.timeline.completedAt || ''));
     const startedAtMs = Date.parse(startedAt || '');
-    const durationMs = Number.isFinite(startedAtMs) && Number.isFinite(completedAtMs)
+    const durationMs = terminal?.clockUnknown ? undefined : Number.isFinite(startedAtMs) && Number.isFinite(completedAtMs)
       ? Math.max(completedAtMs - startedAtMs, 0)
       : cell.timeline.durationMs;
     // A newest-first page may begin halfway through this finished run. Its

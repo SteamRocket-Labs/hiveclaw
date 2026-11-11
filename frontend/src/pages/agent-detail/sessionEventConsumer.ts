@@ -451,7 +451,8 @@ function projectCanonicalItem(
       sessionItem: item,
     };
   }
-  if (item.kind === 'runtime_failure') {
+  const failedDelegation = item.kind === 'run' && item.lifecycle === 'failed' && item.payload.task_type === 'delegation';
+  if (item.kind === 'runtime_failure' || failedDelegation) {
     // Canonical thread-item projection for the provider-failure terminal
     // witness: a user-visible error card built from typed failure fields
     // (failure_code / terminal_reason / typed replay-safety) and the safe
@@ -463,7 +464,8 @@ function projectCanonicalItem(
     const failureRetryable = item.payload.retryable === true;
     const failureRetrySafe = 'retry_safe' in item.payload ? item.payload.retry_safe === true : failureRetryable;
     const deliveryState = typeof item.payload.delivery_state === 'string' ? item.payload.delivery_state : null;
-    const failureMessage = runtimeFailurePresentation(failureCode, failureRetryable, deliveryState).fallback;
+    const failureMessage = failedDelegation && typeof item.payload.message === 'string'
+      ? item.payload.message : runtimeFailurePresentation(failureCode, failureRetryable, deliveryState).fallback;
     const scope = item.scope;
     const threadItem: ThreadItem = {
       schema: 'hive.thread_item.v1',
@@ -532,7 +534,12 @@ function projectCanonicalItem(
 export function projectSessionEventStoreToMessages(store: SessionEventStore): AgentChatMessage[] {
   // A terminal run's process is projected as of that boundary. The store
   // still consumes later updates; they cannot rewrite its finished block.
-  const items = Object.values(store.items).map(item => item.atRunTerminal ?? item);
+  const failedDelegations = new Set(Object.values(store.items)
+    .filter(item => item.kind === 'run' && item.lifecycle === 'failed' && item.payload.task_type === 'delegation')
+    .map(item => 'run_id' in item.scope ? item.scope.run_id : null));
+  const items = Object.values(store.items).map(item => item.atRunTerminal ?? item).filter(item => !(
+    item.payload.legacy === true && ['assistant_text', 'assistant_final'].includes(item.kind)
+    && 'run_id' in item.scope && failedDelegations.has(item.scope.run_id)));
   const terminalFinalSources = new Set(items.filter(item => item.kind === 'assistant_final' && item.terminal)
     .flatMap(item => (item.source_blocks || []).map(source => source.item_id)));
   const terminalSequences = new Map<string, number>();
@@ -610,7 +617,8 @@ export function composeMixedPlaneSessionMessages(options: {
   const canonicalMessages = store ? projectSessionEventStoreToMessages(store) : [];
   const canonicalFinalRunIds = new Set(
     Object.values(store?.items || {})
-      .filter((item) => item.kind === 'assistant_final' && item.terminal)
+      .filter((item) => (item.kind === 'assistant_final' && item.terminal)
+        || (item.kind === 'run' && item.lifecycle === 'failed' && item.payload.task_type === 'delegation'))
       .map((item) => ('run_id' in item.scope ? item.scope.run_id : null))
       .filter((runId): runId is string => Boolean(runId)),
   );

@@ -111,6 +111,7 @@ interface SessionTransportControllerOptions {
   token?: string | null;
   activeSession: any | null;
   writableSession: boolean;
+  readableSession?: boolean;
   isRunActive: (key: SessionRuntimeKey) => boolean;
   shouldKeepalive: (key: SessionRuntimeKey) => boolean;
   getHighestContiguousSequence: (key: SessionRuntimeKey) => number;
@@ -278,9 +279,9 @@ export function useSessionTransportController(options: SessionTransportControlle
   const syncActiveSocketState = (
     session: any | null = optionsRef.current.activeSession,
     agentId: string | undefined = optionsRef.current.agentId,
-    writableSession: boolean = optionsRef.current.writableSession,
+    readableSession: boolean = optionsRef.current.readableSession ?? optionsRef.current.writableSession,
   ) => {
-    if (!session || !agentId || !writableSession) {
+    if (!session || !agentId || !readableSession) {
       activeSocketRef.current = null;
       setWsConnected(false);
       return;
@@ -496,8 +497,8 @@ export function useSessionTransportController(options: SessionTransportControlle
   };
 
   const reconnectActiveTransport = () => {
-    const { agentId, token, activeSession, writableSession } = optionsRef.current;
-    if (!agentId || !token || !activeSession?.id || !writableSession) return;
+    const { agentId, token, activeSession, readableSession = optionsRef.current.writableSession } = optionsRef.current;
+    if (!agentId || !token || !activeSession?.id || !readableSession) return;
     const key = runtimeKey(agentId, String(activeSession.id));
     reconnectDisabledRef.current[key] = false;
     reconnectAttemptsRef.current[key] = 0;
@@ -532,9 +533,9 @@ export function useSessionTransportController(options: SessionTransportControlle
   const getSessionSocket = (agentId: string, sessionId: string) => socketsRef.current[runtimeKey(agentId, sessionId)] ?? null;
 
   useEffect(() => {
-    const { enabled, agentId, token, activeSession, writableSession } = optionsRef.current;
+    const { enabled, agentId, token, activeSession, readableSession = optionsRef.current.writableSession } = optionsRef.current;
     if (!enabled || !agentId || !token) return;
-    if (!activeSession || !writableSession) {
+    if (!activeSession || !readableSession) {
       syncActiveSocketState(activeSession, agentId);
       return;
     }
@@ -550,11 +551,11 @@ export function useSessionTransportController(options: SessionTransportControlle
     );
     void hydrateAndConnect(activeSession, agentId, token);
     syncActiveSocketState(activeSession, agentId);
-  }, [options.enabled, options.agentId, options.token, options.activeSession?.id, options.activeSession?.operator_view, options.writableSession]);
+  }, [options.enabled, options.agentId, options.token, options.activeSession?.id, options.activeSession?.operator_view, options.readableSession ?? options.writableSession]);
 
   useEffect(() => {
-    const { enabled, agentId, token, activeSession, writableSession } = optionsRef.current;
-    if (!enabled || !agentId || !token || !activeSession?.id || !writableSession) return;
+    const { enabled, agentId, token, activeSession, readableSession = optionsRef.current.writableSession } = optionsRef.current;
+    if (!enabled || !agentId || !token || !activeSession?.id || !readableSession) return;
     const key = runtimeKey(agentId, String(activeSession.id));
     const wake = () => {
       if (reconnectDisabledRef.current[key]) return;
@@ -616,11 +617,11 @@ export function useSessionTransportController(options: SessionTransportControlle
       window.removeEventListener('offline', handleOffline);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [options.enabled, options.agentId, options.token, options.activeSession?.id, options.activeSession?.operator_view, options.writableSession]);
+  }, [options.enabled, options.agentId, options.token, options.activeSession?.id, options.activeSession?.operator_view, options.readableSession ?? options.writableSession]);
 
   useEffect(() => {
-    const { enabled, agentId, activeSession, writableSession } = optionsRef.current;
-    if (!enabled || !agentId || !activeSession?.id || !writableSession) return;
+    const { enabled, agentId, activeSession, readableSession = optionsRef.current.writableSession } = optionsRef.current;
+    if (!enabled || !agentId || !activeSession?.id || !readableSession) return;
     const key = runtimeKey(agentId, String(activeSession.id));
     const interval = transportPollIntervalMs(transportPhase, optionsRef.current.isRunActive(key));
     if (interval === null) return;
@@ -646,7 +647,7 @@ export function useSessionTransportController(options: SessionTransportControlle
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [options.enabled, options.agentId, options.activeSession?.id, options.activeSession?.operator_view, options.writableSession, transportPhase]);
+  }, [options.enabled, options.agentId, options.activeSession?.id, options.activeSession?.operator_view, options.readableSession ?? options.writableSession, transportPhase]);
 
   useEffect(() => () => {
     Object.keys(reconnectDisabledRef.current).forEach((key) => { reconnectDisabledRef.current[key] = true; });

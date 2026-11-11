@@ -166,6 +166,7 @@ def _pending_result_record(record):
 def _matches_status_body(body, task_id, record):
     expected = {
         "task_id": task_id,
+        "task_type": record["task_type"],
         "status": record["status"],
         "result": record["result"],
         "timed_out": bool(record["metadata"].get("timed_out", False)),

@@ -172,7 +172,7 @@ export function SessionWorkbenchHeader({ model, history, manageHref }: {
   // A conversation with no run yet (idle) shows no run status at all.
   // Failed runs show only guidance supplied by their recorded blocker (B6).
   const showRunStatus = model.status !== 'idle';
-  const statusLabel = runtimeStatusLabel(model.status, t);
+  const statusLabel = runtimeStatusLabel(model.status, t, model.phase);
   const guidance = model.guidance || (model.status === 'waiting'
     ? t('sessionWorkbench.waitingGuidance', 'Review the request below and choose the next action.')
     : null);

@@ -61,6 +61,7 @@ export type SessionWorkbenchStatus = 'idle' | 'running' | 'waiting' | 'streaming
 export interface SessionWorkbenchHeaderModel {
   title: string;
   status: SessionWorkbenchStatus;
+  phase?: 'queued';
   modelLabel: string | null;
   guidance?: string;
 }export interface ThreadTimelineModel {
@@ -2222,6 +2223,7 @@ function sameCellIdentity(previous: ThreadTimelineCell, next: ThreadTimelineCell
     if (previous.runId !== next.runId) return false;
     if (previous.phase !== next.phase) return false;
     if (previous.timeline.status !== next.timeline.status) return false;
+    if (previous.timeline.phase !== next.timeline.phase) return false;
     if (previous.timeline.startedAt !== next.timeline.startedAt) return false;
     if (previous.timeline.completedAt !== next.timeline.completedAt) return false;
     if (previous.timeline.durationMs !== next.timeline.durationMs) return false;
@@ -2290,20 +2292,29 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     && (!currentRun || CANONICAL_RUN_TERMINAL_LIFECYCLES.has(taskLifecycle))) {
     currentRun = { runId: currentRunId, lifecycle: taskLifecycle };
   }
-  const activeRunId = normalizeSessionRunId(input.activeRunId) || normalizeSessionRunId(currentRun?.runId);
+  const latestUser = input.messages[latestUserIndex];
+  // A late boundary or active-run read can still describe the preceding turn
+  // while POST /runs is pending. Keep that run's evidence without assigning it
+  // to the input being sent. A new run's own terminal remains authoritative.
+  const pendingSendState = (latestUser?.sendState === 'sending' || latestUser?.sendState === 'queued')
+    && !latestTurnAnswered && (!currentRun || (!isSameSessionRunId(messageRunId(latestUser), currentRun.runId)
+      && input.messages.slice(0, latestUserIndex).some(message => isSameSessionRunId(messageRunId(message), currentRun?.runId))))
+    ? latestUser.sendState : null;
+  if (pendingSendState) currentRun = null;
+  const activeRunId = pendingSendState ? null
+    : normalizeSessionRunId(input.activeRunId) || normalizeSessionRunId(currentRun?.runId);
   const terminalAnswerOwnsActiveRun = Boolean(
     latestAnsweredRunId && activeRunId && isSameSessionRunId(latestAnsweredRunId, activeRunId),
   );
-  const activeRunStatus = CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
+  const activeRunStatus = pendingSendState || CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     ? null : mainTurnActiveRunStatus(input, cells);
   const runtimePhaseValue = String(input.runtimePhase || '').trim();
-  const terminalDeliveryPending = (Boolean(input.terminalTranscriptPending) || input.isWaiting || input.isStreaming) && (runtimePhaseValue === 'done'
+  const terminalDeliveryPending = !pendingSendState && (Boolean(input.terminalTranscriptPending) || input.isWaiting || input.isStreaming) && (runtimePhaseValue === 'done'
     || runtimeStatusKey(currentRun?.lifecycle || activeRunStatus || '') === 'done')
     && latestUserMessageIndex(input.messages) >= 0
     && !latestTurnAnswered;
-  const retainedProcessRun = keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending);
-  const trailingUserTurn = cells.at(-1)?.kind === 'user_turn';
-  const latestUser = input.messages[latestUserIndex];
+  const retainedProcessRun = !pendingSendState && keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending);
+  const trailingUserTurn = Boolean(pendingSendState) || cells.at(-1)?.kind === 'user_turn';
   const acceptedUserTurnPending = trailingUserTurn && (latestUser?.sendState === 'sending'
     || latestUser?.sendState === 'queued'
     || (latestUser?.sessionItem?.kind === 'human_input' && latestUser.sessionItem.lifecycle === 'accepted'));
@@ -2317,12 +2328,16 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     && (!runtimePhaseValue || runtimePhaseValue === 'idle' || acceptedUserTurnPending);
   const pendingRunCell = terminalAnswerOwnsActiveRun || CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     ? null
-    : buildPendingRunCell({ ...input, activeRunId }, runtimePhaseValue === 'idle' && !input.activeRunId
-      ? activeRunStatus : currentRun?.lifecycle || activeRunStatus, unresolvedUserTurn, interruptedUserTurn);
-  if (pendingRunCell && !retainedProcessRun && !hasOpenRunCell(cells)) {
-    cells.push(pendingRunCell);
+    : buildPendingRunCell({ ...input, activeRunId,
+      ...(pendingSendState ? { runtimePhase: pendingSendState === 'queued' ? 'queued' : '' } : {}),
+    }, runtimePhaseValue === 'idle' && !input.activeRunId
+      ? activeRunStatus : currentRun?.lifecycle || activeRunStatus, unresolvedUserTurn || Boolean(pendingSendState), interruptedUserTurn);
+  if (pendingRunCell && !retainedProcessRun && (pendingSendState || !hasOpenRunCell(cells))) {
+    cells.push(pendingSendState === 'queued'
+      ? { ...pendingRunCell, timeline: { ...pendingRunCell.timeline, phase: 'queued' } }
+      : pendingRunCell);
   }
-  const livePhase = liveRunPhase(input);
+  const livePhase = pendingSendState ? pendingSendState === 'queued' ? 'queued' : null : liveRunPhase(input);
   if (livePhase) {
     for (let index = cells.length - 1; index >= 0; index -= 1) {
       const cell = cells[index];
@@ -2341,11 +2356,11 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const sessionIndex = input.sessionIndex && !Array.isArray(input.sessionIndex) ? input.sessionIndex : null;
   const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
   const runtimeSummary = input.runtimeSummary || null;
-  const headerRunId = currentRun?.runId || messageRunId(input.messages.slice(latestUserMessageIndex(input.messages) + 1)
+  const headerRunId = pendingSendState ? null : currentRun?.runId || messageRunId(input.messages.slice(latestUserMessageIndex(input.messages) + 1)
     .reverse().find(message => messageRunId(message)));
   const blockedRun = sessionWorkbench?.runtime_tasks?.find(task => isSameSessionRunId(
     readString(task, ['runtime_task_id', 'id'], ''), headerRunId));
-  const runLifecycle = awaitingApproval ? 'waiting' : CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
+  const runLifecycle = pendingSendState ? undefined : awaitingApproval ? 'waiting' : CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     ? currentRun?.lifecycle : readString(blockedRun ?? {}, ['status'], '') || currentRun?.lifecycle;
   const guidance = runLifecycle === 'needs_reconciliation'
     ? readString(asRecord(blockedRun?.user_blocker) ?? {}, ['next_action'], '') : '';
@@ -2355,7 +2370,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const terminalStatePending = terminalDeliveryPending || replyAwaitingTerminal || (!runDisplay && !latestTurnAnswered
     && input.messages[latestUserMessageIndex(input.messages)]?.sessionItem?.kind === 'human_input'
     && getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus, input.runtimePhase) === 'complete');
-  const headerStatus = terminalStatePending ? 'running' : runDisplay
+  const headerStatus = pendingSendState ? 'running' : terminalStatePending ? 'running' : runDisplay
     ? runDisplay === 'done' ? 'complete' : runDisplay === 'stopped' ? 'cancelled' : runDisplay
     : livePhase
     ? livePhaseHeaderStatus(livePhase)
@@ -2381,6 +2396,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     header: {
       title: getSessionTitle(input.activeSession),
       status: headerStatus,
+      ...(pendingSendState === 'queued' ? { phase: 'queued' } : {}),
       modelLabel: runtimeSummary?.model?.label || runtimeSummary?.model?.name || null,
       ...(guidance ? { guidance } : {}),
     },

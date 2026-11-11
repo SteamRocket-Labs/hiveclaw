@@ -35,7 +35,10 @@ it('refreshes the open file and saved reference when a newer file card is opened
     artifact: { ...preview.artifact, id: 'bot-next-delivery', snapshotHash: 'c'.repeat(64) } }} />);
   await screen.findByText('Bot revision');
   expect((screen.getByRole('textbox', { name: 'Continue with this file' }) as HTMLTextAreaElement).value).toBe('Keep going');
-  fireEvent.click(screen.getByRole('button', { name: 'Continue in this work' }));
+  const continueButton = screen.getByRole('button', { name: 'Continue in this work' }) as HTMLButtonElement;
+  // Content renders before the editor-ready state reaches the parent.
+  await waitFor(() => expect(continueButton.disabled).toBe(false));
+  fireEvent.click(continueButton);
   await waitFor(() => expect(send).toHaveBeenCalledOnce());
   expect(send.mock.calls[0][1].parts).toEqual([
     { type: 'workspace_file_ref', agent_id: 'employee', path: 'workspace/report.md' },

@@ -91,6 +91,7 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
 
 export function formatComposerAttachments(userMsg: string, attachedFiles: Array<{
     name: string; text: string; path?: string; imageUrl?: string; originalAttachment?: UploadedChatFile['original_attachment'];
+    size?: number; mimeType?: string;
     conversion?: { markdownPath?: string; metadataPath?: string };
 }>, supportsVision: boolean) {
     let contentForLLM = userMsg;
@@ -128,6 +129,8 @@ export function formatComposerAttachments(userMsg: string, attachedFiles: Array<
     return { userMsg, contentForLLM, fileName: attachedFiles.map(file => file.name).join(', '),
         inputAttachments: attachedFiles.filter(file => file.path).map(file => ({
             path: file.path!, name: file.name, source: 'human_input',
+            ...(typeof file.size === 'number' ? { size: file.size } : {}),
+            ...(file.mimeType ? { mimeType: file.mimeType } : {}),
             ...(file.originalAttachment ? { originalUpload: { id: file.originalAttachment.id, ownerUserId: file.originalAttachment.owner_user_id } } : {}),
         })),
         attachmentPayload: attachedFiles.map(file => ({

@@ -75,6 +75,8 @@ export interface RunAggregateSummary {
 export interface RunTimelineSnapshot {
   id: string;
   status: 'idle' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled' | 'interrupted';
+  /** Pending input presentation; the run lifecycle keeps its existing status. */
+  phase?: 'queued';
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
@@ -737,7 +739,8 @@ export function isAssistantAnswer(message: AgentChatMessage): boolean {
 
 export function buildRunAggregateSummary(steps: RunStepSnapshot[]): RunAggregateSummary | undefined {
   const hiddenProcessTools = steps.filter((step) => step.presentation === 'tool_history');
-  const files = hiddenProcessTools.filter((step) => step.kind === 'file').length;
+  const files = steps.filter((step) => step.presentation !== 'external'
+    && ['read_file', 'fs_read', 'read_document'].includes(String((step.details as { toolName?: string } | null)?.toolName))).length;
   const searches = hiddenProcessTools.filter((step) => step.kind === 'search').length;
   const commands = hiddenProcessTools.filter((step) => step.kind === 'command').length;
   return files + searches + commands > 0 ? { files, searches, commands } : undefined;

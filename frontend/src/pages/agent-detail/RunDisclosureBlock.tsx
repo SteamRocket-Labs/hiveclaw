@@ -150,7 +150,7 @@ function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string |
   if (timeline.durationIsFinal) return formatDuration(timeline.durationMs);
   const duration = formatDuration(Math.max(observedDurationMs, timeline.durationMs ?? 0));
   if (duration) return duration;
-  return running && !Number.isNaN(parsed) ? '0s' : '';
+  return running && !Number.isNaN(parsed) ? i18n.t('agent.chat.disclosure.elapsedSeconds', '{{seconds}}s', { seconds: 0 }) : '';
 }
 
 function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
@@ -253,7 +253,7 @@ function RunStepRow({ step, resultPreview }: { step: RunStepSnapshot; resultPrev
   // Commands, arguments and output wait behind this toggle: the default layer
   // shows the localized action and its state only (B2 r2).
   const [expanded, setExpanded] = React.useState(false);
-  const hasDetails = step.details != null;
+  const hasDetails = hasStepDetails(step);
   const preview = resultPreview && step.systemEvent?.type === 'child_session' && typeof step.details === 'string'
     ? step.details : step.summary;
   return (
@@ -336,8 +336,14 @@ function RunCompactionBoundary({ step }: { step: RunStepSnapshot }) {
 function toolNameOf(step: RunStepSnapshot): string | null {
   const details = step.details;
   if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
-  const toolName = (details as { toolName?: unknown }).toolName;
+  const toolName = (details as { toolName?: unknown; name?: unknown }).toolName
+    || (details as { name?: unknown }).name;
   return typeof toolName === 'string' && toolName.trim() ? toolName : null;
+}
+
+function hasStepDetails(step: RunStepSnapshot): boolean {
+  return Boolean(toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)
+    || (typeof step.details === 'string' && step.details.trim()));
 }
 
 function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
@@ -392,7 +398,7 @@ function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
 function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
-  const hasDetails = step.details != null;
+  const hasDetails = hasStepDetails(step);
   const row = (
     <>
       <span className={step.status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
@@ -485,7 +491,7 @@ export default function RunDisclosureBlock({
   }, [opensForAttention, timeline.id, timeline.status]);
 
   const title = resultsKept ? t('agent.chat.disclosure.system.resultsAvailable', 'Task results received')
-    : runtimeStatusLabel(timeline.status, t);
+    : runtimeStatusLabel(timeline.status, t, timeline.phase);
   const interruptedHint = t(
     'agent.chat.disclosure.interruptedHint',
     'This turn has no completion record; send a new message to continue.',

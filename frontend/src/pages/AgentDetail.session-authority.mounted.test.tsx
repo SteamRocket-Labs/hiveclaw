@@ -703,6 +703,49 @@ async function composeOrdinaryMessage(text = 'Keep this message') {
   act(() => mocks.chatProps.onSetChatInput(text));
 }
 
+it.each(['accepted', 'deferred'])('R16a.4 does not describe a first %s input as merged work', async status => {
+  mocks.language = 'zh';
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', status, run: null,
+    admission_state: 'admitted', intent: 'start_turn', dispatch: status === 'deferred' ? { kind: 'deferred', code: 'execution_denied' } : {} });
+  await composeOrdinaryMessage();
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(mocks.chatProps.transportNotice).toBeNull();
+});
+
+it('R16a.9 does not announce older history on a fresh conversation live subscription', async () => {
+  await mountOwnedArtifactWork();
+  const older = deferred<any[]>();
+  mocks.getSessionTranscript.mockReturnValue(older.promise);
+  let backfill!: Promise<unknown>;
+  act(() => { backfill = mocks.transport.callbacks.onBackfill(mocks.chatProps.activeSession, 'agent-1'); });
+  await act(async () => {
+    mocks.transport.callbacks.onLiveTailReady({ key: `agent-1:${mocks.sessionId}`, sessionId: mocks.sessionId, acceptedAfterSequence: 0 });
+  });
+  expect(mocks.chatProps.transportNotice).toBeNull();
+  await act(async () => { older.resolve([]); await backfill; });
+});
+
+it('R16a.3 preserves the sending turn when a late previous-run phase arrives', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  await mountOwnedArtifactWork();
+  const history = completedRunEvents(1, 'old-run').slice(0, 3);
+  history.push(activeRunEvent(4, 'run', 'cancelled', 'old-run'));
+  await receiveRunEvents(history);
+  mocks.activeSessionRun = null;
+  mocks.activeRunObservedAt += 1;
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Fresh request' } });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(1));
+  expectMemberRunState('运行中');
+  await act(async () => { receiveLiveMessage({ type: 'phase', phase: 'cancelled', run_id: 'old-run' }); });
+  expectMemberRunState('运行中');
+  expect(disclosureStates()).toEqual(['cancelled', 'running']);
+  await act(async () => request.resolve({ run_id: 'new-run', status: 'running' }));
+});
+
 function receiveLiveMessage(data: any) {
   mocks.transport.callbacks.onMessage({ data, session: mocks.chatProps.activeSession,
     agentId: 'agent-1', sessionId: mocks.sessionId, key: `agent-1:${mocks.sessionId}`, isActiveRuntime: true,
@@ -756,6 +799,84 @@ function expectMemberRunState(state: string) {
 function disclosureStates() {
   return screen.queryAllByTestId('run-disclosure-block').map(block => block.getAttribute('data-status'));
 }
+
+it('R16a.3 round2 adopts the 201 run and its later terminal after a pending send', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  await mountOwnedArtifactWork();
+  const history = completedRunEvents(1, 'old-run').slice(0, 3);
+  history.push(activeRunEvent(4, 'run', 'cancelled', 'old-run'));
+  await receiveRunEvents(history);
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Fresh request' } });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(1));
+  expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ sendState: 'sending' });
+  expectMemberRunState('运行中');
+  expect(disclosureStates().at(-1)).toBe('running');
+  // startSessionRun resolves the parsed body of POST /runs (201).
+  await act(async () => request.resolve({ run_id: 'new-run', status: 'running' }));
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBe('new-run'));
+  expect(mocks.chatProps.chatMessages.find((message: any) => message.content === 'Fresh request')?.sendState).toBeUndefined();
+  expectMemberRunState('运行中');
+  expect(disclosureStates().at(-1)).toBe('running');
+  const nextEvents = [
+    activeRunEvent(5, 'run', 'running', 'new-run'),
+    activeRunEvent(6, 'assistant_commentary', 'completed', 'new-run', { content: 'Checking the new request.' }),
+    activeRunEvent(7, 'run', 'failed', 'new-run'),
+  ];
+  await receiveRunEvents(nextEvents, [...history, ...nextEvents]);
+  expectMemberRunState('失败');
+  expect(disclosureStates().at(-1)).toBe('failed');
+});
+
+it.each([1, 2])('R16a.9 round2 only announces earlier history after a load failure when the first sequence is %s', async firstSequence => {
+  mocks.language = 'zh';
+  await mountOwnedArtifactWork();
+  const error = new ApiError(422, 'Earlier page unavailable');
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const page = Array.from({ length: 1000 }, (_, i) => activeRunEvent(i + firstSequence, 'human_input', 'accepted', null,
+    { content_parts: [{ type: 'text', text: `Message ${i}` }] }));
+  mocks.getSessionTranscript.mockResolvedValueOnce(page).mockRejectedValue(error);
+  await act(async () => { await mocks.chatProps.onSelectSession(mocks.chatProps.activeSession); });
+  await waitFor(() => expect(logged).toHaveBeenCalledWith('Failed to load session messages:', error));
+  expect(mocks.chatProps.chatMessages).toHaveLength(1000);
+  expect(mocks.chatProps.transportNotice).toBe(firstSequence > 1 ? '较早的消息还在加载，请稍候。' : null);
+});
+
+it('R16a.3 keeps header, runtime panel and new run through an older-history refetch during POST', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.sessionId = 'owned-artifact-work';
+  const session = { id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
+    title: 'History backfill', session_kind: 'human_chat', read_only: false };
+  mocks.listSessions.mockResolvedValue([session]);
+  const history = [
+    ...completedRunEvents(1, 'earlier-run'),
+    activeRunEvent(6, 'human_input', 'accepted', null, { content_parts: [{ type: 'text', text: 'Previous request' }] }),
+    activeRunEvent(7, 'run', 'running', 'old-run'),
+    activeRunEvent(8, 'run', 'cancelled', 'old-run'),
+  ];
+  mocks.getSessionTranscript.mockResolvedValue(history.slice(5));
+  render(<AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps.chatMessages.length).toBeGreaterThan(0));
+  expect(screen.getByTestId('session-workbench-header').querySelector('.swb-header-status')?.textContent).toBe('已停止');
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Fresh request' } });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(1));
+  expectMemberRunState('运行中');
+  mocks.getSessionTranscript.mockResolvedValue(history);
+  await act(async () => { await mocks.chatProps.onSelectSession(session); });
+  await waitFor(() => expect(mocks.chatProps.chatMessages.some((message: any) => message.content === 'Result earlier-run.')).toBe(true));
+  expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ content: 'Fresh request', sendState: 'sending' });
+  expectMemberRunState('运行中');
+  expect(disclosureStates()).toEqual(['done', 'cancelled', 'running']);
+  await act(async () => request.resolve({ run_id: 'new-run', status: 'running' }));
+});
 
 it('R13a adopts a platform continuation in one existing active-run poll and stops that exact run', async () => {
   // Fake only intervals so the 3 s poll is deterministic and async UI waits keep their real timers.
@@ -857,7 +978,8 @@ it.each(['deferred', 'successor'])('R13a keeps finished blocks finished and a %s
   mocks.activeRunObservedAt += 1;
   await act(async () => { mocks.chatProps.onSetChatInput('Next draft'); });
   expect.soft(disclosureStates()).toEqual(['done', 'done', 'running']);
-  expectMemberRunState('运行中');
+  expectMemberRunState('排队中');
+  expect(screen.getAllByTestId('run-disclosure-block').at(-1)?.querySelector('.run-disclosure-title')?.textContent).toBe('排队中');
   expect(screen.getByTestId('message-send-status').textContent).toBe('排队中');
   history.push(activeRunEvent(12, 'run', 'queued', 'queued-run', { input_id: inputId }));
   await receiveRunEvents(history, terminalRead.promise);
@@ -866,6 +988,7 @@ it.each(['deferred', 'successor'])('R13a keeps finished blocks finished and a %s
   await act(async () => { mocks.chatProps.onSetChatInput('Preserve this draft'); });
   expect(disclosureStates()).toEqual(['done', 'done', 'running']);
   expect(screen.queryByTestId('message-send-status')).toBeNull();
+  expectMemberRunState('运行中');
   await act(async () => terminalRead.resolve(history));
 });
 
@@ -903,7 +1026,7 @@ it('R13a clears the old stop notice and state before the next run POST settles',
   expect(screen.queryByText(zh.agent.chat.stopRecorded)).toBeNull();
 });
 
-it('R13a keeps a queued resend after stop running when its deferred receipt has no run id', async () => {
+it('R13a keeps a queued resend after stop visible when its deferred receipt has no run id', async () => {
   mocks.realChat = true;
   mocks.language = 'zh';
   mocks.userRole = 'member';
@@ -932,7 +1055,8 @@ it('R13a keeps a queued resend after stop running when its deferred receipt has 
   await waitFor(() => expect(screen.getByTestId('message-send-status').textContent).toBe('排队中'));
   expect(mocks.chatProps.activeRunId).toBeNull();
   expect.soft(disclosureStates()).toEqual(['cancelled', 'running']);
-  expectMemberRunState('运行中');
+  expectMemberRunState('排队中');
+  expect(screen.getAllByTestId('run-disclosure-block').at(-1)?.querySelector('.run-disclosure-title')?.textContent).toBe('排队中');
   expect(screen.queryByText(zh.agent.chat.stopRecorded)).toBeNull();
 });
 
@@ -1349,7 +1473,7 @@ it('R14a sends a delayed upload with its own message and bubble, then leaves the
     expect.objectContaining({ name: 'sales.csv', path: 'workspace/uploads/sales.csv' }),
   ]);
   await waitFor(() => expect(screen.queryByTestId('session-composer-attachments')).toBeNull());
-  expect(screen.getByText('sales.csv')).toBeTruthy();
+  expect(document.querySelector('.chat-artifact-name')?.textContent).toBe('sales.csv');
   expect(mocks.chatProps.chatMessages.find((message: any) => message.role === 'user').inputAttachments)
     .toEqual([expect.objectContaining({ name: 'sales.csv' })]);
   fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'A different request' } });

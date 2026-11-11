@@ -18,6 +18,8 @@ export function useChatAttachments(
         name: string;
         text: string;
         path?: string;
+        size?: number;
+        mimeType?: string;
         imageUrl?: string;
         conversion?: {
             status?: string;
@@ -56,11 +58,13 @@ export function useChatAttachments(
         try {
             const results = await Promise.all(uploads.map(upload => upload.promise));
             if (cancelled) return;
-            const newAttached = results.map(data => ({
+            const newAttached = results.map((data, index) => ({
                 originalAttachment: data.original_attachment,
                 name: data.filename,
                 text: data.extracted_text,
                 path: data.workspace_path,
+                size: data.size,
+                mimeType: allowedFiles[index].type || undefined,
                 imageUrl: data.image_data_url || undefined,
                 conversion: data.conversion ? {
                     status: data.conversion.status,

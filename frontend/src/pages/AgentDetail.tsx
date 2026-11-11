@@ -439,7 +439,7 @@ function AgentDetailInner() {
         const run = submittedSessionRunState(payload);
         if (run) setActiveRunState(key, run);
         else if (key === buildSessionRuntimeKey(currentAgentIdRef.current || '', activeSessionIdRef.current || '')) {
-            if (submittedSessionInputIssue(payload) !== 'queued') {
+            if ('dispatch' in payload && payload.dispatch?.kind === 'mailbox') {
                 setTransportNotice(t('agent.chat.inputRecorded', 'Your input is recorded. Follow its application status in this work.'));
             }
         }
@@ -489,7 +489,8 @@ function AgentDetailInner() {
         setChatMessagesAfterQueuedForSession(sessionId, prev => {
             pendingUserMessagesRef.current[key] = [
                 ...(pendingUserMessagesRef.current[key] || []),
-                { message, anchorMessageCount: prev.length },
+                { message, anchorMessageCount: prev.length,
+                    anchorMessageId: prev.at(-1)?.id || prev.at(-1)?.messageId || prev.at(-1)?.transcriptEventId || undefined },
             ];
             return mergePendingForSession(key, prev);
         });
@@ -890,12 +891,10 @@ function AgentDetailInner() {
             if (publishedCanonicalSnapshot) {
                 console.error('Failed to load session messages:', err);
                 sessionEventFullHydrationKeysRef.current.add(runtimeKey);
-                setTransportNotice(
-                    t(
-                        'agent.chat.sessionBackfillIncomplete',
-                        'Latest activity is visible, but older session evidence is still recovering.',
-                    ),
-                );
+                const sequences = (transcriptEventsRef.current[runtimeKey] || []).map(event => Number(event.sequence)).filter(sequence => sequence > 0);
+                const hasEarlierHistory = sequences.length > 0 && Math.min(...sequences) > 1;
+                setTransportNotice(current => nextSessionBackfillNotice(current,
+                    t('agent.chat.sessionBackfillIncomplete', 'Earlier messages are still loading. Please wait.'), hasEarlierHistory));
                 return;
             }
             console.error('Failed to load session messages:', err);
@@ -1723,7 +1722,9 @@ function AgentDetailInner() {
             sessionEventStoresRef.current[key] ??= createSessionEventStore(acceptedAfterSequence);
             transcriptReplayStateRef.current[key] ??= createEmptyTranscriptReplayState();
             if (activeSessionIdRef.current !== sessionId) return;
-            setTransportNotice((current) => nextSessionBackfillNotice(current, t('agent.chat.sessionBackfillIncomplete', 'Latest activity is visible, but older session evidence is still recovering.'), Boolean(transcriptBackfillInFlightRef.current[key]) || sessionEventFullHydrationKeysRef.current.has(key)));
+            const sequences = (transcriptEventsRef.current[key] || []).map(event => Number(event.sequence)).filter(sequence => sequence > 0);
+            const hasEarlierHistory = sequences.length > 0 && Math.min(...sequences) > 1;
+            setTransportNotice((current) => nextSessionBackfillNotice(current, t('agent.chat.sessionBackfillIncomplete', 'Earlier messages are still loading. Please wait.'), hasEarlierHistory && (Boolean(transcriptBackfillInFlightRef.current[key]) || sessionEventFullHydrationKeysRef.current.has(key))));
         },
         onDisconnected: ({ key, phase, isActiveRuntime }) => {
             if (activeOperatorAuthorityScopeRef.current

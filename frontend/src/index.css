@@ -2294,6 +2294,12 @@
   opacity: 1;
 }
 
+@media (hover: none) {
+  .chat-artifact-actions {
+    opacity: 1;
+  }
+}
+
 .chat-artifact-action {
   display: inline-flex;
   align-items: center;
@@ -3174,6 +3180,36 @@
   .chat-artifact-meta {
     flex: 0 0 100%;
     padding-left: 22px;
+  }
+
+  .chat-artifact-row.is-upload {
+    flex-wrap: wrap;
+  }
+
+  .is-upload .chat-artifact-main {
+    flex: 1 1 100%;
+  }
+
+  .is-upload .chat-artifact-name {
+    display: flex;
+    align-items: flex-end;
+  }
+
+  .is-upload .chat-artifact-stem {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+
+  .is-upload .chat-artifact-extension {
+    flex-shrink: 0;
+  }
+
+  .is-upload .chat-artifact-actions {
+    margin-left: auto;
+    padding-bottom: 5px;
   }
 
   .run-disclosure-header {

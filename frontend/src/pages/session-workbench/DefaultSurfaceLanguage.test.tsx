@@ -227,7 +227,9 @@ describe('default screen language (B2)', () => {
         {chip}
       </div>,
     );
-    const text = visibleSurface(bubbleMarkup);
+    const bubble = document.createElement('div');
+    bubble.innerHTML = bubbleMarkup;
+    const text = bubble.textContent || '';
     expect(text).toContain('[E2E] 读这个文件');
     expect(text).toContain('sales.csv');
     // The file appears once: no duplicated `[📎 …]` marker line in the text.

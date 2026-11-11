@@ -1,6 +1,6 @@
 """Read-only reconstruction of compiler gaps in immutable model requests."""
 
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 
@@ -16,48 +16,44 @@ def source_resolution():
     if existing is not None and existing["open"]:
         yield existing
         return
-    state = {"open": True, "active": set(), "models": {}, "origins": {}, "recovered": {}, "contexts": {}}
+    state = {"open": True, "active": set(), "models": {}, "recovered": {}, "contexts": {}}
     token = _RESOLUTION.set(state)
     try:
         yield state
     finally:
         state["open"] = False
-        for cache in ("models", "origins", "recovered", "contexts"):
+        for cache in ("models", "recovered", "contexts"):
             state[cache].clear()
         # In-flight readers retain their exact cycle keys until they finish.
         _RESOLUTION.reset(token)
 
 
-async def _complete_origins(db, *, tenant_id, agent_id, session_id):
+async def _complete_origins(db, *, tenant_id, agent_id, session_id, kind):
     from app.models.invocation_span import InvocationSpan
     from app.services.session_model_inputs import _validated_context_message_origin
 
-    state = _RESOLUTION.get()
-    key = (tenant_id, agent_id, str(session_id))
-    if key not in state["origins"]:
-        rows = (
-            await db.scalars(
-                select(InvocationSpan)
-                .where(
-                    InvocationSpan.tenant_id == tenant_id,
-                    InvocationSpan.agent_id == agent_id,
-                    InvocationSpan.session_id == str(session_id),
-                    InvocationSpan.span_type == "kernel_context",
-                    InvocationSpan.status == "captured",
-                )
-                .order_by(InvocationSpan.started_at, InvocationSpan.id)
-                .execution_options(populate_existing=True)
-            )
-        ).all()
-        origins = []
-        for row in rows:
+    rows = await db.stream_scalars(
+        select(InvocationSpan)
+        .where(
+            InvocationSpan.tenant_id == tenant_id,
+            InvocationSpan.agent_id == agent_id,
+            InvocationSpan.session_id == str(session_id),
+            InvocationSpan.span_type == "kernel_context",
+            InvocationSpan.status == "captured",
+            InvocationSpan.name == kind,
+        )
+        .order_by(InvocationSpan.started_at, InvocationSpan.id)
+        .execution_options(populate_existing=True, yield_per=16)
+    )
+    try:
+        async for row in rows:
             proof = await _validated_context_message_origin(
                 db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, row=row
             )
             if proof is not None and proof["dependency_coverage"]["complete"] is True:
-                origins.append((f"session-kernel-context:{row.id}", proof))
-        state["origins"][key] = origins
-    return state["origins"][key]
+                yield f"session-kernel-context:{row.id}", proof
+    finally:
+        await rows.close()
 
 
 def _catalog_section(origin):
@@ -111,32 +107,35 @@ async def recover_context_dependencies(db, *, tenant_id, agent_id, origin, depen
     if catalog is None:
         return dependencies, False
     paths = {value.removeprefix("skill_file_unbound:") for value in missing}
-    for ref, witness in await _complete_origins(
-        db, tenant_id=tenant_id, agent_id=agent_id, session_id=origin["session_id"]
-    ):
-        if _catalog_section(witness) != catalog:
-            continue
-        leaves = _stored_dependencies(witness.get("dependencies"))
-        if leaves is None:
-            continue
-        # Only the publicly packaged defaults have an independent source here.
-        # Matching a private registry description does not recover its old file.
-        public = [
-            leaf
-            for leaf in leaves
-            if leaf["source_kind"] == "agent_platform_skill_file"
-            and len(leaf["source_id"].split("\n")) == 3
-            and leaf["source_id"].split("\n")[0] == str(agent_id)
-            and leaf["source_id"].split("\n")[1] in paths
-        ]
-        if {leaf["source_id"].split("\n")[1] for leaf in public} == paths:
-            _RESOLUTION.get()["contexts"][origin["source_hash"]] = {
-                "original_context_hash": origin["source_hash"],
-                "witness_ref": ref,
-                "witness_hash": witness["source_hash"],
-                "recovered_paths": sorted(paths),
-            }
-            return _unique_dependencies([*dependencies, *public]), True
+    async with aclosing(
+        _complete_origins(
+            db, tenant_id=tenant_id, agent_id=agent_id, session_id=origin["session_id"], kind="dynamic_prompt"
+        )
+    ) as origins:
+        async for ref, witness in origins:
+            if _catalog_section(witness) != catalog:
+                continue
+            leaves = _stored_dependencies(witness.get("dependencies"))
+            if leaves is None:
+                continue
+            # Only the publicly packaged defaults have an independent source here.
+            # Matching a private registry description does not recover its old file.
+            public = [
+                leaf
+                for leaf in leaves
+                if leaf["source_kind"] == "agent_platform_skill_file"
+                and len(leaf["source_id"].split("\n")) == 3
+                and leaf["source_id"].split("\n")[0] == str(agent_id)
+                and leaf["source_id"].split("\n")[1] in paths
+            ]
+            if {leaf["source_id"].split("\n")[1] for leaf in public} == paths:
+                _RESOLUTION.get()["contexts"][origin["source_hash"]] = {
+                    "original_context_hash": origin["source_hash"],
+                    "witness_ref": ref,
+                    "witness_hash": witness["source_hash"],
+                    "recovered_paths": sorted(paths),
+                }
+                return _unique_dependencies([*dependencies, *public]), True
     return dependencies, False
 
 
@@ -238,6 +237,24 @@ async def recover_model_dependencies(db, *, tenant_id, agent_id, result):
         return original, False
     state["active"].add(key)
     try:
+        from app.models.chat_transcript_event import ChatTranscriptEvent
+        from app.services.session_semantic_history import load_session_semantic_history
+
+        prepared_sequence = await db.scalar(
+            select(ChatTranscriptEvent.sequence)
+            .where(
+                ChatTranscriptEvent.tenant_id == tenant_id,
+                ChatTranscriptEvent.agent_id == agent_id,
+                ChatTranscriptEvent.session_id == result.session_id,
+                ChatTranscriptEvent.result_id == result.id,
+                ChatTranscriptEvent.item_kind == "result_commit",
+                ChatTranscriptEvent.lifecycle == "prepared",
+                ChatTranscriptEvent.content_hash == result.model_request_hash,
+            )
+            .order_by(ChatTranscriptEvent.sequence)
+            .limit(1)
+        )
+        history = None
         messages = []
         for index, (message, entry) in enumerate(zip(wire, entries)):
             if (
@@ -251,38 +268,27 @@ async def recover_model_dependencies(db, *, tenant_id, agent_id, result):
             if entry.get("status") == "bound" and isinstance(entry.get("source_ref"), str):
                 selected["source_ref"] = entry["source_ref"]
             elif index == 0 and message.get("role") == "system" and entry.get("code") == "source_origin_missing":
-                matches = []
-                for ref, proof in await _complete_origins(
-                    db, tenant_id=tenant_id, agent_id=agent_id, session_id=result.session_id
-                ):
-                    if proof["kind"] == "frozen_prompt" and (
-                        proof["message"] == message
-                        or match_cache_hint_presentation(proof["message"], message) is not None
-                    ):
-                        matches.append(ref)
-                if matches:
-                    selected["source_ref"] = matches[0]
-            elif message.get("role") == "assistant" and entry.get("code") == "source_content_mismatch":
-                from app.models.chat_transcript_event import ChatTranscriptEvent
-                from app.services.session_semantic_history import load_session_semantic_history
-
-                prepared_sequence = await db.scalar(
-                    select(ChatTranscriptEvent.sequence)
-                    .where(
-                        ChatTranscriptEvent.tenant_id == tenant_id,
-                        ChatTranscriptEvent.agent_id == agent_id,
-                        ChatTranscriptEvent.session_id == result.session_id,
-                        ChatTranscriptEvent.result_id == result.id,
-                        ChatTranscriptEvent.item_kind == "result_commit",
-                        ChatTranscriptEvent.lifecycle == "prepared",
-                        ChatTranscriptEvent.content_hash == result.model_request_hash,
+                async with aclosing(
+                    _complete_origins(
+                        db, tenant_id=tenant_id, agent_id=agent_id, session_id=result.session_id, kind="frozen_prompt"
                     )
-                    .order_by(ChatTranscriptEvent.sequence)
-                    .limit(1)
-                )
-                history = await load_session_semantic_history(
-                    db, tenant_id=tenant_id, agent_id=agent_id, session_id=result.session_id
-                )
+                ) as origins:
+                    async for ref, proof in origins:
+                        if (
+                            proof["message"] == message
+                            or match_cache_hint_presentation(proof["message"], message) is not None
+                        ):
+                            selected["source_ref"] = ref
+                            break
+            elif message.get("role") == "assistant" and entry.get("code") == "source_content_mismatch":
+                if history is None:
+                    history = await load_session_semantic_history(
+                        db,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        session_id=result.session_id,
+                        before_sequence=prepared_sequence,
+                    )
                 matches = []
                 for item in history.messages:
                     if item.role != "assistant" or prepared_sequence is None or item.sequence_end >= prepared_sequence:
@@ -304,6 +310,8 @@ async def recover_model_dependencies(db, *, tenant_id, agent_id, result):
             session_id=result.session_id,
             messages=messages,
             wire_messages=wire,
+            history=history,
+            before_sequence=prepared_sequence,
         )
         complete = reconstructed["dependency_coverage"]["complete"] is True
         dependencies = _unique_dependencies([*original, *reconstructed["dependencies"]])

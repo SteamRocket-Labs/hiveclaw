@@ -2302,6 +2302,15 @@ async def validate_runtime_workspace_receipt(db, tenant_id, principal, receipt, 
 
 
 async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, runtime_principal=None):
+    from app.services.historical_model_inputs import source_resolution
+
+    with source_resolution():
+        return await _validate_artifact_content_receipt(
+            db, tenant_id, user, artifact, runtime_principal=runtime_principal
+        )
+
+
+async def _validate_artifact_content_receipt(db, tenant_id, user, artifact, *, runtime_principal=None):
     """Recheck the captured version's sources without borrowing a later version's audience."""
     snapshot = artifact.snapshot_json or {}
     try:

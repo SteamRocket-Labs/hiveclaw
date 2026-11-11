@@ -234,6 +234,7 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
       : outcome === 'failed' || step.status === 'failed'
         ? command ? runtimeStatusLabel('failed', t)
           : t('agent.chat.disclosure.failure.generic', 'The operation did not complete; the outcome is unconfirmed.')
+      : step.status === 'interrupted' ? t('agent.chat.disclosure.stepInterrupted', 'Interrupted; no result was returned.')
       : step.status !== 'done' ? runtimeStatusLabel(step.status, t)
           : command ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
             : t('agent.chat.disclosure.resultReturned', 'Result returned');
@@ -392,6 +393,7 @@ function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
   if (steps.some((step) => step.status === 'failed')) return 'failed';
   if (steps.some((step) => step.status === 'blocked')) return 'blocked';
   if (steps.some((step) => step.status === 'cancelled')) return 'cancelled';
+  if (steps.some((step) => step.status === 'interrupted')) return 'interrupted';
   return 'done';
 }
 
@@ -404,7 +406,12 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
       <span className={step.status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
         <StepIcon kind={step.kind} running={step.status === 'running'} />
       </span>
-      <span className="run-tool-history-title">{localizedToolTitle(step, t)}</span>
+      <span className="run-tool-history-title">
+        {localizedToolTitle(step, t)}
+        {step.status === 'interrupted' && (
+          <span className="run-tool-history-status">{t('agent.chat.disclosure.interruptedBadge', 'Interrupted')}</span>
+        )}
+      </span>
       {step.summary && <span className="run-tool-history-summary">{step.summary}</span>}
     </>
   );
@@ -431,13 +438,21 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
   const named = steps.filter((step) => localizedToolTitle(step, t) !== genericTitle);
   const status = toolGroupStatus(steps);
   const currentStep = [...steps].reverse().find((step) => step.status === 'running') || steps[steps.length - 1];
+  // A call cut off by the member's stop never completed: when every call in
+  // the group is interrupted the collapsed row must say so instead of reading
+  // as a completed action.
+  const allInterrupted = steps.length > 0 && steps.every((step) => step.status === 'interrupted');
   const label = named.length === 0
     ? t('agent.chat.disclosure.otherAction', 'Other action')
     : status === 'running'
       ? t('agent.chat.disclosure.toolRunning', 'Using {{tool}}', { tool: toolStepLabel(currentStep, t) })
-      : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', {
-        tools: Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · '),
-      });
+      : allInterrupted
+        ? t('agent.chat.disclosure.toolInterrupted', 'Interrupted: {{tools}}', {
+          tools: Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · '),
+        })
+        : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', {
+          tools: Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · '),
+        });
   const historyLabel = t('agent.chat.disclosure.toolHistory', 'Tool call history');
   return (
     <details data-testid="run-disclosure-tool-group" data-status={status} className="run-tool-group">

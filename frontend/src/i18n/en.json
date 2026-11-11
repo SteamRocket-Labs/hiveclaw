@@ -2651,6 +2651,9 @@
         "resultFile": "{{action}}: {{file}}. {{status}}",
         "resultAction": "{{action}}. {{status}}",
         "toolCompleted": "Used tools: {{tools}}",
+        "toolInterrupted": "Interrupted: {{tools}}",
+        "interruptedBadge": "Interrupted",
+        "stepInterrupted": "Interrupted; no result was returned.",
         "toolHistory": "Tool call history",
         "system": {
           "resultsReceived": "Received {{count}} task results",

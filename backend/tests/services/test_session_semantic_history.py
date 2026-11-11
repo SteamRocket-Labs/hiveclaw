@@ -928,6 +928,218 @@ async def test_dangling_prior_tool_call_never_replays_without_its_result(
     assert receipt["held_items"][0]["missing_provider_tool_use_ids"] == [dangling_tool_use_id]
 
 
+async def _member_stopped_mid_tool_session(owner_sessionmaker, monkeypatch, *, prompts, followup):
+    """A run the member stopped while two issued tool calls never settled.
+
+    Drives the real ingress, model-round sealing, tool-invocation lifecycle,
+    member-stop control input, and canonical terminal settlement, then loads
+    the successor turn's provider conversation through the live entry.
+    """
+
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.user import User
+    from app.services import web_chat_runtime as runtime
+    from app.services.session_live_input import submit_live_cancel_input
+
+    tenant_id, user_id, agent_id, session_id = await _seed(owner_sessionmaker)
+    search_one, search_two = f"search-{uuid.uuid4().hex}", f"search-{uuid.uuid4().hex}"
+    plan_text = "开始检索，先并行跑几组关键词"
+    _input1, run1, turn1 = await _submit_turn(
+        owner_sessionmaker,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        content=prompts,
+    )
+    await _bind_round_one(
+        owner_sessionmaker,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run1,
+        turn_id=turn1,
+    )
+    async with owner_sessionmaker() as db:
+        request_id = await _prepare_round(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run1,
+            turn_id=turn1,
+            round_index=1,
+        )
+        for tool_use_id, query in ((search_one, "saas 新闻"), (search_two, "ai 新闻")):
+            await _settle_tool_invocation(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                run_id=run1,
+                provider_request_id=request_id,
+                provider_tool_use_id=tool_use_id,
+                tool_name="web_search",
+                arguments={"query": query},
+                result_content=None,
+            )
+        await _seal_round(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run1,
+            turn_id=turn1,
+            round_index=1,
+            provider_request_id=request_id,
+            content=plan_text,
+            tool_calls=[
+                {
+                    "id": search_one,
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"saas 新闻"}'},
+                },
+                {
+                    "id": search_two,
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"ai 新闻"}'},
+                },
+            ],
+        )
+        await db.commit()
+
+    async def signal(**_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "signal_web_chat_cancel", signal)
+    async with owner_sessionmaker() as db:
+        receipt = await submit_live_cancel_input(
+            db=db,
+            agent=await db.get(Agent, agent_id),
+            user=await db.get(User, user_id),
+            session=await db.get(ChatSession, session_id),
+            run_id=run1,
+            source="web",
+        )
+        await db.commit()
+    assert receipt["status"] == "applying", receipt
+    await _set_run_status(owner_sessionmaker, run_id=run1, status="killed")
+
+    _input2, run2, _turn2 = await _submit_turn(
+        owner_sessionmaker,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        content=followup,
+    )
+    _runtime_task, history_messages, conversation = await _load_history_via_live_entry(
+        owner_sessionmaker, monkeypatch, run_id=run2
+    )
+    return {
+        "run1": run1,
+        "search_ids": [search_one, search_two],
+        "plan_text": plan_text,
+        "prompt": prompts,
+        "followup": followup,
+        "history_messages": history_messages,
+        "conversation": conversation,
+        "receipt": _runtime_task.metadata_json["session_semantic_history"],
+    }
+
+
+async def test_member_stop_replays_interrupted_tool_calls_to_next_turn(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """Run13 defect: the next turn's model input must show the two search calls
+    the stop cut off as interrupted with no result, not erase the round."""
+
+    from app.services import session_semantic_history as history
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompts="搜索新闻并写一篇综述",
+        followup="刚才做了什么？",
+    )
+    conversation = stopped["conversation"]
+    search_one, search_two = stopped["search_ids"]
+
+    tool_call_entries = [entry for entry in conversation if isinstance(entry.get("tool_calls"), list)]
+    assert len(tool_call_entries) == 1, f"stopped round's assistant calls missing: {conversation}"
+    assert [call["id"] for call in tool_call_entries[0]["tool_calls"]] == [search_one, search_two]
+    assert tool_call_entries[0]["content"] == stopped["plan_text"], (
+        f"stopped round's plan text missing: {conversation}"
+    )
+
+    tool_result_entries = [entry for entry in conversation if entry.get("role") == "tool"]
+    assert sorted(entry["tool_call_id"] for entry in tool_result_entries) == sorted(
+        [search_one, search_two]
+    ), f"interrupted calls must replay with one result each: {conversation}"
+    assert all(
+        entry["content"] == history._INTERRUPTED_TOOL_RESULT for entry in tool_result_entries
+    ), f"interrupted results must carry the fixed no-result sentence: {tool_result_entries}"
+    for entry in tool_result_entries:
+        assert conversation.index(tool_call_entries[0]) < conversation.index(entry), (
+            f"each interrupted result must follow its assistant call: {conversation}"
+        )
+
+    contents = [entry.get("content") for entry in conversation]
+    assert contents.index(stopped["prompt"]) < contents.index(stopped["plan_text"])
+    assert contents.index(stopped["plan_text"]) < contents.index(history._USER_STOP_MARKER)
+    assert stopped["receipt"]["held_items"] == [], stopped["receipt"]
+
+
+async def test_interrupted_stop_replay_pairs_for_provider_adapters(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """The assembled stop history converts validly for the adapters in use:
+    every tool call id has exactly one result, after its call, in both the
+    OpenAI and Anthropic wire formats."""
+
+    from app.kernel.engine import _dicts_to_llm_messages
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompts="检索行业动态",
+        followup="继续",
+    )
+    api_messages = _dicts_to_llm_messages(stopped["conversation"])
+    search_one, search_two = stopped["search_ids"]
+
+    openai_entries = [message.to_openai_format() for message in api_messages]
+    issued = [
+        call["id"]
+        for entry in openai_entries
+        for call in (entry.get("tool_calls") or [])
+    ]
+    answered = [entry.get("tool_call_id") for entry in openai_entries if entry.get("role") == "tool"]
+    assert issued == [search_one, search_two]
+    assert sorted(answered) == sorted([search_one, search_two])
+
+    anthropic_entries = [
+        converted for message in api_messages if (converted := message.to_anthropic_format()) is not None
+    ]
+    block_order: list[tuple[str, str]] = []
+    for entry in anthropic_entries:
+        blocks = entry.get("content") if isinstance(entry.get("content"), list) else []
+        for block in blocks:
+            if block.get("type") == "tool_use":
+                block_order.append(("use", block["id"]))
+            elif block.get("type") == "tool_result":
+                block_order.append(("result", block["tool_use_id"]))
+    assert [use_id for kind, use_id in block_order if kind == "use"] == [search_one, search_two]
+    assert sorted(use_id for kind, use_id in block_order if kind == "result") == sorted(
+        [search_one, search_two]
+    )
+    for use_id in (search_one, search_two):
+        use_at = block_order.index(("use", use_id))
+        result_at = block_order.index(("result", use_id))
+        assert use_at < result_at, f"tool_result for {use_id} must follow its tool_use: {block_order}"
+
+
 async def test_current_run_semantics_stay_out_of_history_and_resume_owns_them(
     owner_sessionmaker,
     monkeypatch,

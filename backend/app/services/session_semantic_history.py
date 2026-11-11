@@ -36,6 +36,9 @@ from app.services.session_user_checkpoint import (
 _BRANCH_PREFIX_SOURCE = "conversation_branch_prefix"
 _USER_STOP_MARKER = "[Request interrupted by user; its plan and todos are stopped. Resume only if asked.]"
 _USER_STOP_NOTICE = f"Previous run: {_USER_STOP_MARKER}\nAnswer the member's latest message."
+# A member stop cut this call off before any result existed; the next turn's
+# model sees the issued call paired with this fixed notice, never a fake result.
+_INTERRUPTED_TOOL_RESULT = "[Interrupted by the user's stop: this tool call was issued but returned no result.]"
 
 
 def is_member_authored_run(task: Any) -> bool:
@@ -377,6 +380,22 @@ def _user_messages(
     return messages
 
 
+def _member_stop_run_ids(views: list[_EventView]) -> set[uuid.UUID]:
+    """Runs the member stopped: a cancelled run bound to an accepted stop control."""
+
+    return {
+        run_id
+        for run_id in {
+            _source_scope_run_id(view.source)
+            for view in views
+            if view.source.item_kind == "run"
+            and view.source.lifecycle == "cancelled"
+            and _event_payload(view.source).get("control_id")
+        }
+        if run_id is not None
+    }
+
+
 def _cancelled_run_messages(
     views: list[_EventView], *, current_run_id: uuid.UUID | None,
 ) -> tuple[list[SessionSemanticMessage], list[tuple[int, int]], dict[str, int]]:
@@ -425,6 +444,7 @@ async def _committed_round_messages(
     session_id: uuid.UUID,
     current_run_id: uuid.UUID | None,
     views: list[_EventView],
+    member_stopped_runs: set[uuid.UUID] | None = None,
 ) -> tuple[list[SessionSemanticMessage], list[dict[str, Any]], int]:
     committed_views: dict[uuid.UUID, _EventView] = {}
     tool_result_views: dict[uuid.UUID, _EventView] = {}
@@ -546,6 +566,7 @@ async def _committed_round_messages(
 
     messages: list[SessionSemanticMessage] = []
     held: list[dict[str, Any]] = []
+    stopped_runs = member_stopped_runs or set()
     for result in logical_results:
         committed_view = committed_views[result.id]
         seal = result.seal_json if isinstance(result.seal_json, dict) else None
@@ -567,6 +588,7 @@ async def _committed_round_messages(
         tool_calls = copy.deepcopy(raw_tool_calls) if isinstance(raw_tool_calls, list) else []
         invocation_map = invocations_by_request.get(result.provider_request_id, {})
         completed_pairs: list[tuple[dict[str, Any], SessionToolInvocation, _EventView]] = []
+        interrupted_calls: list[dict[str, Any]] = []
         missing_tool_use_ids: list[str] = []
         for tool_call in tool_calls:
             tool_use_id = str(tool_call.get("id") or "") if isinstance(tool_call, dict) else ""
@@ -602,7 +624,17 @@ async def _committed_round_messages(
                 or result_view.source.id != invocation.result_event_id
                 or not settled
             ):
-                missing_tool_use_ids.append(tool_use_id or "<missing-provider-tool-use-id>")
+                if (
+                    tool_use_id
+                    and result.run_id in stopped_runs
+                    and (invocation is None or invocation.effect_state == "prepared_not_started")
+                ):
+                    # The member stopped this run while the call was issued but
+                    # never started its effect: replay keeps the round the model
+                    # acted on and pairs the call with a fixed no-result notice.
+                    interrupted_calls.append(tool_call)
+                else:
+                    missing_tool_use_ids.append(tool_use_id or "<missing-provider-tool-use-id>")
                 continue
             completed_pairs.append((tool_call, invocation, result_view))
         if missing_tool_use_ids:
@@ -676,6 +708,20 @@ async def _committed_round_messages(
                     sequence_end=end_sequence,
                     group_id=f"round:{result.id}",
                     source_event_ids=tuple(source_event_ids),
+                    tool_call_id=str(tool_call["id"]),
+                )
+            )
+        for tool_call in interrupted_calls:
+            messages.append(
+                SessionSemanticMessage(
+                    id=f"session-tool-interrupted:{result.id}:{tool_call['id']}",
+                    role="tool",
+                    content=_INTERRUPTED_TOOL_RESULT,
+                    created_at=committed_view.created_at,
+                    sequence_start=committed_view.sequence,
+                    sequence_end=end_sequence,
+                    group_id=f"round:{result.id}",
+                    source_event_ids=(committed_view.target_event_id,),
                     tool_call_id=str(tool_call["id"]),
                 )
             )
@@ -825,6 +871,7 @@ async def load_session_semantic_history(
             session_id=session_id,
             current_run_id=current_run_id,
             views=views,
+            member_stopped_runs=_member_stop_run_ids(views),
         )
         from app.services.remote_a2a_chat import history_messages
 

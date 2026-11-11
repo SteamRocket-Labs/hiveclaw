@@ -61,7 +61,9 @@ async def test_history_window_rechecks_revocation_across_native_protocol_groups(
 
         async def observe(*args, **kwargs):
             sources = args[2] if len(args) > 2 else kwargs["dependencies"]
-            if kwargs.get("runtime_request") is not None and not kwargs.get("active_workspace_receipts"):
+            # R12a: a source first reached under a receipt is the same reader's
+            # completed source, so count every validation, including that one.
+            if kwargs.get("runtime_request") is not None:
                 reads.extend(row for row in sources if row == command)
             return await original(*args, **kwargs)
 

@@ -139,7 +139,10 @@ export function SessionRunControls({
               <span>{uploadProgress}%</span>
             </>
           ) : (
-            <span>{t('agent.chat.composer.processing', 'Processing...')}</span>
+            <>
+              <progress className="session-composer-progress" aria-hidden="true" />
+              <span>{t('agent.chat.composer.processing', 'Processing...')}</span>
+            </>
           )}
           <button type="button" onClick={onCancelUpload} aria-label={t('common.cancel', 'Cancel')}>
             <IconX size={13} aria-hidden="true" />

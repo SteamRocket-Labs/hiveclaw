@@ -44,6 +44,7 @@ export function uploadFileWithProgress(
       }
     };
     xhr.onerror = () => reject(new Error('Upload network error'));
+    xhr.onabort = () => reject(new Error('Upload cancelled'));
     xhr.ontimeout = () => reject(new Error('Upload timeout'));
     xhr.send(formData);
   });

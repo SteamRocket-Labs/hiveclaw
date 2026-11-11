@@ -52,6 +52,32 @@ function renderMenuComposer(overrides: Partial<React.ComponentProps<typeof Sessi
 
 afterEach(() => cleanup());
 
+it.each([
+  { value: 'Analyze sales', attachments: [] },
+  { value: '', attachments: [{ name: 'ready.csv' }] },
+])('blocks button and keyboard submission during an upload with %j', (draft) => {
+  const onSubmit = vi.fn();
+  renderMenuComposer({ ...draft, uploading: true, uploadProgress: 101, onSubmit });
+  expect((screen.getByTestId('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  fireEvent.keyDown(screen.getByTestId('session-composer-input'), { key: 'Enter' });
+  expect(onSubmit).not.toHaveBeenCalled();
+  expect((screen.getByTestId('session-composer-input') as HTMLTextAreaElement).disabled).toBe(false);
+  expect(screen.getByRole('status').textContent).toContain('Processing...');
+  expect(screen.getByRole('status').textContent).not.toContain('0%');
+  expect(screen.getByRole('status').querySelector('progress')?.hasAttribute('value')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'Open composer actions' }));
+  expect((screen.getByRole('menuitem', { name: /Plan Mode/ }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole('menuitem', { name: /Goal mode/ }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it('blocks Enter during an upload', () => {
+  const onSubmit = vi.fn();
+  renderMenuComposer({ value: 'Analyze sales', uploading: true, uploadProgress: 101, onSubmit });
+  fireEvent.keyDown(screen.getByTestId('session-composer-input'), { key: 'Enter' });
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
 it('keeps the permission badge hidden in default mode while the "+" menu opens the same selection', () => {
   const onPermissionModeChange = vi.fn();
   renderMenuComposer({ onPermissionModeChange });

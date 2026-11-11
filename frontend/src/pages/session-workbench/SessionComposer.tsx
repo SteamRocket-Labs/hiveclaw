@@ -109,7 +109,7 @@ export function SessionComposer({
   const { t } = useTranslation();
   const [composerMenuOpen, setComposerMenuOpen] = React.useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = React.useState(false);
-  const canSend = !disabled && !sendDisabled && (Boolean(value.trim()) || attachments.length > 0);
+  const canSend = !disabled && !sendDisabled && !uploading && (Boolean(value.trim()) || attachments.length > 0);
   const actions = [
     {
       key: 'upload' as const,

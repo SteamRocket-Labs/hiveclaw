@@ -51,7 +51,7 @@ it('summarizes command execution while keeping raw output internal', () => {
     details: { command: 'wc -l report.md', output: '106', exit_code: 0 },
   }] }} />);
   fireEvent.click(screen.getByRole('button', { name: /运行命令/ }));
-  expect(container.textContent).toContain('运行命令。完成');
+  expect(container.textContent).toContain('运行命令。成功');
   expect(container.textContent).not.toContain('已返回结果');
   expect(container.textContent).not.toMatch(/106|wc -l|exit/);
   expect(container.querySelector('.session-tui-exec-output')).toBeNull();

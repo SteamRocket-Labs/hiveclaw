@@ -2692,6 +2692,8 @@ async def _execute_tool_with_hooks(
             trace_metadata=trace_metadata_sink,
             machine_status=machine_status,
         )
+        if isinstance(result, ToolContentEnvelope) and isinstance(result.metadata.get("code_execution_result"), dict):
+            side_effect_sink["tool_execution_evidence"]["code_execution_result"] = dict(result.metadata["code_execution_result"])
     decision_payload = trace_metadata_sink.get("tool_decision")
     decision_outcome = str(decision_payload.get("outcome") or "") if isinstance(decision_payload, dict) else ""
     execution_frame = trace_metadata_sink.get("tool_execution_frame")

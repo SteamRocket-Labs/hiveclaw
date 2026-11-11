@@ -1169,6 +1169,8 @@ async def complete_tool_invocation(
                 provider_tool_use_id=invocation.provider_tool_use_id,
             )
         )
+    command_result = (execution_evidence or {}).get("code_execution_result")
+    command_payload = {"code_execution_result": dict(command_result)} if isinstance(command_result, Mapping) else {}
     drafts.extend(
         [
             SessionEventDraft(
@@ -1186,6 +1188,7 @@ async def complete_tool_invocation(
                     "decision_id": decision_id,
                     "execution_fence_ref": invocation.execution_fence_ref,
                     "receipt_ref": receipt_ref,
+                    **command_payload,
                 },
                 result_id=result.id,
                 invocation_id=invocation.id,
@@ -1207,6 +1210,7 @@ async def complete_tool_invocation(
                     "retryable": retryable,
                     "content": content,
                     "content_hash": content_hash,
+                    **command_payload,
                     **({"metadata": knowledge_metadata} if knowledge_metadata else {}),
                     # Bounded provider projection for session replay into model
                     # context; absent means the durable content is the projection.

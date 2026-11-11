@@ -113,7 +113,7 @@ it.each(['zh', 'en'])('shows a completed command status without stdout or clippi
   ] }} />);
   fireEvent.click(container.querySelector('.run-step-toggle')!);
   // R11g: structured exit_code: 0 confirms completion without showing command stdout.
-  expect(container.querySelector('.run-step-body p')?.textContent).toBe(language === 'zh' ? '运行命令。完成' : 'Run command. Done');
+  expect(container.querySelector('.run-step-body p')?.textContent).toBe(language === 'zh' ? '运行命令。成功' : 'Run command. success');
   // R11g: member step details never show command stdout.
   expect(container.textContent).not.toMatch(/Output: member stdout|line-1|📤 Output:|56 lines|省略 56 行/);
   // R11g: hiding command stdout must preserve the original result bytes.

@@ -676,6 +676,7 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
         args: message.toolArgs,
         result: message.toolResult,
         rawResult: message.toolRawResult,
+        executionResult: message.sessionItem?.payload.code_execution_result,
         meta: message.toolMeta,
       },
       visibility: message.toolMeta?.kind === 'runtime_step' && message.toolMeta.visibility !== 'redacted'

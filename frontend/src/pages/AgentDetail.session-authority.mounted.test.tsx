@@ -1644,3 +1644,38 @@ it('keeps the read-only conversation the member opened after leaving and returni
   await waitFor(() => expect(mocks.listSessions.mock.calls.length).toBeGreaterThan(1));
   expect(mocks.chatProps.activeSession.id).toBe('delegated');
 });
+
+it.each(['failed', 'completed'])('R15b updates a read-only colleague live to %s with its actual duration', async status => {
+  mocks.sessionId = 'owned-artifact-work';
+  mocks.hash = '#chat';
+  mocks.language = 'zh';
+  mocks.realChat = true;
+  const child = { id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
+    title: '周报助手', session_kind: 'delegation_run', read_only: true, runtime_task_id: 'child-run' };
+  mocks.listSessions.mockResolvedValue([child]);
+  const started = activeRunEvent(1, 'run', 'running', 'child-run');
+  const progress = activeRunEvent(2, 'assistant_commentary', 'completed', 'child-run', { content: '正在核对工作记录。' });
+  mocks.getSessionTranscript.mockResolvedValue([started, progress]);
+  render(<AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe(child.id));
+  expect(mocks.transport.readableSession).toBe(true);
+  expect(mocks.transport.writableSession).toBe(false);
+  expect(await screen.findByText('正在核对工作记录。')).toBeTruthy();
+  expect(screen.getAllByTestId('run-disclosure-block')[0].getAttribute('data-status')).toBe('running');
+  const terminal = activeRunEvent(3, 'run', status, 'child-run', {
+    task_type: 'delegation',
+    started_at: started.occurred_at, completed_at: new Date(Date.parse(started.occurred_at) + 591_000).toISOString(),
+    ...(status === 'failed' ? { reason_code: 'tool_budget', message: '这次用完了用量预算，没有完成。' } : {}),
+  });
+  terminal.occurred_at = terminal.payload.completed_at as string;
+  mocks.getSessionTranscript.mockResolvedValue([started, progress, terminal]);
+  await act(async () => { receiveLiveMessage(terminal); });
+  await waitFor(() => expect(screen.getAllByTestId('run-disclosure-block')[0].getAttribute('data-status'))
+    .toBe(status === 'failed' ? 'failed' : 'done'));
+  expect(screen.getAllByTestId('run-disclosure-block')[0].querySelector('.run-disclosure-duration')?.textContent).toBe('9m 51s');
+  if (status === 'failed') {
+    expect(screen.getAllByText('这次用完了用量预算，没有完成。')).toHaveLength(1);
+    expect(screen.getAllByTestId('run-disclosure-block')[0].textContent).not.toContain('完成');
+  }
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+});

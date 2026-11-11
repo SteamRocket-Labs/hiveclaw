@@ -429,6 +429,10 @@ def _copy_optional_runtime_metadata(state: _WebChatRunState) -> None:
     for key in ("parent_trace_id", "tool_policy"):
         if state.metadata.get(key):
             context.metadata[key] = state.metadata[key]
+    if isinstance(state.metadata.get("result_manifest"), dict):
+        context.metadata["result_manifest"] = state.metadata["result_manifest"]
+    else:
+        context.metadata.pop("result_manifest", None)
     if state.metadata.get("side_session"):
         context.metadata["side_session"] = True
         context.metadata["side_session_kind"] = state.metadata.get("side_session_kind") or "btw"

@@ -25,7 +25,7 @@ it.each(['send_message_to_agent', 'save_memory', 'unknown_tool'])(
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('.run-detail-pre')).toBeNull();
     expect(container.textContent).not.toMatch(/toolName|rawResult|PRIVATE_RAW_RESULT|send_message_to_agent|unknown_tool/);
-    expect(container.textContent).toMatch(/处理请求|交给其他数字员工|保存记忆/);
+    expect(container.textContent).toMatch(/处理请求|联系同事|保存记忆/);
     expect(container.querySelector('.run-tool-history-item')?.querySelector('p')?.textContent).toContain('运行中');
     expect(details.result).toContain('PRIVATE_RAW_RESULT');
   },

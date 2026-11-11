@@ -31,6 +31,13 @@ const TOOL_TITLE_KEY: Record<string, string> = {
 };
 
 const MEMORY_AND_CREATION: Record<string, [string, string]> = {
+  delegate_to_agent: ['delegateWork', 'Delegate work'],
+  check_async_task: ['checkColleague', 'Check colleague progress'],
+  list_async_tasks: ['checkColleague', 'Check colleague progress'],
+  task_output: ['readTaskResult', 'Read task result'],
+  read_runtime_result: ['readTaskResult', 'Read task result'],
+  send_message_to_agent: ['contactColleague', 'Contact a colleague'],
+  send_agent_session_message: ['followUpColleague', 'Send follow-up instructions'],
   read_context_resource: ['readContext', 'Read work context'],
   search_personal_kb: ['searchPersonal', 'Search personal documents'],
   read_personal_kb: ['readPersonal', 'Read personal documents'],

@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -289,11 +290,24 @@ async def settle_and_enqueue_runtime_task_terminal(
         return terminal_fence
 
     from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES
+    from app.services.runtime_terminal_boundary_outbox import enqueue_required_terminal_boundary_for_task
 
-    if task.task_type in EXECUTABLE_CHAT_TASK_TYPES:
-        if task.tenant_id is None or task.parent_agent_id is None or not str(task.parent_session_id or "").strip():
+    delegation_session = None
+    if task.task_type == "delegation" and task.tenant_id and task.child_agent_id and task.child_session_id:
+        from app.models.chat_session import ChatSession
+
+        delegation_session = await db.scalar(select(ChatSession.id).where(
+            ChatSession.id == uuid.UUID(str(task.child_session_id)),
+            ChatSession.tenant_id == task.tenant_id, ChatSession.agent_id == task.child_agent_id,
+        ))
+    # Legacy/orphan runs still stop even when no child conversation exists
+    # to receive a display event. Their terminal evidence stays on the Run.
+    if task.task_type in EXECUTABLE_CHAT_TASK_TYPES or delegation_session is not None:
+        agent_id = task.child_agent_id if task.task_type == "delegation" else task.parent_agent_id
+        session_id_raw = task.child_session_id if task.task_type == "delegation" else task.parent_session_id
+        if task.tenant_id is None or agent_id is None or not str(session_id_raw or "").strip():
             raise ValueError("web_terminal_runtime_authority_required")
-        session_id = uuid.UUID(str(task.parent_session_id))
+        session_id = uuid.UUID(str(session_id_raw))
         # Transcript lifecycle vocabulary: the session event contract has no
         # ``run.killed``; the product's canonical phase mapping (see
         # ``_phase_for_terminal_status``) presents a killed run as cancelled,
@@ -306,7 +320,7 @@ async def settle_and_enqueue_runtime_task_terminal(
             select(ChatTranscriptEvent.id)
             .where(
                 ChatTranscriptEvent.tenant_id == task.tenant_id,
-                ChatTranscriptEvent.agent_id == task.parent_agent_id,
+                ChatTranscriptEvent.agent_id == agent_id,
                 ChatTranscriptEvent.session_id == session_id,
                 ChatTranscriptEvent.run_id == task.id,
                 ChatTranscriptEvent.event_type == event_type,
@@ -317,11 +331,20 @@ async def settle_and_enqueue_runtime_task_terminal(
             from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
             metadata = dict(task.metadata_json or {})
+            from app.services.runtime_display_status import runtime_failure_observation
+
+            failure = runtime_failure_observation(task.status, metadata, result_summary=task.result_summary)
+            delegation_payload = {
+                "task_type": "delegation",
+                "started_at": task.started_at.isoformat() if task.started_at else None,
+                "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+                **({"message": failure["reason"], "failure_code": failure["reason_code"]} if failure else {}),
+            } if task.task_type == "delegation" else {}
             turn_id = str(metadata.get("turn_id") or f"turn-{task.id.hex}")
             await append_session_events(
                 db,
                 tenant_id=task.tenant_id,
-                agent_id=task.parent_agent_id,
+                agent_id=agent_id,
                 session_id=session_id,
                 drafts=[
                     SessionEventDraft(
@@ -337,13 +360,13 @@ async def settle_and_enqueue_runtime_task_terminal(
                         },
                         actor={"type": "runtime"},
                         payload={"reason_code": str(root_reason_code or terminal_source),
+                            **delegation_payload,
                             **({"runtime_status": "skipped", "local_abandoned": bool(
                                 (metadata.get("remote_a2a") or {}).get("abandoned"))} if task.status == "skipped" else {})},
+                        occurred_at=task.completed_at or datetime.now(timezone.utc),
                     )
                 ],
             )
-    from app.services.runtime_terminal_boundary_outbox import enqueue_required_terminal_boundary_for_task
-
     await enqueue_required_terminal_boundary_for_task(db, task)
     return terminal_fence
 

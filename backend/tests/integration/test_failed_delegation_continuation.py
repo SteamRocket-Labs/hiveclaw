@@ -526,7 +526,7 @@ async def test_identical_running_child_reads_do_not_end_the_turn(
     assert len(client.requests) == threshold + 2
 
 
-async def test_listed_stale_failure_waits_for_running_child_before_counting(
+async def test_listed_running_child_ends_turn_before_stale_failure_counting(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
 ):
     import app.runtime.invoker as invoker
@@ -579,12 +579,14 @@ async def test_listed_stale_failure_waits_for_running_child_before_counting(
         print("R13B4_STALE_LIST", "running_reads", min(len(client.requests), running_reads),
             "terminal_reads", max(len(client.requests) - running_reads, 0), "calls", len(client.requests),
             "rounds", len(models), "status", returned.status, "summary", returned.result_summary)
-        assert len(client.requests) == len(models) == running_reads + threshold
-        assert returned.status == "failed"
-        assert returned.metadata_json["terminal_reason"] == "loop_guard"
-        assert returned.metadata_json["error_code"] == "identical_terminal_task_read"
-        assert returned.result_summary == "loop_guard"
-    await _assert_member_final(app_user_sessionmaker, seed, STOP_REASON, failed=True)
+        assert len(client.requests) == len(models) == threshold
+        assert returned.status == "completed"
+        assert returned.metadata_json["terminal_reason"] == "turn_stop"
+        assert returned.result_summary == "同事正在处理，结果回来后会在这里继续。"
+        assert (await db.get(RuntimeTask, seed["running_id"])).status == "running"
+        assert (await db.get(RuntimeTask, seed["child_id"])).status == "failed"
+    await _assert_member_final(app_user_sessionmaker, seed,
+        "同事正在处理，结果回来后会在这里继续。", provider_final=False)
 
 
 async def test_continuation_cannot_reset_the_shared_root_provider_call_pool(

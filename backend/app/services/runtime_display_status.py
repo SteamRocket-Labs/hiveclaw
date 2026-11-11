@@ -6,6 +6,7 @@ RUNTIME_LIMIT_MESSAGES = {
     "tool_round_limit": "这次已达到运行轮次上限，没有完成。可以重试继续。",
 }
 TERMINAL_TASK_READ_PREFIX = "任务结果未变化，已停止本次处理："
+DELEGATED_TASK_RUNNING_MESSAGE = "同事正在处理，结果回来后会在这里继续。"
 
 _FAILURE_MESSAGES = {
     **RUNTIME_LIMIT_MESSAGES,

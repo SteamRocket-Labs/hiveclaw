@@ -612,7 +612,7 @@ describe('default screen language (B2)', () => {
       fireEvent.click(row);
       expect(row.getAttribute('aria-expanded')).toBe('true');
     }
-    fireEvent.click(screen.getByRole('button', { name: /交给其他数字员工/ }));
+    fireEvent.click(screen.getByRole('button', { name: /联系同事/ }));
     expect(document.body.textContent).not.toMatch(/read_context_resource|call_mcp_tool|send_message_to_agent|MCP RESULT|INDEX CONTENT|weather|toolName|rawResult/);
     expect(document.body.textContent).not.toMatch(/private_content|tool_name|"ref"/);
     expect(screen.getAllByText('对方数字员工暂不可用')).toHaveLength(1);

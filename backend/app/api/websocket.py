@@ -327,7 +327,10 @@ async def websocket_chat(
             )
             if active_session is None:
                 raise SessionSubscriptionError("session_not_found")
-            if active_session.source_channel == "agent" or active_session.session_kind == "agent_chat":
+            delegated_session = (active_session.source_channel == "agent"
+                and active_session.session_kind == "delegation_run"
+                and getattr(active_session, "runtime_source", None) == "delegation")
+            if (active_session.source_channel == "agent" and not delegated_session) or active_session.session_kind == "agent_chat":
                 raise SessionSubscriptionError("session_forbidden")
             try:
                 if active_session.audience_kind == "group":
@@ -344,14 +347,14 @@ async def websocket_chat(
                         session=active_session,
                         access_level=_access_level,
                         action="chat_session:subscribe",
-                        require_writable=True,
+                        require_writable=not delegated_session,
                     )
             except HTTPException as error:
                 if error.status_code not in {403, 409}:
                     raise
                 raise SessionSubscriptionError("session_forbidden") from error
             # Subscribing as an administrator must not rebind the owner's delivery target.
-            if authority_source == "session_owner":
+            if authority_source == "session_owner" and not delegated_session:
                 await apply_web_session_contract(db, session=active_session, agent_id=agent_id, user=user)
             await db.commit()
 

@@ -266,6 +266,9 @@ async def _latest_run_event(
             ChatTranscriptEvent.agent_id == agent_id,
             ChatTranscriptEvent.session_id == session_uuid,
             ChatTranscriptEvent.run_id == task.id,
+            # Run lifecycle projections do not replace the latest execution
+            # evidence used to validate a direct invocation's committed reply.
+            (ChatTranscriptEvent.item_kind.is_(None) | (ChatTranscriptEvent.item_kind != "run")),
         )
         .order_by(ChatTranscriptEvent.sequence.desc())
         .limit(1)

@@ -63,7 +63,7 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
   const query = useQuery({
     queryKey,
     queryFn: async ({ signal }) => {
-      let result = await queryClient.fetchQuery({ ...bindingQuery, staleTime: 0 });
+      let result = await queryClient.fetchQuery(bindingQuery);
       signal.throwIfAborted();
       if (!stillCurrent(scope, result)) throw new ApiError(409, 'scope changed', { state: 'scope_changed' });
       const attempted = automaticOpens.get(queryClient) || new Set<string>();

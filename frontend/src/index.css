@@ -3158,15 +3158,6 @@
 }
 
 @media (max-width: 600px) {
-  .chat-artifact-actions {
-    display: none;
-  }
-
-  .chat-artifact-row:hover .chat-artifact-actions,
-  .chat-artifact-row:focus-within .chat-artifact-actions {
-    display: inline-flex;
-  }
-
   .chat-artifact-main {
     flex-wrap: wrap;
     row-gap: 2px;

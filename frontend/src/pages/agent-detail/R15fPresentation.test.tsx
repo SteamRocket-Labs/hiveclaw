@@ -23,19 +23,29 @@ function rule(selector: string) {
   return phoneRules.match(new RegExp(`${escaped}\\s*\\{([^}]+)\\}`))?.[1] || '';
 }
 
-it('R15f.1 keeps the full filename, extension and metadata without hidden action width at 390px', () => {
+it('R15f.1 keeps the full filename and metadata with tappable file actions at 390px', () => {
   const name = 'sales-report-sales-run11-2026-11-20.md';
+  const open = vi.fn();
+  const download = vi.fn();
   const { container } = render(<ArtifactCards agentId="bot" artifacts={[
-    { name, path: `workspace/${name}`, previewKind: 'markdown', size: 8192 },
-  ]} />);
+    { name, path: `workspace/${name}`, previewKind: 'markdown', size: 8192,
+      originalUpload: { id: 'upload', ownerUserId: 'member' } },
+  ]} viewerUserId="member" onOpenArtifact={open} onDownloadArtifact={download} />);
   expect(container.querySelector('.chat-artifact-name')?.textContent).toBe(name);
   expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('markdown · 8 KB');
-  expect(rule('.chat-artifact-actions')).toMatch(/display:\s*none/);
-  expect(phoneRules).toMatch(/\.chat-artifact-row:focus-within \.chat-artifact-actions\s*\{[^}]*display:\s*inline-flex/);
+  expect(phoneRules).not.toMatch(/\.chat-artifact-actions\s*\{[^}]*(?:display:\s*none|visibility:\s*hidden|pointer-events:\s*none)/);
   expect(rule('.chat-artifact-main')).toMatch(/flex-wrap:\s*wrap/);
   expect(rule('.chat-artifact-name')).toMatch(/white-space:\s*normal/);
   expect(rule('.chat-artifact-name')).toMatch(/overflow-wrap:\s*anywhere/);
   expect(rule('.chat-artifact-meta')).toMatch(/flex:\s*0 0 100%/);
+  const actions = container.querySelector('.chat-artifact-actions')!;
+  fireEvent.click(actions.querySelector('[data-testid="chat-artifact-open"]')!);
+  fireEvent.click(actions.querySelectorAll('button')[1]);
+  const menu = actions.querySelector('[data-testid="chat-artifact-original-menu"]')!;
+  fireEvent.click(menu);
+  expect(open).toHaveBeenCalledTimes(1);
+  expect(download).toHaveBeenCalledTimes(1);
+  expect(menu.getAttribute('aria-expanded')).toBe('true');
 });
 
 it('R15f.2 wraps between complete duration, aggregate and step-count items at 390px', () => {

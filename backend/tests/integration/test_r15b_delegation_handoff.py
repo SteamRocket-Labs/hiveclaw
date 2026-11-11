@@ -15,6 +15,10 @@ from tests.integration import test_failed_delegation_continuation as failed
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 WAITING = "同事正在处理，结果回来后会在这里继续。"
 RETRY = "同事这次没有完成：这次用完了用量预算，没有完成。需要重试的话，请告诉我。"
+RETRY_GUIDANCE = (
+    "Explain the failure reason to the member in their language and offer to retry. "
+    "Do not delegate again unless the member asks."
+)
 
 
 async def test_running_colleague_reads_end_parent_without_waiting_for_child(
@@ -50,16 +54,19 @@ async def test_running_colleague_reads_end_parent_without_waiting_for_child(
     assert sum(event.get("payload", {}).get("content") == WAITING for event in events) == 1
 
 
-async def test_failed_colleague_cannot_be_redelegated_without_a_new_member_turn(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+@pytest.mark.parametrize("reader", ["check_async_task", "task_output", "read_runtime_result", "list_async_tasks"])
+async def test_failed_colleague_read_instructs_parent_to_offer_member_requested_retry(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, reader,
 ):
     import app.runtime.invoker as invoker
 
     seed, _ = await failed._failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    args = {"check_async_task": {"task_id": str(seed["child_id"])},
+        "task_output": {"runtime_task_id": str(seed["child_id"])},
+        "read_runtime_result": {"result_ref": seed["result_ref"]}, "list_async_tasks": {}}[reader]
     client = lifecycle.ScriptedLLMClient([
-        lifecycle._tool("read_runtime_result", {"result_ref": seed["result_ref"]}),
-        lifecycle._tool("send_message_to_agent", {"agent_name": "Weekly colleague", "message": "Retry now.", "msg_type": "consult"}),
-        {"content": "An unauthorized retry was started."},
+        lifecycle._tool(reader, args),
+        {"content": RETRY},
     ])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
     await failed._execute(owner_sessionmaker, seed["return_id"], "r15b-failure-return")
@@ -67,21 +74,25 @@ async def test_failed_colleague_cannot_be_redelegated_without_a_new_member_turn(
         children = list(await db.scalars(select(RuntimeTask).where(
             RuntimeTask.tenant_id == seed["tenant_id"], RuntimeTask.parent_agent_id == seed["agent_id"],
             RuntimeTask.parent_session_id == str(seed["session_id"]), RuntimeTask.task_type == "delegation")))
-        assert len(children) == 1, "A failed colleague must not be retried by the parent"
+        assert len(children) == 1
         returned = await db.get(RuntimeTask, seed["return_id"])
         assert returned.status == "completed" and returned.result_summary == RETRY
     assert len(client.requests) == 2
-    await failed._assert_member_final(app_user_sessionmaker, seed, RETRY, provider_final=False)
+    observed = [message["content"] for message in client.requests[1]["messages"]
+        if message.get("role") == "tool" and RETRY_GUIDANCE in str(message.get("content"))]
+    assert len(observed) == 1
+    assert "这次用完了用量预算，没有完成。" in observed[0]
+    assert "PRIVATE_PARTIAL_BODY" not in observed[0]
+    await failed._assert_member_final(app_user_sessionmaker, seed, RETRY)
 
 
-async def test_failure_notification_prevents_retry_even_before_the_result_is_read(
+async def test_failure_notification_instructs_member_requested_retry_before_reading_result(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
 ):
     import app.runtime.invoker as invoker
 
     seed, _ = await failed._failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
     client = lifecycle.ScriptedLLMClient([
-        lifecycle._tool("delegate_to_agent", {"agent_name": "Weekly colleague", "message": "Retry immediately."}),
         lifecycle._tool("read_runtime_result", {"result_ref": seed["result_ref"]}),
         {"content": RETRY},
     ])
@@ -93,7 +104,8 @@ async def test_failure_notification_prevents_retry_even_before_the_result_is_rea
             RuntimeTask.parent_session_id == str(seed["session_id"]), RuntimeTask.task_type == "delegation")))
         assert len(children) == 1
         assert (await db.get(RuntimeTask, seed["return_id"])).result_summary == RETRY
-    assert "Retry requires a new request from the member." in json.dumps(client.requests[1]["messages"], ensure_ascii=False)
+    assert RETRY_GUIDANCE in json.dumps(client.requests[0]["messages"], ensure_ascii=False)
+    assert len(client.requests) == 2
     await failed._assert_member_final(app_user_sessionmaker, seed, RETRY)
 
 
@@ -159,6 +171,9 @@ async def test_normal_parent_end_result_delivery_resumes_once_and_stop_never_res
     ])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: resumed)
     await lifecycle._execute(continuations[0].id, owner_sessionmaker, worker="r15b-use-returned-result")
+    if status == "failed":
+        assert RETRY_GUIDANCE in json.dumps(resumed.requests[0]["messages"], ensure_ascii=False)
+        assert RETRY_GUIDANCE in json.dumps(resumed.requests[1]["messages"], ensure_ascii=False)
     expected = lifecycle.RESULT if status == "completed" else "这次用完了用量预算，没有完成。"
     assert expected in json.dumps(resumed.requests[1]["messages"], ensure_ascii=False)
     async with owner_sessionmaker() as db:

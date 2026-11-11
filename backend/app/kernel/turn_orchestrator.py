@@ -1744,8 +1744,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         loop_guard = LoopGuard(runtime_task_id=(
             session_ctx.metadata.get("runtime_task_id") or session_ctx.metadata.get("task_id")
         ) if session_ctx else None)
-        if session_ctx and isinstance(session_ctx.metadata.get("result_manifest"), dict):
-            loop_guard.observe_result_manifest(session_ctx.metadata["result_manifest"])
         # Runtime reminders (T-G1): one scheduler per invocation; texts are
         # transient (per-round stream clone only — never api_messages).
         reminder_scheduler = ReminderScheduler(build_default_reminder_specs())
@@ -2045,31 +2043,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         _loop_guard_summary_pending = False
         _loop_guard_terminal_decision: LoopGuardDecision | None = None
 
-        async def _execute_turn_tool(**kwargs):
-            nonlocal _loop_guard_terminal_decision
-            tool_name = kwargs["tool_name"]
-            decision = loop_guard.before_tool_effect(tool_name)
-            if decision is not None:
-                if decision.reason != "failed_delegation_result_unread":
-                    _loop_guard_terminal_decision = decision
-                else:
-                    reminder_scheduler.enqueue(
-                        "Retry requires a new request from the member. Read the failed colleague's result once "
-                        "through read_runtime_result, explain its reason in the member's language, and offer to retry.",
-                        source="loop_guard", ttl="next_collect", priority=95, unbound=(),
-                    )
-                kwargs["side_effect_sink"]["tool_execution_evidence"] = _tool_execution_evidence(
-                    tool_name=tool_name, tool_args=kwargs["tool_args"], trace_metadata=None,
-                    machine_status="denied",
-                )
-                return (decision.message if decision.reason == "failed_delegation_result_unread"
-                    else "请先等待成员提出重试请求。"), kwargs["tool_args"], False
-            result = await _execute_tool_with_hooks(**kwargs)
-            if is_read_only_tool(tool_name):
-                # Observe before releasing the next unsafe sibling in the same
-                # model batch; the ordinary result path still owns read counts.
-                loop_guard.observe_delegation_failure(tool_name, str(result[0]))
-            return result
         try:
             client = self._deps.create_client(active_model)
         except Exception as exc:
@@ -3208,7 +3181,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     # exact durable tool_result instead of
                                     # re-executing or reporting a CAS error.
                                     return _settled_content, t_args, True, None
-                                _r_str, _r_args, _r_exec = await _execute_turn_tool(
+                                _r_str, _r_args, _r_exec = await _execute_tool_with_hooks(
                                     execute_tool=self._deps.execute_tool,
                                     request=request,
                                     runtime_config=runtime_config,
@@ -3458,7 +3431,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     pre_effect_fence_ref=f"session-permission-batch-abort:{tc['id']}",
                                 )
                             else:
-                                result, args, executed = await _execute_turn_tool(
+                                result, args, executed = await _execute_tool_with_hooks(
                                     execute_tool=self._deps.execute_tool,
                                     request=request,
                                     runtime_config=runtime_config,
@@ -3602,7 +3575,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     return await _pause_for_user_clarification()
 
                 if _loop_guard_terminal_decision is not None:
-                    if _loop_guard_terminal_decision.reason in {"identical_running_task_read", "failed_delegation_retry"}:
+                    if _loop_guard_terminal_decision.reason == "identical_running_task_read":
                         message = _loop_guard_terminal_decision.message
                         await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, message, api_messages)

@@ -21,6 +21,12 @@ _TERMINAL_READ_MESSAGES = frozenset(TERMINAL_TASK_READ_PREFIX + reason for reaso
 _FAILURE_MESSAGES["identical_terminal_task_read"] = "任务结果未变化，已停止本次处理。"
 
 
+FAILED_DELEGATION_MODEL_INSTRUCTION = (
+    "Explain the failure reason to the member in their language and offer to retry. "
+    "Do not delegate again unless the member asks."
+)
+
+
 def runtime_failure_observation(status: str, metadata: dict, *, result_summary: str | None = None) -> dict | None:
     """Expose terminal execution facts without releasing a failed model's partial body."""
     if not isinstance(status, str):
@@ -39,7 +45,8 @@ def runtime_failure_observation(status: str, metadata: dict, *, result_summary: 
     if reason == "identical_terminal_task_read" and isinstance(result_summary, str) and result_summary in _TERMINAL_READ_MESSAGES:
         message = result_summary  # Only fixed runtime copy, never a failed model's partial body.
     return {"ok": True, "status": status, "reason_code": reason, "reason": message,
-        "retryable": reason == "tool_round_limit"}
+        "retryable": reason == "tool_round_limit",
+        **({"model_instruction": FAILED_DELEGATION_MODEL_INSTRUCTION} if status == "failed" else {})}
 
 
 def is_runtime_failure_observation(payload: object) -> bool:

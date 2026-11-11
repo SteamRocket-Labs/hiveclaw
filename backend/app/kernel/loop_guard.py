@@ -6,8 +6,7 @@ available only when a tool explicitly reports retry exhaustion, the operation
 is side-effect-free, and the same progress token proves that state did not
 advance. Native task-status reads may also stop at the existing identical-call
 threshold when the same task's fixed terminal reason is unchanged across readers,
-or when a delegated colleague is still running. Failed colleagues require a new
-member turn before another delegation can start.
+or when a delegated colleague is still running.
 """
 
 from __future__ import annotations
@@ -117,7 +116,6 @@ class LoopGuard:
         self._tool_arg_counts: dict[tuple[str, str], int] = {}
         self._failure_counts: dict[tuple[str, str, str], int] = {}
         self._terminal_read_counts: dict[tuple[str, str], int] = {}
-        self._failed_delegation_reason: str | None = None
         self._assistant_text_counts: dict[str, int] = {}
         self._warned: set[str] = set()
 
@@ -243,7 +241,6 @@ class LoopGuard:
             and str(item.get("task_id") or "").replace("-", "") != self._runtime_task_id
             for item in observations
         )
-        self.observe_delegation_failure(tool_name, result)
         for observation in observations:
             if not isinstance(observation, dict):
                 continue
@@ -273,41 +270,6 @@ class LoopGuard:
                     args_digest=_digest(_canonical_args(args)),
                     extra_trace={"identical_terminal_read_count": check.count})
         return None
-
-    def observe_delegation_failure(self, tool_name: str, result: str) -> None:
-        """Remember only a native, fixed failure reason for this invocation."""
-        if tool_name not in {"check_async_task", "task_output", "read_runtime_result", "list_async_tasks"}:
-            return
-        try:
-            body = json.loads(result)
-        except (TypeError, ValueError):
-            return
-        if tool_name == "task_output" and isinstance(body, dict):
-            body = body.get("task")
-        for item in body if isinstance(body, list) else [body]:
-            if (is_runtime_failure_observation(item) and item["status"] == "failed"
-                and (tool_name in {"check_async_task", "read_runtime_result"} or item.get("task_type") == "delegation")):
-                self._failed_delegation_reason = item["reason"]
-
-    def observe_result_manifest(self, manifest: dict[str, Any]) -> None:
-        if any(isinstance(item, dict) and item.get("task_type") in {"delegation", "a2a_delegation"}
-            and item.get("terminal_status") == "failed" for item in manifest.get("items", [])):
-            # Terminal status is already trusted; the body still needs the
-            # ordinary result reader before we can state its precise reason.
-            self._failed_delegation_reason = ""
-
-    def before_tool_effect(self, tool_name: str) -> LoopGuardDecision | None:
-        if self._failed_delegation_reason is None or tool_name not in {
-            "delegate_to_agent", "send_message_to_agent", "send_agent_session_message",
-        }:
-            return None
-        if not self._failed_delegation_reason:
-            return LoopGuardDecision(reason="failed_delegation_result_unread", severity="abort",
-                message="同事这次没有完成，需先查看失败原因。重试需要你提出请求。",
-                trace_event={"event": "loop_guard_triggered", "reason": "failed_delegation_result_unread", "tool": tool_name})
-        return LoopGuardDecision(reason="failed_delegation_retry", severity="abort",
-            message=f"同事这次没有完成：{self._failed_delegation_reason}需要重试的话，请告诉我。",
-            trace_event={"event": "loop_guard_triggered", "reason": "failed_delegation_retry", "tool": tool_name})
 
     def observe_assistant_text(self, content: str | None) -> LoopGuardDecision | None:
         normalized = " ".join((content or "").strip().lower().split())

@@ -492,7 +492,7 @@ async def test_delegated_child_terminal_read_failure_reaches_parent(
     await _assert_member_final(app_user_sessionmaker, seed, parent_answer)
 
 
-async def test_identical_running_child_reads_do_not_end_the_turn(
+async def test_identical_unauthorized_child_reads_do_not_end_the_turn(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
 ):
     import app.runtime.invoker as invoker
@@ -503,6 +503,7 @@ async def test_identical_running_child_reads_do_not_end_the_turn(
         parent_rounds=threshold + 5)
     async with owner_sessionmaker() as db:
         failed = await db.get(RuntimeTask, seed["child_id"])
+        # No delegation chain is supplied: reads of this synthetic task are denied.
         child = RuntimeTask(id=uuid4(), task_type="delegation", status="running",
             tenant_id=failed.tenant_id, parent_agent_id=failed.parent_agent_id,
             child_agent_id=failed.child_agent_id, child_agent_name=failed.child_agent_name,
@@ -518,7 +519,25 @@ async def test_identical_running_child_reads_do_not_end_the_turn(
         for index in range(threshold + 1)
     ] + [{"content": "同事仍在处理。"}])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    from functools import wraps
+    native_execute = invoker.execute_tool
+    observed = []
+
+    @wraps(native_execute)
+    async def capture_tool(*args, **kwargs):
+        result = await native_execute(*args, **kwargs)
+        observed.append(str(result))
+        return result
+
+    monkeypatch.setattr(invoker, "execute_tool", capture_tool)
     await _execute(owner_sessionmaker, seed["return_id"], "r13b-running-reader")
+    errors = [json.loads(result.split("<tool_error>", 1)[1].split("</tool_error>", 1)[0])
+        for result in observed]
+    assert len(errors) == threshold + 1
+    assert all(error["error_class"] == "auth_or_permission"
+        and error["diagnostic_message"] == "RuntimeTask access denied: root_authority_missing"
+        for error in errors)
+    print("R15B_R2_DENIED_READS", [error["diagnostic_message"] for error in errors])
     async with owner_sessionmaker() as db:
         returned = await db.get(RuntimeTask, seed["return_id"])
         assert returned.status == "completed"

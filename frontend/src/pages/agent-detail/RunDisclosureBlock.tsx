@@ -179,19 +179,10 @@ function commandOutcome(details: unknown): 'done' | 'failed' | 'unknown' | null 
     }
     return value && typeof value === 'object' && !Array.isArray(value) ? [value as Record<string, unknown>] : [];
   });
-  const texts = values.filter((value): value is string => typeof value === 'string');
+  if (records.some(value => value.timed_out === true || value.ok === false || value.error || value.error_class)) return 'unknown';
   const exitCodes = records.flatMap(value => typeof value.exit_code === 'number' && Number.isFinite(value.exit_code)
     ? [value.exit_code] : []);
-  if (records.some(value => value.timed_out === true)) return 'unknown';
-  if (exitCodes.some(code => code !== 0)
-    || records.some(value => value.ok === false || value.error || value.error_class)
-    // Native text results append a nonzero exit footer; zero needs a
-    // structured result rather than a successful-looking stdout line.
-    || texts.some(text => [...text.matchAll(/^Exit code: (-?\d+)\s*$/gm)].some(match => Number(match[1]) !== 0))
-    // Run 8 captured this shell failure in output even though the tool event
-    // itself was marked done. Do not mistake that event status for success.
-    || texts.some(text => /^(?:bash|sh|zsh): (?:line \d+: )?[^\r\n]+: command not found\s*$/m.test(text)
-      || /^❌ Execution error:/m.test(text))) return 'failed';
+  if (exitCodes.some(code => code !== 0)) return 'failed';
   return exitCodes.includes(0) ? 'done' : null;
 }
 
@@ -223,8 +214,9 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
     }
     const path = step.kind === 'file' ? details?.args?.path ?? details?.args?.file_path : null;
     const file = typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).pop() : undefined;
-    const status = outcome === 'unknown' ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
-      : outcome === 'done' ? t('sessionWorkbench.threadItem.value.success', 'Success')
+    const status = command && step.status === 'failed' ? runtimeStatusLabel('failed', t)
+      : outcome === 'unknown' ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
+      : outcome === 'done' ? t('agent.chat.disclosure.resultSucceeded', 'Succeeded')
       : step.status === 'failed' || outcome === 'failed'
         ? command ? runtimeStatusLabel('failed', t)
           : t('agent.chat.disclosure.failure.generic', 'The operation did not complete; the outcome is unconfirmed.')

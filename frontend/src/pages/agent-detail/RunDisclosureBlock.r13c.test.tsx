@@ -14,6 +14,16 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
 }) }));
 afterEach(cleanup);
 
+it.each(['denied', 'exception', 'cancelled'])('keeps failed command calls failed (%s)', reason => {
+  const { container } = render(<RunDisclosureBlock timeline={{ id: 'failed-run', status: 'failed', steps: [
+    { id: reason, kind: 'command', title: 'Run command', status: 'failed', visibility: 'visible',
+      details: { toolName: 'run_command', rawResult: `PRIVATE_${reason}`, executionResult: { exit_code: null, timed_out: false } } },
+  ] }} />);
+  fireEvent.click(container.querySelector('.run-step-toggle')!);
+  expect(container.querySelector('p')?.textContent).toBe('运行命令。失败');
+  expect(container.textContent).not.toContain('PRIVATE_');
+});
+
 it.each([
   [{ exit_code: 0, timed_out: false }, '75 report.md', '成功'],
   [{ exit_code: 7, timed_out: false }, 'PRIVATE_STDERR', '失败'],

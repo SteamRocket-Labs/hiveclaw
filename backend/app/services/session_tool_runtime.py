@@ -1170,7 +1170,9 @@ async def complete_tool_invocation(
             )
         )
     command_result = (execution_evidence or {}).get("code_execution_result")
-    command_payload = {"code_execution_result": dict(command_result)} if isinstance(command_result, Mapping) else {}
+    command_payload = {"code_execution_result": {
+        "exit_code": command_result.get("exit_code"), "timed_out": command_result.get("timed_out"),
+    }} if isinstance(command_result, Mapping) else {}
     drafts.extend(
         [
             SessionEventDraft(

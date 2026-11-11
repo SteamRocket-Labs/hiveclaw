@@ -1870,6 +1870,8 @@ def _tool_execution_evidence(
         if isinstance(trace.get("native_directory_read_evidence"), dict) else None,
         "native_read_denial_evidence": dict(trace["native_read_denial_evidence"])
         if isinstance(trace.get("native_read_denial_evidence"), dict) else None,
+        "code_execution_result": dict(trace["code_execution_result"])
+        if isinstance(trace.get("code_execution_result"), dict) else None,
         "agent_directory_sources": list(trace["agent_directory_sources"])
         if isinstance(trace.get("agent_directory_sources"), list) else None,
     }
@@ -2692,8 +2694,6 @@ async def _execute_tool_with_hooks(
             trace_metadata=trace_metadata_sink,
             machine_status=machine_status,
         )
-        if isinstance(result, ToolContentEnvelope) and isinstance(result.metadata.get("code_execution_result"), dict):
-            side_effect_sink["tool_execution_evidence"]["code_execution_result"] = dict(result.metadata["code_execution_result"])
     decision_payload = trace_metadata_sink.get("tool_decision")
     decision_outcome = str(decision_payload.get("outcome") or "") if isinstance(decision_payload, dict) else ""
     execution_frame = trace_metadata_sink.get("tool_execution_frame")

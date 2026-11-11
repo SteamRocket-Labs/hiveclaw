@@ -10,9 +10,10 @@ from typing import TYPE_CHECKING, Any, Callable
 from app.core.execution_context import A2A_TOOL_AUTHORITY_FRAME_SCHEMA, A2AToolAuthorityFrame, ExecutionPrincipal
 from app.runtime.ccplus_contracts import permission_profile_snapshot, permission_profile_snapshot_hash
 from app.services.execution_receipts import canonical_payload_hash
+from app.tools.result_envelope import ToolContentEnvelope
 
 if TYPE_CHECKING:
-    from app.tools.service import ApprovalDecisionSet, EventCallback, ToolContentEnvelope
+    from app.tools.service import ApprovalDecisionSet, EventCallback
 
 
 @dataclass(frozen=True, slots=True)
@@ -1156,7 +1157,12 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
         _record_lifecycle(state, "unknown" if unknown else "failed" if failed else "completed")
         await _log_execution_result(state, result_text, error_payload)
         rewritten = await _run_result_hooks(state, result_text, failed or unknown)
-        return rewritten.value if rewritten is not None else result
+        result = rewritten.value if rewritten is not None else result
+        if request.trace_metadata_sink is not None and isinstance(result, ToolContentEnvelope):
+            command_result = result.metadata.get("code_execution_result")
+            if isinstance(command_result, dict):
+                request.trace_metadata_sink["code_execution_result"] = dict(command_result)
+        return result
     except ports.asyncio.TimeoutError:
         return await _handle_execution_failure(state, timeout_seconds=timeout_seconds)
     except Exception as exc:

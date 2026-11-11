@@ -215,12 +215,22 @@ async def test_pre_click_queue_follows_stop_only_when_consumed_by_successor(monk
     ]
 
 
-@pytest.mark.parametrize("later_outcome,sequence,active", [
-    (None, 0, True), ("failed", 12, True), ("completed", 5, True), ("completed", 12, False),
+@pytest.mark.parametrize("later_outcome,sequence,active,task_type,metadata,reason", [
+    (None, 0, True, "web_chat_turn", {}, None),
+    ("failed", 12, True, "web_chat_turn", {}, None),
+    ("completed", 5, True, "web_chat_turn", {}, None),
+    ("completed", 12, False, "web_chat_turn", {}, None),
+    ("completed", 12, True, "goal_continuation", {}, None),
+    ("completed", 12, True, "web_chat_turn", {"task_notification": True}, None),
+    ("completed", 12, True, "web_chat_turn", {"runtime_mailbox_role": "system"}, None),
+    ("completed", 12, True, "web_chat_turn", {"trigger_origin": {"trigger_id": "scheduled"}}, None),
+    ("completed", 12, True, "team_member", {}, None),
+    ("completed", 12, True, "web_chat_turn", {}, "company_approval_required"),
 ])
 async def test_stop_tail_eligibility_expires_only_after_later_normal_completion(
-    monkeypatch, later_outcome, sequence, active,
+    monkeypatch, later_outcome, sequence, active, task_type, metadata, reason,
 ):
+    from app.models.runtime_task import RuntimeTask
     from app.services import session_semantic_history as history
 
     now, stopped_run, control_id = datetime.now(timezone.utc), uuid.uuid4(), str(uuid.uuid4())
@@ -233,8 +243,9 @@ async def test_stop_tail_eligibility_expires_only_after_later_normal_completion(
         views.append(history._EventView(target=row, source=row))
 
     event(10, "cancelled", stopped_run, control_id=control_id)
+    later_run = uuid.uuid4()
     if later_outcome:
-        event(sequence, later_outcome, uuid.uuid4())
+        event(sequence, later_outcome, later_run, reason_code=reason)
 
     async def load_views(*_args, **_kwargs):
         return views, {}
@@ -243,8 +254,10 @@ async def test_stop_tail_eligibility_expires_only_after_later_normal_completion(
         return [], [], 0
 
     class DB:
-        async def execute(self, _statement):
-            return SimpleNamespace(all=lambda: [])
+        async def execute(self, statement):
+            rows = [SimpleNamespace(id=later_run, task_type=task_type, metadata_json=metadata,
+                machine_credential_id=None)] if statement.column_descriptions[0]["entity"] is RuntimeTask else []
+            return SimpleNamespace(all=lambda: rows)
 
     monkeypatch.setattr(history, "_load_event_views", load_views)
     monkeypatch.setattr(history, "_committed_round_messages", rounds)

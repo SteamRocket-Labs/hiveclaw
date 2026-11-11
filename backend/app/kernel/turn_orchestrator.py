@@ -222,7 +222,8 @@ def _bind_system_prompt_suffix_sections(
         state = ensure_runtime_assembly_state(session_ctx)
         stop = next((message for message in reversed(request.messages)
             if message.get("stop_notice_active")
-            and str(message.get("source_ref", "")).startswith("session-run-cancelled:")), None)
+            and str(message.get("source_ref", "")).startswith("session-run-cancelled:")), None
+        ) if getattr(request, "member_authored_turn", False) else None
         if stop is not None:
             from app.services.session_semantic_history import _USER_STOP_NOTICE
 
@@ -1629,7 +1630,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 mcp_server_refs=list(session_ctx.metadata.get("mcp_server_refs") or []),
                 hook_added_context=hook_added_context,
                 available_agent_types=list(session_ctx.metadata.get("available_agent_types") or []),
-                messages=request.messages,
+                messages=[{key: value for key, value in message.items() if key != "stop_notice_active"}
+                    for message in request.messages],
                 frozen_context_dependency_manifest=_frozen_context_manifest,
             )
             prompt_manifest["dynamic_context_section_ledger"] = {
@@ -2149,14 +2151,19 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     )
                     if dynamic_notice is not None:
                         from app.services.session_model_round import split_context_message
+                        from app.services.session_semantic_history import _USER_STOP_NOTICE
 
                         for part in split_context_message(dynamic_notice, _dynamic_message_sections()):
                             sections = ()
-                            for content in (resolved_memory_context, resolved_permissions_context, part.content):
+                            for content in (resolved_memory_context, resolved_permissions_context):
                                 if content and content in part.content:
                                     sections = ensure_runtime_assembly_state(session_ctx).context_sections_for(
                                         agent_id=request.agent_id, content=content)
                                     break
+                            if not sections and part.content == _USER_STOP_NOTICE:
+                                sections = tuple(section for section in ensure_runtime_assembly_state(
+                                    session_ctx).context_sections_for(agent_id=request.agent_id, content=part.content)
+                                    if section.get("name") == "member_stop")
                             stream_messages.extend(split_context_message(part, sections) if sections else [part])
                     if self._deps.apply_vision_transform:
                         stream_messages = self._deps.apply_vision_transform(

@@ -164,6 +164,7 @@ class AgentInvocationRequest:
     memory_messages: list[dict] | None = None
     session_context: SessionContext | None = None
     system_prompt_suffix: str = ""
+    member_authored_turn: bool = False
     # CC subagent semantics (replace, not layer): when set, this text IS the
     # entire system prompt — no host soul/memory/skills/tasks are assembled
     # around it. Subagent spawn sets this; channel/delegation paths keep using

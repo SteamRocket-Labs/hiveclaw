@@ -402,6 +402,7 @@ def _build_kernel_request(
         memory_messages=request.memory_messages,
         session_context=request.session_context,
         system_prompt_suffix=request.system_prompt_suffix,
+        member_authored_turn=request.member_authored_turn,
         standalone_system_prompt=request.standalone_system_prompt,
         skill_catalog=skill_catalog,
         tool_executor=request.tool_executor,

@@ -157,6 +157,7 @@ class InvocationRequest:
     memory_messages: list[dict] | None = None
     session_context: SessionContext | None = None
     system_prompt_suffix: str = ""
+    member_authored_turn: bool = False
     # CC subagent semantics: when set, this text IS the entire system prompt —
     # the platform must not assemble the host agent's identity (soul, memory,
     # skills, tasks) around it. Read by the prompt/memory dependency callbacks.

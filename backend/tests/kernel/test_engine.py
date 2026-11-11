@@ -2016,6 +2016,35 @@ def test_runtime_attachment_sections_use_context_restore_budget(tmp_path: Path, 
 
 
 @pytest.mark.asyncio
+async def test_compaction_trace_omits_stop_flag_without_mutating_live_history():
+    from unittest.mock import AsyncMock
+
+    from app.kernel.engine import _compress_messages_with_trace
+    from app.runtime.compaction_trace import CompactedMessages
+
+    messages = [
+        {"role": "user", "content": "Stopped request", "stop_notice_active": True},
+        {"role": "user", "content": "Next question"},
+    ]
+
+    async def compress(history, **_kwargs):
+        assert history is messages and history[0]["stop_notice_active"] is True
+        return CompactedMessages([{"role": "system", "content": "Summary"}, *history], source_messages=history)
+
+    attempt = SimpleNamespace(record_completed=AsyncMock())
+    trace = SimpleNamespace(enabled_flag=True, start_attempt=AsyncMock(return_value=attempt), record_installed=AsyncMock())
+    compressed = await _compress_messages_with_trace(compress, messages, trace_context=trace)
+    assert messages[0]["stop_notice_active"] is True
+    assert compressed[1]["stop_notice_active"] is True
+    assert "stop_notice_active" not in json.dumps(trace.start_attempt.call_args.args[0].input)
+    assert "stop_notice_active" not in json.dumps(attempt.record_completed.call_args.kwargs)
+    installed = trace.record_installed.call_args.kwargs
+    assert installed["source"]["inputs"] == [{key: value for key, value in row.items()
+        if key != "stop_notice_active"} for row in messages]
+    assert "stop_notice_active" not in json.dumps(installed)
+
+
+@pytest.mark.asyncio
 async def test_compress_messages_with_lifecycle_hooks_emits_pre_and_post(monkeypatch):
     from app.kernel.engine import _compress_messages_with_lifecycle_hooks
     from app.runtime.hooks import HookEvent

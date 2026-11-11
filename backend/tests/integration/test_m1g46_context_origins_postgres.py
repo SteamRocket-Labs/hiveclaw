@@ -107,10 +107,13 @@ async def test_known_platform_guidance_can_have_complete_inventory_without_grant
         assert origin["dependency_coverage"] == {"complete": True, "unbound": []}
 
 
-@pytest.mark.parametrize("source", ["missing", "human_event"])
+@pytest.mark.parametrize("source", ["missing", "human_event", "cancelled", "other_session"])
 async def test_member_stop_notice_requires_a_cancelled_event(owner_sessionmaker, app_user_sessionmaker, source):
     from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
     from app.services.session_semantic_history import _USER_STOP_NOTICE
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
     scope = await _bound_input(owner_sessionmaker)
     section = {"name": "member_stop"}
@@ -120,13 +123,37 @@ async def test_member_stop_notice_requires_a_cancelled_event(owner_sessionmaker,
                 ChatTranscriptEvent.item_kind == "human_input", ChatTranscriptEvent.lifecycle == "accepted"))
             assert event is not None
             section["source_ref"] = f"session-run-cancelled:{event.id}"
+    elif source in {"cancelled", "other_session"}:
+        async with owner_sessionmaker() as db:
+            session_id = scope[2]
+            session = await db.get(ChatSession, session_id)
+            if source == "other_session":
+                other = ChatSession(id=uuid.uuid4(), tenant_id=scope[0], agent_id=scope[1], user_id=session.user_id)
+                db.add(other)
+                await db.flush()
+                session_id = other.id
+            run_id = uuid.uuid4()
+            db.add(RuntimeTask(id=run_id, task_type="web_chat_turn", status="killed",
+                tenant_id=scope[0], parent_agent_id=scope[1], child_agent_id=scope[1],
+                parent_session_id=str(session_id), child_session_id=str(session_id),
+                root_user_id=session.user_id, root_session_id=str(session_id), root_runtime_task_id=run_id,
+                prompt="Stopped work", metadata_json={"turn_id": f"turn-{run_id.hex}"}))
+            await db.flush()
+            event, = await append_session_events(db, tenant_id=scope[0], agent_id=scope[1], session_id=session_id,
+                drafts=[SessionEventDraft(item_id=run_id, item_kind="run", lifecycle="cancelled",
+                    scope={"level": "run", "session_id": str(session_id), "thread_id": str(session_id),
+                        "turn_id": f"turn-{run_id.hex}", "run_id": str(run_id)},
+                    actor={"type": "runtime"}, payload={"control_id": str(uuid.uuid4())})])
+            section["source_ref"] = f"session-run-cancelled:{event.id}"
+            await db.commit()
     context = _context_message(role="user", content=_USER_STOP_NOTICE, kind="dynamic_prompt",
         sections=[section], unbound=())
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, scope[0])
         snapshot = await _prepare(db, scope, context)
-        assert snapshot["input_bindings"]["messages"][0]["status"] == "withheld"
-        assert _USER_STOP_NOTICE not in str(snapshot["wire_request"])
+        assert snapshot["input_bindings"]["messages"][0]["status"] == ("bound" if source == "cancelled" else "withheld")
+        assert any(message.get("content") == _USER_STOP_NOTICE
+            for message in snapshot["wire_request"]["messages"]) is (source == "cancelled")
 
 
 @pytest.mark.parametrize("change", ["dictionary", "changed_bytes"])

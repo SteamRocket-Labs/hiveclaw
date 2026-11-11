@@ -1113,6 +1113,8 @@ def _agent_invocation_request(
     callbacks: _WebChatCallbacks,
     suffix: str,
 ) -> AgentInvocationRequest:
+    from app.services.session_semantic_history import is_member_authored_run
+
     profile = {}
     if getattr(state, "system_plan_mode", None) is not None:
         from app.services.plan_mode_system_run import SYSTEM_PLAN_RUN_MAX_ROUNDS
@@ -1150,6 +1152,7 @@ def _agent_invocation_request(
         cancel_event=state.cancel_event,
         session_context=state.runtime_session_context,
         system_prompt_suffix=suffix,
+        member_authored_turn=not state.internal_runtime_context_turn and is_member_authored_run(state.runtime_task),
         round_input_bind=lambda round_index: _bind_session_round_inputs(state, round_index),
         model_request_prepare=lambda **payload: _prepare_session_model_request(state, **payload),
         model_response_commit=lambda **payload: _commit_session_model_response(state, **payload),

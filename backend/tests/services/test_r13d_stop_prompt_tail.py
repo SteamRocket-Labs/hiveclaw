@@ -39,16 +39,16 @@ def _shape(messages, prompt):
             for message in trailing
         ],
     }
-    print("R13D_REQUEST_SHAPE", json.dumps(shape, ensure_ascii=False))
     return shape
 
 
-async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_sessionmaker, monkeypatch):
+@pytest.mark.parametrize("followup", ["member", "internal", "goal_pause_resume"])
+async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_sessionmaker, monkeypatch, followup):
     from app import database
     from app.api.chat_sessions import StartSessionRunIn, cancel_session_run, start_session_run
     from app.database import tenant_scoped_session
     from app.models.llm import LLMModel
-    from app.services import tenant_resolver, web_chat_runtime as runtime
+    from app.services import quota_guard, runtime_budget_service, tenant_resolver, web_chat_runtime as runtime
     from app.runtime import invoker
     from app.services.llm_client import LLMResponse
     from app.services.secrets_provider import get_secrets_provider
@@ -60,6 +60,8 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
         (tenant_resolver, "async_session"),
         (runtime, "_async_session"),
         (invoker, "async_session"),
+        (quota_guard, "async_session"),
+        (runtime_budget_service, "async_session"),
     ):
         monkeypatch.setattr(module, name, factory)
 
@@ -68,6 +70,7 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
 
     monkeypatch.setattr(runtime, "tenant_scoped_session", scoped)
     monkeypatch.setattr(invoker, "tenant_scoped_session", scoped)
+    monkeypatch.setattr(database, "tenant_scoped_session", scoped)
     # Maintenance models also stay local; request assembly and the worker's
     # model-round / tool / terminal paths below remain real.
     monkeypatch.setattr("app.services.session_memory._get_session_memory_model_config", AsyncMock(return_value=None))
@@ -113,7 +116,9 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
         processor = WebTerminalBoundaryProcessor(
             session_factory=factory, summary_generator=AsyncMock(return_value="Local test conversation summary")
         )
-        items = await service.claim_batch(tenant_id=tenant_id, worker_id="r13d-boundary", task_types=("web_chat_turn",))
+        items = await service.claim_batch(
+            tenant_id=tenant_id, worker_id="r13d-boundary", task_types=("web_chat_turn", "goal_continuation")
+        )
         assert len(items) == 1 and items[0].runtime_task_id == run_id
         assert await service.process_terminal_boundary(
             item=items[0], worker_id="r13d-boundary", canonical_validator=processor.validate, process_callback=processor
@@ -150,7 +155,25 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
         {"content": ANSWER},
         {"content": "你好。"},
     ]
+    if followup != "member":
+        script.insert(3, {"content": "Internal work completed."})
     current_run = None
+    goal_id = uuid4()
+
+    async def transition_goal(action):
+        from app.api.session_goals import GoalTransitionIn, transition_goal as transition
+
+        async with factory() as db:
+            result = await transition(
+                agent_id=agent_id,
+                session_id=session_id,
+                goal_id=goal_id,
+                body=GoalTransitionIn(action=action),
+                current_user=await db.get(User, user_id),
+                db=db,
+            )
+            await db.commit()
+        return result
 
     class Client:
         supports_request_idempotency = False
@@ -173,16 +196,19 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
             assert script, "unexpected model request"
             item = script.pop(0)
             if item.pop("stop", False):
-                async with factory() as db:
-                    receipt = await cancel_session_run(
-                        agent_id=agent_id,
-                        session_id=session_id,
-                        run_id=current_run,
-                        idempotency_key=None,
-                        current_user=await db.get(User, user_id),
-                        db=db,
-                    )
-                assert receipt["accepted"]
+                if followup == "goal_pause_resume":
+                    assert (await transition_goal("pause"))["status"] == "paused"
+                else:
+                    async with factory() as db:
+                        receipt = await cancel_session_run(
+                            agent_id=agent_id,
+                            session_id=session_id,
+                            run_id=current_run,
+                            idempotency_key=None,
+                            current_user=await db.get(User, user_id),
+                            db=db,
+                        )
+                    assert receipt["accepted"]
             return LLMResponse(
                 content=item.get("content", ""),
                 tool_calls=item.get("tool_calls", []),
@@ -193,15 +219,34 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
 
     client = Client()
     monkeypatch.setattr(invoker, "create_llm_client", lambda **kwargs: client)
-    current_run = await start("hello")
+    current_run = await start("hello", permission_mode="bypassPermissions")
     await execute(current_run, "completed")
     assert len(requests) == 1
     _shape(requests[0], "hello")
     assert not any("Answer the member's latest message" in str(message["content"]) for message in requests[0])
 
-    current_run = await start(
-        "Research these three parts and keep track of each todo.", permission_mode="bypassPermissions"
-    )
+    if followup == "goal_pause_resume":
+        from app.api.session_goals import StartGoalIn, start_session_goal
+
+        async with factory() as db:
+            result = await start_session_goal(
+                agent_id=agent_id,
+                session_id=session_id,
+                body=StartGoalIn(
+                    objective="Research these three parts and keep track of each todo.",
+                    max_continuation_turns=1,
+                    start_immediately=True,
+                ),
+                current_user=await db.get(User, user_id),
+                db=db,
+            )
+            await db.commit()
+        goal_id = UUID(result["id"])
+        current_run = UUID(result["run"]["run_id"])
+    else:
+        current_run = await start(
+            "Research these three parts and keep track of each todo.", permission_mode="bypassPermissions"
+        )
     await execute(current_run, "killed")
     async with factory() as db:
         assert (await db.get(RuntimeTask, current_run)).status == "killed"
@@ -212,10 +257,40 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
     assert all(item["status"] == "in_progress" for item in ledger["todo_items"])
     assert len(requests) == 3
 
+    if followup != "member":
+        if followup == "goal_pause_resume":
+            result = await transition_goal("resume")
+            assert result["status"] == "active"
+            current_run = UUID(result["continuation"]["run"]["run_id"])
+        else:
+            from app.models.chat_session import ChatSession
+            from app.services.session_live_input import submit_live_human_input
+
+            async with factory() as db:
+                result = await submit_live_human_input(
+                    db=db,
+                    agent=await db.get(Agent, agent_id),
+                    user=await db.get(User, user_id),
+                    session=await db.get(ChatSession, session_id),
+                    content="Integrate the internal result.",
+                    source="task_notification",
+                    input_id=uuid4(),
+                    requested_kind="start_turn",
+                    role="system",
+                    runtime_metadata={"task_notification": True},
+                )
+                await db.commit()
+            current_run = UUID(result["run"]["run_id"])
+        await execute(current_run, "completed")
+        assert len(requests) == 4
+        assert any(message["content"] == _USER_STOP_MARKER for message in requests[-1])
+        assert not any("Answer the member's latest message" in str(message["content"]) for message in requests[-1])
+
+    offset = len(requests)
     current_run = await start(QUESTION, permission_mode="bypassPermissions")
     await execute(current_run, "completed")
-    assert len(requests) == 5
-    first, second = requests[3:5]
+    assert len(requests) == offset + 2
+    first, second = requests[offset:]
     assert any(message["content"] == _USER_STOP_MARKER for message in first)
     shape = _shape(first, QUESTION)
     assert shape["trailing_count"] > 0
@@ -233,6 +308,7 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
     async with factory() as db:
         task = await db.get(RuntimeTask, current_run)
         assert task.status == "completed" and task.result_summary == ANSWER
+        assert "stop_notice_active" not in json.dumps(task.metadata_json)
         results = list(
             await db.scalars(
                 select(SessionModelResult)
@@ -264,7 +340,7 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
 
     current_run = await start("hello again")
     await execute(current_run, "completed")
-    assert len(requests) == 6 and not script
+    assert len(requests) == offset + 3 and not script
     # Historical cancellation remains; the extra tail notice expires.
     assert any(message["content"] == _USER_STOP_MARKER for message in requests[-1])
     assert not any("Answer the member's latest message" in str(message["content"]) for message in requests[-1])

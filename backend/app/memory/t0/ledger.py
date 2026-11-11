@@ -602,6 +602,14 @@ def _validate_replay(events, *, index, agent_id, session_id, complete):
     return ordered
 
 
+def get_t0_active_segment_id(
+    *, agent_id: uuid.UUID | str, session_id: uuid.UUID | str, data_root: Path | str | None = None,
+) -> str | None:
+    """Read only the index pointer, without replaying any segment events."""
+    index = _read_index(_session_dir(data_root, agent_id, session_id))
+    return index.get("active_segment_id") if index else None
+
+
 def replay_t0_session_events(
     *,
     agent_id: uuid.UUID | str,

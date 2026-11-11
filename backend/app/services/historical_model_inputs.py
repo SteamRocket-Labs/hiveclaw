@@ -30,14 +30,14 @@ def source_resolution():
 
 async def _complete_origins(db, *, tenant_id, agent_id, session_id):
     from app.models.invocation_span import InvocationSpan
-    from app.services.session_model_inputs import load_context_message_origin
+    from app.services.session_model_inputs import _validated_context_message_origin
 
     state = _RESOLUTION.get()
     key = (tenant_id, agent_id, str(session_id))
     if key not in state["origins"]:
-        ids = (
+        rows = (
             await db.scalars(
-                select(InvocationSpan.id)
+                select(InvocationSpan)
                 .where(
                     InvocationSpan.tenant_id == tenant_id,
                     InvocationSpan.agent_id == agent_id,
@@ -46,15 +46,16 @@ async def _complete_origins(db, *, tenant_id, agent_id, session_id):
                     InvocationSpan.status == "captured",
                 )
                 .order_by(InvocationSpan.started_at, InvocationSpan.id)
+                .execution_options(populate_existing=True)
             )
         ).all()
         origins = []
-        for source_id in ids:
-            proof = await load_context_message_origin(
-                db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, source_id=source_id
+        for row in rows:
+            proof = await _validated_context_message_origin(
+                db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, row=row
             )
             if proof is not None and proof["dependency_coverage"]["complete"] is True:
-                origins.append((f"session-kernel-context:{source_id}", proof))
+                origins.append((f"session-kernel-context:{row.id}", proof))
         state["origins"][key] = origins
     return state["origins"][key]
 

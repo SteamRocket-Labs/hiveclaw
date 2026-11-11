@@ -147,6 +147,12 @@ async def load_context_message_origin(db, *, tenant_id, agent_id, source_id, ses
     from app.models.invocation_span import InvocationSpan
 
     row = await db.get(InvocationSpan, source_id, populate_existing=True)
+    return await _validated_context_message_origin(
+        db, tenant_id=tenant_id, agent_id=agent_id, row=row, session_id=session_id
+    )
+
+
+async def _validated_context_message_origin(db, *, tenant_id, agent_id, row, session_id=None):
     proof = (row.metadata_json or {}).get("context_origin") if row is not None else None
     if (
         row is None

@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
-from app.database import pin_rls_tenant_context
+from app.database import PostgresTextContractError, pin_rls_tenant_context
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionToolInvocation, SessionTurnInput
@@ -19,11 +19,13 @@ from tests.integration import test_web_chat_worker_restart_kernel_recovery as re
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
+@pytest.mark.parametrize("entry", ["notification", "admission"])
 async def test_finished_result_round_and_completion_admission_do_not_deadlock(
     owner_sessionmaker,
     app_user_sessionmaker,
     monkeypatch,
     tmp_path,
+    entry,
 ):
     from app.services import chat_transcript, session_model_round, session_v2_persistence
     from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
@@ -115,16 +117,44 @@ async def test_finished_result_round_and_completion_admission_do_not_deadlock(
             )
             result = await db.get(ChatTranscriptEvent, invocation.result_event_id)
             assert lifecycle.RESULT in result.metadata_json["v2_payload"]["content"]
-        delivery_job = asyncio.create_task(service._deliver_page(pages[0]))
+
+        async def admit_completion():
+            from app.models.agent import Agent
+            from app.models.chat_session import ChatSession
+            from app.models.user import User
+            from app.services.agent_session_continuation import build_result_integration_runtime_context
+            from app.services.session_live_input import submit_live_human_input
+
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                return await submit_live_human_input(
+                    db=db,
+                    agent=await db.get(Agent, seed["agent_id"]),
+                    user=await db.get(User, seed["user_id"]),
+                    session=await db.get(ChatSession, seed["session_id"]),
+                    content=build_result_integration_runtime_context(pages[0].manifest),
+                    source="runtime_result_integration",
+                    role="system",
+                    idempotency_key=f"runtime-result-page:{pages[0].id}",
+                )
+
+        delivery_job = asyncio.create_task(
+            service._deliver_page(pages[0]) if entry == "notification" else admit_completion()
+        )
         await asyncio.wait_for(admission_at_row.wait(), 30)
         # BASE holds RuntimeTask FOR UPDATE from current_run_fences before
         # its first advisory. Completion delivery holds that advisory and its
-        # transcript append needs the run's FK key-share: this is a real cycle.
+        # transcript append needs the run's FK key-share. Direct admission
+        # instead requests ChatSession FOR UPDATE against the plan flush's
+        # FK key-share. Both entries form a real row -> advisory cycle.
         # HEAD pauses before either a row lock or flush, so admission commits.
         release_parent.set()
         release_admission.set()
         delivered, _ = await asyncio.wait_for(asyncio.gather(delivery_job, parent_job), 40)
-        assert delivered.get("ok") is True, delivered
+        if entry == "notification":
+            assert delivered.get("ok") is True, delivered
+        else:
+            assert delivered["admission_state"] == "admitted", delivered
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
             failures = list(
@@ -158,7 +188,7 @@ async def test_finished_result_round_and_completion_admission_do_not_deadlock(
             )
             assert len(accepted) == 1
             assert accepted[0].metadata_json["v2_payload"]["runtime_metadata"]["source"] == "runtime_result_integration"
-        print("R17B_CONCURRENT_RESULT_RESUME completed; failures=0; completion_inputs=1")
+        print(f"R17B_CONCURRENT_RESULT_RESUME entry={entry}; completed; failures=0; completion_inputs=1")
     finally:
         parent.release.set()
         child_client.release.set()
@@ -180,6 +210,7 @@ async def test_finished_result_round_and_completion_admission_do_not_deadlock(
         asyncpg.DeadlockDetectedError("deadlock detected"),
         asyncpg.SerializationError("serialization failure"),
         asyncpg.PostgresError("database operation failed"),
+        PostgresTextContractError("invalid PostgreSQL text"),
     ],
     ids=[
         "wrapped_deadlock",
@@ -188,6 +219,7 @@ async def test_finished_result_round_and_completion_admission_do_not_deadlock(
         "asyncpg_deadlock",
         "asyncpg_serialization",
         "asyncpg",
+        "postgres_text",
     ],
 )
 async def test_database_exception_inside_turn_records_persistence_failure(

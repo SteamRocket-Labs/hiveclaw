@@ -8,11 +8,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from asyncpg import PostgresError
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
 
-from app.database import PostgresTextContractError
 from app.kernel.contracts import (
     ExecutionAuthorityUnavailable,
     ExecutionIdentityRef,
@@ -25,6 +23,7 @@ from app.runtime.invoker import AgentInvocationRequest
 from app.models.runtime_task import RuntimeTask
 from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase
 from app.services.llm_client import LLMError
+from app.services.llm_error_policy import is_runtime_persistence_error
 from app.services.runtime_budget_failover import runtime_budget_model_notice, runtime_budget_payload
 from app.services.session_semantic_history import SessionSemanticHistoryUnavailable
 
@@ -42,7 +41,7 @@ def _runtime_exception_failure(exc: Exception) -> RuntimeExceptionFailure:
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
     if isinstance(exc, ToolLifecyclePersistenceError):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
-    if isinstance(exc, (SQLAlchemyError, PostgresError, PostgresTextContractError)):
+    if is_runtime_persistence_error(exc):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
     if isinstance(exc, LLMError):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PROVIDER_ERROR.value)
@@ -2006,9 +2005,10 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
         await _handle_restart_recovery_required(state, exc)
         return
     failure = _runtime_exception_failure(exc)
+    database_failure = is_runtime_persistence_error(exc)
     summary = (
         "这次没有完成，请稍后再试。"
-        if failure.terminal_reason == TerminalReason.PERSISTENCE_ERROR.value
+        if database_failure
         else "Execution stopped before the next effect; restore authority or revise the work."
         if isinstance(exc, ExecutionAuthorityUnavailable)
         else "Canonical session history is unavailable; model invocation did not start."
@@ -2045,8 +2045,8 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
             status="failed",
             result_summary=summary,
             metadata_json=metadata,
-            failure={"message": summary, "terminal_reason": failure.terminal_reason}
-            if failure.terminal_reason == TerminalReason.PERSISTENCE_ERROR.value else None,
+            **({"failure": {"message": summary, "terminal_reason": failure.terminal_reason}}
+               if database_failure else {}),
             **changes,
         )
         if not finalized:

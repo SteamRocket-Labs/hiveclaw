@@ -258,18 +258,6 @@ async def settle_runtime_task_terminal(
             execution_fence_ref=terminal_fence,
             terminal_source=str(terminal_source),
         )
-        stopped = dict(task.metadata_json or {})
-        if not existing_fence and task.status in {"killed", "needs_reconciliation"} and (
-            stopped.get("cancel_state") in {"cancelling", "cancelled"}
-            or stopped.get("terminal_reason") == "user_cancel"
-            or stopped.get("cancelled_by_user") is True
-        ):
-            from app.services.agent_work_ledger import stop_agent_work_ledger
-
-            # Only the first terminal settlement owns the session's old work;
-            # later repair of this run must not stop a successor's new todos.
-            stop_agent_work_ledger(agent_id=task.parent_agent_id, runtime_task_id=task.id)
-            stop_agent_work_ledger(agent_id=task.parent_agent_id, session_id=session_id_raw)
     # Callers still own commit, but no lease renewal may race the prepared
     # terminal transaction after every shared mechanical write has succeeded.
     from app.services.runtime_task_fence import finish_current_runtime_task_claim

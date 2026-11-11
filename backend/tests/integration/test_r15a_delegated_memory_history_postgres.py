@@ -1,8 +1,9 @@
 """A delegated instruction's memory reader also covers its own derived history."""
 
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
@@ -86,7 +87,7 @@ async def delegated_rounds(s, app_user_sessionmaker, owner_sessionmaker, monkeyp
         assert receipt.authority_json["audience_kind"] == "private"
         assert receipt.authority_json["state"] == "active"
         source = source_dependency(receipt)
-    if change == "unrelated_source":
+    if change in {"unrelated_source", "history_sources"}:
         saved, _ = await memory_call(
             n,
             app_user_sessionmaker,
@@ -139,6 +140,18 @@ async def delegated_rounds(s, app_user_sessionmaker, owner_sessionmaker, monkeyp
                     content="UNSHARED_PRIVATE_MARKER",
                     kind="memory_context",
                     sources=[unrelated],
+                    unbound=(),
+                )
+                kwargs["messages"].append(message)
+                kwargs["wire_request"]["messages"].append(message_snapshot(message))
+            elif change == "same_memory_context":
+                from app.services.session_model_inputs import message_snapshot
+
+                message = _context_message(
+                    role="system",
+                    content="DIRECT_PARENT_MEMORY_MARKER",
+                    kind="memory_context",
+                    sources=[source],
                     unbound=(),
                 )
                 kwargs["messages"].append(message)
@@ -215,6 +228,107 @@ async def delegated_rounds(s, app_user_sessionmaker, owner_sessionmaker, monkeyp
     instruction = observations[0]["input_bindings"]["messages"][observations[0]["instruction_indexes"][0]]
     assert source in instruction["dependencies"] and instruction["status"] == "bound", instruction
     return child_id, session_id, run_id, source, client, observations
+
+
+async def recheck_history_sources(
+    s, app_user_sessionmaker, delegation, *, mixed=False, non_memory=False, bad_first=False
+):
+    """Seed a committed history item's sources, then use the real compiler and validator."""
+    from app.services.explicit_memory_authority import latest_memory_receipt, source_dependency
+    from app.services.learned_skill_sources import model_source
+    from app.services.session_model_inputs import _hash, _unique_dependencies, build_model_input_bindings
+    from app.services.session_model_round import _validate_or_withhold_model_sources
+    from app.services.session_semantic_history import load_session_semantic_history
+
+    child, session, run, source, _, snapshots = delegation
+    session = UUID(str(session))
+    n = s.n
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        if non_memory:
+            parent = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == n.run))
+            bad = model_source(parent)
+        else:
+            entry = json.loads((n.root / "memory/explicit/manifest.jsonl").read_text().splitlines()[-1])
+            bad = source_dependency(await latest_memory_receipt(db, n.tenant, n.agent, entry["id"]))
+        assert bad != source
+        results = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run)))
+        derived = next(
+            row
+            for row in results
+            if row.seal_json["semantic_content"] == "I have the earlier listing and can continue."
+        )
+        # Only this standalone assistant output gets the adversarial source set;
+        # the genuine first-round assistant/tool pair remains dependent on M.
+        saved = deepcopy(derived.model_request_snapshot_json)
+        saved["input_bindings"]["dependencies"] = [source, bad] if mixed else [bad]
+        derived.model_request_snapshot_json = saved
+        derived.model_request_hash = _hash(saved)
+        await db.flush()
+        history = await load_session_semantic_history(db, tenant_id=n.tenant, agent_id=child, session_id=session)
+        ref = f"session-model-result:{derived.id}"
+        final = next(message for message in history.messages if message.id == ref)
+        final_message = {"role": final.role, "content": final.content}
+        final_bindings = await build_model_input_bindings(
+            db,
+            tenant_id=n.tenant,
+            agent_id=child,
+            session_id=session,
+            messages=[{**final_message, "source_ref": final.id}],
+            wire_messages=[final_message],
+            history=history,
+        )
+        assert final_bindings["dependency_coverage"]["complete"] is True, final_bindings
+        snapshot = snapshots[1]
+        bindings, wire = deepcopy(snapshot["input_bindings"]), deepcopy(snapshot["wire_request"])
+        final_entry = {**final_bindings["messages"][0], "message_index": len(wire["messages"])}
+        bindings["messages"].append(final_entry)
+        bindings["dependencies"] = _unique_dependencies([*bindings["dependencies"], *final_bindings["dependencies"]])
+        wire["messages"].append(final_message)
+        messages = deepcopy(wire["messages"])
+        assert bindings["dependency_coverage"]["complete"] is True, bindings
+        assert all(entry["status"] == "bound" for entry in bindings["messages"]), bindings
+        assert bindings["messages"][-1]["dependencies"] == sorted(
+            [source, bad] if mixed else [bad],
+            key=lambda value: (value["source_kind"], value["source_id"], value["source_version"]),
+        )
+        assert source in bindings["dependencies"] and bad in bindings["dependencies"]
+        # Exercise both pass orders, including refusal before a later successful M check.
+        bindings["dependencies"] = (
+            [bad, *[value for value in bindings["dependencies"] if value != bad]]
+            if bad_first
+            else [*[value for value in bindings["dependencies"] if value != bad], bad]
+        )
+        await _validate_or_withhold_model_sources(
+            db,
+            tenant_id=n.tenant,
+            agent_id=child,
+            session_id=session,
+            run_id=run,
+            input_bindings=bindings,
+            messages=messages,
+            wire_request=wire,
+        )
+        return bindings, wire, source, bad, ref
+
+
+def assert_instruction_and_m_history_bound(bindings, wire, source, *, excluded_ref=None):
+    entries = bindings["messages"]
+    instruction = [
+        entry
+        for entry in entries
+        if source in entry["dependencies"] and entry.get("source_ref", "").startswith("session-kernel-context:")
+    ]
+    assert instruction and all(entry["status"] == "bound" for entry in instruction), entries
+    own = [
+        entry
+        for entry in entries
+        if entry.get("source_ref", "").startswith(("session-model-result:", "session-tool-result:"))
+        and entry["source_ref"] != excluded_ref
+    ]
+    assert len(own) == 2 and all(entry["status"] == "bound" and source in entry["dependencies"] for entry in own), (
+        entries
+    )
+    assert {wire["messages"][entry["message_index"]]["role"] for entry in own} == {"assistant", "tool"}
 
 
 async def test_round_two_sees_its_own_assistant_and_tool_history(
@@ -308,6 +422,82 @@ async def test_an_attested_instruction_does_not_cover_another_parent_memory_sour
     ), entries
     assert entries[-1]["status"] == "withheld" and entries[-1]["code"] == "explicit_memory_source_unverified"
     assert "UNSHARED_PRIVATE_MARKER" not in json.dumps(client.requests[1]["messages"])
+
+
+async def test_non_history_context_cannot_inherit_the_briefs_parent_memory_reader(
+    shared_memory,  # noqa: F811
+    app_user_sessionmaker,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    *_, source, client, snapshots = await delegated_rounds(
+        shared_memory, app_user_sessionmaker, owner_sessionmaker, monkeypatch, change="same_memory_context"
+    )
+    snapshot = snapshots[1]
+    bindings, wire = snapshot["input_bindings"], snapshot["wire_request"]
+    assert_instruction_and_m_history_bound(bindings, wire, source)
+    context = bindings["messages"][-1]
+    assert not context["source_ref"].startswith(("session-model-result:", "session-tool-result:"))
+    assert (context["status"], context["code"], context["dependencies"]) == (
+        "withheld",
+        "explicit_memory_source_unverified",
+        [],
+    ), context
+    assert "DIRECT_PARENT_MEMORY_MARKER" not in json.dumps(wire)
+    assert "DIRECT_PARENT_MEMORY_MARKER" not in json.dumps(client.requests[1]["messages"])
+
+
+async def test_history_cannot_inherit_a_source_absent_from_the_validated_brief(
+    shared_memory,  # noqa: F811
+    app_user_sessionmaker,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    delegation = await delegated_rounds(
+        shared_memory, app_user_sessionmaker, owner_sessionmaker, monkeypatch, change="history_sources"
+    )
+    bindings, wire, source, bad, ref = await recheck_history_sources(shared_memory, app_user_sessionmaker, delegation)
+    assert_instruction_and_m_history_bound(bindings, wire, source, excluded_ref=ref)
+    assert all(
+        bad not in entry["dependencies"]
+        for entry in bindings["messages"]
+        if entry.get("source_ref", "").startswith("session-kernel-context:")
+    )
+    history = bindings["messages"][-1]
+    assert history["source_ref"] == ref
+    assert (history["status"], history["code"], history["dependencies"]) == (
+        "withheld",
+        "explicit_memory_source_unverified",
+        [],
+    ), history
+    assert "I have the earlier listing and can continue." not in json.dumps(wire)
+
+
+async def test_mixed_history_stays_withheld_after_any_other_source_passes(
+    shared_memory,  # noqa: F811
+    app_user_sessionmaker,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    delegation = await delegated_rounds(
+        shared_memory, app_user_sessionmaker, owner_sessionmaker, monkeypatch, change="history_sources"
+    )
+    for non_memory in (False, True):
+        for bad_first in (False, True):
+            bindings, wire, source, bad, ref = await recheck_history_sources(
+                shared_memory, app_user_sessionmaker, delegation, mixed=True, non_memory=non_memory, bad_first=bad_first
+            )
+            assert_instruction_and_m_history_bound(bindings, wire, source, excluded_ref=ref)
+            history = bindings["messages"][-1]
+            assert history["source_ref"] == ref
+            code = "content_source_access_denied" if non_memory else "explicit_memory_source_unverified"
+            assert (history["status"], history["code"], history["dependencies"]) == ("withheld", code, []), (
+                non_memory,
+                bad_first,
+                history,
+            )
+            assert bad not in bindings["dependencies"]
+            assert "I have the earlier listing and can continue." not in json.dumps(wire)
 
 
 async def test_delegated_history_reader_never_grants_direct_parent_memory_reads(

@@ -50,6 +50,7 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
     from app.models.llm import LLMModel
     from app.services import quota_guard, runtime_budget_service, tenant_resolver, web_chat_runtime as runtime
     from app.runtime import invoker
+    from app.tools import governance_resolver, workspace
     from app.services.llm_client import LLMResponse
     from app.services.secrets_provider import get_secrets_provider
 
@@ -62,6 +63,8 @@ async def test_web_stop_question_has_bound_tail_until_normal_completion(owner_se
         (invoker, "async_session"),
         (quota_guard, "async_session"),
         (runtime_budget_service, "async_session"),
+        (governance_resolver, "async_session"),
+        (workspace, "async_session"),
     ):
         monkeypatch.setattr(module, name, factory)
 

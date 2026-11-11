@@ -802,9 +802,6 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
                 _, complete = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=stop_ref)
                 if not complete:
                     return dependencies or [], False
-                event = await db.get(ChatTranscriptEvent, uuid.UUID(stop_ref.split(":", 1)[1]))
-                if event is None or str(event.session_id) != origin["session_id"]:
-                    return dependencies or [], False
         if dependencies is not None and origin["dependency_coverage"]["complete"] is False:
             return await recover_context_dependencies(
                 db, tenant_id=tenant_id, agent_id=agent_id, origin=origin, dependencies=dependencies

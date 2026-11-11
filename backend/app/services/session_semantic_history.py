@@ -838,7 +838,7 @@ async def load_session_semantic_history(
             completed = [view for view in views
                 if view.source.item_kind == "run" and view.source.lifecycle == "completed"
                 and _source_scope_run_id(view.source) != current_run_id
-                and view.sequence > min(message.sequence_end for message in cancelled)
+                and view.sequence > max(message.sequence_end for message in cancelled)
                 and _event_payload(view.source).get("reason_code") != "company_approval_required"]
             run_ids = {_source_scope_run_id(view.source) for view in completed} - {None}
             if run_ids:

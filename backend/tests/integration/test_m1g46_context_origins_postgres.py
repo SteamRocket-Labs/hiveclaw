@@ -151,9 +151,91 @@ async def test_member_stop_notice_requires_a_cancelled_event(owner_sessionmaker,
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, scope[0])
         snapshot = await _prepare(db, scope, context)
-        assert snapshot["input_bindings"]["messages"][0]["status"] == ("bound" if source == "cancelled" else "withheld")
+        # Server-produced stop references may retain a source session after branching.
+        valid = source in {"cancelled", "other_session"}
+        assert snapshot["input_bindings"]["messages"][0]["status"] == ("bound" if valid else "withheld")
         assert any(message.get("content") == _USER_STOP_NOTICE
-            for message in snapshot["wire_request"]["messages"]) is (source == "cancelled")
+            for message in snapshot["wire_request"]["messages"]) is valid
+
+
+async def test_branch_member_request_keeps_stop_notice_bound_to_source(owner_sessionmaker, app_user_sessionmaker):
+    from types import SimpleNamespace
+
+    from app.kernel.engine import _dicts_to_llm_messages
+    from app.kernel.turn_orchestrator import _bind_system_prompt_suffix_sections
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.user import User
+    from app.runtime.context import SessionContext, ensure_runtime_assembly_state
+    from app.services.conversation_branch_service import create_conversation_branch
+    from app.services.session_control_input import accept_cancel_control_input, begin_cancel_control_input
+    from app.services.session_model_round import bind_round_inputs
+    from app.services.session_semantic_history import _USER_STOP_MARKER, _USER_STOP_NOTICE, load_session_semantic_history
+    from app.services.web_chat_runtime import _apply_terminal_task_update_and_settle, conversation_from_history_messages
+    from tests.services.test_session_input_control_v2 import _authority
+    from tests.services.test_session_semantic_history import _seed, _submit_turn
+
+    tenant, user, agent, session = await _seed(owner_sessionmaker)
+    _, stopped_run, _ = await _submit_turn(owner_sessionmaker, user_id=user, agent_id=agent,
+        session_id=session, content="Research the release plan.")
+    async with owner_sessionmaker() as db:
+        authority = await _authority(db, user_id=user, agent_id=agent, session_id=session)
+        control_id = uuid.uuid4()
+        await accept_cancel_control_input(db, authority=authority, control_id=control_id, expected_run_id=stopped_run,
+            idempotency_key=f"branch-stop:{control_id}")
+        await begin_cancel_control_input(db, authority=authority, control_id=control_id, worker_id="branch-stop")
+        await _apply_terminal_task_update_and_settle(db, await db.get(RuntimeTask, stopped_run), status="killed",
+            result_summary="Generation stopped by user.", metadata_json={"cancel_control_id": str(control_id)},
+            terminal_source="branch-stop-test")
+        await db.commit()
+        stop = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == session,
+            ChatTranscriptEvent.run_id == stopped_run, ChatTranscriptEvent.item_kind == "run",
+            ChatTranscriptEvent.lifecycle == "cancelled").order_by(ChatTranscriptEvent.sequence))
+        assert stop is not None and stop.metadata_json["v2_payload"]["control_id"] == str(control_id)
+        stop_ref = f"session-run-cancelled:{stop.id}"
+        branch = await create_conversation_branch(db=db, agent=await db.get(Agent, agent),
+            user=await db.get(User, user), source_session=await db.get(ChatSession, session),
+            mode="branch", anchor_event_id=stop.id)
+        branch_session = branch.session.id
+        assert str(stop.id) in branch.branch["copied_event_ids"]
+        await db.commit()
+
+    _, run, turn = await _submit_turn(owner_sessionmaker, user_id=user, agent_id=agent,
+        session_id=branch_session, content="Did the previous work stop?")
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant)
+        history = await load_session_semantic_history(db, tenant_id=tenant, agent_id=agent,
+            session_id=branch_session, current_run_id=run)
+        marker, = [message for message in history.messages if message.content == _USER_STOP_MARKER]
+        assert marker.id == stop_ref and marker.stop_notice_active
+        conversation = conversation_from_history_messages(history.messages)
+        session_ctx = SessionContext(session_id=str(branch_session), source="web_chat")
+        request = SimpleNamespace(agent_id=agent, messages=conversation, member_authored_turn=True,
+            recovery_manifest_result=None)
+        sections = _bind_system_prompt_suffix_sections([], request, session_ctx, lambda *_args: [])()
+        assert sections == [_USER_STOP_NOTICE]
+        state = ensure_runtime_assembly_state(session_ctx)
+        tail = _context_message(role="user", content=sections[0], kind="dynamic_prompt", unbound=(),
+            sections=state.context_sections_for(agent_id=agent, content=sections[0]))
+        bound = await bind_round_inputs(db, tenant_id=tenant, agent_id=agent, session_id=branch_session,
+            run_id=run, turn_id=turn, round_index=1)
+        request_id = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=branch_session,
+            run_id=run, turn_id=turn, round_index=1, messages=[*_dicts_to_llm_messages(conversation),
+                *_mid_run_items_to_user_messages(bound), tail], tools=[], provider="openai", model="synthetic-no-provider")
+        result = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id))
+        snapshot = result.model_request_snapshot_json
+        assert snapshot["wire_request"]["messages"][-1] == {"role": "user", "content": _USER_STOP_NOTICE}
+        binding = snapshot["input_bindings"]["messages"][-1]
+        assert binding["status"] == "bound" and binding["dependency_status"] == "resolved"
+        origin = await load_context_message_origin(db, tenant_id=tenant, agent_id=agent, session_id=branch_session,
+            source_id=uuid.UUID(binding["source_ref"].split(":", 1)[1]))
+        assert origin["sections"][0]["source_ref"] == stop_ref
+        assert origin["dependency_coverage"] == {"complete": True, "unbound": []}
+        assert all("有一项上下文暂时无法核实" not in str(message.get("content"))
+            for message in snapshot["wire_request"]["messages"])
+        await db.commit()
 
 
 @pytest.mark.parametrize("change", ["dictionary", "changed_bytes"])

@@ -267,3 +267,50 @@ async def test_stop_tail_eligibility_expires_only_after_later_normal_completion(
     assert marker.content == history._USER_STOP_MARKER
     assert marker.id == f"session-run-cancelled:{views[0].source.id}"
     assert marker.stop_notice_active is active
+
+
+@pytest.mark.parametrize("completed_after_second_stop", [False, True])
+async def test_only_completion_after_latest_stop_clears_its_notice(monkeypatch, completed_after_second_stop):
+    from app.models.runtime_task import RuntimeTask
+    from app.services import session_semantic_history as history
+
+    now = datetime.now(timezone.utc)
+    views, queried_runs = [], []
+    first_stop, between, second_stop, after = (uuid.uuid4() for _ in range(4))
+
+    def event(sequence, lifecycle, run_id, **payload):
+        row = SimpleNamespace(id=uuid.uuid4(), sequence=sequence, item_kind="run", lifecycle=lifecycle,
+            run_id=run_id, input_id=None, item_id=run_id, scope_json={}, created_at=now,
+            schema_version=2, metadata_json={"v2_payload": payload})
+        views.append(history._EventView(target=row, source=row))
+
+    event(10, "cancelled", first_stop, control_id=str(uuid.uuid4()))
+    event(15, "completed", between)
+    event(20, "cancelled", second_stop, control_id=str(uuid.uuid4()))
+    if completed_after_second_stop:
+        event(25, "completed", after)
+
+    async def load_views(*_args, **_kwargs):
+        return views, {}
+
+    async def rounds(*_args, **_kwargs):
+        return [], [], 0
+
+    class DB:
+        async def execute(self, statement):
+            rows = []
+            if statement.column_descriptions[0]["entity"] is RuntimeTask:
+                run_ids = set(statement.compile().params["id_1"])
+                queried_runs.append(run_ids)
+                rows = [SimpleNamespace(id=run_id, task_type="web_chat_turn", metadata_json={}) for run_id in run_ids]
+            return SimpleNamespace(all=lambda: rows)
+
+    monkeypatch.setattr(history, "_load_event_views", load_views)
+    monkeypatch.setattr(history, "_committed_round_messages", rounds)
+    result = await history.load_session_semantic_history(
+        DB(), tenant_id=uuid.uuid4(), agent_id=uuid.uuid4(), session_id=uuid.uuid4())
+    first, latest = result.messages
+    assert first.id == f"session-run-cancelled:{views[0].source.id}"
+    assert latest.id == f"session-run-cancelled:{views[2].source.id}"
+    assert latest.stop_notice_active is not completed_after_second_stop
+    assert queried_runs == ([{after}] if completed_after_second_stop else [])

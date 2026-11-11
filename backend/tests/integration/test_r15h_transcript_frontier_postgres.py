@@ -28,7 +28,8 @@ async def _commit_boundary(db, task, agent, session, terminal):
 
 
 async def _frontier(factory, monkeypatch, tmp_path, *, owner_type="web_chat_turn",
-                    incoming_type="web_chat_turn", owner_status="completed", incoming_status="completed"):
+                    incoming_type="web_chat_turn", owner_status="completed", incoming_status="completed",
+                    include_owner_final=True):
     import app.database as database
 
     tenant, user, agent, session, owner = await _seed_session(factory, active_run=True)
@@ -58,11 +59,13 @@ async def _frontier(factory, monkeypatch, tmp_path, *, owner_type="web_chat_turn
         rows = []
         # An inline continuation can precede its owner's canonical final. The
         # owner's boundary processor must bridge this same unfinished prefix.
-        for run, actor, kind, content in (
+        records = [
             (incoming, "system", "model_route", "incoming start"),
             (incoming, "assistant", "assistant_message", "incoming final"),
-            (owner, "assistant", "assistant_message", "owner final"),
-        ):
+        ]
+        if include_owner_final:
+            records.append((owner, "assistant", "assistant_message", "owner final"))
+        for run, actor, kind, content in records:
             rows.append(await append_session_event(db=db, tenant_id=tenant, agent_id=agent,
                 session_id=session, run_id=run, actor_type=actor, event_type=kind, content=content,
                 materialize_chat_message=False))
@@ -188,7 +191,7 @@ async def test_unproven_owner_stays_open(owner_sessionmaker, monkeypatch, tmp_pa
         agent_id=fx.agent, session_id=fx.session, data_root=tmp_path)] == ["owner start"]
 
 
-async def test_unchanged_blocked_frontier_only_selects_candidates_until_owner_commits(
+async def test_unchanged_blocked_frontier_waits_for_owner_commit_without_new_attempts(
     owner_sessionmaker, monkeypatch, tmp_path,
 ):
     fx = await _frontier(owner_sessionmaker, monkeypatch, tmp_path, owner_status="running")
@@ -205,7 +208,8 @@ async def test_unchanged_blocked_frontier_only_selects_candidates_until_owner_co
             assert await bus.sweep_pending_transcript_t0_bridges(session_id=fx.session) == 0
     finally:
         event.remove(engine, "before_cursor_execute", capture)
-    assert len(statements) == 2, statements
+    assert len(statements) == 4, statements
+    assert sum("FOR UPDATE SKIP LOCKED" in statement for statement in statements) == 2
     assert all("chat_transcript_events" in statement for statement in statements)
     assert (await _states(owner_sessionmaker, fx))[1][1] == 38760
     async with owner_sessionmaker() as db:
@@ -234,3 +238,20 @@ async def test_empty_projection_sweep_only_issues_candidate_query(owner_sessionm
         event.remove(engine, "before_cursor_execute", capture)
     assert len(statements) == 1, statements
     assert "chat_transcript_events" in statements[0]
+
+
+async def test_existing_ledger_checkpoint_releases_frontier_without_new_task_facts(
+    owner_sessionmaker, monkeypatch, tmp_path,
+):
+    fx = await _frontier(owner_sessionmaker, monkeypatch, tmp_path,
+        owner_status="running", include_owner_final=False)
+    assert await bus.sweep_pending_transcript_t0_bridges(session_id=fx.session) == 0
+    # PRE_COMPACTION already seals live owners through this ledger operation;
+    # it does not change RuntimeTask terminal status or enqueue a boundary.
+    assert ledger.seal_t0_session_segment(agent_id=fx.agent, session_id=fx.session,
+        reason="pre_compaction_checkpoint", expected_runtime_task_id=fx.owner, data_root=tmp_path)
+    assert await bus.sweep_pending_transcript_t0_bridges(session_id=fx.session) == 2
+    async with owner_sessionmaker() as db:
+        owner = await db.get(RuntimeTask, fx.owner)
+        assert owner.status == "running" and owner.completed_at is None
+        assert owner.terminal_boundary_enqueued_at is None

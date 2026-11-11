@@ -740,6 +740,7 @@ async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts:
     from sqlalchemy.orm import aliased
 
     from app.database import async_session, enter_rls_bypass, tenant_scoped_session
+    from app.memory.t0.ledger import replay_t0_session_events_tail
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
 
@@ -747,7 +748,7 @@ async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts:
     statuses = ("pending", "failed") if retry_failed else ("pending",)
 
     # The typed ledger diagnostic carries the exact UUIDs checked by recovery.
-    # Only discovery uses these strings; the locked helper re-proves authority.
+    # Only retry scheduling uses these strings; recovery re-proves authority.
     error = ChatTranscriptEvent.projection_error
     def diagnostic_run_id(field):
         value = func.split_part(func.split_part(error, f"{field}='", 2), "'", 1)
@@ -787,7 +788,6 @@ async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts:
                     ChatTranscriptEvent.projection_status.in_(statuses),
                     (ChatTranscriptEvent.projection_error.is_(None)
                         | ~ChatTranscriptEvent.projection_error.startswith(_T0_TOO_LARGE_ERROR_PREFIX)),
-                    retry_ready,
                     no_earlier_unfinished,
                     *([ChatTranscriptEvent.projection_attempts < max(1, int(max_attempts))] if max_attempts is not None else []),
                     *([ChatTranscriptEvent.session_id == session_id] if session_id is not None else []),
@@ -806,12 +806,26 @@ async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts:
             async with tenant_scoped_session(tenant_id, session_factory=async_session, require_tenant=True,
                 source="runtime_control_bus.transcript_t0_batch") as db:
                 # One ordered owner and transaction for this session's poll batch.
-                frontier = await db.scalar(select(ChatTranscriptEvent.id).where(ChatTranscriptEvent.id == frontier_id,
+                frontier = (await db.execute(select(ChatTranscriptEvent.id, ChatTranscriptEvent.agent_id,
+                    ChatTranscriptEvent.projection_error, retry_ready.label("retry_ready")).where(
+                    ChatTranscriptEvent.id == frontier_id,
                     ChatTranscriptEvent.tenant_id == tenant_id,
                     ChatTranscriptEvent.projection_status.in_(statuses),
-                ).with_for_update(skip_locked=True))
+                ).with_for_update(skip_locked=True))).first()
                 if frontier is None:
                     continue
+                if not frontier.retry_ready:
+                    # PRE_COMPACTION and other existing checkpoints can seal a
+                    # live owner without changing any RuntimeTask facts. Only
+                    # leave the frontier dormant while that exact segment is
+                    # still the open tail; a changed ledger gets the normal
+                    # append/recovery checks again.
+                    tail = replay_t0_session_events_tail(agent_id=frontier.agent_id,
+                        session_id=session_id, limit=1)
+                    stalled_segment = str(frontier.projection_error or "").partition(
+                        "active_segment_id=")[2].partition(" ")[0]
+                    if tail and tail[-1].segment_id == stalled_segment and tail[-1].event_type != "segment_boundary":
+                        continue
                 rows = list((await db.scalars(select(ChatTranscriptEvent).where(
                     ChatTranscriptEvent.session_id == session_id,
                     ChatTranscriptEvent.tenant_id == tenant_id,

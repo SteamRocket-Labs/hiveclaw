@@ -919,7 +919,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land16 (R12a, R12b) versus land15: module-source entries of content_input_receipts.py
 # (memo key without the ancestor set, visiting/revisiting) and heartbeat.py (one run
 # deadline, run_bounded removed); still 122 callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "b6250088725451fd3d86b11906ea67f56e7f61ff58614d6692a5dc677dae2760"
+# Land16 fix: content_input_receipts.py discards (not removes) the visiting key after
+# a scope closes mid-validation; module source only, still 122 callsites.
+RLS_BYPASS_SCOPES_SHA256 = "2b904e9c52ac97f8c2fe0b3dfa934b3f2910665fb76c42f8ed950b722d37449c"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

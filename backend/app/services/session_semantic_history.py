@@ -201,6 +201,7 @@ async def _load_event_views(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     run_id: uuid.UUID | None,
+    before_sequence: int | None = None,
 ) -> tuple[list[_EventView], dict[str, Any]]:
     target_events = list(
         (
@@ -214,6 +215,7 @@ async def _load_event_views(
                     ChatSession.tenant_id == tenant_id,
                     ChatSession.agent_id == agent_id,
                     ChatTranscriptEvent.listed_surface == ChatSession.listed_surface,
+                    *([ChatTranscriptEvent.sequence < before_sequence] if before_sequence is not None else []),
                 )
                 .order_by(ChatTranscriptEvent.sequence.asc())
             )
@@ -783,6 +785,7 @@ async def load_session_semantic_history(
     session_id: uuid.UUID,
     current_run_id: uuid.UUID | None = None,
     reader_run_id: uuid.UUID | None = None,
+    before_sequence: int | None = None,
 ) -> SessionSemanticHistory:
     """Load every authorized committed semantic entry for one provider turn.
 
@@ -792,7 +795,8 @@ async def load_session_semantic_history(
     unapplied successor inputs which remain queued work. Authority and seal
     checks are identical to the provider-turn path. ``reader_run_id`` applies
     shared-reader authority independently of excluding the current run, so
-    external executors retain their same-run protocol history."""
+    external executors retain their same-run protocol history. ``before_sequence``
+    reconstructs an immutable request's prior inputs without projecting later work."""
 
     try:
         views, branch_receipt = await _load_event_views(
@@ -801,6 +805,7 @@ async def load_session_semantic_history(
             agent_id=agent_id,
             session_id=session_id,
             run_id=current_run_id,
+            before_sequence=before_sequence,
         )
         current_input_ids, queued_input_ids = await _excluded_input_ids(
             db,

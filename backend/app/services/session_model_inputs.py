@@ -147,6 +147,12 @@ async def load_context_message_origin(db, *, tenant_id, agent_id, source_id, ses
     from app.models.invocation_span import InvocationSpan
 
     row = await db.get(InvocationSpan, source_id, populate_existing=True)
+    return await _validated_context_message_origin(
+        db, tenant_id=tenant_id, agent_id=agent_id, row=row, session_id=session_id
+    )
+
+
+async def _validated_context_message_origin(db, *, tenant_id, agent_id, row, session_id=None):
     proof = (row.metadata_json or {}).get("context_origin") if row is not None else None
     if (
         row is None
@@ -268,6 +274,8 @@ async def _build_model_input_bindings(
     session_id: uuid.UUID,
     messages: list[Any],
     wire_messages: list[dict[str, Any]],
+    history=None,
+    before_sequence: int | None = None,
 ) -> dict[str, Any]:
     from app.services.session_human_input import input_parts_to_runtime_messages
     from app.services.session_semantic_history import (
@@ -309,7 +317,10 @@ async def _build_model_input_bindings(
     # Projection groups include sibling tool events; only the selected message's
     # canonical id is an origin. Group event ids are never dependency claims.
     try:
-        history = await load_session_semantic_history(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id)
+        if history is None:
+            history = await load_session_semantic_history(
+                db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, before_sequence=before_sequence
+            )
     except SessionSemanticHistoryUnavailable:
         for entry in entries:
             entry["code"] = "canonical_source_unavailable"

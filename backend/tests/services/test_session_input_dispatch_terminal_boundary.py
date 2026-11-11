@@ -410,7 +410,7 @@ async def test_two_quick_turns_keep_the_newer_summary(owner_sessionmaker):
     assert [item.runtime_task_id for item in claimed1] == [run1_id]
     delivery1 = asyncio.create_task(service.process_terminal_boundary(item=claimed1[0], worker_id="r15i-c",
         canonical_validator=canonical, process_callback=processor))
-    assert await _wait_until(_boundary_delivered(owner_sessionmaker, boundary1.id)), \
+    assert await _wait_until(lambda: _boundary_delivered(owner_sessionmaker, boundary1.id)), \
         "turn one must deliver while its summary generator is still blocked"
     assert await asyncio.wait_for(delivery1, timeout=5) is True
 
@@ -481,10 +481,14 @@ async def test_unprojected_required_parts_still_hold_the_next_input(owner_sessio
         error=WebTerminalBoundaryPending("terminal transcript T0 projection is pending")) == "retry"
     assert await _boundary_status(owner_sessionmaker, boundary.id) == "pending"
 
+    # The undelivered boundary keeps the follow-up out of the dispatch
+    # candidates entirely: it stays durably held, not claimed-and-deferred.
     async with owner_sessionmaker() as db:
         recovery = await recover_admitted_session_inputs_once(db, worker_id="r15i-d-input", tenant_id=tenant_id)
-    assert recovery == {"claimed": 1, "dispatched": 0, "deferred": 1, "retried": 0}
-    async with owner_sessionmaker() as db:
+        assert recovery == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+        from app.services.session_input_dispatch import discover_admitted_session_input_locators
+
+        assert await discover_admitted_session_input_locators(db, tenant_id=tenant_id) == []
         admission = await db.scalar(select(SessionInputAdmission).where(
             SessionInputAdmission.input_id == next_input_id))
         assert admission.dispatch_state == "pending"

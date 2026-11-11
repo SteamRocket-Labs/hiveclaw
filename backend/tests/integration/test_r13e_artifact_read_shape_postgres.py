@@ -8,6 +8,8 @@ import pstats
 import time
 import uuid
 from collections import Counter
+from contextlib import aclosing
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -128,6 +130,7 @@ async def test_context_rich_web_rounds_do_not_inflate_delivered_file_reads(
     # runtime, tool, artifact and subsequent read checks remain the real ones.
     prepare = session_model_round.prepare_model_request
     build = session_model_inputs.build_model_input_bindings
+    expected_dependencies = {}
 
     async def old_inventory(*args, **kwargs):
         manifest = await build(*args, **kwargs)
@@ -142,7 +145,14 @@ async def test_context_rich_web_rounds_do_not_inflate_delivered_file_reads(
 
     async def old_request(db, **kwargs):
         if kwargs["round_index"] >= 9:
-            return await prepare(db, **kwargs)
+            request = await prepare(db, **kwargs)
+            result = await db.scalar(
+                select(SessionModelResult).where(SessionModelResult.provider_request_id == request)
+            )
+            bindings = result.model_request_snapshot_json["input_bindings"]
+            assert bindings["dependency_coverage"] == {"complete": True}
+            expected_dependencies[result.id] = deepcopy(bindings["dependencies"]), True
+            return request
         messages = kwargs["messages"]
         prefix = messages[0]
         # Independent witness uses the real compiler origin, never a fabricated row.
@@ -160,6 +170,24 @@ async def test_context_rich_web_rounds_do_not_inflate_delivered_file_reads(
             result_id=uuid.uuid4(),
             messages=[witness],
         )
+        result = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
+        wire = result.model_request_snapshot_json["wire_request"]["messages"]
+        # The complete compiler inventory is the oracle, before the historical
+        # recovery under test and before any later run exists.
+        canonical_messages = []
+        for message, source in zip(wire, [witness, *messages[1:]]):
+            ref = source.get("source_ref") if isinstance(source, dict) else source.source_ref
+            canonical_messages.append({**message, "source_ref": ref})
+        expected = await build(
+            db,
+            tenant_id=n.tenant,
+            agent_id=n.agent,
+            session_id=n.session,
+            messages=canonical_messages,
+            wire_messages=wire,
+        )
+        assert expected["dependency_coverage"] == {"complete": True}, expected
+        expected_dependencies[result.id] = deepcopy(expected["dependencies"]), True
         return request
 
     def session_model_inputs_message(message):
@@ -185,6 +213,7 @@ async def test_context_rich_web_rounds_do_not_inflate_delivered_file_reads(
     monkeypatch.setattr(files, "_load_download_user_from_jwt", lambda **_kwargs: current_user())
     body = "# Sales report\n" + "Sales total: 42.\n" * 190
     measurements = {}
+    recovered_dependencies = {}
     artifact_id = None
 
     def call(name, identity, arguments):
@@ -322,6 +351,18 @@ async def test_context_rich_web_rounds_do_not_inflate_delivered_file_reads(
                     assert len(artifacts) == 1
                     artifact = artifacts[0]
                     artifact_id = artifact.id
+                    producing_requests = {
+                        tool.provider_request_id
+                        for tool in tools
+                        if tool.tool_name == "write_file" and tool.provider_arguments_json.get("path") == path
+                    }
+                    artifact_models = {
+                        result.id for result in rounds if result.provider_request_id in producing_requests
+                    }
+                    selection = artifact.snapshot_json.get("selection_model_result_id")
+                    if selection is not None:
+                        artifact_models.add(uuid.UUID(selection))
+                    assert artifact_models and artifact_models <= expected_dependencies.keys()
             if run_number == 2:
                 continue
             measurements[run_number] = {}
@@ -377,6 +418,35 @@ async def test_context_rich_web_rounds_do_not_inflate_delivered_file_reads(
                 assert (
                     response.content if endpoint == "download" else response.json()["content"].encode()
                 ) == body.encode()
+            from app.database import pin_rls_tenant_context
+            from app.services.session_model_inputs import _origin_dependencies
+
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, n.tenant)
+                # Include the artifact's producing/selection models and every
+                # historical model in their source closure, not just read cost.
+                recovered_dependencies[run_number] = {
+                    model_id: await _origin_dependencies(
+                        db, tenant_id=n.tenant, agent_id=n.agent, ref=f"session-model-result:{model_id}"
+                    )
+                    for model_id in expected_dependencies
+                }
+            assert recovered_dependencies[run_number] == expected_dependencies
+            print(
+                "R13E_DEPENDENCIES",
+                json.dumps(
+                    {
+                        "run": run_number,
+                        "expected_equal": True,
+                        "models": len(expected_dependencies),
+                        "artifact_models": len(artifact_models),
+                        "dependency_counts": [len(value[0]) for value in recovered_dependencies[run_number].values()],
+                    }
+                ),
+                flush=True,
+            )
+    assert recovered_dependencies[1] == recovered_dependencies[3] == expected_dependencies
+    print("R13E_DEPENDENCIES_RUN1_RUN3_EQUAL", True, flush=True)
     for endpoint in measurements[1]:
         assert measurements[3][endpoint]["statements"] <= measurements[1][endpoint]["statements"] + 5, measurements
         assert measurements[3][endpoint]["source_hash_calls"] <= measurements[1][endpoint]["source_hash_calls"] + 10, (
@@ -385,3 +455,77 @@ async def test_context_rich_web_rounds_do_not_inflate_delivered_file_reads(
         assert measurements[3][endpoint]["message_snapshots"] <= measurements[1][endpoint]["message_snapshots"] + 10, (
             measurements
         )
+
+
+async def test_missing_frozen_witness_measures_full_session_scan(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+):
+    """Measure the known unmatched-witness cost; do not impose a scan or time limit."""
+    from app.database import pin_rls_tenant_context
+    from app.kernel.engine import _context_message
+    from app.services.historical_model_inputs import _complete_origins
+    from app.services.session_model_inputs import capture_context_message_origins
+    from tests.integration.test_m1g27_model_input_bindings_postgres import _bound_input
+
+    tenant, agent, session, run, _bound = await _bound_input(owner_sessionmaker)
+    for run_number in range(1, 4):
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, tenant)
+            for round_number in range(10):
+                message = _context_message(
+                    role="system",
+                    kind="frozen_prompt",
+                    unbound=(),
+                    content=f"Captured prefix {run_number}/{round_number}.\n" + "Authorized compiler context.\n" * 500,
+                )
+                await capture_context_message_origins(
+                    db,
+                    tenant_id=tenant,
+                    agent_id=agent,
+                    session_id=session,
+                    run_id=run,
+                    result_id=uuid.uuid4(),
+                    messages=[message],
+                )
+            await db.commit()
+        if run_number == 2:
+            continue
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, tenant)
+            statements, scanned, matched = [], 0, False
+
+            def executed(_connection, _cursor, statement, _parameters, _context, _many):
+                statements.append(statement)
+
+            profile = cProfile.Profile()
+            started = time.perf_counter()
+            event.listen(db.bind.sync_engine, "after_cursor_execute", executed)
+            profile.enable()
+            try:
+                async with aclosing(
+                    _complete_origins(db, tenant_id=tenant, agent_id=agent, session_id=session, kind="frozen_prompt")
+                ) as origins:
+                    async for _ref, proof in origins:
+                        scanned += 1
+                        if proof["message"] == {"role": "system", "content": "No captured witness has these bytes."}:
+                            matched = True
+                            break
+            finally:
+                profile.disable()
+                event.remove(db.bind.sync_engine, "after_cursor_execute", executed)
+            row = {
+                "run": run_number,
+                "statements": len(statements),
+                "scanned": scanned,
+                "source_hash_calls": sum(
+                    item.callcount
+                    for item in profile.getstats()
+                    if not isinstance(item.code, str)
+                    and item.code.co_name == "_hash"
+                    and item.code.co_filename.endswith("session_model_inputs.py")
+                ),
+                "seconds": round(time.perf_counter() - started, 4),
+            }
+            print("R13E_WITNESS_MISS", json.dumps(row), flush=True)
+            assert not matched and scanned == run_number * 10

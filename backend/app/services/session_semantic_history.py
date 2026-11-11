@@ -20,7 +20,6 @@ from typing import Any, Iterable
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import defer
 
 from app.models.audit import ChatMessage
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -438,7 +437,6 @@ async def _committed_round_messages(
     if not committed_views:
         return [], [], 0
 
-    # Semantic projection consumes response seals, not the much larger input snapshots.
     result_rows = list(
         (
             await db.execute(
@@ -453,7 +451,7 @@ async def _committed_round_messages(
                             SessionModelResult.round_committed_event_id.is_not(None),
                         ),
                     ),
-                ).options(defer(SessionModelResult.model_request_snapshot_json))
+                )
             )
         ).scalars()
     )

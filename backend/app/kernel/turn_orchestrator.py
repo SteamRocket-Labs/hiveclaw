@@ -1355,6 +1355,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         resolved_memory_context, other_contexts = await asyncio.gather(
             resolve_memory(), resolve_other_contexts(), return_exceptions=True
         )
+        if isinstance(resolved_memory_context, BaseException) and isinstance(other_contexts, BaseException):
+            logger.warning("[Kernel] Other pre-model context failed alongside memory: %s", other_contexts)
         if isinstance(resolved_memory_context, ContextDependencyUnavailable):
             exc = resolved_memory_context
             logger.error(

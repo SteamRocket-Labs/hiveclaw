@@ -74,6 +74,7 @@ def _selection_descriptor(item: MemoryItem) -> dict[str, object]:
         },
         "observations": {
             "score": item.score,
+            "activation_rank": metadata.get("activation_rank"),
             "activation_reasons": metadata.get("activation_reasons") or [],
             "category": metadata.get("category"),
             "timestamp": metadata.get("timestamp"),
@@ -501,8 +502,12 @@ class MemoryRetriever:
     def _attach_selection_candidate_ids(items: list[MemoryItem]) -> list[MemoryItem]:
         prepared: list[MemoryItem] = []
         # Query-dependent activation order must not change the discovery index.
-        ordered = sorted(items, key=lambda item: (
-            item.kind.value, str(item.metadata.get("source_type") or item.kind.value),
+        ranked = [replace(item, metadata={**item.metadata, "activation_rank": rank})
+            for rank, item in enumerate(items, start=1)]
+        # Durable knowledge changes less often than session packages or working memory.
+        kind_order = (MemoryKind.SEMANTIC, MemoryKind.EXTERNAL, MemoryKind.EPISODIC, MemoryKind.WORKING)
+        ordered = sorted(ranked, key=lambda item: (
+            kind_order.index(item.kind), str(item.metadata.get("source_type") or item.kind.value),
             str(item.metadata.get("entry_id") or item.metadata.get("page_id")
                 or item.metadata.get("session_id") or item.source), item.source, item.content,
         ))
@@ -556,6 +561,7 @@ class MemoryRetriever:
         user_id: str | None = None,
     ) -> tuple[list[str], str]:
         from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+        from app.services.prompt_cache import apply_cache_hints
         from app.services.semantic_input_coverage import prepare_covered_semantic_input
 
         configured = with_llm_usage_context(
@@ -624,8 +630,8 @@ class MemoryRetriever:
             # The per-run proof is dynamic; keep the covered index ahead of it
             # so unchanged descriptors can share the provider's prefix cache.
             coverage_ref, _, covered_index = covered.partition("\n")
-            response = await client.complete(
-                messages=[
+            messages = apply_cache_hints(
+                [
                     LLMMessage(
                         role="system",
                         content=(
@@ -636,12 +642,27 @@ class MemoryRetriever:
                             "automatic prompt surfacing. If more evidence may matter, choose the five best starting "
                             "points; the conversation model can continue with search_memory/load_memory. Do not "
                             "claim the index description is the full memory body. "
-                            "Mechanical scores, order, recency, and graph signals are observations only. Return raw "
+                            "Index order is stable and carries no ranking; activation_rank in the observations "
+                            "records the original activation order (1 = strongest). Mechanical scores, ranking, "
+                            "recency, and graph signals are observations only. Return raw "
                             'JSON only: {"selected_ids":["memory_candidate:..."],"reason":"brief audit note"}'
                         ),
                     ),
                     LLMMessage(role="user", content=f"{covered_index}\n\n{coverage_ref}\n\n<current_query>\n{query}\n</current_query>"),
                 ],
+                str(model_config.get("provider") or ""),
+                invocation_scope="conversation",
+            )
+            stable_index, observations_marker, _ = covered_index.partition('<semantic_source ref="activation_observations"')
+            if observations_marker and isinstance(messages[0].content, list):
+                # Reuse the helper's provider-approved hint at the stable index end.
+                # Preserve all text bytes; map/reduce notes have no stable index.
+                messages[1] = replace(messages[1], content=[
+                    {"type": "text", "text": stable_index, "cache_control": messages[0].content[0]["cache_control"]},
+                    {"type": "text", "text": messages[1].content[len(stable_index):]},
+                ])
+            response = await client.complete(
+                messages=messages,
                 temperature=0.1,
                 max_tokens=output_tokens,
                 _http_max_attempts=MEMORY_SEMANTIC_SELECTION_HTTP_MAX_ATTEMPTS,

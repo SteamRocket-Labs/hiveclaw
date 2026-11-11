@@ -224,11 +224,47 @@ async def _unprojected_predecessor_transcript_event_ids(
     return list(result.scalars())
 
 
-# Deterministic prefix for the mechanical seal of a terminal owner that has no
-# canonical terminal-boundary lane (plain subagent). The full key is
-# ``{prefix}:{runtime_task_id}``, so replays reuse the original boundary
-# receipt instead of sealing a second time.
+# Deterministic prefix for mechanical terminal-owner recovery. Canonical
+# owners can reopen after their boundary, so their key also names the segment.
 TERMINAL_OWNER_SEGMENT_RECOVERY_IDEMPOTENCY_KEY = "t0-terminal-owner-recovery"
+
+
+def _terminal_transcript_recovery_tasks(transcript_event: Any, *, canonical_owner: bool = False) -> Any:
+    """The existing terminal/scope proof, optionally backed by a committed boundary."""
+    from sqlalchemy import String, and_, cast, func, or_
+    from app.models.runtime_task import TERMINAL_BOUNDARY_TERMINAL_STATUSES, RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox as Boundary
+
+    def session_key(value):
+        return func.lower(func.replace(value, "-", ""))
+
+    session_id = transcript_event.session_id
+    session_id = str(session_id) if isinstance(session_id, UUID) else session_id
+    session_id = session_key(cast(session_id, String))
+    no_boundary = and_(RuntimeTask.terminal_boundary_generation.is_(None),
+        RuntimeTask.terminal_boundary_enqueued_at.is_(None))
+    boundary_proof = no_boundary
+    if canonical_owner:
+        committed_boundary = select(Boundary.id).where(
+            Boundary.runtime_task_id == RuntimeTask.id,
+            Boundary.tenant_id == RuntimeTask.tenant_id,
+            Boundary.terminal_status == RuntimeTask.status,
+            Boundary.agent_id.in_((RuntimeTask.parent_agent_id, RuntimeTask.child_agent_id)),
+            session_key(Boundary.session_id).in_((session_key(RuntimeTask.parent_session_id),
+                session_key(RuntimeTask.child_session_id))),
+        ).correlate(RuntimeTask).exists()
+        boundary_proof = or_(no_boundary, and_(RuntimeTask.terminal_boundary_generation.is_not(None),
+            RuntimeTask.terminal_boundary_enqueued_at.is_not(None), committed_boundary))
+    return select(RuntimeTask).where(
+        RuntimeTask.tenant_id == transcript_event.tenant_id,
+        or_(RuntimeTask.parent_agent_id == transcript_event.agent_id,
+            RuntimeTask.child_agent_id == transcript_event.agent_id),
+        or_(session_key(RuntimeTask.parent_session_id) == session_id,
+            session_key(RuntimeTask.child_session_id) == session_id),
+        RuntimeTask.status.in_(TERMINAL_BOUNDARY_TERMINAL_STATUSES),
+        RuntimeTask.completed_at.is_not(None),
+        boundary_proof,
+    )
 
 
 async def _seal_terminal_boundary_pending_owner(
@@ -239,49 +275,36 @@ async def _seal_terminal_boundary_pending_owner(
 ) -> bool:
     """Mechanically seal a stale open segment whose terminal owner cannot.
 
-    Plain ``subagent`` terminal tasks emit T0-bridged transcript events but are
-    not in ``TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES``, so no canonical terminal
-    boundary outbox will ever seal the segment they opened and every later
-    task's events fail on the owner mismatch. This shared mismatch boundary
-    proves the exact owner is terminal, completed, tenant/agent/session-scoped
-    to this transcript event, and carries no canonical boundary generation,
-    then seals only that owner's segment. It is content-free mechanical
-    recovery: the RuntimeTask row is never mutated and no semantic success is
-    invented. Any unproven fact returns False so the caller fails closed.
+    A canonical processor drains the transcript before sealing; a mismatching
+    run in that prefix can prevent it from reaching the seal. A late event
+    can also reopen a finished owner's segment. Prove the same terminal and
+    scope facts as nonboundary recovery, plus a committed canonical outbox
+    when the owner has that lane. This mechanical seal neither acknowledges
+    the outbox nor invents semantic success. Unproven facts still fail closed.
     """
 
     from app.memory.t0.ledger import seal_t0_session_segment
-    from app.models.runtime_task import TERMINAL_BOUNDARY_TERMINAL_STATUSES, RuntimeTask
+    from app.models.runtime_task import RuntimeTask
 
     owner_uuid = _uuid_or_none(getattr(boundary_error, "active_runtime_task_id", None))
     if owner_uuid is None:
         return False
     owner_task = (
-        await db.execute(select(RuntimeTask).where(RuntimeTask.id == owner_uuid).with_for_update())
+        await db.execute(_terminal_transcript_recovery_tasks(transcript_event, canonical_owner=True)
+            .where(RuntimeTask.id == owner_uuid).with_for_update())
     ).scalar_one_or_none()
     if owner_task is None:
         return False
-    owner_agent_ids = {owner_task.parent_agent_id, owner_task.child_agent_id}
-    owner_session_ids = {
-        _uuid_or_none(owner_task.parent_session_id),
-        _uuid_or_none(owner_task.child_session_id),
-    }
-    if (
-        owner_task.tenant_id != transcript_event.tenant_id
-        or transcript_event.agent_id not in owner_agent_ids
-        or transcript_event.session_id not in owner_session_ids
-        or owner_task.status not in TERMINAL_BOUNDARY_TERMINAL_STATUSES
-        or owner_task.completed_at is None
-        or owner_task.terminal_boundary_generation is not None
-        or owner_task.terminal_boundary_enqueued_at is not None
-    ):
-        return False
+    canonical_owner = owner_task.terminal_boundary_generation is not None
+    recovery_key = f"{TERMINAL_OWNER_SEGMENT_RECOVERY_IDEMPOTENCY_KEY}:{owner_uuid}"
+    if canonical_owner:
+        recovery_key += f":{boundary_error.active_segment_id}"
     seal_t0_session_segment(
         agent_id=transcript_event.agent_id,
         session_id=transcript_event.session_id,
         reason="terminal_owner_segment_recovery",
         metadata={
-            "recovery": "terminal_nonboundary_owner",
+            "recovery": "terminal_boundary_owner" if canonical_owner else "terminal_nonboundary_owner",
             "owner_task_type": owner_task.task_type,
             "owner_status": owner_task.status,
             "owner_completed_at": owner_task.completed_at.isoformat(),
@@ -289,7 +312,7 @@ async def _seal_terminal_boundary_pending_owner(
             "incoming_runtime_task_id": getattr(boundary_error, "incoming_runtime_task_id", None),
             "active_segment_id": getattr(boundary_error, "active_segment_id", None),
         },
-        idempotency_key=f"{TERMINAL_OWNER_SEGMENT_RECOVERY_IDEMPOTENCY_KEY}:{owner_uuid}",
+        idempotency_key=recovery_key,
         expected_runtime_task_id=owner_uuid,
     )
     return True
@@ -612,9 +635,9 @@ async def bridge_transcript_event_to_t0(
                                     # boundary a T0 segment, so it joins the
                                     # active segment as a guest instead of
                                     # waiting on a seal that cannot exist.
-                                    # Otherwise, only a proven terminal owner
-                                    # without a canonical boundary lane is
-                                    # sealed; a proven terminal nonboundary
+                                    # Otherwise, a proven terminal owner is
+                                    # sealed (canonical owners also need their
+                                    # committed outbox); terminal nonboundary
                                     # incoming run joins as a guest when that
                                     # seal is refused.
                                     if await _incoming_transcript_run_is_orphan(
@@ -710,16 +733,41 @@ async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts:
     """Recover committed transcript projections after publish/process failure.
 
     Select only each session's unfinished frontier. Live wakes handle pending
-    rows; periodic sweeps also retry failed frontiers, without a permanent cap.
-    An explicit max_attempts remains available to bounded maintenance callers.
+    rows; periodic sweeps retry failed frontiers when the existing recovery
+    proofs can move them. Explicit max_attempts still bounds maintenance calls.
     """
+    from sqlalchemy import Uuid, and_, case, cast, func, or_
     from sqlalchemy.orm import aliased
 
     from app.database import async_session, enter_rls_bypass, tenant_scoped_session
     from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
 
     limit = max(1, int(limit))
     statuses = ("pending", "failed") if retry_failed else ("pending",)
+
+    # The typed ledger diagnostic carries the exact UUIDs checked by recovery.
+    # Only discovery uses these strings; the locked helper re-proves authority.
+    error = ChatTranscriptEvent.projection_error
+    def diagnostic_run_id(field):
+        value = func.split_part(func.split_part(error, f"{field}='", 2), "'", 1)
+        # Invalid/missing IDs stay unknown; compare UUID columns directly so
+        # each proof uses the existing task primary key rather than a scan.
+        return cast(case((value.op("~")("^[0-9a-f]{32}$"), value), else_=None), Uuid)
+
+    owner_id = diagnostic_run_id("active_runtime_task_id")
+    incoming_id = diagnostic_run_id("incoming_runtime_task_id")
+    owner_ready = _terminal_transcript_recovery_tasks(ChatTranscriptEvent, canonical_owner=True).where(
+        RuntimeTask.id == owner_id).correlate(ChatTranscriptEvent).exists()
+    incoming_ready = _terminal_transcript_recovery_tasks(ChatTranscriptEvent).where(
+        RuntimeTask.id == incoming_id).correlate(ChatTranscriptEvent).exists()
+    incoming_orphan = and_(incoming_id.is_not(None), ~select(RuntimeTask.id).where(
+        RuntimeTask.tenant_id == ChatTranscriptEvent.tenant_id,
+        RuntimeTask.id == incoming_id,
+    ).correlate(ChatTranscriptEvent).exists())
+    retry_ready = or_(ChatTranscriptEvent.projection_status != "failed", error.is_(None),
+        ~error.startswith("T0SegmentBoundaryPending:"),
+        owner_ready, incoming_ready, incoming_orphan)
 
     earlier_row = aliased(ChatTranscriptEvent)
     no_earlier_unfinished = ~(
@@ -739,6 +787,7 @@ async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts:
                     ChatTranscriptEvent.projection_status.in_(statuses),
                     (ChatTranscriptEvent.projection_error.is_(None)
                         | ~ChatTranscriptEvent.projection_error.startswith(_T0_TOO_LARGE_ERROR_PREFIX)),
+                    retry_ready,
                     no_earlier_unfinished,
                     *([ChatTranscriptEvent.projection_attempts < max(1, int(max_attempts))] if max_attempts is not None else []),
                     *([ChatTranscriptEvent.session_id == session_id] if session_id is not None else []),

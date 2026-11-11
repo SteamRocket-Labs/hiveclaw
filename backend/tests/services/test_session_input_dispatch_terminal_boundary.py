@@ -1,4 +1,7 @@
+import asyncio
+import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4, uuid5
 
 import pytest
@@ -132,3 +135,356 @@ async def test_old_web_boundary_delivery_releases_next_session_input(owner_sessi
         assert list((await db.scalars(select(RuntimeTask.id).where(
             RuntimeTask.tenant_id == tenant_id, RuntimeTask.parent_session_id == str(session_id),
             RuntimeTask.id != run_id))).all()) == [next_input.target_run_id]
+
+
+async def _wait_until(predicate, *, timeout: float = 5.0, interval: float = 0.05) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if await predicate():
+            return True
+        await asyncio.sleep(interval)
+    return False
+
+
+def _summary_test_material(seeded, *, runtime_task_id, terminal_sequence: int, final_response: str):
+    from app.services.web_terminal_boundary_processor import _WebTerminalMaterial
+
+    return _WebTerminalMaterial(
+        tenant_id=seeded.tenant_id,
+        runtime_task_id=runtime_task_id,
+        agent_id=seeded.agent_id,
+        session_id=seeded.session_id,
+        turn_id=f"turn-{runtime_task_id.hex}",
+        event_kind="turn_stop",
+        terminal_status="completed",
+        terminal_event_id=uuid4(),
+        terminal_sequence=terminal_sequence,
+        agent_name="R15i Agent",
+        user_id=seeded.user_id,
+        response_messages=({"role": "user", "content": "previous turn"},),
+        summary_messages=(
+            {"role": "user", "content": "previous turn"},
+            {"role": "assistant", "content": final_response},
+        ),
+        response_commit={
+            "schema": "hive.response_commit.v1",
+            "committed": True,
+            "commit_kind": "session_v2_terminal_outcome",
+            "idempotency_key": f"session-run-outcome:{runtime_task_id}",
+            "runtime_task_id": str(runtime_task_id),
+            "terminal_outcome_id": str(uuid4()),
+            "terminal_result_id": str(uuid4()),
+            "terminal_event_id": str(uuid4()),
+            "source_refs": [f"session-run-outcome://{uuid4()}"],
+        },
+        main_provider="openai",
+        main_model="gpt-fixture",
+        source_refs=(),
+    )
+
+
+def _deferred_summary_processor(owner_sessionmaker, material, *, summary_generator, bridge=True):
+    """A real WebTerminalBoundaryProcessor whose externals are injected doubles.
+
+    Only the boundary-load and T0 frontier verification are stubbed onto the
+    instance; ``__call__``, the response projection and the whole summary
+    projection state machine run for real against Postgres.
+    """
+
+    from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
+
+    async def noop_hook(_ctx):
+        return None
+
+    async def noop_advisory(*_args, **_kwargs):
+        return None
+
+    async def response_projector(_ctx):
+        return {"source_refs": [f"session-run-outcome://{uuid4()}"], "receipt_sha256": "d" * 64}
+
+    def seal(**_kwargs):
+        return SimpleNamespace(boundary_id=None, event_id=f"evt_{'1' * 32}", sequence=33)
+
+    async def maybe_bridge(**_kwargs):
+        return bridge
+
+    processor = WebTerminalBoundaryProcessor(
+        session_factory=owner_sessionmaker,
+        bridge_to_t0=maybe_bridge,
+        turn_boundary_projector=noop_hook,
+        emit_advisory_hook=noop_advisory,
+        response_projector=response_projector,
+        summary_generator=summary_generator,
+        seal_t0=seal,
+    )
+    processor._load = lambda _item: _async_value(material)
+    processor._verify_t0_frontier = lambda _material: _async_value(None)
+    return processor
+
+
+async def _async_value(value):
+    return value
+
+
+async def _complete_turn_and_enqueue_boundary(db, *, task: RuntimeTask, terminal_sequence: int):
+    task.status = "completed"
+    task.completed_at = datetime.now(UTC)
+    return await enqueue_terminal_boundary(
+        db,
+        task=task,
+        event_kind="turn_stop",
+        agent_id=task.parent_agent_id,
+        session_id=task.parent_session_id,
+        terminal_status="completed",
+        authority_ref="runtime_task",
+        authority_id=task.id,
+        binding={"terminal_event_id": uuid4(), "terminal_sequence": terminal_sequence, "authority_sha256": "a" * 64},
+    )
+
+
+async def _submit_follow_up(db, seeded, *, content="Follow-up after the reply"):
+    next_input_id = uuid4()
+    receipt = await submit_live_human_input(db=db, agent=await db.get(Agent, seeded.agent_id),
+        user=await db.get(User, seeded.user_id), session=await db.get(ChatSession, seeded.session_id),
+        content=content, source="r15i-summary-dispatch-test",
+        input_id=next_input_id, idempotency_key=f"r15i:{next_input_id}")
+    return next_input_id, receipt
+
+
+async def _boundary_status(owner_sessionmaker, boundary_id):
+    async with owner_sessionmaker() as db:
+        row = await db.get(RuntimeTerminalBoundaryOutbox, boundary_id)
+        return row.status if row is not None else "missing"
+
+
+async def _summary_projection(owner_sessionmaker, session_id):
+    async with owner_sessionmaker() as db:
+        session = await db.get(ChatSession, session_id)
+    projection = (session.transcript_metadata_json or {}).get("terminal_summary_projection") or {}
+    return session.summary, projection
+
+
+async def test_follow_up_dispatches_while_summary_generation_is_blocked(owner_sessionmaker):
+    tenant_id, _user_id, _agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    seeded = SimpleNamespace(tenant_id=tenant_id, user_id=_user_id, agent_id=_agent_id, session_id=session_id,
+        run_id=run_id)
+    material = _summary_test_material(seeded, runtime_task_id=run_id, terminal_sequence=21,
+        final_response="turn one answer")
+    release = asyncio.Event()
+
+    async def generate(_messages, **_kwargs):
+        await release.wait()
+        return "summary written after release"
+
+    processor = _deferred_summary_processor(owner_sessionmaker, material, summary_generator=generate)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=owner_sessionmaker)
+
+    async with owner_sessionmaker() as db:
+        boundary = await _complete_turn_and_enqueue_boundary(db, task=await db.get(RuntimeTask, run_id),
+            terminal_sequence=21)
+        next_input_id, receipt = await _submit_follow_up(db, seeded)
+        assert receipt["dispatch"]["kind"] == "deferred"
+        assert receipt["dispatch"]["status"] == "waiting_for_terminal_boundary_ack"
+
+    claimed = await service.claim_batch(tenant_id=tenant_id, worker_id="r15i-a", task_types=("web_chat_turn",))
+    assert [item.runtime_task_id for item in claimed] == [run_id]
+
+    async def canonical(_db, item):
+        return dict(item.binding)
+
+    delivery = asyncio.create_task(service.process_terminal_boundary(item=claimed[0], worker_id="r15i-a",
+        canonical_validator=canonical, process_callback=processor))
+    assert await _wait_until(lambda: _boundary_delivered(owner_sessionmaker, boundary.id)), \
+        "the boundary must be delivered while the summary generator is still blocked"
+    assert await asyncio.wait_for(delivery, timeout=5) is True
+
+    # The held follow-up dispatches and its run exists without waiting for the summary.
+    async with owner_sessionmaker() as db:
+        recovery = await recover_admitted_session_inputs_once(db, worker_id="r15i-a-input", tenant_id=tenant_id)
+    assert recovery == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+    async with owner_sessionmaker() as db:
+        next_input = await db.get(SessionTurnInput, next_input_id)
+        assert next_input.target_run_id is not None
+        assert await db.get(RuntimeTask, next_input.target_run_id) is not None
+
+    summary, projection = await _summary_projection(owner_sessionmaker, session_id)
+    assert summary is None and projection.get("state") == "in_flight"
+
+    release.set()
+
+    async def summary_sealed():
+        summary, projection = await _summary_projection(owner_sessionmaker, session_id)
+        return projection.get("state") == "sealed" and summary == "summary written after release"
+
+    assert await _wait_until(summary_sealed)
+    _, projection = await _summary_projection(owner_sessionmaker, session_id)
+    assert projection["terminal_sequence"] == 21
+
+
+async def _boundary_delivered(owner_sessionmaker, boundary_id):
+    return await _boundary_status(owner_sessionmaker, boundary_id) == "delivered"
+
+
+async def test_follow_up_dispatches_when_summary_generation_raises(owner_sessionmaker):
+    tenant_id, _user_id, _agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    seeded = SimpleNamespace(tenant_id=tenant_id, user_id=_user_id, agent_id=_agent_id, session_id=session_id,
+        run_id=run_id)
+    material = _summary_test_material(seeded, runtime_task_id=run_id, terminal_sequence=21,
+        final_response="turn one answer")
+
+    async def generate(_messages, **_kwargs):
+        raise TimeoutError("provider outcome is ambiguous")
+
+    processor = _deferred_summary_processor(owner_sessionmaker, material, summary_generator=generate)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=owner_sessionmaker)
+
+    async with owner_sessionmaker() as db:
+        boundary = await _complete_turn_and_enqueue_boundary(db, task=await db.get(RuntimeTask, run_id),
+            terminal_sequence=21)
+        next_input_id, receipt = await _submit_follow_up(db, seeded)
+        assert receipt["dispatch"]["kind"] == "deferred"
+
+    claimed = await service.claim_batch(tenant_id=tenant_id, worker_id="r15i-b", task_types=("web_chat_turn",))
+
+    async def canonical(_db, item):
+        return dict(item.binding)
+
+    assert await service.process_terminal_boundary(item=claimed[0], worker_id="r15i-b",
+        canonical_validator=canonical, process_callback=processor) is True
+
+    async with owner_sessionmaker() as db:
+        recovery = await recover_admitted_session_inputs_once(db, worker_id="r15i-b-input", tenant_id=tenant_id)
+    assert recovery == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+
+    async def failure_recorded():
+        summary, projection = await _summary_projection(owner_sessionmaker, session_id)
+        return projection.get("state") == "needs_reconciliation" and summary is None
+
+    assert await _wait_until(failure_recorded)
+    _, projection = await _summary_projection(owner_sessionmaker, session_id)
+    assert projection["error_code"] == "TimeoutError"
+
+
+async def test_two_quick_turns_keep_the_newer_summary(owner_sessionmaker):
+    tenant_id, _user_id, _agent_id, session_id, run1_id = await _seed_session(owner_sessionmaker, active_run=True)
+    seeded = SimpleNamespace(tenant_id=tenant_id, user_id=_user_id, agent_id=_agent_id, session_id=session_id,
+        run_id=run1_id)
+    run2_id = uuid4()
+    material1 = _summary_test_material(seeded, runtime_task_id=run1_id, terminal_sequence=21,
+        final_response="turn one answer")
+    material2 = _summary_test_material(seeded, runtime_task_id=run2_id, terminal_sequence=22,
+        final_response="turn two answer")
+    release_turn_one = asyncio.Event()
+
+    async def generate(messages, **_kwargs):
+        if messages[-1]["content"] == "turn one answer":
+            await release_turn_one.wait()
+            return "turn one summary"
+        return "turn two summary"
+
+    processor = _deferred_summary_processor(owner_sessionmaker, material1, summary_generator=generate)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=owner_sessionmaker)
+
+    async with owner_sessionmaker() as db:
+        boundary1 = await _complete_turn_and_enqueue_boundary(db, task=await db.get(RuntimeTask, run1_id),
+            terminal_sequence=21)
+        db.add(RuntimeTask(
+            id=run2_id, task_type="web_chat_turn", status="running",
+            parent_agent_id=_agent_id, child_agent_id=_agent_id, tenant_id=tenant_id,
+            parent_session_id=str(session_id), child_session_id=str(session_id),
+            root_user_id=_user_id, root_session_id=str(session_id), root_runtime_task_id=run2_id,
+            prompt="second turn", metadata_json={"turn_id": f"turn-{run2_id.hex}"},
+            terminal_boundary_generation=1,
+        ))
+        await db.flush()
+        boundary2 = await _complete_turn_and_enqueue_boundary(db, task=await db.get(RuntimeTask, run2_id),
+            terminal_sequence=22)
+        next_input_id, receipt = await _submit_follow_up(db, seeded)
+        assert receipt["dispatch"]["kind"] == "deferred"
+
+    async def canonical(_db, item):
+        return dict(item.binding)
+
+    claimed1 = await service.claim_batch(tenant_id=tenant_id, worker_id="r15i-c", task_types=("web_chat_turn",),
+        limit=1)
+    assert [item.runtime_task_id for item in claimed1] == [run1_id]
+    delivery1 = asyncio.create_task(service.process_terminal_boundary(item=claimed1[0], worker_id="r15i-c",
+        canonical_validator=canonical, process_callback=processor))
+    assert await _wait_until(_boundary_delivered(owner_sessionmaker, boundary1.id)), \
+        "turn one must deliver while its summary generator is still blocked"
+    assert await asyncio.wait_for(delivery1, timeout=5) is True
+
+    async def turn_one_summary_in_flight():
+        _, projection = await _summary_projection(owner_sessionmaker, session_id)
+        return projection.get("state") == "in_flight" and projection.get("terminal_sequence") == 21
+
+    assert await _wait_until(turn_one_summary_in_flight)
+
+    processor2 = _deferred_summary_processor(owner_sessionmaker, material2, summary_generator=generate)
+    claimed2 = await service.claim_batch(tenant_id=tenant_id, worker_id="r15i-c2", task_types=("web_chat_turn",),
+        limit=1)
+    assert [item.runtime_task_id for item in claimed2] == [run2_id]
+    assert await service.process_terminal_boundary(item=claimed2[0], worker_id="r15i-c2",
+        canonical_validator=canonical, process_callback=processor2) is True
+
+    async def turn_two_summary_sealed():
+        summary, projection = await _summary_projection(owner_sessionmaker, session_id)
+        return projection.get("state") == "sealed" and summary == "turn two summary"
+
+    assert await _wait_until(turn_two_summary_sealed), \
+        "turn two must seal its own summary while turn one's generator is still blocked"
+
+    # Releasing the older turn's generator must not overwrite the newer summary.
+    release_turn_one.set()
+    from app.services.web_terminal_boundary_processor import _SUMMARY_PROJECTION_TASKS
+    assert await _wait_until(lambda: _async_value(not _SUMMARY_PROJECTION_TASKS))
+    summary, projection = await _summary_projection(owner_sessionmaker, session_id)
+    assert summary == "turn two summary"
+    assert projection["terminal_sequence"] == 22
+    assert projection["runtime_task_id"] == str(run2_id)
+
+    async with owner_sessionmaker() as db:
+        recovery = await recover_admitted_session_inputs_once(db, worker_id="r15i-c-input", tenant_id=tenant_id)
+    assert recovery == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+
+
+async def test_unprojected_required_parts_still_hold_the_next_input(owner_sessionmaker):
+    tenant_id, _user_id, _agent_id, _session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    seeded = SimpleNamespace(tenant_id=tenant_id, user_id=_user_id, agent_id=_agent_id, session_id=_session_id,
+        run_id=run_id)
+    material = _summary_test_material(seeded, runtime_task_id=run_id, terminal_sequence=21,
+        final_response="turn one answer")
+
+    async def generate(_messages, **_kwargs):
+        return "summary must not run while required parts are pending"
+
+    # The canonical transcript never reaches T0, so the boundary cannot deliver.
+    processor = _deferred_summary_processor(owner_sessionmaker, material, summary_generator=generate, bridge=False)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=owner_sessionmaker)
+
+    async with owner_sessionmaker() as db:
+        boundary = await _complete_turn_and_enqueue_boundary(db, task=await db.get(RuntimeTask, run_id),
+            terminal_sequence=21)
+        next_input_id, _receipt = await _submit_follow_up(db, seeded)
+
+    claimed = await service.claim_batch(tenant_id=tenant_id, worker_id="r15i-d", task_types=("web_chat_turn",))
+
+    async def canonical(_db, item):
+        return dict(item.binding)
+
+    from app.services.web_terminal_boundary_processor import WebTerminalBoundaryPending
+
+    with pytest.raises(WebTerminalBoundaryPending, match="T0 projection is pending"):
+        await service.process_terminal_boundary(item=claimed[0], worker_id="r15i-d",
+            canonical_validator=canonical, process_callback=processor)
+    assert await service.fail_terminal_boundary(item=claimed[0], worker_id="r15i-d",
+        error=WebTerminalBoundaryPending("terminal transcript T0 projection is pending")) == "retry"
+    assert await _boundary_status(owner_sessionmaker, boundary.id) == "pending"
+
+    async with owner_sessionmaker() as db:
+        recovery = await recover_admitted_session_inputs_once(db, worker_id="r15i-d-input", tenant_id=tenant_id)
+    assert recovery == {"claimed": 1, "dispatched": 0, "deferred": 1, "retried": 0}
+    async with owner_sessionmaker() as db:
+        admission = await db.scalar(select(SessionInputAdmission).where(
+            SessionInputAdmission.input_id == next_input_id))
+        assert admission.dispatch_state == "pending"

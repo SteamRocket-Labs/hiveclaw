@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -301,6 +302,11 @@ async def test_success_processor_orders_projection_seal_learning_and_summary(mon
     monkeypatch.setattr(goal_continuation_service, "continue_committed_goal_turn", continue_goal)
 
     receipt = await processor(item)
+    # The summary projection is detached from delivery: it runs after the last
+    # committed boundary part (goal continuation) instead of before it.
+    from app.services.web_terminal_boundary_processor import _SUMMARY_PROJECTION_TASKS
+    if _SUMMARY_PROJECTION_TASKS:
+        await asyncio.gather(*list(_SUMMARY_PROJECTION_TASKS))
 
     assert order == [
         "t0_catchup",
@@ -310,10 +316,9 @@ async def test_success_processor_orders_projection_seal_learning_and_summary(mon
         "advisory_turn_stop",
         "response_complete",
         "advisory_response_complete",
-        "summary_cas",
-    ] + (["goal_continuation"] if has_bound_goal else [])
+    ] + (["goal_continuation"] if has_bound_goal else []) + ["summary_cas"]
     assert receipt["terminal_sequence"] == material.terminal_sequence
-    assert receipt["summary_sequence"] == material.terminal_sequence
+    assert "summary_sequence" not in receipt and "summary_source_ref" not in receipt
     assert len(receipt["response_projection_sha256"]) == 64
     assert f"runtime-terminal-boundary://{item.id}" in receipt["source_refs"]
     assert all("/hook/" not in ref and "/response-complete" not in ref for ref in receipt["source_refs"])
@@ -536,21 +541,28 @@ async def test_ack_gap_replay_does_not_rerun_or_rewrite_session_projection(monke
     response_receipts: list[tuple[str, tuple[str, ...]]] = []
     project_response = processor._project_response
 
-    async def capture_response_receipt(response_item, response_material):
-        receipt = await project_response(response_item, response_material)
-        response_receipts.append(receipt)
-        return receipt
-
-    monkeypatch.setattr(processor, "_project_response", capture_response_receipt)
-
     async def summary(_material):
         nonlocal summary_attempts
         summary_attempts += 1
-        if summary_attempts == 1:
-            raise RuntimeError("crash after consumers before outbox ack")
         return material.terminal_sequence, f"chat-session-summary://{material.session_id}/{material.terminal_sequence}"
 
     monkeypatch.setattr(processor, "_project_summary", summary)
+
+    # Crash after the response consumers committed but before the outbox ack:
+    # the first delivery attempt raises inside the response step, so nothing
+    # downstream (including the detached summary) has started yet.
+    response_failures = 1
+
+    async def capture_or_crash(response_item, response_material):
+        receipt = await project_response(response_item, response_material)
+        response_receipts.append(receipt)
+        nonlocal response_failures
+        if response_failures:
+            response_failures -= 1
+            raise RuntimeError("crash after consumers before outbox ack")
+        return receipt
+
+    monkeypatch.setattr(processor, "_project_response", capture_or_crash)
 
     with pytest.raises(RuntimeError, match="crash after consumers before outbox ack"):
         await processor(item)
@@ -563,10 +575,13 @@ async def test_ack_gap_replay_does_not_rerun_or_rewrite_session_projection(monke
     first_revision = read_agent_asset_revision(tmp_path / str(material.agent_id))
 
     receipt = await processor(item)
+    from app.services.web_terminal_boundary_processor import _SUMMARY_PROJECTION_TASKS
+    if _SUMMARY_PROJECTION_TASKS:
+        await asyncio.gather(*list(_SUMMARY_PROJECTION_TASKS))
 
-    assert receipt["summary_sequence"] == material.terminal_sequence
+    assert "summary_sequence" not in receipt
     assert build_calls == [1]
-    assert summary_attempts == 2
+    assert summary_attempts == 1
     assert projection_path.read_bytes() == first_content
     assert projection_path.stat().st_mtime_ns == first_mtime
     assert read_agent_asset_revision(tmp_path / str(material.agent_id)) == first_revision

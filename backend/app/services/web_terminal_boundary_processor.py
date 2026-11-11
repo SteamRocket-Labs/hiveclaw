@@ -9,6 +9,7 @@ model.  It never writes Run/Turn terminal facts.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 import hashlib
@@ -43,6 +44,11 @@ class WebTerminalBoundaryPending(RuntimeError):
 logger = logging.getLogger(__name__)
 _SUMMARY_PROJECTION_KEY = "terminal_summary_projection"
 _SUMMARY_PROJECTION_SCHEMA = "terminal_summary_projection.v1"
+# Strong references for detached summary projections, so the event loop cannot
+# garbage-collect a still-running generation task (asyncio holds only weak
+# references). Purely in-process bookkeeping; the durable state is the summary
+# projection itself.
+_SUMMARY_PROJECTION_TASKS: set[asyncio.Task[None]] = set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1397,7 +1403,17 @@ class WebTerminalBoundaryProcessor:
                     source = "chat-session-summary" if session.summary is not None else "chat-session-summary-skipped"
                     return int(current), f"{source}://{material.session_id}/{current}"
                 return int(current), f"chat-session-summary-superseded://{material.session_id}/{current}"
-            if projection_state in {"in_flight", "needs_reconciliation"}:
+            # A detached summary runs after its boundary is delivered, so an
+            # older turn's unresolved projection is a normal concurrent state,
+            # not an unknown outcome: this newer turn claims the projection
+            # slot below, and the older task's seal-time authority check
+            # discards its result without ever overwriting a newer summary.
+            # An unresolved projection at or beyond this turn's sequence still
+            # belongs to a live equal/newer attempt and keeps failing closed.
+            if (
+                projection_state in {"in_flight", "needs_reconciliation"}
+                and projection_sequence >= material.terminal_sequence
+            ):
                 raise WebTerminalBoundaryPending(
                     "summary provider outcome is unknown; operator reconciliation is required"
                 )
@@ -1515,6 +1531,33 @@ class WebTerminalBoundaryProcessor:
             return int(current), f"chat-session-summary-superseded://{material.session_id}/{current}"
         return int(current), f"chat-session-summary://{material.session_id}/{current}"
 
+    async def _project_summary_detached(self, material: _WebTerminalMaterial) -> None:
+        """Run the summary projection without owning the boundary delivery.
+
+        The boundary is already delivered when this runs, so a provider
+        failure can only be logged here; the projection itself records the
+        durable failure state (``needs_reconciliation``/``retryable``).
+        """
+
+        try:
+            await self._project_summary(material)
+        except Exception as exc:  # noqa: BLE001 - delivery is settled; the projection owns retry state.
+            logger.warning(
+                "Web session summary projection failed runtime_task=%s session=%s error=%s: %s",
+                material.runtime_task_id,
+                material.session_id,
+                type(exc).__name__,
+                exc,
+            )
+
+    def _spawn_detached_summary_projection(self, material: _WebTerminalMaterial) -> None:
+        task = asyncio.create_task(
+            self._project_summary_detached(material),
+            name=f"web-terminal-summary:{material.runtime_task_id}",
+        )
+        _SUMMARY_PROJECTION_TASKS.add(task)
+        task.add_done_callback(_SUMMARY_PROJECTION_TASKS.discard)
+
     async def __call__(self, item: ClaimedTerminalBoundary) -> Mapping[str, Any]:
         material = await self._load(item)
         projected = await self._bridge_to_t0(
@@ -1540,16 +1583,8 @@ class WebTerminalBoundaryProcessor:
         if material.event_kind == "turn_abort" or material.response_commit is None:
             return normalize_terminal_boundary_binding(receipt)
         response_sha256, response_source_refs = await self._project_response(item, material)
-        summary_sequence, summary_source_ref = await self._project_summary(material)
         receipt["source_refs"] = list(dict.fromkeys([*receipt["source_refs"], *response_source_refs]))
-        receipt.update(
-            {
-                "response_projection_sha256": response_sha256,
-                "summary_source_ref": summary_source_ref,
-            }
-        )
-        if summary_sequence is not None:
-            receipt["summary_sequence"] = summary_sequence
+        receipt["response_projection_sha256"] = response_sha256
         if material.has_bound_goal:
             from app.services.goal_continuation_service import continue_committed_goal_turn
             from app.services.chat_transcript import lock_transcript_session
@@ -1567,4 +1602,12 @@ class WebTerminalBoundaryProcessor:
                 if task is None:
                     raise TerminalBoundaryCanonicalMismatch("Goal continuation runtime task disappeared")
                 await continue_committed_goal_turn(db, task=task)
+        # Every committed boundary part the next turn depends on is now done:
+        # the T0 transcript frontier, the sealed turn boundary, the required
+        # RESPONSE_COMPLETE projection, and goal continuation. The session
+        # summary is a user-facing read projection no later turn reads, so its
+        # LLM call must not hold delivery (and with it every follow-up input).
+        # Detached, it stays idempotent and its seal-time authority check means
+        # an older summary can never overwrite a newer one.
+        self._spawn_detached_summary_projection(material)
         return normalize_terminal_boundary_binding(receipt)

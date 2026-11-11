@@ -311,14 +311,14 @@ def test_terminal_read_abort_requires_same_task_and_reason():
     first = {"task_id": "first"}
     other = {"task_id": "other"}
     for _ in range(guard.identical_tool_threshold - 1):
-        assert guard.observe_tool_result("check_async_task", first, json.dumps(failure),
+        assert guard.observe_tool_result("check_async_task", first, json.dumps({**first, **failure}),
             machine_outcome="succeeded", side_effect_free=True) is None
     # A different reason or a different child cannot complete the same count.
-    assert guard.observe_tool_result("check_async_task", first, json.dumps(changed),
+    assert guard.observe_tool_result("check_async_task", first, json.dumps({**first, **changed}),
         machine_outcome="succeeded", side_effect_free=True) is None
-    assert guard.observe_tool_result("check_async_task", other, json.dumps(failure),
+    assert guard.observe_tool_result("check_async_task", other, json.dumps({**other, **failure}),
         machine_outcome="succeeded", side_effect_free=True) is None
-    stopped = guard.observe_tool_result("check_async_task", first, json.dumps(failure),
+    stopped = guard.observe_tool_result("check_async_task", first, json.dumps({**first, **failure}),
         machine_outcome="succeeded", side_effect_free=True)
     assert stopped is not None and stopped.severity == "abort"
     assert stopped.reason == "identical_terminal_task_read"
@@ -385,6 +385,54 @@ def test_terminal_reads_keep_different_failed_tasks_separate():
             assert guard.observe_tool_result("list_async_tasks", {},
                 json.dumps([{**failure, "task_id": str(task_id), "task_type": "delegation"}]),
                 machine_outcome="succeeded", side_effect_free=True) is None
+
+
+@pytest.mark.parametrize("active_status", ["pending", "running"])
+def test_listed_failure_does_not_count_while_another_task_is_active(active_status):
+    from app.kernel.loop_guard import LoopGuard
+    from app.services.runtime_display_status import runtime_failure_observation
+
+    own_id = uuid4()
+    guard = LoopGuard(runtime_task_id=own_id.hex)
+    failure = runtime_failure_observation("failed", {"error_code": "provider_error"})
+    tasks = [{"task_id": str(uuid4()), **failure},
+        {"task_id": str(uuid4()), "task_type": "web_chat_turn", "status": active_status},
+        {"task_id": str(own_id), "task_type": "web_chat_turn", "status": "running"}]
+    for _ in range(10):
+        assert guard.observe_tool_result("list_async_tasks", {}, json.dumps(tasks),
+            machine_outcome="succeeded", side_effect_free=True) is None
+
+    tasks[1].update(failure)
+    for index in range(guard.identical_tool_threshold):
+        decision = guard.observe_tool_result("list_async_tasks", {}, json.dumps(tasks),
+            machine_outcome="succeeded", side_effect_free=True)
+        if index < guard.identical_tool_threshold - 1:
+            assert decision is None
+        else:
+            assert decision is not None and decision.severity == "abort"
+            assert decision.reason == "identical_terminal_task_read"
+            assert decision.trace_event["identical_terminal_read_count"] == guard.identical_tool_threshold
+
+
+@pytest.mark.parametrize("task_type", ["web_chat_turn", "delegation"])
+@pytest.mark.parametrize("own_status", ["pending", "running"])
+def test_listed_own_run_does_not_block_terminal_counting(task_type, own_status):
+    from app.kernel.loop_guard import LoopGuard
+    from app.services.runtime_display_status import runtime_failure_observation
+
+    own_id = uuid4()
+    guard = LoopGuard(runtime_task_id=str(own_id))
+    tasks = [{"task_id": str(uuid4()), **runtime_failure_observation("failed", {"error_code": "provider_error"})},
+        {"task_id": own_id.hex, "task_type": task_type, "status": own_status}]
+    for index in range(guard.identical_tool_threshold):
+        decision = guard.observe_tool_result("list_async_tasks", {}, json.dumps(tasks),
+            machine_outcome="succeeded", side_effect_free=True)
+        if index < guard.identical_tool_threshold - 1:
+            assert decision is None
+        else:
+            assert decision is not None and decision.severity == "abort"
+            assert decision.reason == "identical_terminal_task_read"
+            assert decision.trace_event["identical_terminal_read_count"] == guard.identical_tool_threshold
 
 
 @pytest.mark.parametrize("status", ["skipped", "needs_reconciliation", "killed"])

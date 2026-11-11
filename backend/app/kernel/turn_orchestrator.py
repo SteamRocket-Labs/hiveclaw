@@ -1729,7 +1729,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         delivered_chunk_count = 0
         streamed_thinking: list[str] = []
         _callback_failure_count: int = 0
-        loop_guard = LoopGuard()
+        loop_guard = LoopGuard(runtime_task_id=(
+            session_ctx.metadata.get("runtime_task_id") or session_ctx.metadata.get("task_id")
+        ) if session_ctx else None)
         # Runtime reminders (T-G1): one scheduler per invocation; texts are
         # transient (per-round stream clone only — never api_messages).
         reminder_scheduler = ReminderScheduler(build_default_reminder_specs())

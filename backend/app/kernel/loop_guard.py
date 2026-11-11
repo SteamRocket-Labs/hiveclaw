@@ -86,6 +86,7 @@ class LoopGuard:
     def __init__(
         self,
         *,
+        runtime_task_id: UUID | str | None = None,
         total_tool_threshold: int = 100,
         failed_tool_threshold: int = 12,
         identical_tool_threshold: int = 5,
@@ -96,6 +97,7 @@ class LoopGuard:
         high_tool_schema_tokens: int = 100_000,
         low_cache_hit_rate: float = 0.05,
     ) -> None:
+        self._runtime_task_id = str(runtime_task_id).replace("-", "") if runtime_task_id else None
         self.total_tool_threshold = total_tool_threshold
         self.failed_tool_threshold = failed_tool_threshold
         self.identical_tool_threshold = identical_tool_threshold
@@ -231,12 +233,16 @@ class LoopGuard:
         if tool_name == "task_output" and isinstance(body, dict):
             body = body.get("task")
         observations = body if isinstance(body, list) else [body]
+        if tool_name == "list_async_tasks" and any(
+            isinstance(item, dict) and item.get("status") in {"pending", "running"}
+            and str(item.get("task_id") or "").replace("-", "") != self._runtime_task_id
+            for item in observations
+        ):
+            return None
         for observation in observations:
             if not is_runtime_failure_observation(observation):
                 continue
             identity = observation.get("task_id") or observation.get("result_ref")
-            if not identity:
-                identity = (args or {}).get("task_id") or (args or {}).get("runtime_task_id") or (args or {}).get("result_ref")
             if not isinstance(identity, str) or not identity:
                 continue
             try:

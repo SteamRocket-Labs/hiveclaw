@@ -44,7 +44,7 @@ async def _execute(owner, run_id, worker):
 
 
 async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rounds=8, parent_tokens=30,
-    child_reads_terminal=False):
+    child_terminal_reader=None, second_child=False):
     import app.database as database
     import app.runtime.invoker as invoker
     import app.services.tenant_resolver as tenant_resolver
@@ -92,12 +92,17 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
     monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", seed["data_root"])
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
 
-    parent_client = kernel_cases.ScriptedLLMClient([
+    parent_script = [
         {"tool_calls": [_call("send_message_to_agent", {"agent_name": "Weekly colleague",
             "message": "List three work points.", "msg_type": "consult"}, "delegate")],
             "usage": {"total_tokens": parent_tokens}, "finish_reason": "tool_calls"},
-        {"content": "同事正在处理。", "usage": {"total_tokens": 1}},
-    ])
+    ]
+    if second_child:
+        parent_script.append({"tool_calls": [_call("send_message_to_agent", {"agent_name": "Weekly colleague",
+            "message": "List three more work points.", "msg_type": "consult"}, "delegate-second")],
+            "usage": {"total_tokens": 1}, "finish_reason": "tool_calls"})
+    parent_client = kernel_cases.ScriptedLLMClient(parent_script + [
+        {"content": "同事正在处理。", "usage": {"total_tokens": 1}}])
     native_config, native_tools = invoker._resolve_runtime_config, invoker.get_agent_tools_for_llm
     native_resolve_tenant = tenant_resolver.resolve_tenant_for_agent
     kernel_cases._patch_runtime_seams(monkeypatch, seed, app_factory)
@@ -135,13 +140,16 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
     async with owner() as db:
         root = await db.get(RuntimeTask, seed["run_id"])
         assert root.status == "completed", root.result_summary
-        child = await db.scalar(select(RuntimeTask).where(RuntimeTask.root_runtime_task_id == root.id,
-            RuntimeTask.task_type == "delegation"))
-        assert child is not None, root.result_summary
+        children = list(await db.scalars(select(RuntimeTask).where(RuntimeTask.root_runtime_task_id == root.id,
+            RuntimeTask.task_type == "delegation").order_by(RuntimeTask.created_at)))
+        assert len(children) == (2 if second_child else 1), root.result_summary
+        child = children[0]
+        if second_child:
+            seed["running_id"] = children[1].id
         seed["child_id"] = child.id
         child.status, child.claimed_by, child.claim_version, child.attempt_count = "running", "r13b-child", 1, 1
         child.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-        if child_reads_terminal:
+        if child_terminal_reader:
             # The colleague's own failed sub-delegation, scoped to its child session.
             nested_agent = Agent(id=uuid4(), tenant_id=seed["tenant_id"], name="Nested colleague",
                 creator_id=seed["user_id"], owner_user_id=seed["user_id"], primary_model_id=model.id)
@@ -161,7 +169,7 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
         "tool_calls": [_call("get_current_time", {}, "child-check")],
         "usage": {"total_tokens": 1_000_001}, "finish_reason": "tool_calls",
     }])
-    if child_reads_terminal:
+    if child_terminal_reader:
         from functools import wraps
 
         native_execute = invoker.execute_tool
@@ -169,13 +177,19 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
 
         @wraps(native_execute)
         async def capture_child_tool(*args, **kwargs):
+            if child_terminal_reader == "list_async_tasks":
+                async with owner() as db:
+                    own_run = await db.get(RuntimeTask, seed["child_id"])
+                    assert own_run.status == "running"
             result = await native_execute(*args, **kwargs)
             child_observed.append(str(result))
             return result
 
         monkeypatch.setattr(invoker, "execute_tool", capture_child_tool)
         child_client = kernel_cases.ScriptedLLMClient([
-            {"tool_calls": [_call("check_async_task", {"task_id": str(seed["nested_id"])}, f"nested-{index}")],
+            {"tool_calls": [_call(child_terminal_reader,
+                {} if child_terminal_reader == "list_async_tasks" else {"task_id": str(seed["nested_id"])},
+                f"nested-{index}")],
                 "usage": {"total_tokens": 1}, "finish_reason": "tool_calls"}
             for index in range(parent_rounds)
         ] + [{"content": "The terminal read stop did not fire."}])
@@ -187,13 +201,15 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
         assert await orchestrator.dispatch_persisted_async_delegation(seed["child_id"].hex, wait_for_completion=True)
     finally:
         reset_runtime_task_fence(token)
+        if child_terminal_reader:
+            monkeypatch.setattr(invoker, "execute_tool", native_execute)
     async with owner() as db:
         child = await db.get(RuntimeTask, seed["child_id"])
-        if child_reads_terminal:
+        if child_terminal_reader:
             from app.kernel.loop_guard import LoopGuard
 
             print("R13B3_NESTED_READS", json.dumps(child_observed, ensure_ascii=False))
-            print("R13B3_DELEGATED_STOP", child.status, child.result_summary, len(child_client.requests))
+            print("R13B3_DELEGATED_STOP", child_terminal_reader, child.status, child.result_summary, len(child_client.requests))
             assert child.status == "failed", (child.status, child.result_summary)
             assert child.metadata_json["terminal_reason"] == "loop_guard"
             assert child.metadata_json["error_code"] == "identical_terminal_task_read"
@@ -201,7 +217,14 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
             assert len(child_client.requests) == LoopGuard().identical_tool_threshold
             assert len(child_observed) == LoopGuard().identical_tool_threshold
             for content in child_observed:
-                assert json.loads(content)["reason"] == "这次用完了用量预算，没有完成。"
+                body = json.loads(content)
+                if child_terminal_reader == "list_async_tasks":
+                    assert isinstance(body, list), body
+                    nested = [task for task in body if UUID(task["task_id"]) == seed["nested_id"]]
+                    assert len(nested) == 1, body
+                    body = nested[0]
+                assert body["status"] == "failed"
+                assert body["reason"] == "这次用完了用量预算，没有完成。"
                 assert "PRIVATE_PARTIAL_BODY" not in content
         else:
             assert child.status == "failed" and child.metadata_json["terminal_reason"] == "tool_budget", child.metadata_json
@@ -439,14 +462,15 @@ async def test_identical_terminal_child_reads_end_the_turn(
     await _assert_member_final(app_user_sessionmaker, seed, STOP_REASON, failed=True)
 
 
+@pytest.mark.parametrize("child_terminal_reader", ["check_async_task", "list_async_tasks"])
 async def test_delegated_child_terminal_read_failure_reaches_parent(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, child_terminal_reader,
 ):
     import app.runtime.invoker as invoker
     from app.kernel.loop_guard import LoopGuard
 
     seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
-        parent_rounds=LoopGuard().identical_tool_threshold + 5, child_reads_terminal=True)
+        parent_rounds=LoopGuard().identical_tool_threshold + 5, child_terminal_reader=child_terminal_reader)
     reads = [
         _call("check_async_task", {"task_id": str(seed["child_id"])}, "parent-status"),
         _call("task_output", {"runtime_task_id": str(seed["child_id"])}, "parent-output"),
@@ -500,6 +524,67 @@ async def test_identical_running_child_reads_do_not_end_the_turn(
         assert returned.status == "completed"
         assert returned.result_summary == "同事仍在处理。"
     assert len(client.requests) == threshold + 2
+
+
+async def test_listed_stale_failure_waits_for_running_child_before_counting(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    import app.runtime.invoker as invoker
+    from app.kernel.loop_guard import LoopGuard
+
+    threshold, running_reads = LoopGuard().identical_tool_threshold, 10
+    seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        parent_rounds=running_reads + threshold + 2, second_child=True)
+    async with owner_sessionmaker() as db:
+        child = await db.get(RuntimeTask, seed["running_id"])
+        assert child.status == "pending"
+        child.status = "running"
+        await db.commit()
+
+    class PollingClient(kernel_cases.ScriptedLLMClient):
+        async def stream(self, **kwargs):
+            if len(self.requests) == running_reads:
+                async with owner_sessionmaker() as db:
+                    child = await db.get(RuntimeTask, seed["running_id"])
+                    child.status = "failed"
+                    child.metadata_json = {**child.metadata_json, "error_code": "turn_token_budget_exhausted"}
+                    await db.commit()
+            return await super().stream(**kwargs)
+
+    client = PollingClient([
+        {"tool_calls": [_call("list_async_tasks", {}, f"list-{index}")],
+            "usage": {"total_tokens": 1}, "finish_reason": "tool_calls"}
+        for index in range(running_reads + threshold + 1)
+    ] + [{"content": "The terminal read stop did not fire."}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    await _execute(owner_sessionmaker, seed["return_id"], "r13b4-list-reader")
+    for index, request in enumerate(client.requests[1:]):
+        outputs = [message["content"] for message in request["messages"]
+            if message.get("role") == "tool" and message.get("tool_call_id") == f"list-{index}"]
+        assert len(outputs) == 1
+        body = json.loads(outputs[0])
+        assert isinstance(body, list), body
+        statuses = {UUID(task["task_id"]): task["status"] for task in body}
+        assert statuses[seed["return_id"]] == "running", body
+        assert statuses[seed["child_id"]] == "failed"
+        assert statuses[seed["running_id"]] == ("running" if index < running_reads else "failed"), body
+        if index >= running_reads:
+            assert not any(status in {"pending", "running"} for task_id, status in statuses.items()
+                if task_id != seed["return_id"]), [
+                (task["task_id"], task["task_type"], task["status"]) for task in body]
+    async with owner_sessionmaker() as db:
+        returned = await db.get(RuntimeTask, seed["return_id"])
+        models = list(await db.scalars(select(SessionModelResult).where(
+            SessionModelResult.run_id == seed["return_id"])))
+        print("R13B4_STALE_LIST", "running_reads", min(len(client.requests), running_reads),
+            "terminal_reads", max(len(client.requests) - running_reads, 0), "calls", len(client.requests),
+            "rounds", len(models), "status", returned.status, "summary", returned.result_summary)
+        assert len(client.requests) == len(models) == running_reads + threshold
+        assert returned.status == "failed"
+        assert returned.metadata_json["terminal_reason"] == "loop_guard"
+        assert returned.metadata_json["error_code"] == "identical_terminal_task_read"
+        assert returned.result_summary == "loop_guard"
+    await _assert_member_final(app_user_sessionmaker, seed, STOP_REASON, failed=True)
 
 
 async def test_continuation_cannot_reset_the_shared_root_provider_call_pool(

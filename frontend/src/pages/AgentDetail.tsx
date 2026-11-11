@@ -364,7 +364,9 @@ function AgentDetailInner() {
         ? allSessions
         : [];
     const visibleBranchLineage = activeOperatorSessionAuthorized ? branchLineage : [];
-    const liveDelegationSession = activeSession?.session_kind === 'delegation_run';
+    const isLiveDelegationSession = (session: any) => session?.session_kind === 'delegation_run'
+        && session.runtime_source === 'delegation' && String(session.agent_id) === id && !session.operator_view;
+    const liveDelegationSession = isLiveDelegationSession(activeSession);
     const {
         wsConnected,
         transportPhase,
@@ -706,7 +708,7 @@ function AgentDetailInner() {
         const runtimeState = sessionUiStateRef.current[runtimeKey] || uiForPhase('idle');
         const activeRunState = activeRunStateRef.current[runtimeKey];
         const writableSession = isWritableSession(sess);
-        const liveTranscript = writableSession || sess?.session_kind === 'delegation_run';
+        const liveTranscript = writableSession || isLiveDelegationSession(sess);
         const draftSession = isDraftHumanChatSession(sess);
         const operatorOptions = operatorSessionRequestOptions(Boolean(sess?.operator_view), normalizedOperatorReason);
         const authorityIsCurrent = () => !sess?.operator_view || Boolean(

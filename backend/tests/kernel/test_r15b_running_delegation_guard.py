@@ -39,13 +39,13 @@ def test_unrelated_running_tasks_and_completed_colleagues_do_not_stop_the_turn()
                 machine_outcome="succeeded", side_effect_free=True) is None
 
 
-def test_failed_colleague_observation_instructs_member_requested_retry():
+def test_failed_colleague_observation_matches_pre_deploy_bytes():
     payload = runtime_failure_observation("failed", {"error_code": "tool_budget"})
-    assert payload["reason"] == "这次用完了用量预算，没有完成。"
-    assert payload["model_instruction"] == (
-        "Explain the failure reason to the member in their language and offer to retry. "
-        "Do not delegate again unless the member asks."
-    )
+    # Exact 83984c30 projection, including field order for stored body hashes.
+    assert json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode() == (
+        '{"ok":true,"status":"failed","reason_code":"tool_budget",'
+        '"reason":"这次用完了用量预算，没有完成。","retryable":false}'
+    ).encode()
 
 
 def test_failed_return_context_instructs_member_requested_retry():
@@ -55,3 +55,41 @@ def test_failed_return_context_instructs_member_requested_retry():
     failed = {"items": [{"task_type": "a2a_delegation", "terminal_status": "failed"}]}
     assert instruction in build_result_integration_runtime_context(failed)
     assert instruction not in build_result_integration_runtime_context({"items": []})
+
+
+@pytest.mark.parametrize("reader", ["check_async_task", "task_output", "list_async_tasks"])
+@pytest.mark.parametrize("task_type", ["trigger", "workflow"])
+def test_running_non_colleague_polls_do_not_end_turn(reader, task_type):
+    guard = LoopGuard()
+    task_id = str(uuid4())
+    for index in range(guard.identical_tool_threshold):
+        body = {"task_id": task_id, "task_type": task_type, "status": "running", "result": None}
+        if reader == "task_output":
+            body = {"ok": True, "task": body}
+        elif reader == "list_async_tasks":
+            body = [body]
+        assert guard.observe_tool_result(reader, {"cursor": index}, json.dumps(body),
+            machine_outcome="succeeded", side_effect_free=True) is None
+
+
+@pytest.mark.parametrize("task_type", ["trigger", "workflow", "delegation"])
+async def test_check_async_task_exposes_persisted_task_type(monkeypatch, task_type):
+    from app.agents import orchestrator
+
+    task_id, parent_id = str(uuid4()), uuid4()
+
+    async def persisted(requested_id):
+        assert requested_id == task_id
+        return {"task_id": task_id, "task_type": task_type, "status": "running",
+            "parent_agent_id": str(parent_id), "result": None}
+
+    monkeypatch.setattr(orchestrator, "get_runtime_task_record", persisted)
+    payload = await orchestrator.check_async_delegation(task_id, parent_agent_id=parent_id)
+    assert payload["task_type"] == task_type
+    guard = LoopGuard()
+    for index in range(guard.identical_tool_threshold):
+        decision = guard.observe_tool_result("check_async_task", {"cursor": index}, json.dumps(payload),
+            machine_outcome="succeeded", side_effect_free=True)
+        assert (decision is not None) == (task_type == "delegation" and index == guard.identical_tool_threshold - 1)
+    if task_type == "delegation":
+        assert decision.message == "同事正在处理，结果回来后会在这里继续。"

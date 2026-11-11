@@ -4591,6 +4591,7 @@ async def check_async_delegation(
             return {"task_id": task_id, "status": "forbidden", "result": None}
         return {
             "task_id": task_id,
+            "task_type": persisted.get("task_type"),
             "status": persisted.get("status", "not_found"),
             "result": persisted.get("result"),
             "timed_out": bool((persisted.get("metadata") or {}).get("timed_out", False)),
@@ -4606,6 +4607,7 @@ async def check_async_delegation(
     if not state.task.done():
         return {
             "task_id": task_id,
+            "task_type": "delegation",
             "status": "running",
             "result": None,
             "receipt": state.receipt,
@@ -4624,6 +4626,7 @@ async def check_async_delegation(
             _async_task_fallback_records.pop(task_id, None)
             return {
                 "task_id": task_id,
+                "task_type": persisted.get("task_type"),
                 "status": persisted_status,
                 "result": persisted.get("result"),
                 "timed_out": bool((persisted.get("metadata") or {}).get("timed_out", False)),

@@ -495,7 +495,7 @@ async def websocket_chat(
                         )
                         # User-facing session-list/search summary projection.
                         # Canonical episodic prompt memory reads T2 packages.
-                        if _process_role() != "api" and agent.tenant_id and conv_id:
+                        if not delegated_session and _process_role() != "api" and agent.tenant_id and conv_id:
                             try:
                                 from app.services.memory_service import _generate_session_summary, _save_session_summary
 

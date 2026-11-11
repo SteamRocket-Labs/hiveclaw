@@ -244,8 +244,7 @@ class LoopGuard:
         for observation in observations:
             if not isinstance(observation, dict):
                 continue
-            running = observation.get("status") in {"pending", "running"} and (
-                tool_name == "check_async_task" or observation.get("task_type") == "delegation")
+            running = observation.get("status") in {"pending", "running"} and observation.get("task_type") == "delegation"
             if not running and (active_listing or not is_runtime_failure_observation(observation)):
                 continue
             identity = observation.get("task_id") or observation.get("result_ref")

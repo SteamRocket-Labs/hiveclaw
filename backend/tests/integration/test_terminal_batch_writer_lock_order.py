@@ -420,3 +420,99 @@ async def test_task_admitted_between_prescan_and_batch_is_settled_under_its_advi
     assert late is not None and str(late.status) == "killed", late and late.status
     assert late.claimed_by is None and int(late.claim_version or 0) >= 2
     assert str(seed_task.status) == "killed", seed_task.status
+
+
+@pytest.mark.parametrize("writer", ["generic", "batch"])
+async def test_delegation_terminal_update_vs_colleague_round_commit(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, writer,
+) -> None:
+    """A running colleague commits a real model round while its kill is entering.
+
+    Pause the killer before its child advisory and finish the round first.
+    A row-first killer already holds the row the round needs, so neither
+    can proceed until the bounded wait rolls the kill back.
+    """
+    from tests.integration import test_r11c_colleague_lifecycle_postgres as lifecycle
+
+    import app.services.chat_transcript as transcript
+    import app.services.session_v2_persistence as persistence
+    from app.models.agent import Agent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult
+    from app.services.agent_identity_lifecycle import terminate_agent_runtime_tasks
+    from app.services.delegation_session_runtime import DelegationSessionRuntime
+    from app.services.runtime_task_service import update_runtime_task_record
+    from sqlalchemy import select
+
+    seed, _, client = await lifecycle._setup(owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+        tmp_path, tool="delegate_to_agent")
+    await lifecycle._execute(seed["run_id"], owner_sessionmaker, worker="r15b-r3-lock-parent")
+    child = await lifecycle._child(owner_sessionmaker, seed)
+    round_committed, finish_child = asyncio.Event(), asyncio.Event()
+    original_commit = DelegationSessionRuntime.commit
+
+    async def hold_after_round(self, **payload):
+        result = await original_commit(self, **payload)
+        round_committed.set()
+        await finish_child.wait()
+        return result
+
+    monkeypatch.setattr(DelegationSessionRuntime, "commit", hold_after_round)
+    child_task = asyncio.create_task(lifecycle._execute(child.id, owner_sessionmaker,
+        worker="r15b-r3-lock-child", delegation=True))
+    caller = asyncio.current_task()
+    original_lock = transcript.lock_transcript_session
+    gated = False
+
+    async def before_child_lock(db, *, session_id):
+        nonlocal gated
+        if asyncio.current_task() is caller and session_id == uuid.UUID(child.child_session_id) and not gated:
+            gated = True
+            client.release.set()
+            await asyncio.wait_for(round_committed.wait(), timeout=10)
+        await original_lock(db, session_id=session_id)
+
+    try:
+        await asyncio.wait_for(client.started.wait(), timeout=20)
+        monkeypatch.setattr(transcript, "lock_transcript_session", before_child_lock)
+        monkeypatch.setattr(persistence, "lock_transcript_session", before_child_lock)
+        if writer == "generic":
+            assert await update_runtime_task_record(child.id.hex, status="killed", result_summary="Member stopped colleague")
+        else:
+            async with owner_sessionmaker() as db:
+                agent = await db.get(Agent, seed["agent_id"])
+                await terminate_agent_runtime_tasks(db, agent, actor_id=seed["user_id"],
+                    reason="agent_deactivated", terminal_source="api.agents:deactivate_agent")
+                await db.commit()
+        assert gated and round_committed.is_set()
+        async with owner_sessionmaker() as db:
+            killed = await db.get(RuntimeTask, child.id)
+            assert killed.status == "killed"
+            assert (killed.metadata_json or {})["terminal_committed_status"] == "killed"
+            results = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == child.id)))
+            assert len(results) == 1 and results[0].round_committed_event_id is not None
+        print(f"DELEGATION-LOCK {writer}: round committed; kill committed")
+    finally:
+        client.release.set()
+        finish_child.set()
+        child_task.cancel()
+        await asyncio.gather(child_task, return_exceptions=True)
+
+
+async def test_malformed_child_session_does_not_rollback_colleague_stop(owner_sessionmaker, monkeypatch, tmp_path):
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import _patch_runtime_seams, _seed_run
+
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_task_service import update_runtime_task_record
+
+    seed = await _seed_run(owner_sessionmaker, tmp_path)
+    _patch_runtime_seams(monkeypatch, seed, owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeTask, seed["run_id"])
+        run.task_type, run.child_session_id = "delegation", "malformed-child-session"
+        await db.commit()
+    assert await update_runtime_task_record(seed["run_id"].hex, status="killed")
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeTask, seed["run_id"])
+        assert run.status == "killed"
+        assert run.metadata_json["terminal_committed_status"] == "killed"

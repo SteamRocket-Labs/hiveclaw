@@ -2042,7 +2042,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         _tool_terminal_signal: str | None = None
         _loop_guard_summary_pending = False
         _loop_guard_terminal_decision: LoopGuardDecision | None = None
-
         try:
             client = self._deps.create_client(active_model)
         except Exception as exc:

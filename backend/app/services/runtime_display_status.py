@@ -45,8 +45,7 @@ def runtime_failure_observation(status: str, metadata: dict, *, result_summary: 
     if reason == "identical_terminal_task_read" and isinstance(result_summary, str) and result_summary in _TERMINAL_READ_MESSAGES:
         message = result_summary  # Only fixed runtime copy, never a failed model's partial body.
     return {"ok": True, "status": status, "reason_code": reason, "reason": message,
-        "retryable": reason == "tool_round_limit",
-        **({"model_instruction": FAILED_DELEGATION_MODEL_INSTRUCTION} if status == "failed" else {})}
+        "retryable": reason == "tool_round_limit"}
 
 
 def is_runtime_failure_observation(payload: object) -> bool:

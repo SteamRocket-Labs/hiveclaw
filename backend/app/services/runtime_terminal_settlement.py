@@ -64,22 +64,26 @@ async def lock_runtime_task_with_session_authority(
     ``FOR UPDATE`` row first and reached this module's entry advisory (or
     ``append_session_events``' own advisory) afterwards — the exact edge that
     kills a concurrent transcript append of the same session. This helper
-    reads the row's immutable session binding unlocked, acquires that session
-    advisory, and only then takes the row lock. Refresh existing identity-map
+    reads the row's session bindings unlocked, acquires the parent and delegation
+    child advisories in sorted order, and only then takes the row lock. Refresh existing identity-map
     entries: another writer may have committed while this caller held no lock.
     The query's autoflush preserves any valid pending writes before that read.
     """
 
-    from app.services.chat_transcript import lock_transcript_session
+    from app.services.chat_transcript import lock_transcript_sessions
 
     binding = (
         await db.execute(
-            select(RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id).where(RuntimeTask.id == task_id)
+            select(RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id,
+                RuntimeTask.task_type, RuntimeTask.child_session_id).where(RuntimeTask.id == task_id)
         )
     ).first()
     session_id_raw = str(binding.parent_session_id or "") if binding is not None else ""
-    if binding is not None and session_id_raw and binding.parent_agent_id is not None:
-        await lock_transcript_session(db, session_id=uuid.UUID(session_id_raw))
+    if binding is not None:
+        await lock_transcript_sessions(db, session_ids=[
+            binding.parent_session_id if binding.parent_agent_id is not None else None,
+            binding.child_session_id if binding.task_type == "delegation" else None,
+        ])
     task = (
         await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id)
             .with_for_update().execution_options(populate_existing=True))
@@ -134,7 +138,8 @@ async def lock_runtime_task_batch_with_session_authority(
 
     from app.services.chat_transcript import lock_transcript_sessions
 
-    prescan = statement.with_only_columns(RuntimeTask.id, RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id)
+    prescan = statement.with_only_columns(RuntimeTask.id, RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id,
+        RuntimeTask.task_type, RuntimeTask.child_session_id)
     for _ in range(max(1, int(rounds))):
         bindings = (await db.execute(prescan)).all()
         prescan_ids = {row.id for row in bindings}
@@ -142,7 +147,10 @@ async def lock_runtime_task_batch_with_session_authority(
         await lock_transcript_sessions(
             db,
             session_ids=[
-                row.parent_session_id for row in bindings if row.parent_session_id and row.parent_agent_id is not None
+                session_id for row in bindings for session_id in (
+                    row.parent_session_id if row.parent_agent_id is not None else None,
+                    row.child_session_id if row.task_type == "delegation" else None,
+                ) if session_id
             ],
         )
         locked_statement = statement.with_for_update(skip_locked=skip_locked).execution_options(populate_existing=True)
@@ -296,10 +304,15 @@ async def settle_and_enqueue_runtime_task_terminal(
     if task.task_type == "delegation" and task.tenant_id and task.child_agent_id and task.child_session_id:
         from app.models.chat_session import ChatSession
 
-        delegation_session = await db.scalar(select(ChatSession.id).where(
-            ChatSession.id == uuid.UUID(str(task.child_session_id)),
-            ChatSession.tenant_id == task.tenant_id, ChatSession.agent_id == task.child_agent_id,
-        ))
+        try:
+            child_session_id = uuid.UUID(str(task.child_session_id))
+        except (ValueError, TypeError):
+            child_session_id = None
+        if child_session_id is not None:
+            delegation_session = await db.scalar(select(ChatSession.id).where(
+                ChatSession.id == child_session_id,
+                ChatSession.tenant_id == task.tenant_id, ChatSession.agent_id == task.child_agent_id,
+            ))
     # Legacy/orphan runs still stop even when no child conversation exists
     # to receive a display event. Their terminal evidence stays on the Run.
     if task.task_type in EXECUTABLE_CHAT_TASK_TYPES or delegation_session is not None:
@@ -363,7 +376,7 @@ async def settle_and_enqueue_runtime_task_terminal(
                             **delegation_payload,
                             **({"runtime_status": "skipped", "local_abandoned": bool(
                                 (metadata.get("remote_a2a") or {}).get("abandoned"))} if task.status == "skipped" else {})},
-                        occurred_at=task.completed_at or datetime.now(timezone.utc),
+                        **({"occurred_at": task.completed_at} if task.task_type == "delegation" and task.completed_at else {}),
                     )
                 ],
             )

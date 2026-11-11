@@ -37,3 +37,17 @@ it.each(['pending', 'running'])('does not claim a returned result for a %s deleg
   expect(container.textContent).toContain('同事正在处理');
   expect(container.textContent).not.toMatch(/已返回结果|private-/);
 });
+
+it.each(['check_async_task', 'list_async_tasks', 'task_output'].flatMap(reader =>
+  ['pending', 'running'].map(status => [reader, status])))('shows working progress for %s on a %s colleague', (reader, status) => {
+  const task = { task_id: 'private-task-id', task_type: 'delegation', status, result: null };
+  const result = JSON.stringify(reader === 'list_async_tasks' ? [task]
+    : reader === 'task_output' ? { ok: true, task } : task);
+  const timeline = buildRunTimelineFromMessages([{ role: 'tool_call', content: '', toolName: reader,
+    toolStatus: 'done', toolResult: result, toolRawResult: result }]);
+  const { container } = render(<RunDisclosureBlock timeline={timeline} />);
+  fireEvent.click(container.querySelector('.run-disclosure-header')!);
+  fireEvent.click(container.querySelector('.run-step-toggle, .run-tool-history-toggle')!);
+  expect(container.textContent).toContain('同事正在处理，结果回来后会在这里继续。');
+  expect(container.textContent).not.toMatch(/已返回结果|private-/);
+});

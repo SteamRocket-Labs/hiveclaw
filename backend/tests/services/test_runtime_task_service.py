@@ -174,6 +174,8 @@ class _ReconcileSession(ActiveTransactionSessionStub):
                 "root_runtime_task_id": None,
                 "parent_session_id": None,
                 "parent_agent_id": None,
+                "child_session_id": None,
+                "task_type": "",
                 "terminal_boundary_generation": None,
             }.items():
                 if not hasattr(task, name):
@@ -316,7 +318,7 @@ class _OneTaskResult:
 
     def first(self):
         # The advisory-first single-task helper reads the session binding as
-        # a (parent_session_id, parent_agent_id) row via .first(); the fake
+        # parent/child session bindings and task type via .first(); the fake
         # task object carries those attributes directly.
         return self._task
 
@@ -330,6 +332,8 @@ class _UpdateSession(ActiveTransactionSessionStub):
             "root_runtime_task_id": None,
             "parent_session_id": None,
             "parent_agent_id": None,
+            "child_session_id": None,
+            "task_type": "",
             "terminal_boundary_generation": None,
         }.items():
             if not hasattr(task, name):

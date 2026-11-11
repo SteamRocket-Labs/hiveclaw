@@ -312,31 +312,34 @@ async def _provider_available_tools(agent_id: uuid.UUID | None = None) -> set[st
     """Return provider-backed tools that are available in this deployment."""
     available: set[str] = set()
 
-    exa_key = await _get_exa_api_key()
-    tavily_key = await _get_tavily_api_key()
-    firecrawl_key = await _get_firecrawl_api_key()
-    xcrawl_key = await _get_xcrawl_api_key()
+    configs = await _get_tool_configs(("advanced_web_search", "advanced_web_fetch", "web_search",
+        "exa_search", "exa_fetch", "tavily_search", "tavily_extract", "firecrawl_search", "firecrawl_fetch",
+        "xcrawl_scrape"))
+    exa_key = configs["exa_search"].get("api_key") or configs["exa_search"].get("exa_api_key")
+    tavily_key = configs["tavily_search"].get("api_key") or configs["tavily_search"].get("tavily_api_key")
+    firecrawl_key = configs["firecrawl_fetch"].get("api_key") or configs["firecrawl_fetch"].get("firecrawl_api_key")
+    xcrawl_key = configs["xcrawl_scrape"].get("api_key") or configs["xcrawl_scrape"].get("xcrawl_api_key")
     for tool_name in ("advanced_web_search", "advanced_web_fetch"):
-        if await _keyless_capable_provider_available(tool_name, "", "api_key"):
+        if await _keyless_capable_provider_available(tool_name, "", "api_key", config=configs[tool_name]):
             available.add(tool_name)
-    if await _anysearch_provider_available():
+    if await _anysearch_provider_available(config=configs["web_search"]):
         available |= {
             "anysearch_get_sub_domains",
             "anysearch_search",
             "anysearch_batch_search",
             "anysearch_extract",
         }
-    if await _keyless_capable_provider_available("exa_search", exa_key, "exa_api_key"):
+    if await _keyless_capable_provider_available("exa_search", exa_key, "exa_api_key", config=configs["exa_search"]):
         available.add("exa_search")
-    if await _keyless_capable_provider_available("exa_fetch", exa_key, "exa_api_key"):
+    if await _keyless_capable_provider_available("exa_fetch", exa_key, "exa_api_key", config=configs["exa_fetch"]):
         available.add("exa_fetch")
-    if await _keyless_capable_provider_available("tavily_search", tavily_key, "tavily_api_key"):
+    if await _keyless_capable_provider_available("tavily_search", tavily_key, "tavily_api_key", config=configs["tavily_search"]):
         available.add("tavily_search")
-    if await _keyless_capable_provider_available("tavily_extract", tavily_key, "tavily_api_key"):
+    if await _keyless_capable_provider_available("tavily_extract", tavily_key, "tavily_api_key", config=configs["tavily_extract"]):
         available.add("tavily_extract")
-    if await _keyless_capable_provider_available("firecrawl_search", firecrawl_key, "firecrawl_api_key"):
+    if await _keyless_capable_provider_available("firecrawl_search", firecrawl_key, "firecrawl_api_key", config=configs["firecrawl_search"]):
         available.add("firecrawl_search")
-    if await _keyless_capable_provider_available("firecrawl_fetch", firecrawl_key, "firecrawl_api_key"):
+    if await _keyless_capable_provider_available("firecrawl_fetch", firecrawl_key, "firecrawl_api_key", config=configs["firecrawl_fetch"]):
         available.add("firecrawl_fetch")
     if xcrawl_key:
         available.add("xcrawl_scrape")
@@ -354,15 +357,17 @@ async def _provider_available_tools(agent_id: uuid.UUID | None = None) -> set[st
     return available
 
 
-async def _keyless_capable_provider_available(tool_name: str, platform_key: str, provider_key_name: str) -> bool:
-    config = await _get_tool_config(tool_name)
+async def _keyless_capable_provider_available(tool_name: str, platform_key: str, provider_key_name: str, *, config=None) -> bool:
+    if config is None:
+        config = await _get_tool_config(tool_name)
     auth_mode = str(config.get("auth_mode") or "auto").strip().lower()
     configured_key = str(config.get("api_key") or config.get(provider_key_name) or platform_key or "").strip()
     return auth_mode != "api_key" or bool(configured_key)
 
 
-async def _anysearch_provider_available() -> bool:
-    config = await _get_tool_config("web_search")
+async def _anysearch_provider_available(*, config=None) -> bool:
+    if config is None:
+        config = await _get_tool_config("web_search")
     auth_mode = str(config.get("anysearch_auth_mode") or config.get("auth_mode") or "auto").strip().lower()
     keys = config.get("anysearch_api_keys") or get_settings().ANYSEARCH_API_KEYS
     if isinstance(keys, list | tuple):
@@ -1452,6 +1457,7 @@ from app.services.agent_tool_domains.web_mcp import (  # noqa: E402
     _get_firecrawl_api_key as _get_firecrawl_api_key,
     _get_tavily_api_key as _get_tavily_api_key,
     _get_tool_config as _get_tool_config,
+    _get_tool_configs as _get_tool_configs,
     _get_xcrawl_api_key as _get_xcrawl_api_key,
     _import_mcp_server as _import_mcp_server,
     _search_exa as _search_exa,

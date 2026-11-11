@@ -82,6 +82,10 @@ async def _load_agent_for_user(
             .execution_options(populate_existing=True)
         )
     agent = result.scalar_one_or_none()
+    return await _validate_loaded_agent_for_user(db, user, agent, retirement_history=retirement_history)
+
+
+async def _validate_loaded_agent_for_user(db, user, agent, *, retirement_history=False):
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
@@ -372,7 +376,8 @@ async def require_agent_execution_access(
 
 
 async def check_agent_access(
-    db: AsyncSession, user: User, agent_id: uuid.UUID, *, _retirement_history: bool = False
+    db: AsyncSession, user: User, agent_id: uuid.UUID, *, _retirement_history: bool = False,
+    _live_agent_row: tuple[Agent | None, bool | None] | None = None,
 ) -> Tuple[Agent, str]:
     """Check whether a user may use or manage a specific Agent.
 
@@ -380,8 +385,13 @@ async def check_agent_access(
     must call :func:`check_agent_operator_reachability` explicitly.
     """
 
-    agent = await _load_agent_for_user(db, user, agent_id, retirement_history=_retirement_history)
-
+    if _live_agent_row is None:
+        agent = await _load_agent_for_user(db, user, agent_id, retirement_history=_retirement_history)
+    else:
+        # Only the same live SQL read may supply this row; it is not a cached grant.
+        agent, tenant_active = _live_agent_row
+        agent = await _validate_loaded_agent_for_user(db, user, agent if tenant_active is True else None,
+            retirement_history=_retirement_history)
     # Scoped administrators (PDEC-013): organization administrators manage
     # every agent in their own tenant, platform administrators every agent
     # of the authenticated selected company the exact lookup resolved to,
@@ -474,6 +484,32 @@ async def check_agent_access(
         return agent, "use"
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
+
+
+async def load_runtime_user_agent_access(db, *, tenant_id, user_id, agent_id):
+    """Refresh the ordinary reader and employee in one query, with the same ACLs."""
+    from app.database import get_current_tenant_id
+    from app.services.runtime_user_identity import load_scoped_runtime_user
+
+    if str(get_current_tenant_id()) != str(tenant_id):
+        return None, None
+    row = (await db.execute(select(User, Agent, Tenant.is_active)
+        .select_from(User).outerjoin(Agent, Agent.id == agent_id)
+        .outerjoin(Tenant, Tenant.id == Agent.tenant_id)
+        .options(joinedload(Agent.owner), joinedload(Agent.creator))
+        .where(User.id == user_id, User.tenant_id == tenant_id).execution_options(populate_existing=True))).first()
+    if row is None or row[0].role == "platform_admin":
+        # Exact cross-company platform identity recovery retains its audited path.
+        user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
+        if user is None:
+            return None, None
+        agent, _access = await check_agent_access(db, user, agent_id)
+        return user, agent
+    user, agent, active = row
+    if not user.is_active:
+        return None, None
+    agent, _access = await check_agent_access(db, user, agent_id, _live_agent_row=(agent, active))
+    return user, agent
 
 
 def effective_agent_owner_id(agent: Agent) -> uuid.UUID | None:

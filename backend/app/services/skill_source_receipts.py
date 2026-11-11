@@ -241,19 +241,25 @@ async def record_original_platform_skill_sources(db, *, agent, workspace):
 async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
     from app.config import get_settings
     from app.models.agent import Agent
+    from app.services.content_input_receipts import _preflight_inputs
 
-    revision = await db.scalar(
-        select(ConfigRevision)
-        .where(
-            ConfigRevision.tenant_id == tenant_id,
-            ConfigRevision.entity_type == "agent_bootstrap",
-            ConfigRevision.entity_id == agent_id,
-            ConfigRevision.version == 1,
-            ConfigRevision.is_active.is_(True),
-        )
-        .execution_options(populate_existing=True)
-    )
-    agent = await db.get(Agent, agent_id, populate_existing=True)
+    rows = _preflight_inputs(db)
+    key = ("platform_skill_sources", tenant_id, agent_id)
+    if rows is not None and key in rows:
+        sources = rows[key]
+        return sources if source_path is None else {source_path: sources[source_path]} if source_path in sources else {}
+    # The existing disclosure frame owns one current lineage snapshot. File
+    # bytes are still checked by each validator; the next disclosure reads anew.
+    selected_path = source_path
+    if rows is not None:
+        source_path = None
+
+    row = (await db.execute(select(ConfigRevision, Agent).select_from(Agent)
+        .outerjoin(ConfigRevision, (ConfigRevision.tenant_id == tenant_id)
+            & (ConfigRevision.entity_type == "agent_bootstrap") & (ConfigRevision.entity_id == Agent.id)
+            & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
+        .where(Agent.id == agent_id).execution_options(populate_existing=True))).first()
+    revision, agent = row if row is not None else (None, None)
     content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
     if agent is None or agent.tenant_id != tenant_id:
         return {}
@@ -354,7 +360,9 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
             continue
         if bundled.get(path) == digest:
             sources[path] = (source_revision_id, digest)
-    return sources
+    if rows is not None:
+        rows[key] = sources
+    return sources if selected_path is None else {selected_path: sources[selected_path]} if selected_path in sources else {}
 
 
 def _installation_id(agent_id, folder):

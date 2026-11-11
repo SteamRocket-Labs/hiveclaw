@@ -866,22 +866,13 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
         from app.models.config_revision import ConfigRevision
         from app.services.config_versioning import canonical_content_hash
 
-        revision = await db.scalar(
-            select(ConfigRevision)
-            .where(
-                ConfigRevision.tenant_id == tenant_id,
-                ConfigRevision.entity_type == "agent_bootstrap",
-                ConfigRevision.entity_id == agent_id,
-                ConfigRevision.version == 1,
-                ConfigRevision.is_active.is_(True),
-            )
-            .execution_options(populate_existing=True)
-        )
-        source = await db.scalar(
-            select(Agent)
+        row = (await db.execute(select(ConfigRevision, Agent).select_from(Agent)
+            .outerjoin(ConfigRevision, (ConfigRevision.tenant_id == tenant_id)
+                & (ConfigRevision.entity_type == "agent_bootstrap") & (ConfigRevision.entity_id == Agent.id)
+                & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
             .where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
-            .execution_options(populate_existing=True)
-        )
+            .execution_options(populate_existing=True))).first()
+        revision, source = row if row is not None else (None, None)
         content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
         if (
             revision is None
@@ -1707,9 +1698,9 @@ async def _runtime_input_actor(db, tenant_id, request):
 
 async def _resolve_runtime_input_actor(db, tenant_id, request):
     from fastapi import HTTPException
+    from app.core.permissions import load_runtime_user_agent_access
     from app.models.chat_session import ChatSession
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
-    from app.services.runtime_user_identity import load_scoped_runtime_user
     from app.tools.handlers.knowledge import _personal_kb_runtime_principal
 
     from app.services.machine_runtime_authority import machine_request_actor
@@ -1752,7 +1743,8 @@ async def _resolve_runtime_input_actor(db, tenant_id, request):
         principal = request if isinstance(request, AgentRuntimePrincipal) else _personal_kb_runtime_principal(
             request, require_delegation_binding=False,
         )
-        requester = await load_scoped_runtime_user(db, principal.requester_user_id, tenant_id=tenant_id)
+        requester, agent = await load_runtime_user_agent_access(db, tenant_id=tenant_id,
+            user_id=principal.requester_user_id, agent_id=principal.agent_id)
         if requester is None:
             raise ValueError("runtime_requester_unavailable")
         current_session = await _input_row(db, ChatSession, uuid.UUID(str(principal.session_id)))
@@ -1775,8 +1767,6 @@ async def _resolve_runtime_input_actor(db, tenant_id, request):
                 raise ValueError("runtime_session_actor_mismatch")
         elif current_session.user_id != requester.id:
             raise ValueError("runtime_session_actor_mismatch")
-        # The shared access reader refreshes the employee, owner and tenant together.
-        agent, _access = await _input_agent_access(db, requester, principal.agent_id)
         if agent.tenant_id != tenant_id:
             raise ValueError("runtime_agent_tenant_mismatch")
         return principal, requester

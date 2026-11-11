@@ -598,6 +598,18 @@ async def _anysearch_extract(arguments: dict) -> str:
     return await _call_anysearch_mcp_tool("anysearch_extract", "extract", {"url": normalized_url})
 
 
+async def _get_tool_configs(tool_names) -> dict:
+    from app.core.execution_context import get_tool_agent_id, get_tool_tenant_id
+    from app.services.tool_config_service import resolve_tool_configs
+
+    try:
+        return await resolve_tool_configs(tool_names, get_tool_tenant_id(), agent_id=get_tool_agent_id())
+    except Exception:
+        if get_tool_tenant_id() is not None or get_tool_agent_id() is not None:
+            raise
+        return {name: await _get_tool_config(name) for name in tool_names}
+
+
 async def _get_tool_config(tool_name: str) -> dict:
     """Resolve platform, company and employee config from the governed tool context.
 

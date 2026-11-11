@@ -536,7 +536,7 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
     from app.services.shared_group_authority import validate_shared_group_model_inputs
     from app.services.trigger_read_sources import validate_native_trigger_model_sources
     from app.services.team_task_context import validate_model_sources
-    from app.services.explicit_memory_authority import validate_memory_model_sources
+    from app.services.explicit_memory_authority import preload_memory_receipts, validate_memory_model_sources
 
     task = await db.get(RuntimeTask, run_id)
     # A selected team goal defines the work, rather than an optional source.
@@ -574,12 +574,17 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
             memory_readers[entry["message_index"]] = principals.setdefault(reader, reader)
     # Reuse source walks and rows; resolve reader authority on each validation.
     with group_source_read(batch_inputs=True, cache_authority=False) as scope:
+        await preload_memory_receipts(db, tenant_id, input_bindings["dependencies"])
         # Each dependency is checked once; an arbitrary retry cap must not turn the
         # fourth unavailable item into a whole-turn failure.
         for source in list(input_bindings["dependencies"]) or [None]:
             if source is not None and source not in input_bindings["dependencies"]:
                 continue
             dependencies = [source] if source is not None else []
+            for rows in scope.inputs.values():
+                for key in list(rows):
+                    if isinstance(key, tuple) and key[0] == "platform_skill_sources":
+                        del rows[key]
             source_key = tuple(source[key] for key in ("source_kind", "source_id", "source_version")) if source else None
             try:
                 if group_principal is not None:

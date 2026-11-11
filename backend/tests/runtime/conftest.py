@@ -47,7 +47,7 @@ def _default_runtime_config(monkeypatch, request):
     async def _stub_runtime_config(_agent_id):
         return RuntimeConfig(tenant_id=uuid.uuid4(), max_tool_rounds=200)
 
-    async def _stub_current_user_name(_user_id):
+    async def _stub_current_user_name(_user_id, _tenant_id=None):
         return None
 
     async def _stub_agent_runtime_context(*_args, **_kwargs):

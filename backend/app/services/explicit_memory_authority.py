@@ -4,7 +4,7 @@ import hashlib
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.database import tenant_scoped_session
 from app.memory.explicit_overlay import (
@@ -157,7 +157,8 @@ async def latest_memory_receipt(db, tenant_id, agent_id, entry_id):
     ).order_by(ContentInputReceipt.revision.desc()).limit(1).execution_options(populate_existing=True))
 
 
-async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, active_receipts=frozenset()):
+async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, active_receipts=frozenset(),
+    final_receipt_check=True):
     authority = receipt.authority_json if receipt is not None else {}
     await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     if (
@@ -179,11 +180,56 @@ async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, 
     await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, runtime_request=request,
         active_workspace_receipts=active_receipts | {receipt.id})
     await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
-    latest = await latest_memory_receipt(db, tenant_id, agent_id, entry.entry_id)
-    if latest is None or latest.id != receipt.id or _sha256(latest.authority_json) != version:
-        raise ContentInputReceiptError("explicit_memory_source_changed", "The memory authority changed while reading.", 403)
+    if final_receipt_check:
+        latest = await latest_memory_receipt(db, tenant_id, agent_id, entry.entry_id)
+        if latest is None or latest.id != receipt.id or _sha256(latest.authority_json) != version:
+            raise ContentInputReceiptError("explicit_memory_source_changed", "The memory authority changed while reading.", 403)
     _validate_source_bytes(path, receipt.content_sha256)
     return receipt
+
+
+async def _latest_entry_receipts(db, tenant_id, agent_id, entries):
+    refs = [memory_ref(agent_id, entry.entry_id) for entry in entries]
+    return {row.carrier_ref: row for row in await db.scalars(select(ContentInputReceipt).where(
+        ContentInputReceipt.tenant_id == tenant_id, ContentInputReceipt.carrier_kind == "explicit_memory",
+        ContentInputReceipt.carrier_ref.in_(refs)).distinct(ContentInputReceipt.carrier_ref)
+        .order_by(ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())
+        .execution_options(populate_existing=True))} if refs else {}
+
+
+async def preload_memory_receipts(db, tenant_id, dependencies):
+    """Populate the existing disclosure's receipt rows, without deciding access."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    if not isinstance(db, AsyncSession):
+        return
+    ids = []
+    for source in dependencies:
+        if source["source_kind"] == "explicit_memory":
+            try:
+                ids.append(uuid.UUID(source["source_id"]))
+            except ValueError:
+                pass  # The ordered validator retains its original error.
+    if not ids:
+        return
+    rows = _preflight_inputs(db)
+    if rows is None:
+        return
+    statement = text("""
+        WITH RECURSIVE memories(id) AS (
+            SELECT unnest(CAST(:ids AS uuid[]))
+            UNION
+            SELECT CASE WHEN child->>'source_id' ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
+                THEN (child->>'source_id')::uuid END
+            FROM memories m JOIN content_input_receipts r ON r.id = m.id AND r.tenant_id = :tenant
+            CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(r.dependencies_json) = 'array'
+                THEN r.dependencies_json ELSE '[]'::jsonb END) child
+            WHERE child->>'source_kind' = 'explicit_memory'
+        ) SELECT r.* FROM content_input_receipts r JOIN memories m ON r.id = m.id WHERE r.tenant_id = :tenant
+    """)
+    receipts = await db.scalars(select(ContentInputReceipt).from_statement(statement)
+        .params(ids=ids, tenant=tenant_id).execution_options(populate_existing=True))
+    rows.update({(ContentInputReceipt, receipt.id): receipt for receipt in receipts})
 
 
 async def _recheck_group_memory_audiences(db, *, tenant_id, agent_id, request, receipts):
@@ -210,23 +256,41 @@ async def _recheck_group_memory_audiences(db, *, tenant_id, agent_id, request, r
 async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, session_factory=None, issue_observer=None):
     """Return only exact current versions; do not let previews bypass this boundary."""
     allowed = []
+    entries = list(entries)
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
         # Every authorization pass, including post-selection, owns a fresh walk.
         with group_source_read(batch_inputs=True):
             _principal, actor, _session = await _actor(db, tenant_id, request)
             actor_id = actor.id
             current_audience = audience_for_session(_session)
+            latest = await _latest_entry_receipts(db, tenant_id, agent_id, entries)
+            rows = _preflight_inputs(db)
+            rows.update({(ContentInputReceipt, receipt.id): receipt for receipt in latest.values()})
             checked_entries = []
+            versions = {}
             for entry in entries:
                 receipt = None
                 try:
-                    receipt = await latest_memory_receipt(db, tenant_id, agent_id, entry.entry_id)
+                    receipt = latest.get(memory_ref(agent_id, entry.entry_id))
+                    versions[entry.entry_id] = _sha256(receipt.authority_json) if receipt is not None else None
                     await _authorize_entry(db, tenant_id=tenant_id, agent_id=agent_id, request=request,
-                        entry=entry, receipt=receipt)
+                        entry=entry, receipt=receipt, final_receipt_check=False)
                 except ContentInputReceiptError as exc:
                     checked_entries.append((entry, receipt, exc))
                 else:
                     checked_entries.append((entry, receipt, None))
+            # Refresh every admitted entry together after all source walks;
+            # a newer revision or changed authority still withholds that entry.
+            refreshed = await _latest_entry_receipts(db, tenant_id, agent_id,
+                [entry for entry, _receipt, error in checked_entries if error is None])
+            for index, (entry, receipt, error) in enumerate(checked_entries):
+                if error is not None:
+                    continue
+                current = refreshed.get(memory_ref(agent_id, entry.entry_id))
+                if (current is None or current.id != receipt.id
+                    or _sha256(current.authority_json) != versions[entry.entry_id]):
+                    checked_entries[index] = (entry, receipt, ContentInputReceiptError(
+                        "explicit_memory_source_changed", "The memory authority changed while reading.", 403))
         # Refresh current-work access and compare actor identity/current audience.
         # Origin-group membership is checked separately below, outside the batch.
         _principal, current_actor, _session = await _actor(db, tenant_id, request)

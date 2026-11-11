@@ -14,7 +14,7 @@ import logging
 import re
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import tenant_scoped_session
@@ -264,6 +264,28 @@ async def resolve_tool_config(
         if not tool:
             return {}
 
+    return await _resolve_tool_config_for_row(db, tool, tool_name, tenant_id, agent_id)
+
+
+async def resolve_tool_configs(tool_names, tenant_id=None, *, agent_id=None, db=None):
+    """Resolve one availability inventory through the same governed merge path."""
+    if db is None:
+        effective_tenant = tenant_id
+        if not effective_tenant and agent_id:
+            from app.services.tenant_resolver import resolve_tenant_for_agent
+
+            effective_tenant = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(effective_tenant) as scoped_db:
+            return await resolve_tool_configs(tool_names, tenant_id, agent_id=agent_id, db=scoped_db)
+    tools = list(await db.scalars(select(Tool).where(Tool.name.in_(tool_names),
+        or_(Tool.tenant_id.is_(None), Tool.tenant_id == tenant_id))))
+    by_name = {tool.name: tool for tool in tools if tool.tenant_id == tenant_id}
+    by_name.update({tool.name: tool for tool in tools if tool.tenant_id is None})
+    return {name: await _resolve_tool_config_for_row(db, by_name[name], name, tenant_id, agent_id)
+        if name in by_name else {} for name in tool_names}
+
+
+async def _resolve_tool_config_for_row(db, tool, tool_name, tenant_id, agent_id):
     base_config = decrypt_tool_config_secrets(tool.config, tool.config_schema)
 
     # 2. Resolve tenant_id from agent if needed

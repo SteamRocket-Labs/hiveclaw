@@ -308,10 +308,10 @@ async def _build_memory_context_result(
     retriever = None
     rerank_model_config = await _maybe_await(_get_rerank_model_config(tenant_id))
     attempts = 0
+    retrieve_kwargs = {}
     for attempts in range(1, 3):
         try:
             retriever = MemoryRetriever(data_root=data_root_settings)
-            retrieve_kwargs = {}
             retrieve_params = inspect.signature(retriever.retrieve).parameters
             if "rerank_model_config" in retrieve_params:
                 retrieve_kwargs["rerank_model_config"] = rerank_model_config
@@ -321,6 +321,8 @@ async def _build_memory_context_result(
                 retrieve_kwargs["activation_context"] = activation_context
             if "runtime_task_id" in retrieve_params:
                 retrieve_kwargs["runtime_task_id"] = runtime_task_id
+            if "defer_explicit_sources" in retrieve_params and not legacy_compatibility:
+                retrieve_kwargs["defer_explicit_sources"] = True
             items = await retriever.retrieve(
                 agent_id,
                 query,
@@ -345,6 +347,7 @@ async def _build_memory_context_result(
     # that boundary so stale previews cannot bypass the scoped full loader.
     base_resident, overlay_sections = resident, []
     if not legacy_compatibility:
+        authorized = []
         try:
             from app.memory.explicit_overlay import load_explicit_overlay_entries
             from app.memory.profile_plane import with_explicit_memory_index
@@ -356,6 +359,10 @@ async def _build_memory_context_result(
             issues = []
             authorized = await authorized_explicit_entries(tenant_id=tenant_id, agent_id=agent_id, request=principal,
                 entries=load_explicit_overlay_entries(data_root, agent_id), issue_observer=issues)
+            if retrieve_kwargs.get("defer_explicit_sources") and items and any(
+                item.metadata.get("source_type") == "explicit_overlay" for item in items
+            ):
+                retriever.last_explicit_source_status = "partial" if issues else "ready"
             if issues or getattr(retriever, "last_explicit_source_status", "ready") != "ready":
                 degraded_components.append("explicit_memory_source_authority")
             overlay_sources = {entry.entry_id: (source_dependency(receipt),) for entry, receipt in authorized}
@@ -365,6 +372,15 @@ async def _build_memory_context_result(
         except Exception as exc:
             logger.warning("Resident explicit source authority unavailable: %s", type(exc).__name__)
             degraded_components.append("explicit_memory_source_authority")
+            if retrieve_kwargs.get("defer_explicit_sources") and items and any(
+                item.metadata.get("source_type") == "explicit_overlay" for item in items
+            ):
+                retriever._note_withheld("explicit_memory", None, "explicit_memory_source_unavailable")
+        if items is not None and retrieve_kwargs.get("defer_explicit_sources"):
+            # One post-selection disclosure binds both the selected bodies and
+            # the resident index; neither can bypass its final current reader.
+            items = retriever.bind_explicit_sources(items,
+                {entry.entry_id: (entry, receipt) for entry, receipt in authorized})
     resident_unbound = tuple(f"resident_source_unverified:{ref['source_id']}" for ref in resident.source_refs
         if ref["source_kind"] != "explicit_memory" and (
             ref["source_kind"] != "agent_resident_memory" or ref["source_id"] != f"{agent_id}\nmemory/self/self.md"))
@@ -693,11 +709,9 @@ async def _resolve_accountability_context(
 ) -> AgentAccountabilityContext | None:
     try:
         async with tenant_scoped_session(tenant_id) as db:
-            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
-            agent = agent_result.scalar_one_or_none()
-
-            tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-            tenant = tenant_result.scalar_one_or_none()
+            row = (await db.execute(select(Agent, Tenant).join(Tenant, Tenant.id == Agent.tenant_id)
+                .where(Agent.id == agent_id, Agent.tenant_id == tenant_id))).first()
+            agent, tenant = row if row is not None else (None, None)
 
             if agent is None or tenant is None:
                 return None
@@ -708,9 +722,9 @@ async def _resolve_accountability_context(
             )
             creator_uuid = getattr(agent, "creator_id", None)
 
-            owner = await _fetch_user(db, owner_uuid)
-            creator = await _fetch_user(db, creator_uuid)
-            current_user = await _fetch_user(db, current_user_uuid)
+            users = {user.id: user for user in await db.scalars(select(User).where(
+                User.id.in_({value for value in (owner_uuid, creator_uuid, current_user_uuid) if value}))) }
+            owner, creator, current_user = (users.get(value) for value in (owner_uuid, creator_uuid, current_user_uuid))
 
             owner_id = str(owner_uuid or agent_id)
             owner_name = _display_name(owner) or owner_id
@@ -732,13 +746,6 @@ async def _resolve_accountability_context(
     except Exception as exc:
         logger.warning("Failed to resolve activation accountability context for agent %s: %s", agent_id, exc)
         raise
-
-
-async def _fetch_user(db, user_id: uuid.UUID | None) -> User | None:
-    if not user_id:
-        return None
-    result = await db.execute(select(User).where(User.id == user_id))
-    return result.scalar_one_or_none()
 
 
 def _display_name(user: User | None) -> str | None:

@@ -6,6 +6,11 @@ from app.models.user import User
 from app.models.tenant import Tenant
 
 
+def is_scoped_runtime_user(actor, *, tenant_id):
+    """Share the exact live-company predicate with joined runtime reader loads."""
+    return actor is not None and actor.is_active and actor.tenant_id == tenant_id
+
+
 async def load_scoped_runtime_user(db, user_id, *, tenant_id):
     """Recover an exact live reader inside the already selected runtime company.
 
@@ -17,7 +22,7 @@ async def load_scoped_runtime_user(db, user_id, *, tenant_id):
     if str(get_current_tenant_id()) != str(tenant_id):
         return None
     actor = await load_runtime_user(db, user_id)
-    if actor is None or actor.tenant_id == tenant_id:
+    if actor is None or is_scoped_runtime_user(actor, tenant_id=tenant_id):
         return actor
     if actor.role != "platform_admin":
         return None

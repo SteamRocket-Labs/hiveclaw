@@ -79,6 +79,7 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
             )
     if owner_id is None and machine_actor is None and external_actor is None:
         return
+    captures = []
     for index, message in enumerate(messages):
         origin = message.context_origin if isinstance(message, LLMMessage) else None
         if not isinstance(origin, ContextMessageOrigin) or message.role not in {"system", "user"}:
@@ -111,7 +112,12 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
             proof["requester_external_principal_id"] = str(external_actor.external_principal_id)
         proof["source_hash"] = _hash(proof)
         source_id = uuid.uuid5(result_id, f"kernel-context:{index}:{proof['source_hash']}")
-        row = await db.get(InvocationSpan, source_id, populate_existing=True)
+        captures.append((message, source_id, proof))
+    existing = {row.id: row for row in await db.scalars(select(InvocationSpan).where(
+        InvocationSpan.id.in_([source_id for _message, source_id, _proof in captures]))
+        .execution_options(populate_existing=True))} if captures else {}
+    for message, source_id, proof in captures:
+        row = existing.get(source_id)
         if row is not None:
             if (
                 row.tenant_id != tenant_id
@@ -132,7 +138,7 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
                     trace_id=f"session-model:{result_id}",
                     span_id=f"kernel-context:{source_id}",
                     span_type="kernel_context",
-                    name=origin.kind,
+                    name=proof["kind"],
                     status="captured",
                     duration_ms=0,
                     started_at=datetime.now(timezone.utc),
@@ -334,17 +340,25 @@ async def _build_model_input_bindings(
             value["reasoning_signature"] = message.thinking_signature
         canonical[message.id] = message_snapshot(value)
 
+    kernel_ids = {}
     for ref in refs:
         if isinstance(ref, str) and ref.startswith("session-kernel-context:"):
             try:
-                source_id = uuid.UUID(ref.split(":", 1)[1])
+                kernel_ids[ref] = uuid.UUID(ref.split(":", 1)[1])
             except ValueError:
                 continue
-            origin = await load_context_message_origin(
-                db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, source_id=source_id
-            )
-            if origin is not None:
-                canonical[ref] = origin["message"]
+    from app.models.invocation_span import InvocationSpan
+
+    kernel_rows = {row.id: row for row in await db.scalars(select(InvocationSpan).where(
+        InvocationSpan.id.in_(kernel_ids.values())).execution_options(populate_existing=True))} if kernel_ids else {}
+    kernel_origins = {}
+    for ref, source_id in kernel_ids.items():
+        origin = await _validated_context_message_origin(
+            db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, row=kernel_rows.get(source_id)
+        )
+        if origin is not None:
+            canonical[ref] = origin["message"]
+            kernel_origins[ref] = origin
 
     for ref in refs:
         if isinstance(ref, str) and ref.startswith("session-compaction:"):
@@ -470,7 +484,11 @@ async def _build_model_input_bindings(
             continue
         ref = entry["source_ref"]
         if ref not in resolved:
-            resolved[ref] = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
+            if ref in kernel_origins:
+                resolved[ref] = await _context_origin_dependencies(db, tenant_id=tenant_id,
+                    agent_id=agent_id, origin=kernel_origins[ref])
+            else:
+                resolved[ref] = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
         refs, complete = resolved[ref]
         entry["dependencies"] = refs
         entry["dependency_status"] = "resolved" if complete else "incomplete"
@@ -777,6 +795,24 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     return result
 
 
+async def _context_origin_dependencies(db, *, tenant_id, agent_id, origin):
+    from app.services.historical_model_inputs import recover_context_dependencies
+
+    dependencies = _stored_dependencies(origin.get("dependencies")) if origin is not None else None
+    for section in (origin or {}).get("sections", []):
+        if section.get("name") == "member_stop":
+            stop_ref = section.get("source_ref", "")
+            if not stop_ref.startswith("session-run-cancelled:"):
+                return dependencies or [], False
+            _, complete = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=stop_ref)
+            if not complete:
+                return dependencies or [], False
+    if dependencies is not None and origin["dependency_coverage"]["complete"] is False:
+        return await recover_context_dependencies(
+            db, tenant_id=tenant_id, agent_id=agent_id, origin=origin, dependencies=dependencies)
+    return dependencies or [], dependencies is not None and origin["dependency_coverage"]["complete"] is True
+
+
 async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.organization_identity import ContentInputReceipt
@@ -784,7 +820,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence, _preflight_inputs
     from app.services.knowledge_provenance import KNOWLEDGE_TOOL_NAMES, build_knowledge_provenance
     from app.services.session_semantic_history import _event_payload
-    from app.services.historical_model_inputs import recover_context_dependencies, recover_model_dependencies
+    from app.services.historical_model_inputs import recover_model_dependencies
 
     try:
         kind, raw_id = ref.split(":", 1)
@@ -804,20 +840,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     if kind == "session-kernel-context":
         # Complete inventory is separate from the live leaf-authority readers.
         origin = await load_context_message_origin(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)
-        dependencies = _stored_dependencies(origin.get("dependencies")) if origin is not None else None
-        for section in (origin or {}).get("sections", []):
-            if section.get("name") == "member_stop":
-                stop_ref = section.get("source_ref", "")
-                if not stop_ref.startswith("session-run-cancelled:"):
-                    return dependencies or [], False
-                _, complete = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=stop_ref)
-                if not complete:
-                    return dependencies or [], False
-        if dependencies is not None and origin["dependency_coverage"]["complete"] is False:
-            return await recover_context_dependencies(
-                db, tenant_id=tenant_id, agent_id=agent_id, origin=origin, dependencies=dependencies
-            )
-        return dependencies or [], dependencies is not None and origin["dependency_coverage"]["complete"] is True
+        return await _context_origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, origin=origin)
     if kind == "session-compaction":
         source = await load_compaction_source(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)
         catalog = source.get("input_bindings") if source is not None else None

@@ -536,6 +536,7 @@ async def test_sources_are_validated_once_and_authority_checks_stay_live(native_
     n = await _graph(native_workspace, 10, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
     validations, authority, checks, resolutions = Counter(), Counter(), Counter(), Counter()
     validate, access = receipts._validate_input_dependency_batch, permissions.check_agent_access
+    live_access = permissions._agent_access_for_live_row
     authorize, resolve = receipts._authorize_session_input_source, receipts._resolve_session_input_source
 
     async def observe_validation(db, tenant, dependencies, **context):
@@ -546,11 +547,18 @@ async def test_sources_are_validated_once_and_authority_checks_stay_live(native_
             validations[scope, id(reader), current_source_recipient(), identity] += 1
         return await validate(db, tenant, dependencies, **context)
 
-    async def observe_access(db, user, agent, **kwargs):
+    def count_access(user, agent_id):
         scope = receipts._DISCLOSURE_SOURCE_VALIDATIONS.get()
         if scope is not None and scope.active:
-            authority[scope, user.id, agent] += 1
+            authority[scope, user.id, agent_id] += 1
+
+    async def observe_access(db, user, agent, **kwargs):
+        count_access(user, agent)
         return await access(db, user, agent, **kwargs)
+
+    async def observe_live_access(db, user, agent, tenant_active):
+        count_access(user, agent.id)
+        return await live_access(db, user, agent, tenant_active)
 
     def authority_key(db, tenant, session, context):
         return (receipts._DISCLOSURE_SOURCE_VALIDATIONS.get(), db.get_transaction(), tenant, session.id,
@@ -566,6 +574,7 @@ async def test_sources_are_validated_once_and_authority_checks_stay_live(native_
 
     monkeypatch.setattr(receipts, "_validate_input_dependency_batch", observe_validation)
     monkeypatch.setattr(permissions, "check_agent_access", observe_access)
+    monkeypatch.setattr(permissions, "_agent_access_for_live_row", observe_live_access)
     monkeypatch.setattr(receipts, "_authorize_session_input_source", observe_check)
     monkeypatch.setattr(receipts, "_resolve_session_input_source", observe_resolution)
     operation = {"download": lambda: _browser(n, "download"), "heartbeat_t2": lambda: _heartbeat(n),

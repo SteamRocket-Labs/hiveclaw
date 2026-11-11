@@ -117,6 +117,7 @@ class MemoryRetriever:
         retrieval_profile: ContextBudget | None = None,
         activation_context: ActivationContext | None = None,
         runtime_task_id: str | None = None,
+        defer_explicit_sources: bool = False,
     ) -> list[MemoryItem]:
         """Gather complete authorized evidence, then let the model select semantics.
 
@@ -153,8 +154,9 @@ class MemoryRetriever:
         # Selection can await a provider; recheck before releasing bodies to the main prompt.
         selected = await self._filter_episodic_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
             session_id=session_id, activation_context=activation_context)
-        selected = await self._filter_explicit_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
-            session_id=session_id, activation_context=activation_context, runtime_task_id=runtime_task_id)
+        if not defer_explicit_sources:
+            selected = await self._filter_explicit_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
+                session_id=session_id, activation_context=activation_context, runtime_task_id=runtime_task_id)
         return await self._filter_team_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
             session_id=session_id, activation_context=activation_context, runtime_task_id=runtime_task_id)
 
@@ -219,7 +221,7 @@ class MemoryRetriever:
 
     async def _filter_explicit_sources(self, items, *, agent_id, tenant_id, session_id, activation_context, runtime_task_id=None):
         from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
-        from app.services.explicit_memory_authority import authorized_explicit_entries, source_dependency
+        from app.services.explicit_memory_authority import authorized_explicit_entries
         from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
         explicit = [item for item in items if item.metadata.get("source_type") == "explicit_overlay"]
@@ -240,6 +242,12 @@ class MemoryRetriever:
         except Exception as exc:
             logger.warning("Explicit memory source authority unavailable: %s", type(exc).__name__)
             self._note_withheld("explicit_memory", None, "explicit_memory_source_unavailable")
+        return self.bind_explicit_sources(items, allowed)
+
+    def bind_explicit_sources(self, items, allowed):
+        """Bind selected bodies to the final authorized index without another walk."""
+        from app.services.explicit_memory_authority import source_dependency
+
         result = []
         explicit_dropped = 0
         for item in items:

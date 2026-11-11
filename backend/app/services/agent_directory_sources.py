@@ -49,19 +49,11 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
             raise _error()
         return actor, agent
     user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
-    agent = await db.get(Agent, agent_id, populate_existing=True)
-    session = await db.get(ChatSession, session_id, populate_existing=True)
-    task = (
-        await db.execute(
-            select(
-                RuntimeTask.root_user_id,
-                RuntimeTask.parent_agent_id,
-                RuntimeTask.child_agent_id,
-                RuntimeTask.parent_session_id,
-                RuntimeTask.child_session_id,
-            ).where(RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id)
-        )
-    ).one_or_none()
+    row = (await db.execute(select(Agent, ChatSession, RuntimeTask).select_from(Agent)
+        .outerjoin(ChatSession, ChatSession.id == session_id)
+        .outerjoin(RuntimeTask, (RuntimeTask.id == run_id) & (RuntimeTask.tenant_id == tenant_id))
+        .where(Agent.id == agent_id).execution_options(populate_existing=True))).first()
+    agent, session, task = row if row is not None else (None, None, None)
     try:
         task_sessions = {
             uuid.UUID(value) for value in (task.parent_session_id, task.child_session_id) if value

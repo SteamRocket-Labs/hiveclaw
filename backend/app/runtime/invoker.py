@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload
 
 from app.config import get_settings
 from app.core.execution_context import A2AToolAuthorityFrame, ExecutionPrincipal
@@ -567,7 +567,7 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
         ) as db:
             result = await db.execute(
                 select(Agent)
-                .options(selectinload(Agent.owner), selectinload(Agent.creator))
+                .options(joinedload(Agent.owner), joinedload(Agent.creator))
                 .where(Agent.id == agent_id)
             )
             agent = result.scalar_one_or_none()
@@ -658,15 +658,14 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
         )
 
 
-async def _resolve_current_user_name(user_id: uuid.UUID | None) -> str | None:
+async def _resolve_current_user_name(user_id: uuid.UUID | None, tenant_id: uuid.UUID | None = None) -> str | None:
     if not user_id:
         return None
 
     try:
-        tenant_id = await resolve_tenant_for_user(
-            user_id,
-            session_factory=async_session,
-        )
+        known_tenant = tenant_id is not None
+        if not known_tenant:
+            tenant_id = await resolve_tenant_for_user(user_id, session_factory=async_session)
         if tenant_id is None:
             return None
         async with tenant_scoped_session(
@@ -675,8 +674,13 @@ async def _resolve_current_user_name(user_id: uuid.UUID | None) -> str | None:
             require_tenant=True,
             source="current_user_display_name_bootstrap",
         ) as db:
-            result = await db.execute(select(User).where(User.id == user_id))
-            user = result.scalar_one_or_none()
+            if known_tenant:
+                from app.services.runtime_user_identity import load_scoped_runtime_user
+
+                user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
+            else:
+                result = await db.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
             if user:
                 return user.display_name or user.username
     except Exception as exc:
@@ -819,7 +823,7 @@ async def _resolve_memory_context(
         _memory_sig = inspect.signature(build_memory_context).parameters
         current_user_name = None
         if request.user_id and ("current_user_id" in _memory_sig or "current_user_name" in _memory_sig):
-            current_user_name = await _resolve_current_user_name(request.user_id)
+            current_user_name = await _resolve_current_user_name(request.user_id, tenant_id)
         if "context_window_tokens" in _memory_sig:
             _memory_kwargs["context_window_tokens"] = context_window_tokens
         if "budget_profile" in _memory_sig:
@@ -1048,7 +1052,7 @@ async def _resolve_runtime_metadata_context(
         return ""
 
     budget_profile = _resolve_context_budget(request)
-    current_user_name = await _resolve_current_user_name(request.user_id) if request.user_id else None
+    current_user_name = await _resolve_current_user_name(request.user_id, tenant_id) if request.user_id else None
     metadata = _session_metadata(request.session_context)
     _runtime_kwargs = {"current_user_name": current_user_name}
     _runtime_sig = inspect.signature(build_agent_runtime_context).parameters

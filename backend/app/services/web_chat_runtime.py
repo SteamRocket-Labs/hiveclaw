@@ -19,7 +19,7 @@ from loguru import logger
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload
 
 from app.config import get_settings
 from app.core.permissions import is_agent_expired
@@ -5862,7 +5862,7 @@ async def _load_runtime_context(
 
         agent_result = await db.execute(
             select(Agent)
-            .options(selectinload(Agent.owner), selectinload(Agent.creator))
+            .options(joinedload(Agent.owner), joinedload(Agent.creator))
             .where(Agent.id == runtime_task.parent_agent_id)
         )
         agent = agent_result.scalar_one_or_none()

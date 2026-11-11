@@ -525,6 +525,10 @@ async def test_provider_available_tools_respects_explicit_api_key_mode(monkeypat
     monkeypatch.setattr(agent_tools_module, "_get_firecrawl_api_key", no_key)
     monkeypatch.setattr(agent_tools_module, "_get_xcrawl_api_key", no_key)
     monkeypatch.setattr(agent_tools_module, "_get_tool_config", api_key_required_config)
+    async def configs(tool_names):
+        return {name: await api_key_required_config(name) for name in tool_names}
+
+    monkeypatch.setattr(agent_tools_module, "_get_tool_configs", configs)
     monkeypatch.setattr("app.services.resource_discovery._get_smithery_api_key", no_smithery_key)
     monkeypatch.setattr("app.services.resource_discovery._get_modelscope_api_token", no_modelscope_token)
 

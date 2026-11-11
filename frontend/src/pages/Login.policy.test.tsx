@@ -33,6 +33,13 @@ function mount(path = '/login') {
 }
 
 describe('Login policy', () => {
+  it('R16a.10 asks for the existing password at login and a new one at registration', async () => {
+    language.value = 'zh';
+    const { container } = mount();
+    expect(container.querySelector('input[type=password]')?.getAttribute('placeholder')).toBe('输入密码');
+    fireEvent.click(await screen.findByRole('tab', { name: '注册账号' }));
+    expect(container.querySelector('input[type=password]')?.getAttribute('placeholder')).toBe('设置密码');
+  });
   it.each([
     [new ApiError(0, '网络连接失败，请检查网络后重试。'), '无法连接服务器，请检查网络连接后重试。'],
     [new TypeError('A localized network failure'), '无法连接服务器，请检查网络连接后重试。'],

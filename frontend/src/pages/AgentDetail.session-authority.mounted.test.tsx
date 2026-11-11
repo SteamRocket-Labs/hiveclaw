@@ -703,6 +703,49 @@ async function composeOrdinaryMessage(text = 'Keep this message') {
   act(() => mocks.chatProps.onSetChatInput(text));
 }
 
+it.each(['accepted', 'deferred'])('R16a.4 does not describe a first %s input as merged work', async status => {
+  mocks.language = 'zh';
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', status, run: null,
+    admission_state: 'admitted', intent: 'start_turn', dispatch: status === 'deferred' ? { kind: 'deferred', code: 'execution_denied' } : {} });
+  await composeOrdinaryMessage();
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(mocks.chatProps.transportNotice).toBeNull();
+});
+
+it('R16a.9 does not announce older history on a fresh conversation live subscription', async () => {
+  await mountOwnedArtifactWork();
+  const older = deferred<any[]>();
+  mocks.getSessionTranscript.mockReturnValue(older.promise);
+  let backfill!: Promise<unknown>;
+  act(() => { backfill = mocks.transport.callbacks.onBackfill(mocks.chatProps.activeSession, 'agent-1'); });
+  await act(async () => {
+    mocks.transport.callbacks.onLiveTailReady({ key: `agent-1:${mocks.sessionId}`, sessionId: mocks.sessionId, acceptedAfterSequence: 0 });
+  });
+  expect(mocks.chatProps.transportNotice).toBeNull();
+  await act(async () => { older.resolve([]); await backfill; });
+});
+
+it('R16a.3 preserves the sending turn when a late previous-run phase arrives', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  await mountOwnedArtifactWork();
+  const history = completedRunEvents(1, 'old-run').slice(0, 3);
+  history.push(activeRunEvent(4, 'run', 'cancelled', 'old-run'));
+  await receiveRunEvents(history);
+  mocks.activeSessionRun = null;
+  mocks.activeRunObservedAt += 1;
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Fresh request' } });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(1));
+  expectMemberRunState('运行中');
+  await act(async () => { receiveLiveMessage({ type: 'phase', phase: 'cancelled', run_id: 'old-run' }); });
+  expectMemberRunState('运行中');
+  expect(disclosureStates()).toEqual(['cancelled', 'running']);
+  await act(async () => request.resolve({ run_id: 'new-run', status: 'running' }));
+});
+
 function receiveLiveMessage(data: any) {
   mocks.transport.callbacks.onMessage({ data, session: mocks.chatProps.activeSession,
     agentId: 'agent-1', sessionId: mocks.sessionId, key: `agent-1:${mocks.sessionId}`, isActiveRuntime: true,

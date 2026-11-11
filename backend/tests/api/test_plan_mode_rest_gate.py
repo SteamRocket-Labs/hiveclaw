@@ -1279,7 +1279,12 @@ def test_cancel_business_task_updates_both_projections_and_publishes_interrupt(m
     db = _QueuedDB(
         [
             _ScalarResult(task),
-            _ScalarResult(SimpleNamespace(parent_session_id=None, parent_agent_id=agent_id)),
+            # Mirrors the session-authority lock query, which also selects
+            # task_type and child_session_id since R15b's lock-order fix.
+            _ScalarResult(SimpleNamespace(
+                parent_session_id=None, parent_agent_id=agent_id,
+                task_type="business_task", child_session_id=None,
+            )),
             _ScalarResult(runtime),
             _ScalarResult(task),
         ]

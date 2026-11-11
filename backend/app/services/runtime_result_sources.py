@@ -1259,14 +1259,22 @@ def runtime_result_denial_bound(*, invocation, payload, content):
         if body.get("retryable") is True and body == {"schema": "hive.runtime_result_page.v1", "status": "not_found",
             "result_ref": arguments["result_ref"], "retryable": True}:
             return True  # Native absence feedback contains no result body or source grant.
-        from app.services.runtime_display_status import runtime_failure_observation
+        from app.services.runtime_display_status import is_delegation_failure_result_page, runtime_failure_observation
 
+        if is_delegation_failure_result_page(body):
+            # The predicate binds the fixed copy, the exact key set, and a
+            # canonical task_id; the settled gate above already pinned
+            # result_ref to this invocation's argument.
+            return True  # Only the native reader's fixed plain-sentence notice, never failed result bytes.
+        task_identity = {"task_id": str(uuid.UUID(str(body["task_id"])))} if "task_id" in body else {}
         failure = runtime_failure_observation(body.get("status"), {"error_code": body.get("reason_code")},
             result_summary=body.get("reason"))
-        task_identity = {"task_id": str(uuid.UUID(str(body["task_id"])))} if "task_id" in body else {}
-        if failure and body == {"schema": "hive.runtime_result_page.v1", "result_ref": arguments["result_ref"],
-            **task_identity, **failure}:
-            return True  # Only the native reader's fixed execution status, never failed result bytes.
+        if (failure and body.get("reason_code") != "delegation_timeout" and body == {
+                "schema": "hive.runtime_result_page.v1", "result_ref": arguments["result_ref"],
+                **task_identity, **failure}):
+            # No pre-R16b record carries the delegation_timeout code; refusing it
+            # keeps this legacy acceptance set from growing with the new code.
+            return True  # Legacy pre-R16b fixed execution status: records written before the plain page still bind.
         return (
             set(body) == {"schema", "status", "reason_code", "result_ref", "retryable", "recovery_action"}
             and body["schema"] == "hive.runtime_result_page.v1"

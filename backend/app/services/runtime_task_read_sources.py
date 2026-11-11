@@ -251,22 +251,25 @@ async def record_task_read(request, content, *, capture=None):
                     observations.append(
                         {"task_id": str(task.id), "record_hash": _hash(record), "observed_at": observed[1]}
                     )
-                from app.services.runtime_display_status import runtime_failure_observation
+                from app.services.runtime_display_status import delegation_failure_result_page
 
-                failure = runtime_failure_observation(record["status"], record["metadata"], result_summary=record["result"])
-                if failure:
+                page = delegation_failure_result_page(
+                    task_id=str(uuid.UUID(str(record["task_id"]))),
+                    status=record["status"],
+                    metadata=record["metadata"],
+                    result_summary=record["result"],
+                )
+                if page:
                     # This is a scoped SQL status observation, not a grant to
                     # consume a failed child's prompt, partial output or metadata.
-                    projection = _pending_result_record(record)
-                    projection.pop("result_publication")
-                    projection.update(failure, result=failure["reason"])
+                    # Every reader hands the parent the same plain page
+                    # read_runtime_result uses — no codes left to quote.
                     if call.tool_name == "task_output":
-                        body["task"] = projection
+                        body["task"] = page
                     elif call.tool_name == "check_async_task":
-                        body = {key: value for key, value in body.items() if key not in {"result", "receipt"}}
-                        body.update(failure, result=failure["reason"])
+                        body = page
                     else:
-                        body[index] = projection
+                        body[index] = page
                     failure_projected = True
                     continue
                 if call.tool_name == "check_async_task" and body.get("result") is None and body.get("receipt") is None:

@@ -287,6 +287,9 @@ def _build_delegated_worker_prompt(profile: DelegationToolProfile, parent_name: 
         "<isolation_contract>\n"
         "- The delegated task is the ONLY authoritative context you have.\n"
         "- The parent agent's conversation history is NOT available to you.\n"
+        "- Facts, figures, and short excerpts given in the task message are your source when you cannot read the "
+        "original file: answer from them and say which points rest on the message. Do not spend rounds searching "
+        "for files outside your reach.\n"
         "- Do not assume shared state with the parent beyond what the task says.\n"
         "- Do not leak information about the parent's other tasks or sessions.\n"
         f"{nesting_rule}"
@@ -2321,8 +2324,12 @@ async def _delegate_after_cycle_check(
         )
     except asyncio.TimeoutError:
         _delegation_status = "timeout"
+        # Plain member-language outcome: no seconds, no repeated target name (the
+        # runtime-action line already names the colleague), no "结果未知" vagueness.
+        from app.services.runtime_display_status import DELEGATION_TIMEOUT_MESSAGE
+
         delegation_result = AgentDelegationResult(
-            content=(f"委派给{request.target.name}的任务超过 {request.policy.timeout_seconds:g} 秒未完成，结果未知。"),
+            content=DELEGATION_TIMEOUT_MESSAGE,
             child_session_id=child_session_id,
             trace_id=trace_id,
             depth=request.depth,
@@ -2334,7 +2341,9 @@ async def _delegate_after_cycle_check(
         reconciliation_required = isinstance(
             exc, (ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired, ToolLifecyclePersistenceError)
         )
-        # Keep the full exception message available to the parent model; the stack remains server-side.
+        # The full exception type, trace, and depth stay in the server log below
+        # (not in task metadata); the member line carries the fixed plain
+        # sentence only.
         logger.error(
             "[Orchestrator] Child agent %s failed (depth=%d, trace=%s): %s",
             request.target.name,
@@ -2343,11 +2352,10 @@ async def _delegate_after_cycle_check(
             exc,
             exc_info=True,
         )
+        from app.services.runtime_display_status import TASK_FAILED_MESSAGE
+
         delegation_result = AgentDelegationResult(
-            content=(
-                f"⚠️ Delegation to {request.target.name} failed: {type(exc).__name__}: {str(exc)}\n"
-                f"Trace: {trace_id}, depth: {request.depth}"
-            ),
+            content=TASK_FAILED_MESSAGE,
             child_session_id=child_session_id,
             trace_id=trace_id,
             depth=request.depth,

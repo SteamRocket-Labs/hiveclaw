@@ -794,6 +794,14 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         # Complete inventory is separate from the live leaf-authority readers.
         origin = await load_context_message_origin(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)
         dependencies = _stored_dependencies(origin.get("dependencies")) if origin is not None else None
+        for section in (origin or {}).get("sections", []):
+            if section.get("name") == "member_stop":
+                stop_ref = section.get("source_ref", "")
+                if not stop_ref.startswith("session-run-cancelled:"):
+                    return dependencies or [], False
+                _, complete = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=stop_ref)
+                if not complete:
+                    return dependencies or [], False
         if dependencies is not None and origin["dependency_coverage"]["complete"] is False:
             return await recover_context_dependencies(
                 db, tenant_id=tenant_id, agent_id=agent_id, origin=origin, dependencies=dependencies

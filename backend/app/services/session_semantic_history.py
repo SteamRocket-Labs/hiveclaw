@@ -14,7 +14,7 @@ import copy
 import json
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -35,6 +35,17 @@ from app.services.session_user_checkpoint import (
 
 _BRANCH_PREFIX_SOURCE = "conversation_branch_prefix"
 _USER_STOP_MARKER = "[Request interrupted by user; its plan and todos are stopped. Resume only if asked.]"
+_USER_STOP_NOTICE = f"Previous run: {_USER_STOP_MARKER}\nAnswer the member's latest message."
+
+
+def is_member_authored_run(task: Any) -> bool:
+    metadata = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    return (
+        task.task_type == "web_chat_turn"
+        and not metadata.get("task_notification")
+        and str(metadata.get("runtime_mailbox_role") or "").strip().lower() != "system"
+        and not metadata.get("trigger_origin")
+    )
 
 
 class SessionSemanticHistoryUnavailable(RuntimeError):
@@ -86,6 +97,7 @@ class SessionSemanticMessage:
     thinking_signature: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str | None = None
+    stop_notice_active: bool = False
 
     @property
     def sequence(self) -> int:
@@ -820,6 +832,24 @@ async def load_session_semantic_history(
             current_run_id=current_run_id,
             views=views,
         )
+        cancelled, stop_windows, queued_starts = _cancelled_run_messages(views, current_run_id=current_run_id)
+        completed_sequence = 0
+        if cancelled:
+            completed = [view for view in views
+                if view.source.item_kind == "run" and view.source.lifecycle == "completed"
+                and _source_scope_run_id(view.source) != current_run_id
+                and view.sequence > max(message.sequence_end for message in cancelled)
+                and _event_payload(view.source).get("reason_code") != "company_approval_required"]
+            run_ids = {_source_scope_run_id(view.source) for view in completed} - {None}
+            if run_ids:
+                from app.models.runtime_task import RuntimeTask
+
+                tasks = (await db.execute(select(RuntimeTask.id, RuntimeTask.task_type, RuntimeTask.metadata_json).where(
+                    RuntimeTask.tenant_id == tenant_id, RuntimeTask.parent_agent_id == agent_id,
+                    RuntimeTask.id.in_(run_ids)))).all()
+                member_run_ids = {task.id for task in tasks if is_member_authored_run(task)}
+                completed_sequence = max((view.sequence for view in completed
+                    if _source_scope_run_id(view.source) in member_run_ids), default=0)
     except SessionSemanticHistoryUnavailable:
         raise
     except Exception as exc:
@@ -830,10 +860,11 @@ async def load_session_semantic_history(
             tenant_id=tenant_id,
             agent_id=agent_id,
             session_id=session_id,
-            evidence_refs=("chat_transcript_events", "session_model_results", "session_tool_invocations"),
+            evidence_refs=("chat_transcript_events", "session_model_results", "session_tool_invocations", "runtime_tasks"),
         ) from exc
 
-    cancelled, stop_windows, queued_starts = _cancelled_run_messages(views, current_run_id=current_run_id)
+    cancelled = [replace(message, stop_notice_active=message.sequence_end > completed_sequence)
+        for message in cancelled]
     messages = [*users, *rounds, *legacy, *remote, *cancelled]
 
     def history_order(message):

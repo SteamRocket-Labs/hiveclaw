@@ -492,3 +492,189 @@ async def test_unprojected_required_parts_still_hold_the_next_input(owner_sessio
         admission = await db.scalar(select(SessionInputAdmission).where(
             SessionInputAdmission.input_id == next_input_id))
         assert admission.dispatch_state == "pending"
+
+
+async def _dead_letter_turn_two_boundary(owner_sessionmaker, seeded, *, terminal_sequence: int):
+    from uuid import uuid4 as _uuid4
+
+    run2_id = _uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(RuntimeTask(
+            id=run2_id, task_type="web_chat_turn", status="running",
+            parent_agent_id=seeded.agent_id, child_agent_id=seeded.agent_id,
+            tenant_id=seeded.tenant_id,
+            parent_session_id=str(seeded.session_id), child_session_id=str(seeded.session_id),
+            root_user_id=seeded.user_id, root_session_id=str(seeded.session_id), root_runtime_task_id=run2_id,
+            prompt="second turn", metadata_json={"turn_id": f"turn-{run2_id.hex}"},
+            terminal_boundary_generation=1,
+        ))
+        await db.flush()
+        boundary2 = await _complete_turn_and_enqueue_boundary(db, task=await db.get(RuntimeTask, run2_id),
+            terminal_sequence=terminal_sequence)
+        await db.commit()
+    async with owner_sessionmaker() as db:
+        row = await db.get(RuntimeTerminalBoundaryOutbox, boundary2.id)
+        # An unrelated dead-letter cause: the T0 bridge never projected.
+        row.status = "dead_letter"
+        row.last_error = "WebTerminalBoundaryPending: terminal transcript T0 projection is pending"
+        await db.commit()
+    return run2_id, boundary2
+
+
+@pytest.mark.parametrize("disposition", [None, "retry"])
+@pytest.mark.parametrize("older_state", ["needs_reconciliation", "in_flight"])
+async def test_older_unresolved_summary_does_not_block_newer_dead_letter_redrive(
+    owner_sessionmaker, older_state, disposition
+):
+    """R15i round-2 B1: a held projection of turn N must not gate turn N+1's
+    dead letter. Before the fix, ``prepare_web_summary_retry`` counted ANY
+    in_flight/needs_reconciliation projection as this dead letter's own, so
+    both redrive variants raised and the session stayed stuck."""
+    from app.services.web_terminal_boundary_processor import _SUMMARY_PROJECTION_TASKS
+
+    tenant_id, user_id, _agent_id, session_id, run1_id = await _seed_session(owner_sessionmaker, active_run=True)
+    seeded = SimpleNamespace(tenant_id=tenant_id, user_id=user_id, agent_id=_agent_id, session_id=session_id,
+        run_id=run1_id)
+    material1 = _summary_test_material(seeded, runtime_task_id=run1_id, terminal_sequence=21,
+        final_response="turn one answer")
+    release = asyncio.Event()
+    provider_calls = 0
+
+    async def generate(_messages, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        if older_state == "in_flight":
+            await release.wait()
+            return "turn one summary"
+        raise TimeoutError("provider timeout")
+
+    processor1 = _deferred_summary_processor(owner_sessionmaker, material1, summary_generator=generate)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=owner_sessionmaker)
+
+    async with owner_sessionmaker() as db:
+        await _complete_turn_and_enqueue_boundary(db, task=await db.get(RuntimeTask, run1_id),
+            terminal_sequence=21)
+        await db.commit()
+    claimed1 = await service.claim_batch(tenant_id=tenant_id, worker_id="r15i2-a", task_types=("web_chat_turn",),
+        limit=1)
+
+    async def canonical(_db, item):
+        return dict(item.binding)
+
+    assert await service.process_terminal_boundary(item=claimed1[0], worker_id="r15i2-a",
+        canonical_validator=canonical, process_callback=processor1) is True
+
+    async def older_unresolved():
+        _, projection = await _summary_projection(owner_sessionmaker, session_id)
+        return projection.get("state") == older_state and (older_state == "needs_reconciliation"
+            or provider_calls == 1)
+
+    assert await _wait_until(older_unresolved)
+    if older_state == "in_flight":
+        # Simulate a redeploy: the event loop cancels the detached task
+        # mid-provider-call and the projection stays in_flight with no writer.
+        for task in list(_SUMMARY_PROJECTION_TASKS):
+            task.cancel()
+        await asyncio.gather(*list(_SUMMARY_PROJECTION_TASKS), return_exceptions=True)
+        _, projection = await _summary_projection(owner_sessionmaker, session_id)
+        assert projection.get("state") == "in_flight"
+
+    run2_id, boundary2 = await _dead_letter_turn_two_boundary(owner_sessionmaker, seeded, terminal_sequence=22)
+
+    # While the dead letter stands, every follow-up is refused outright.
+    async with owner_sessionmaker() as db:
+        _input_id, receipt = await _submit_follow_up(db, seeded)
+    assert receipt["dispatch"]["kind"] == "rejected"
+
+    # The older turn's unresolved summary must not gate this dead letter's
+    # redrive, with or without an operator summary disposition.
+    redriven = await service.redrive_dead_letter(tenant_id=tenant_id, outbox_id=boundary2.id,
+        actor_user_id=user_id, reason="r15i2 older summary must not block this boundary",
+        summary_disposition=disposition)
+    assert redriven.status == "pending"
+
+    material2 = _summary_test_material(seeded, runtime_task_id=run2_id, terminal_sequence=22,
+        final_response="turn two answer")
+
+    async def generate_two(_messages, **_kwargs):
+        return "turn two summary"
+
+    processor2 = _deferred_summary_processor(owner_sessionmaker, material2, summary_generator=generate_two)
+    claimed2 = await service.claim_batch(tenant_id=tenant_id, worker_id="r15i2-b", task_types=("web_chat_turn",),
+        limit=1)
+    assert [item.runtime_task_id for item in claimed2] == [run2_id]
+    assert await service.process_terminal_boundary(item=claimed2[0], worker_id="r15i2-b",
+        canonical_validator=canonical, process_callback=processor2) is True
+    assert await _wait_until(lambda: _boundary_delivered(owner_sessionmaker, boundary2.id))
+
+    async def newer_summary_sealed():
+        summary, projection = await _summary_projection(owner_sessionmaker, session_id)
+        return projection.get("state") == "sealed" and summary == "turn two summary"
+
+    assert await _wait_until(newer_summary_sealed), \
+        "the redriven turn's own summary must supersede the older unresolved projection"
+    _, projection = await _summary_projection(owner_sessionmaker, session_id)
+    assert projection["terminal_sequence"] == 22
+    assert projection["runtime_task_id"] == str(run2_id)
+
+
+async def test_ack_gap_replay_after_call_return_invokes_provider_once_and_seals_once(owner_sessionmaker):
+    """R15i round-2 N2: the ack can fail after ``__call__`` has returned, so
+    the outbox reprocesses the boundary and a second detached task is spawned
+    for the same turn while the first is still inside the provider call."""
+    from app.services.web_terminal_boundary_processor import _SUMMARY_PROJECTION_TASKS
+
+    tenant_id, _user_id, _agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    seeded = SimpleNamespace(tenant_id=tenant_id, user_id=_user_id, agent_id=_agent_id, session_id=session_id,
+        run_id=run_id)
+    material = _summary_test_material(seeded, runtime_task_id=run_id, terminal_sequence=21,
+        final_response="turn one answer")
+    release = asyncio.Event()
+    provider_calls = 0
+
+    async def generate(_messages, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        await release.wait()
+        return "the only summary"
+
+    processor = _deferred_summary_processor(owner_sessionmaker, material, summary_generator=generate)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=owner_sessionmaker)
+
+    async with owner_sessionmaker() as db:
+        boundary = await _complete_turn_and_enqueue_boundary(db, task=await db.get(RuntimeTask, run_id),
+            terminal_sequence=21)
+        await db.commit()
+
+    async def canonical(_db, item):
+        return dict(item.binding)
+
+    claimed = await service.claim_batch(tenant_id=tenant_id, worker_id="r15i2-c", task_types=("web_chat_turn",),
+        limit=1)
+    assert await service.process_terminal_boundary(item=claimed[0], worker_id="r15i2-c",
+        canonical_validator=canonical, process_callback=processor) is True
+    assert await _wait_until(lambda: _boundary_delivered(owner_sessionmaker, boundary.id))
+
+    async def first_attempt_inside_provider():
+        _, projection = await _summary_projection(owner_sessionmaker, session_id)
+        return projection.get("state") == "in_flight" and provider_calls == 1
+
+    assert await _wait_until(first_attempt_inside_provider)
+    # The detached task carries the runtime snapshot prefix.
+    assert [task.get_name() for task in _SUMMARY_PROJECTION_TASKS] == [
+        f"runtime-terminal-boundary-summary:{run_id}"
+    ]
+
+    # Ack failed after ``__call__`` returned: the outbox reprocesses the
+    # boundary, which runs the callback (and its spawn) a second time.
+    await processor(claimed[0])
+
+    release.set()
+    await asyncio.gather(*list(_SUMMARY_PROJECTION_TASKS), return_exceptions=True)
+
+    summary, projection = await _summary_projection(owner_sessionmaker, session_id)
+    assert provider_calls == 1, "the replayed turn must not invoke the provider a second time"
+    assert summary == "the only summary"
+    assert projection["state"] == "sealed"
+    assert projection["terminal_sequence"] == 21
+    assert projection["attempt_count"] == 1, "the slot was claimed and sealed exactly once"

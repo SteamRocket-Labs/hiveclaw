@@ -1997,7 +1997,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 tokens_used=accumulated_tokens,
             )
 
-        max_rounds = request.max_tool_rounds if request.max_tool_rounds is not None else runtime_config.max_tool_rounds
+        max_rounds = request.max_tool_rounds or runtime_config.max_tool_rounds
         max_tokens = self._deps.get_max_tokens(
             active_model.provider,
             active_model.model,
@@ -3516,6 +3516,14 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     return await _pause_for_user_clarification()
 
                 if _loop_guard_terminal_decision is not None:
+                    if _loop_guard_terminal_decision.reason == "identical_terminal_task_read":
+                        message = _loop_guard_terminal_decision.message
+                        await _record_new_token_usage()
+                        await self._persist_before_exit(request, runtime_config, message, api_messages)
+                        return InvocationResult(
+                            content=message, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
+                            parts=collected_parts + build_done_event(message)["parts"],
+                        )
                     _loop_guard_summary_pending = True
                     _terminal_evidence = {
                         "schema": "hive.loop_guard_terminal_evidence.v1",

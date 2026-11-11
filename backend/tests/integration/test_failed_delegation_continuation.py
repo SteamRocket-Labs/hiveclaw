@@ -1,4 +1,4 @@
-"""Failed colleagues remain readable, and return turns retain the parent's limits."""
+"""Terminal colleagues remain readable; continuations share the root budget pool."""
 
 import json
 import sys
@@ -193,8 +193,14 @@ async def test_result_return_keeps_the_original_runtime_budget(
     assert seed["budget_inherited"], "A completion return must not allocate a fresh root budget"
 
 
+@pytest.mark.parametrize("terminal_status,short_reason", [
+    ("failed", "这次用完了用量预算，没有完成。"),
+    ("killed", "这次任务已停止。"),
+    ("skipped", "这次任务已跳过。"),
+    ("needs_reconciliation", "这次任务的结果待确认。"),
+])
 async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, terminal_status, short_reason,
 ):
     import app.runtime.invoker as invoker
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -202,13 +208,20 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
     from app.services.session_semantic_history import _event_payload
 
     seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    if terminal_status != "failed":
+        async with owner_sessionmaker() as db:
+            child = await db.get(RuntimeTask, seed["child_id"])
+            child.status = terminal_status
+            child.result_summary = "PRIVATE_PARTIAL_BODY"
+            await db.commit()
+    member_text = FAILURE if terminal_status == "failed" else "同事的任务没有完成：" + short_reason
     reads = [
         _call("read_runtime_result", {"result_ref": seed["result_ref"]}, "read-result"),
         _call("task_output", {"runtime_task_id": str(seed["child_id"])}, "read-output"),
         _call("check_async_task", {"task_id": str(seed["child_id"])}, "read-status"),
     ]
     client = kernel_cases.ScriptedLLMClient([
-        {"tool_calls": reads, "finish_reason": "tool_calls"}, {"content": FAILURE},
+        {"tool_calls": reads, "finish_reason": "tool_calls"}, {"content": member_text},
     ])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
     await _execute(owner_sessionmaker, seed["return_id"], "r13b-reader")
@@ -227,15 +240,20 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
     print("R13B_FAILED_CHILD_READERS", json.dumps(observed, ensure_ascii=False))
     (tmp_path / "reader-observations.json").write_text(json.dumps(observed, ensure_ascii=False, indent=2))
     for identity in ("read-result", "read-output", "read-status"):
-        assert identity in observed and "用量预算" in observed[identity], observed
-        assert "failed" in observed[identity], observed
+        assert identity in observed and short_reason in observed[identity], observed
+        assert terminal_status in observed[identity], observed
+        assert "PRIVATE_PARTIAL_BODY" not in observed[identity]
         assert "1000001" not in observed[identity] and "[Runtime Limit]" not in observed[identity]
     async with owner_sessionmaker() as db:
         events = list(await db.scalars(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.run_id == seed["return_id"], ChatTranscriptEvent.item_kind == "assistant_final")))
         assert len(events) == 1
         child = await db.get(RuntimeTask, seed["child_id"])
-        assert child.result_summary == "这次用完了用量预算，没有完成。"
+        assert child.result_summary == (short_reason if terminal_status == "failed" else "PRIVATE_PARTIAL_BODY")
+    await _assert_member_final(app_user_sessionmaker, seed, member_text)
+
+
+async def _assert_member_final(app_user_sessionmaker, seed, expected, *, provider_final=True):
     # Native finals reference the text blocks delivered by the member API.
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
@@ -261,6 +279,15 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
         response = await client.get(f"/agents/{seed['agent_id']}/sessions/{seed['session_id']}/transcript",
             params={"schema_version": 2, "limit": 1000})
     assert response.status_code == 200, response.text
+    if not provider_final:
+        # A runtime stop uses the existing runtime-authored terminal message;
+        # it must not invent a sealed provider final or disappear as a tool-card pause.
+        messages = [event for event in response.json() if event.get("legacy_event_type") == "assistant_message"
+            and event.get("run_id") == str(seed["return_id"])]
+        assert len(messages) == 1
+        assert messages[0]["payload"]["content"] == expected
+        assert sum(event.get("payload", {}).get("content") == expected for event in response.json()) == 1
+        return
     finals = [event for event in response.json() if event.get("item_kind") == "assistant_final"
         and event.get("scope", {}).get("run_id") == str(seed["return_id"])]
     assert len(finals) == 1
@@ -268,12 +295,12 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
 
     items = reduce_session_events(event for event in response.json() if event.get("schema") == SESSION_EVENT_SCHEMA).items
     displayed = "".join(items[source["item_id"]].content for source in finals[0]["payload"]["source_blocks"])
-    assert displayed == FAILURE
-    assert sum(event["payload"].get("content") == FAILURE for event in response.json()) == 1
+    assert displayed == expected
+    assert sum(event["payload"].get("content") == expected for event in response.json()) == 1
 
 
 @pytest.mark.parametrize("bound", ["rounds", "tokens"])
-async def test_polling_return_turn_does_not_reset_the_member_turn_limit(
+async def test_continuation_has_own_kernel_limits_under_the_shared_root_budget(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, bound,
 ):
     import app.runtime.invoker as invoker
@@ -282,7 +309,7 @@ async def test_polling_return_turn_does_not_reset_the_member_turn_limit(
         parent_rounds=4, parent_tokens=32_000 if bound == "tokens" else 30)
     client = kernel_cases.ScriptedLLMClient([
         {"tool_calls": [_call("check_async_task", {"task_id": str(seed["child_id"])}, f"poll-{index}")],
-            "usage": {"total_tokens": 1000 if bound == "tokens" else 1}, "finish_reason": "tool_calls"}
+            "usage": {"total_tokens": 10_000 if bound == "tokens" else 1}, "finish_reason": "tool_calls"}
         for index in range(6)
     ])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
@@ -294,4 +321,111 @@ async def test_polling_return_turn_does_not_reset_the_member_turn_limit(
         print("R13B_POLL_BOUND", bound, "calls", len(client.requests), "committed_rounds", len(models),
             "status", returned.status, "metadata", returned.metadata_json.get("turn_tokens_used"))
         assert returned.status == "failed" and returned.metadata_json["terminal_reason"] == "tool_budget"
-        assert len(client.requests) <= (1 if bound == "tokens" else 2), "Continuation reset the member's existing ceiling"
+        assert seed["budget_inherited"], "Only the root budget pool is inherited across continuations"
+        assert len(client.requests) == 4, "Each continuation gets its own kernel ceiling"
+        assert len(models) == 6  # Two parent rounds plus four continuation rounds.
+        assert returned.metadata_json["error_code"] == (
+            "turn_token_budget_exhausted" if bound == "tokens" else "tool_round_limit")
+        assert returned.metadata_json["turn_tokens_used"] == (40_000 if bound == "tokens" else 4)
+
+
+@pytest.mark.parametrize("reader", ["check_async_task", "task_output", "read_runtime_result", "all"])
+async def test_identical_terminal_child_reads_end_the_turn(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, reader,
+):
+    import app.runtime.invoker as invoker
+    from app.kernel.loop_guard import LoopGuard
+
+    threshold = LoopGuard().identical_tool_threshold
+    seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        parent_rounds=threshold + 5)
+    arguments = {
+        "check_async_task": {"task_id": str(seed["child_id"])},
+        "task_output": {"runtime_task_id": str(seed["child_id"])},
+        "read_runtime_result": {"result_ref": seed["result_ref"]},
+    }
+    readers = list(arguments) if reader == "all" else [reader]
+    client = kernel_cases.ScriptedLLMClient([
+        {"tool_calls": [_call(name, arguments[name], f"repeat-{index}-{name}") for name in readers],
+            "usage": {"total_tokens": 1}, "finish_reason": "tool_calls"}
+        for index in range(threshold + 5)
+    ])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    await _execute(owner_sessionmaker, seed["return_id"], "r13b-repeat-reader")
+    async with owner_sessionmaker() as db:
+        returned = await db.get(RuntimeTask, seed["return_id"])
+        models = list(await db.scalars(select(SessionModelResult).where(
+            SessionModelResult.run_id == seed["return_id"])))
+        print("R13B_IDENTICAL_TERMINAL", reader, "calls", len(client.requests), "rounds", len(models),
+            "status", returned.status, "summary", returned.result_summary)
+        assert len(client.requests) == len(models) == threshold
+        assert returned.result_summary == "同事的任务失败了：这次用完了用量预算，没有完成。"
+        assert returned.status == "completed"
+    await _assert_member_final(app_user_sessionmaker, seed, "同事的任务失败了：这次用完了用量预算，没有完成。", provider_final=False)
+
+
+async def test_identical_running_child_reads_do_not_end_the_turn(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    import app.runtime.invoker as invoker
+    from app.kernel.loop_guard import LoopGuard
+
+    threshold = LoopGuard().identical_tool_threshold
+    seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        parent_rounds=threshold + 5)
+    async with owner_sessionmaker() as db:
+        failed = await db.get(RuntimeTask, seed["child_id"])
+        child = RuntimeTask(id=uuid4(), task_type="delegation", status="running",
+            tenant_id=failed.tenant_id, parent_agent_id=failed.parent_agent_id,
+            child_agent_id=failed.child_agent_id, child_agent_name=failed.child_agent_name,
+            parent_session_id=failed.parent_session_id, child_session_id=failed.child_session_id,
+            root_user_id=failed.root_user_id, root_session_id=failed.root_session_id,
+            root_runtime_task_id=failed.root_runtime_task_id, prompt="Still processing.")
+        db.add(child)
+        await db.commit()
+        seed["child_id"] = child.id
+    client = kernel_cases.ScriptedLLMClient([
+        {"tool_calls": [_call("check_async_task", {"task_id": str(seed["child_id"])}, f"running-{index}")],
+            "usage": {"total_tokens": 1}, "finish_reason": "tool_calls"}
+        for index in range(threshold + 1)
+    ] + [{"content": "同事仍在处理。"}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    await _execute(owner_sessionmaker, seed["return_id"], "r13b-running-reader")
+    async with owner_sessionmaker() as db:
+        returned = await db.get(RuntimeTask, seed["return_id"])
+        assert returned.status == "completed"
+        assert returned.result_summary == "同事仍在处理。"
+    assert len(client.requests) == threshold + 2
+
+
+async def test_continuation_cannot_reset_the_shared_root_provider_call_pool(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    import app.runtime.invoker as invoker
+    from app.models.runtime_budget import RuntimeBudgetRun
+
+    seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    async with owner_sessionmaker() as db:
+        budget = await db.get(RuntimeBudgetRun, seed["budget_run_id"])
+        # Earlier total-only usage receipts deliberately retain their reservations.
+        # Leave two calls after both actual and still-reserved usage, without erasing either.
+        budget.used_provider_calls = budget.max_provider_calls - budget.reserved_provider_calls - 2
+        initial_used = budget.used_provider_calls
+        await db.commit()
+    client = kernel_cases.ScriptedLLMClient([
+        {"tool_calls": [_call("check_async_task", {"task_id": str(seed["child_id"])}, f"pool-{index}")],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1},
+            "finish_reason": "tool_calls"} for index in range(4)
+    ])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    await _execute(owner_sessionmaker, seed["return_id"], "r13b-budget-pool")
+    async with owner_sessionmaker() as db:
+        budget = await db.get(RuntimeBudgetRun, seed["budget_run_id"])
+        returned = await db.get(RuntimeTask, seed["return_id"])
+        print("R13B_SHARED_POOL", "calls", len(client.requests), "used", budget.used_provider_calls,
+            "cap", budget.max_provider_calls, "budget_status", budget.status, "return_status", returned.status)
+        assert returned.budget_run_id == seed["budget_run_id"]
+        assert budget.used_provider_calls == initial_used + 2
+        assert budget.used_provider_calls + budget.reserved_provider_calls == budget.max_provider_calls
+        assert budget.status == "waiting_budget_approval"
+    assert len(client.requests) == 2, "The exhausted root pool must deny another continuation provider call"

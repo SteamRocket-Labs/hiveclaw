@@ -241,24 +241,31 @@ async def test_tool_callback_binds_provider_request_and_only_broadcasts_committe
 
 
 @pytest.mark.asyncio
-async def test_persisted_runtime_event_only_broadcasts_committed_canonical_envelope():
+@pytest.mark.parametrize("event_type,visibility", [
+    ("memory_context_degraded", None),
+    ("context_window_status", "debug"),
+    ("provider_call_ledger", "debug"),
+])
+async def test_persisted_runtime_event_only_broadcasts_committed_canonical_envelope(event_type, visibility):
     from app.services import web_chat_run_orchestrator as orchestrator
 
     persisted_calls: list[dict] = []
     broadcasts: list[dict] = []
     raw_event = {
         "type": "session_context",
-        "event_type": "memory_context_degraded",
+        "event_type": event_type,
         "message": "semantic retrieval is temporarily unavailable",
         "retryable": True,
     }
+    if visibility:
+        raw_event["visibility"] = visibility
     committed = {
         "schema": "hive.session_event_compatibility",
         "schema_version": 1,
         "event_id": str(uuid4()),
         "sequence": 12,
         "visibility": {"audience": "direct_user"},
-        "event_type": "memory_context_degraded",
+        "event_type": event_type,
     }
 
     async def persist_runtime_event(**kwargs):
@@ -1804,3 +1811,12 @@ async def test_committed_outcome_is_not_rewritten_when_sidecars_fail(monkeypatch
 
     assert legacy_calls == []
     assert len(warnings) == 1
+
+
+async def test_turn_budget_debug_event_stays_out_of_member_output():
+    from app.services.web_chat_run_orchestrator import _WebChatCallbacks
+
+    # This event is excluded before persistence or broadcast; other debug events persist.
+    callbacks = _WebChatCallbacks(SimpleNamespace(ports=SimpleNamespace(events=SimpleNamespace(
+        stream_batcher_type=_NoopStreamBatcher))))
+    await callbacks.runtime_event({"type": "turn_token_budget_exhausted", "visibility": "debug"})

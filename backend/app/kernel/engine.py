@@ -49,6 +49,7 @@ from app.services.chat_message_parts import (
 from app.services.chat_artifact_delivery import tool_session_write_paths
 from app.services.llm_error_policy import classify_llm_error, should_surface_without_model_fallback
 from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
+from app.services.runtime_display_status import RUNTIME_LIMIT_MESSAGES
 from app.services.llm_client import LLMError, LLMMessage, LLMResponse, STREAM_RETRY_TOMBSTONE
 from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES
 from app.memory.metrics import record_prompt_cache_metrics
@@ -800,7 +801,7 @@ def _build_error_result(
 
 
 def _turn_token_budget_message(*, tokens_used: int, token_budget: int) -> str:
-    return "这次用完了用量预算，没有完成。"
+    return RUNTIME_LIMIT_MESSAGES["turn_token_budget_exhausted"]
 
 
 def _registered_connector_source_items(request: InvocationRequest) -> list[dict[str, Any]]:
@@ -1187,7 +1188,7 @@ def _tool_message_content(text_content: str, raw_result: Any) -> "str | list[dic
 
 
 def _tool_round_limit_message(max_rounds: int) -> str:
-    return "这次已达到运行轮次上限，没有完成。可以重试继续。"
+    return RUNTIME_LIMIT_MESSAGES["tool_round_limit"]
 
 
 def _is_concurrency_safe_tool(name: str) -> bool:

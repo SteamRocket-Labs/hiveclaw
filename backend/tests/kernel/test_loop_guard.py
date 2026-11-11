@@ -292,3 +292,43 @@ def test_loop_guard_warns_on_repeated_provider_cost_pressure() -> None:
     assert decision.trace_event["tool_schema_tokens"] == 2_100
     assert decision.outcome is not None
     assert decision.outcome.next_action == "self_correct_and_continue"
+
+
+def test_terminal_read_abort_requires_identical_task_and_complete_body():
+    import json
+
+    from app.kernel.loop_guard import LoopGuard
+    from app.services.runtime_display_status import runtime_failure_observation
+
+    guard = LoopGuard()
+    failure = runtime_failure_observation("failed", {"error_code": "provider_error"})
+    changed = runtime_failure_observation("failed", {"error_code": "tool_round_limit"})
+    first = {"task_id": "first"}
+    other = {"task_id": "other"}
+    for _ in range(guard.identical_tool_threshold - 1):
+        assert guard.observe_tool_result("check_async_task", first, json.dumps(failure),
+            machine_outcome="succeeded", side_effect_free=True) is None
+    # A different reason or a different child cannot complete the same count.
+    assert guard.observe_tool_result("check_async_task", first, json.dumps(changed),
+        machine_outcome="succeeded", side_effect_free=True) is None
+    assert guard.observe_tool_result("check_async_task", other, json.dumps(failure),
+        machine_outcome="succeeded", side_effect_free=True) is None
+    stopped = guard.observe_tool_result("check_async_task", first, json.dumps(failure),
+        machine_outcome="succeeded", side_effect_free=True)
+    assert stopped is not None and stopped.severity == "abort"
+    assert stopped.reason == "identical_terminal_task_read"
+    assert failure["reason"] in stopped.message
+    assert guard.failed_tool_calls == 0, "Reading a failed child is still a successful tool read"
+
+
+def test_pending_read_observations_do_not_abort_or_count_as_terminal_failures():
+    import json
+
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard()
+    for status in ("running", "pending"):
+        for _ in range(guard.identical_tool_threshold + 1):
+            assert guard.observe_tool_result("check_async_task", {"task_id": "live"},
+                json.dumps({"ok": True, "status": status, "result": None}),
+                machine_outcome="succeeded", side_effect_free=True) is None

@@ -180,8 +180,8 @@ async def test_turn_state_tool_budget_terminal_reason_on_real_handle():
     result = await kernel.handle(_request())
 
     assert result.terminal_reason == TerminalReason.TOOL_BUDGET
-    # The budget exit explains the round limit and preserves state for resume.
-    assert "tool-round limit" in result.content
+    # Only the text changed to Chinese; TOOL_BUDGET still owns this exit.
+    assert result.content == "这次已达到运行轮次上限，没有完成。可以重试继续。"
 
 
 @pytest.mark.asyncio

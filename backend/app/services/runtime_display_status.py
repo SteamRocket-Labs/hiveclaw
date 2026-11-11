@@ -1,25 +1,46 @@
 """Five display labels; execution states and replay rules are unchanged."""
 
 
-_FAILURE_MESSAGES = {
-    "tool_budget": "这次用完了用量预算，没有完成。",
+RUNTIME_LIMIT_MESSAGES = {
     "turn_token_budget_exhausted": "这次用完了用量预算，没有完成。",
     "tool_round_limit": "这次已达到运行轮次上限，没有完成。可以重试继续。",
+}
+
+_FAILURE_MESSAGES = {
+    **RUNTIME_LIMIT_MESSAGES,
+    "tool_budget": RUNTIME_LIMIT_MESSAGES["turn_token_budget_exhausted"],
     "provider_error": "这次调用模型失败，没有完成。",
     "task_failed": "这次执行失败，没有完成。",
+    "task_killed": "这次任务已停止。",
+    "task_skipped": "这次任务已跳过。",
+    "task_needs_reconciliation": "这次任务的结果待确认。",
 }
 
 
 def runtime_failure_observation(status: str, metadata: dict) -> dict | None:
     """Expose terminal execution facts without releasing a failed model's partial body."""
-    if status != "failed":
+    if not isinstance(status, str):
         return None
-    reason = metadata.get("error_code")
-    if reason not in _FAILURE_MESSAGES:
-        reason = metadata.get("terminal_reason")
-    if reason not in _FAILURE_MESSAGES:
-        reason = "task_failed"
-    return {"ok": True, "status": "failed", "reason_code": reason, "reason": _FAILURE_MESSAGES[reason], "retryable": False}
+    if status in {"killed", "skipped", "needs_reconciliation"}:
+        reason = f"task_{status}"
+    elif status == "failed":
+        reason = metadata.get("error_code")
+        if not isinstance(reason, str) or reason not in _FAILURE_MESSAGES:
+            reason = metadata.get("terminal_reason")
+        if not isinstance(reason, str) or reason not in _FAILURE_MESSAGES:
+            reason = "task_failed"
+    else:
+        return None
+    return {"ok": True, "status": status, "reason_code": reason, "reason": _FAILURE_MESSAGES[reason],
+        "retryable": reason == "tool_round_limit"}
+
+
+def is_runtime_failure_observation(payload: object) -> bool:
+    """Recognize only the native reader's fixed terminal-status projection."""
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        return False
+    expected = runtime_failure_observation(payload.get("status"), {"error_code": payload.get("reason_code")})
+    return expected is not None and all(payload.get(key) == value for key, value in expected.items())
 
 
 def runtime_display_status(status: str) -> str:

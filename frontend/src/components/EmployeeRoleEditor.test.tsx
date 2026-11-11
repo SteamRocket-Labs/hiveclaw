@@ -47,3 +47,25 @@ it('retries the recorded save confirmation without repeating the canonical role 
   expect(patch).toHaveBeenCalledTimes(1);
   expect(saved).toHaveBeenLastCalledWith(current);
 });
+
+it('shows the localized platform default without rewriting the stored sentinel row', async () => {
+  const platformDefault = { role_description: "The user's assistant", role_revision: 'a'.repeat(64) };
+  const requests: Array<{ method?: string; url: string; body?: unknown }> = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+    requests.push({ method: init?.method, url: String(url), ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
+    return response(platformDefault);
+  });
+  const saved = vi.fn();
+  render(<EmployeeRoleEditor agentId="assistant" value={platformDefault}
+    defaultRoleLabel="为你处理工作的助理" onSaved={saved} />);
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('为你处理工作的助理');
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(saved).toHaveBeenCalledWith(platformDefault));
+  // Leaving the displayed default untouched sends no role write: the stored
+  // row keeps its exact bytes instead of being renamed to the label.
+  expect(requests.every((request) => request.method !== 'PATCH')).toBe(true);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'My draft' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Read current responsibilities' }));
+  await waitFor(() => expect(screen.queryByText('为你处理工作的助理')).toBeTruthy());
+  expect(screen.queryByText("The user's assistant")).toBeNull();
+});

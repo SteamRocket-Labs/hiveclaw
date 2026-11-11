@@ -107,6 +107,26 @@ describe('member conversation landing', () => {
     expect(screen.queryByRole('heading')).toBeNull();
   });
 
+  it('offers retry instead of the admin sentence when the employee list read itself fails', async () => {
+    const fetcher = vi.fn(async (url: string) => {
+      // Provisioning is refused and the binding read succeeded, but the
+      // employee list read fails: the member can retry that read.
+      if (url.startsWith('/api/agents/')) {
+        return new Response(JSON.stringify({ detail: 'read failed' }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ ...unbound, state: 'model_unconfigured' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    mount();
+    expect(await screen.findByText('assistant.connectionFailed')).toBeTruthy();
+    expect(screen.queryByText('assistant.setupByAdmin')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'assistant.retry' }));
+    await waitFor(() => {
+      const listReads = fetcher.mock.calls.filter(([url]) => String(url).startsWith('/api/agents/'));
+      expect(listReads.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
   it('keeps the explicit picker in settings and applies a chosen bot', async () => {
     transport(own, bots, { ...unbound, candidates: [{ id: 'recent', name: 'Recent' }] });
     // Selection uses the same write contract as before.

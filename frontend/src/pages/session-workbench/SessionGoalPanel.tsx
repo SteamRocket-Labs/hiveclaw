@@ -16,14 +16,23 @@ function compactDuration(seconds: number): string {
   return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
-export function goalProgressFacts(goal: Pick<
-  SessionGoal,
-  'remaining_tokens' | 'remaining_continuation_turns' | 'remaining_time_seconds'
->): string[] {
+export function goalProgressFacts(
+  goal: Pick<
+    SessionGoal,
+    'remaining_tokens' | 'remaining_continuation_turns' | 'remaining_time_seconds'
+  >,
+  t: (key: string, fallback: string, options?: Record<string, unknown>) => string,
+): string[] {
   return [
-    typeof goal.remaining_tokens === 'number' ? `${goal.remaining_tokens.toLocaleString()} tokens left` : null,
-    typeof goal.remaining_continuation_turns === 'number' ? `${goal.remaining_continuation_turns} turns left` : null,
-    typeof goal.remaining_time_seconds === 'number' ? `${compactDuration(goal.remaining_time_seconds)} left` : null,
+    typeof goal.remaining_tokens === 'number'
+      ? t('sessionGoal.facts.tokensLeft', '{{count}} tokens left', { count: goal.remaining_tokens.toLocaleString() })
+      : null,
+    typeof goal.remaining_continuation_turns === 'number'
+      ? t('sessionGoal.facts.turnsLeft', '{{count}} turns left', { count: goal.remaining_continuation_turns })
+      : null,
+    typeof goal.remaining_time_seconds === 'number'
+      ? t('sessionGoal.facts.timeLeft', '{{duration}} left', { duration: compactDuration(goal.remaining_time_seconds) })
+      : null,
   ].filter((value): value is string => Boolean(value));
 }
 
@@ -91,7 +100,7 @@ export function SessionGoalPanel({
         const objectiveEvent = [...messages].reverse().find(message => message.eventType === 'goal'
           && message.eventGoalId === goal.id && ['started', 'updated'].includes(message.eventAction || ''));
         const pastedCredentialNotice = objectiveEvent?.pastedCredentialNotice === true;
-        const facts = goalProgressFacts(goal);
+        const facts = goalProgressFacts(goal, t);
         const controls = goal.controls || { can_pause: false, can_resume: false, can_stop: false };
         return (
           <article key={goal.id} className="session-goal-card" data-goal-status={goal.status}>

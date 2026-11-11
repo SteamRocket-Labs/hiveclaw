@@ -192,4 +192,14 @@ export const DYNAMIC_KEY_RULES = [
     expression: 'labelKey',
     reason: 'The runtime wait-state presenter owns the finite label-key mapping.',
   },
+  {
+    source: 'src/pages/employee-directory/HrCreationRecoveryPanel.tsx',
+    expression: 'FAILURE_LINE_KEYS[code]',
+    reason: 'FAILURE_LINE_KEYS is the exhaustive HR draft failure-code translation map; unknown codes fall back to the generic member line.',
+  },
+  {
+    source: 'src/pages/employee-directory/HrCreationRecoveryPanel.tsx',
+    expression: 'ACTION_ERROR_KEYS[code]',
+    reason: 'ACTION_ERROR_KEYS is the exhaustive HR abandon/retry error-code translation map; unknown codes fall back to the generic member line.',
+  },
 ];

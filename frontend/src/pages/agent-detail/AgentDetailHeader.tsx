@@ -50,6 +50,9 @@ export default function AgentDetailHeader({
   const assistantAgentId = useAssistantAgentId(user);
   const name = agentId === assistantAgentId ? t('assistant.title') : assistantNameForDisplay(agent.name, t('assistant.title', 'My Assistant'));
   const role = assistantRoleForDisplay(agent.role_description, t('assistant.role', "The user's assistant"));
+  // Only the binding id proves this row is the platform assistant; the label
+  // is also part of the role editor's key below.
+  const editorDefaultLabel = agentId === assistantAgentId ? t('assistant.role', "The user's assistant") : undefined;
   const queryClient = useQueryClient();
   const [editingRole, setEditingRole] = React.useState(false);
   const [editingName, setEditingName] = React.useState(false);
@@ -214,8 +217,12 @@ export default function AgentDetailHeader({
       )}
     </div>
     {canManage && editingRole && <div className="card">
-      <EmployeeRoleEditor key={agentId} agentId={agentId}
+      {/* The label is part of the key: an editor opened before the assistant
+          binding resolved remounts with the localized default, so the member
+          never saves the stored English sentinel by mistake. */}
+      <EmployeeRoleEditor key={`${agentId}:${editorDefaultLabel ?? ''}`} agentId={agentId}
             value={{ role_description: agent.role_description || '', role_revision: agent.role_revision || '' }}
+            defaultRoleLabel={editorDefaultLabel}
             onSaved={(saved) => {
               queryClient.setQueryData(['agent', agentId], (current: any) => current ? { ...current, ...saved } : current);
               setEditingRole(false); return invalidateAgent();

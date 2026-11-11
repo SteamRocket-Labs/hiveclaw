@@ -142,6 +142,14 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
     const first = fallback.isSuccess && !fallback.isFetching
       ? sortSidebarAgents(fallback.data, payload?.agent?.id)[0] : null;
     if (query.isSuccess && !query.isFetching && stillCurrent(scope) && first) return <Navigate to={sidebarAgentLink(first)} replace />;
+    // Provisioning may have been refused, but the employee list itself failed
+    // to read: that is a read failure the member can retry, not a dead end.
+    if (query.isSuccess && !query.isFetching && stillCurrent(scope) && fallback.isError && !fallback.isFetching) {
+      return <div className="assistant-entry">
+        <p role="status">{t('assistant.connectionFailed')}</p>
+        <button className="btn btn-secondary" onClick={() => { void fallback.refetch(); }}>{t('assistant.retry')}</button>
+      </div>;
+    }
     return <p className="assistant-entry" role="status">{t(query.isPending || query.isFetching || fallback.isFetching
       ? 'assistant.loading' : 'assistant.setupByAdmin')}</p>;
   }

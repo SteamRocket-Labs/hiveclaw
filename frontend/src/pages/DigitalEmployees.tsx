@@ -25,6 +25,12 @@ function formatAgentStatus(status: Agent['status'] | string | undefined) {
   return status;
 }
 
+/** Member badge text for the stored employee status; the raw key stays a CSS class only. */
+function agentStatusLabel(status: Agent['status'] | string | undefined, t: (key: string, fallback: string) => string): string {
+  const key = formatAgentStatus(status);
+  return t(`employees.status.${key}`, key);
+}
+
 function isLocalAgentRuntime(agent: Agent): boolean {
   return agent.agent_type === 'local_agent';
 }
@@ -162,7 +168,7 @@ export default function DigitalEmployees() {
                   <div className="employee-card-copy">
                     <div className="employee-card-title-row">
                       <h2>{assistantNameForDisplay(agent.name, t('assistant.title'))}</h2>
-                      <span className={`employee-status ${formatAgentStatus(agent.status)}`}>{formatAgentStatus(agent.status)}</span>
+                      <span className={`employee-status ${formatAgentStatus(agent.status)}`}>{agentStatusLabel(agent.status, t)}</span>
                     </div>
                     <p>{assistantRoleForDisplay(agent.role_description, t('assistant.role')) || t('employees.noRole', 'No role description yet')}</p>
                     <div className="employee-chip-row">

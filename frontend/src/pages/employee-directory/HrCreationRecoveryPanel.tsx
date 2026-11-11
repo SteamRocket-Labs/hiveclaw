@@ -14,16 +14,79 @@ import './HrCreationRecoveryPanel.css';
 
 const ACTIVE_DRAFT_STATUSES = new Set(['confirmed', 'creating', 'provisioning']);
 
-function draftName(draft: HrCreationDraft): string {
-  const name = draft.blueprint?.name;
-  return typeof name === 'string' && name.trim() ? name.trim() : 'Unfinished digital employee';
+// Own-key-only dictionaries: a crafted key like `constructor` must fall through
+// to the generic line instead of reaching anything on the prototype chain.
+const FAILURE_LINE_KEYS: Record<string, string> = {
+  missing_confirmation_evidence: 'employees.hrRecovery.failureMissingConfirmation',
+  runtime_task_failed: 'employees.hrRecovery.failureProvisionFailed',
+  provisioning_failed: 'employees.hrRecovery.failureProvisionFailed',
+  missing_creation_model: 'employees.hrRecovery.failureModelMissing',
+  capability_denied: 'employees.hrRecovery.failureCapabilityDenied',
+  approval_required: 'employees.hrRecovery.failureApprovalRequired',
+  runtime_task_needs_reconciliation: 'employees.hrRecovery.failureNeedsOperator',
+  runtime_task_draft_divergence: 'employees.hrRecovery.failureNeedsOperator',
+  cancellation_reconciliation_required: 'employees.hrRecovery.failureNeedsOperator',
+};
+
+const ACTION_ERROR_KEYS: Record<string, string> = {
+  agent_retirement_administrator_required: 'employees.hrRecovery.retirementAdministrator',
+  invalid_status: 'employees.hrRecovery.errorStateChanged',
+  provisioning_task_missing: 'employees.hrRecovery.errorStateChanged',
+  retry_required: 'employees.hrRecovery.errorStateChanged',
+  not_found: 'employees.hrRecovery.errorMissing',
+  confirmation_missing: 'employees.hrRecovery.errorConfirmationMissing',
+  // A direct-creation request whose authorization evidence expired: the
+  // member's remedy is to ask again, not to keep retrying this draft.
+  missing_confirmation_evidence: 'agent.chat.toolResults.creationExpired',
+  reconciliation_required: 'employees.hrRecovery.errorReconciliationRequired',
+  invalid_task_status: 'employees.hrRecovery.errorStateChanged',
+  // Capability/identity refusals the retry handler can raise: the sentence
+  // keeps telling the member what to do (often: ask an administrator) instead
+  // of collapsing into the generic retry line.
+  capability_denied: 'employees.hrRecovery.failureCapabilityDenied',
+  approval_required: 'employees.hrRecovery.failureApprovalRequired',
+  capability_unavailable: 'employees.hrRecovery.errorCapabilityUnavailable',
+  source_execute_denied: 'employees.hrRecovery.errorSourceExecuteDenied',
+  direct_human_input_required: 'employees.hrRecovery.errorDirectInputRequired',
+};
+
+function failureLine(draft: HrCreationDraft, t: (key: string, fallback: string) => string): string | null {
+  const failure = draft.failure;
+  const code = failure && typeof failure === 'object' && typeof (failure as Record<string, unknown>).code === 'string'
+    ? (failure as Record<string, unknown>).code as string : '';
+  if (code && Object.prototype.hasOwnProperty.call(FAILURE_LINE_KEYS, code)) {
+    return t(FAILURE_LINE_KEYS[code], FAILURE_LINE_KEYS[code]);
+  }
+  const legacyMessage = failure && typeof failure === 'object' && typeof (failure as Record<string, unknown>).message === 'string'
+    ? (failure as Record<string, unknown>).message as string : '';
+  const legacyReason = typeof draft.recovery?.reason === 'string' ? draft.recovery.reason : '';
+  // A failure line exists only for a draft that actually failed: an unmapped
+  // code or a codeless legacy message/reason keeps one stable Chinese line
+  // (never the stored English sentence), while a draft still awaiting
+  // confirmation or provisioning shows no failure line at all.
+  if (!code && !legacyMessage.trim() && !legacyReason.trim()) return null;
+  return t('employees.hrRecovery.failureGeneric', 'This creation did not finish. Retry it or abandon it.');
 }
 
-function draftFailure(draft: HrCreationDraft): string | null {
-  const message = draft.failure?.message;
-  if (typeof message === 'string' && message.trim()) return message.trim();
-  const reason = draft.recovery?.reason;
-  return typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+/** One plain Chinese sentence for a refused abandon/retry, mapped from the
+ * server's error code. Raw server text never reaches the member. */
+function actionErrorText(error: Error, t: (key: string, fallback: string) => string): string {
+  if (!(error instanceof ApiError)) return error.message;
+  const data = error.data;
+  const code = data !== null && typeof data === 'object' && !Array.isArray(data)
+    ? String((data as Record<string, unknown>).code || (data as Record<string, unknown>).error || '')
+    : '';
+  if (code && Object.prototype.hasOwnProperty.call(ACTION_ERROR_KEYS, code)) {
+    return t(ACTION_ERROR_KEYS[code], ACTION_ERROR_KEYS[code]);
+  }
+  return t('employees.hrRecovery.errorGeneric', 'The action did not complete. Please try again.');
+}
+
+function draftName(draft: HrCreationDraft, t: (key: string, fallback: string) => string): string {
+  const name = draft.blueprint?.name;
+  return typeof name === 'string' && name.trim()
+    ? name.trim()
+    : t('employees.hrRecovery.unnamedDraft', 'Unfinished digital employee');
 }
 
 export default function HrCreationRecoveryPanel() {
@@ -55,12 +118,12 @@ export default function HrCreationRecoveryPanel() {
   const retryMutation = useMutation({
     mutationFn: (draft: HrCreationDraft) => hrCreationApi.retry(sourceAgentId(draft), draft.blueprint_id),
     onSuccess: refresh,
-    onError: (error: Error) => showAppToast(error.message, 'error'),
+    onError: (error: Error) => showAppToast(actionErrorText(error, t), 'error'),
   });
   const abandonMutation = useMutation({
     mutationFn: (draft: HrCreationDraft) => hrCreationApi.abandon(sourceAgentId(draft), draft.blueprint_id),
     onSettled: refresh,
-    onError: (error: Error) => showAppToast(error.message, 'error'),
+    onError: (error: Error) => showAppToast(actionErrorText(error, t), 'error'),
   });
   const errorData = abandonMutation.error instanceof ApiError ? abandonMutation.error.data : null;
   const retirementRecovery = errorData !== null && typeof errorData === 'object' && 'code' in errorData
@@ -84,7 +147,7 @@ export default function HrCreationRecoveryPanel() {
       message: t(
         'employees.hrRecovery.removeConfirm',
         'Abandon the unfinished creation of {{name}}? Its employee, files and history are kept and stay until a company admin deactivates them.',
-        { name: draftName(draft) },
+        { name: draftName(draft, t) },
       ),
       confirmLabel: t('employees.hrRecovery.remove', 'Abandon unfinished creation'),
       danger: true,
@@ -107,14 +170,14 @@ export default function HrCreationRecoveryPanel() {
           const firstTaskRecovery = draft.draft_status === 'completed' && Boolean(draft.provisioning?.first_task);
           const failure = firstTaskRecovery
             ? t('employees.hrRecovery.firstTaskPending', 'The employee is ready; its first task needs recovery.')
-            : draftFailure(draft);
+            : failureLine(draft, t);
           const retirementError = abandonMutation.variables?.blueprint_id === draft.blueprint_id
             ? retirementRecovery : null;
           return (
             <article className="hr-recovery-item" key={draft.blueprint_id} data-status={draft.draft_status}>
               <div>
                 <div className="hr-recovery-title-row">
-                  <h3>{draftName(draft)}</h3>
+                  <h3>{draftName(draft, t)}</h3>
                   <span>{blueprintStatusLabel(draft.draft_status, t)}</span>
                 </div>
                 {failure && <p role={recovery?.requires_operator ? 'alert' : undefined}>{failure}</p>}

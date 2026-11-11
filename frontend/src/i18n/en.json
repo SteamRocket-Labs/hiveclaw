@@ -231,7 +231,14 @@
         "first_task": "First task",
         "recipient": "Recipient",
         "subject": "Subject",
-        "body": "Body"
+        "body": "Body",
+        "filename": "File name",
+        "file_name": "File name",
+        "channel": "Channel",
+        "target": "Target",
+        "query": "Query",
+        "url": "URL",
+        "title": "Title"
       },
       "value": {
         "success": "success",
@@ -701,7 +708,31 @@
       "resume": "Resume original work",
       "sourceMissing": "The original employee could not be identified. Reload before retrying.",
       "retry": "Retry provisioning",
-      "title": "Interrupted creations"
+      "title": "Interrupted creations",
+      "failureGeneric": "This creation did not finish. Retry it or abandon it.",
+      "failureMissingConfirmation": "Creation confirmation is missing; provisioning cannot continue yet. Retry it.",
+      "failureProvisionFailed": "Something went wrong while creating. Retry it.",
+      "failureModelMissing": "No enabled model is configured for this company yet. Contact an administrator before retrying.",
+      "failureCapabilityDenied": "Company policy does not allow creating digital employees. Contact an administrator.",
+      "failureApprovalRequired": "Creating a digital employee needs company approval. Contact an administrator.",
+      "failureNeedsOperator": "This creation needs an operator review before it can continue.",
+      "errorGeneric": "The action did not complete. Please try again.",
+      "errorStateChanged": "The creation changed while you acted. Reload and try again.",
+      "errorMissing": "This unfinished creation was not found. Reload the page.",
+      "errorRequesterOnly": "Only the member who requested this creation can act on it.",
+      "errorConfirmationMissing": "Creation confirmation is missing. Reload and try again.",
+      "errorReconciliationRequired": "This creation needs an operator review before retry.",
+      "errorCapabilityUnavailable": "The company's creation rules are temporarily unavailable. Please try again later.",
+      "errorSourceExecuteDenied": "Start the creation request from your own conversation, or sign in again and retry.",
+      "errorDirectInputRequired": "Ask for the digital employee yourself in this conversation; forwarded or background requests cannot create one.",
+      "unnamedDraft": "Unfinished digital employee"
+    },
+    "status": {
+      "creating": "Creating",
+      "running": "Running",
+      "idle": "Idle",
+      "stopped": "Stopped",
+      "error": "Error"
     }
   },
   "agentCreate": {
@@ -5905,7 +5936,21 @@
     "resume": "Resume",
     "stop": "Stop",
     "title": "Goal",
-    "transitionFailed": "Could not update this goal."
+    "transitionFailed": "Could not update this goal.",
+    "status": {
+      "active": "Active",
+      "paused": "Paused",
+      "blocked": "Needs attention",
+      "usage_limited": "Usage limit reached",
+      "budget_limited": "Budget reached",
+      "complete": "Complete",
+      "cancelled": "Stopped"
+    },
+    "facts": {
+      "tokensLeft": "{{count}} tokens left",
+      "turnsLeft": "{{count}} turns left",
+      "timeLeft": "{{duration}} left"
+    }
   },
   "teamBudgets": {
     "adminReview": "Ask an administrator to review this run’s other protection limits.",

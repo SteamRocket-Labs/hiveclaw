@@ -3213,6 +3213,10 @@
   }
 
   .main-content .swb-header { padding-left: 60px; }
+  /* The new-employee (System HR) page header keeps its avatar clear of the
+   * floating sidebar toggle at phone width, the same clearance the session
+   * workbench header reserves. */
+  .main-content .agent-detail-hr-header { padding-left: 60px; }
   .has-notification-bar .sidebar.collapsed .sidebar-collapse-btn { top: 40px; }
   .swb-header-title-row { flex-wrap: wrap; }
   .swb-header-title { flex: 1; min-width: 0; }

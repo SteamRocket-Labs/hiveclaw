@@ -421,6 +421,18 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
         if hashlib.sha256(payload_bytes).hexdigest() == ref_sha256 and len(payload_bytes) == int(
             result_object.size_bytes
         ):
+            if result_object.source_kind == "a2a_delegation":
+                from app.models.runtime_task import RuntimeTask
+                from app.services.runtime_display_status import runtime_failure_observation
+
+                task = await db.scalar(select(RuntimeTask).where(
+                    RuntimeTask.id == uuid.UUID(result_object.source_run_id),
+                    RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.task_type == "delegation",
+                ))
+                failure = runtime_failure_observation(task.status, task.metadata_json or {}) if task else None
+                if failure:
+                    return _json({"schema": schema, "result_ref": result_ref, **failure})
             from app.services.content_input_receipts import ContentInputReceiptError
             from app.services.runtime_result_sources import validate_runtime_result_sources
 

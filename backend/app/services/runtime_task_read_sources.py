@@ -221,6 +221,7 @@ async def record_task_read(request, content, *, capture=None):
             if records is None:
                 return content
             sources, unbound, identities, pending, observations = [], [], [], [], []
+            failure_projected = False
             principal = execution_principal_from_tool_context(context)
             for index, record in enumerate(records):
                 task = await db.get(RuntimeTask, uuid.UUID(record["task_id"]), populate_existing=True)
@@ -249,6 +250,24 @@ async def record_task_read(request, content, *, capture=None):
                     observations.append(
                         {"task_id": str(task.id), "record_hash": _hash(record), "observed_at": observed[1]}
                     )
+                from app.services.runtime_display_status import runtime_failure_observation
+
+                failure = runtime_failure_observation(record["status"], record["metadata"])
+                if failure:
+                    # This is a scoped SQL status observation, not a grant to
+                    # consume a failed child's prompt, partial output or metadata.
+                    projection = _pending_result_record(record)
+                    projection.pop("result_publication")
+                    projection.update(failure, result=failure["reason"])
+                    if call.tool_name == "task_output":
+                        body["task"] = projection
+                    elif call.tool_name == "check_async_task":
+                        body = {key: value for key, value in body.items() if key not in {"result", "receipt"}}
+                        body.update(failure, result=failure["reason"])
+                    else:
+                        body[index] = projection
+                    failure_projected = True
+                    continue
                 if call.tool_name == "check_async_task" and body.get("result") is None and body.get("receipt") is None:
                     # This exact authorized SQL observation contains only task
                     # status/coordinates, not the instruction or result body.
@@ -273,7 +292,7 @@ async def record_task_read(request, content, *, capture=None):
                     unbound.append("task_read_sources_unbound")
         except (ValueError, TypeError, KeyError, AttributeError, ContentInputReceiptError):
             return content
-        if pending:
+        if pending or failure_projected:
             content = json.dumps(body, ensure_ascii=False, default=str)
         proof = {
             "schema": "hive.runtime_task_read.v1",

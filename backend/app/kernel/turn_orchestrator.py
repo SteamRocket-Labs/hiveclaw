@@ -165,6 +165,7 @@ def _turn_token_budget_event(
 ) -> dict[str, Any]:
     return {
         "type": "turn_token_budget_exhausted",
+        "visibility": "debug",
         "status": "blocked",
         "round": logical_round_index,
         "tokens_used": tokens_used,
@@ -173,6 +174,7 @@ def _turn_token_budget_event(
         "retryable": True,
         "part": {
             "type": "event",
+            "visibility": "debug",
             "event_type": "turn_token_budget_exhausted",
             "title": "Turn budget reached",
             "text": "The turn stopped before the next tool action.",
@@ -1995,7 +1997,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 tokens_used=accumulated_tokens,
             )
 
-        max_rounds = request.max_tool_rounds or runtime_config.max_tool_rounds
+        max_rounds = request.max_tool_rounds if request.max_tool_rounds is not None else runtime_config.max_tool_rounds
         max_tokens = self._deps.get_max_tokens(
             active_model.provider,
             active_model.model,
@@ -2793,6 +2795,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         tokens_used=accumulated_tokens,
                         final_tools=tools_for_llm,
                         terminal_reason=TerminalReason.TOOL_BUDGET,
+                        failure_code="turn_token_budget_exhausted",
                     )
                     result.parts = collected_parts + result.parts
                     result.model_result_receipt = last_model_result_receipt
@@ -3714,6 +3717,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 tokens_used=accumulated_tokens,
                 final_tools=tools_for_llm,
                 terminal_reason=TerminalReason.TOOL_BUDGET,
+                failure_code="tool_round_limit",
             )
         finally:
             await client.close()

@@ -800,10 +800,7 @@ def _build_error_result(
 
 
 def _turn_token_budget_message(*, tokens_used: int, token_budget: int) -> str:
-    return (
-        "[Runtime Limit] This turn stopped because the configured token budget was exhausted "
-        f"({tokens_used}/{token_budget} tokens used)."
-    )
+    return "这次用完了用量预算，没有完成。"
 
 
 def _registered_connector_source_items(request: InvocationRequest) -> list[dict[str, Any]]:
@@ -1190,10 +1187,7 @@ def _tool_message_content(text_content: str, raw_result: Any) -> "str | list[dic
 
 
 def _tool_round_limit_message(max_rounds: int) -> str:
-    return (
-        f"I reached the configured tool-round limit ({max_rounds}) before I could finish. "
-        "The current state has been saved; continue the task to resume from here, or raise max_tool_rounds for this agent."
-    )
+    return "这次已达到运行轮次上限，没有完成。可以重试继续。"
 
 
 def _is_concurrency_safe_tool(name: str) -> bool:

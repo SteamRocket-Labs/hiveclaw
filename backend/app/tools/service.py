@@ -323,7 +323,8 @@ def _tool_result_failed(result: Any) -> bool:
         return False
     return isinstance(payload, dict) and (
         payload.get("ok") is False
-        or str(payload.get("status") or "").lower() in {"error", "failed", "rejected", "blocked"}
+        or (payload.get("ok") is not True
+            and str(payload.get("status") or "").lower() in {"error", "failed", "rejected", "blocked"})
     )
 
 

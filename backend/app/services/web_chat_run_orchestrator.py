@@ -563,6 +563,8 @@ class _WebChatCallbacks:
         await state.stream_batcher.emit_thinking(text)
 
     async def runtime_event(self, data: dict[str, Any]) -> None:
+        if data.get("visibility") == "debug":
+            return
         state, events = self.state, self.state.ports.events
         data = {**data, "runtime_task_id": str(state.run_uuid)}
         if data.get("type") == "stream_retry_tombstone":
@@ -1063,6 +1065,7 @@ async def _invoke_model(state: _WebChatRunState, callbacks: _WebChatCallbacks, s
             channel_token = channel_delivery_target.set(target)
         try:
             invocation = _agent_invocation_request(state, callbacks, suffix)
+            await _inherit_parent_turn_limits(state, invocation)
             if getattr(state.session, "audience_kind", None) == "group":
                 from app.services.shared_group_authority import bind_shared_group_permission_source
 
@@ -1106,6 +1109,34 @@ async def _invoke_model(state: _WebChatRunState, callbacks: _WebChatCallbacks, s
             state.ports.terminal.clear_interactive_plan_mode(state.runtime_session_context)
         key = state.ports.runtime.plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY
         state.runtime_session_context.metadata.pop(key, None)
+
+
+async def _inherit_parent_turn_limits(state: _WebChatRunState, invocation: AgentInvocationRequest) -> None:
+    """A result wake spends the original member turn's remaining kernel budget."""
+    task = state.runtime_task
+    root_id = getattr(task, "root_runtime_task_id", None)
+    if root_id is None or root_id == state.run_uuid or task.task_type not in {"web_chat_turn", "a2a_continuation"}:
+        return
+    from app.models.session_v2 import SessionModelResult
+    from app.services.web_chat_runtime import _committed_turn_usage_tokens, _continuation_index_from_round_id
+
+    async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        previous = list(await db.scalars(select(SessionModelResult).join(
+            RuntimeTask, RuntimeTask.id == SessionModelResult.run_id,
+        ).where(
+            RuntimeTask.tenant_id == state.agent.tenant_id,
+            (RuntimeTask.id == root_id) | (RuntimeTask.root_runtime_task_id == root_id),
+            RuntimeTask.id != state.run_uuid,
+            RuntimeTask.parent_agent_id == state.agent.id,
+            RuntimeTask.child_agent_id == state.agent.id,
+            RuntimeTask.parent_session_id == state.session_id,
+            RuntimeTask.task_type.in_(["web_chat_turn", "a2a_continuation"]),
+            SessionModelResult.state.in_(["sealed", "round_committed"]),
+        )))
+    prior_rounds = sum(_continuation_index_from_round_id(row.round_id) == 0 for row in previous)
+    ceiling = invocation.max_tool_rounds if invocation.max_tool_rounds is not None else state.agent.max_tool_rounds
+    invocation.max_tool_rounds = max(0, (ceiling or 200) - prior_rounds)
+    invocation.initial_turn_tokens_used += _committed_turn_usage_tokens(previous, resume_round_index=2**31 - 1)
 
 
 def _agent_invocation_request(

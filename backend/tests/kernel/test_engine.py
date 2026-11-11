@@ -5369,8 +5369,9 @@ async def test_max_rounds_exit_never_persists_memory_before_terminal_commit():
         )
     )
 
-    assert "tool-round limit" in result.content
-    assert "continue" in result.content.lower()
+    assert result.content == "这次已达到运行轮次上限，没有完成。可以重试继续。"
+    assert result.failure_code == "tool_round_limit"
+    assert "可以重试继续" in result.content
     assert persist_calls == []
 
 
@@ -5446,7 +5447,7 @@ async def test_turn_token_budget_stops_before_next_tool_round_with_typed_receipt
         )
     )
 
-    assert result.content.startswith("[Runtime Limit]")
+    assert result.content == "这次用完了用量预算，没有完成。"
     assert result.terminal_reason is TerminalReason.TOOL_BUDGET
     assert result.tokens_used == 50
     assert executed == []
@@ -5461,13 +5462,15 @@ async def test_turn_token_budget_stops_before_next_tool_round_with_typed_receipt
     }
     assert persist_calls == []
     assert result.response_complete_payload is None
-    assert any(
-        part.get("event_type") == "turn_token_budget_exhausted" for part in result.parts if isinstance(part, dict)
-    )
+    assert [part for part in result.parts if part.get("type") == "text"] == [
+        {"type": "text", "text": "这次用完了用量预算，没有完成。"}
+    ]
+    assert not any(part.get("event_type") == "turn_token_budget_exhausted" for part in result.parts)
     budget_events = [event for event in runtime_events if event.get("type") == "turn_token_budget_exhausted"]
     assert budget_events == [
         {
             "type": "turn_token_budget_exhausted",
+            "visibility": "debug",
             "status": "blocked",
             "round": 1,
             "tokens_used": 50,
@@ -5476,6 +5479,7 @@ async def test_turn_token_budget_stops_before_next_tool_round_with_typed_receipt
             "retryable": True,
             "part": {
                 "type": "event",
+                "visibility": "debug",
                 "event_type": "turn_token_budget_exhausted",
                 "title": "Turn budget reached",
                 "text": "The turn stopped before the next tool action.",

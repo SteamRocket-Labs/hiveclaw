@@ -1259,6 +1259,11 @@ def runtime_result_denial_bound(*, invocation, payload, content):
         if body.get("retryable") is True and body == {"schema": "hive.runtime_result_page.v1", "status": "not_found",
             "result_ref": arguments["result_ref"], "retryable": True}:
             return True  # Native absence feedback contains no result body or source grant.
+        from app.services.runtime_display_status import runtime_failure_observation
+
+        failure = runtime_failure_observation(body.get("status"), {"error_code": body.get("reason_code")})
+        if failure and body == {"schema": "hive.runtime_result_page.v1", "result_ref": arguments["result_ref"], **failure}:
+            return True  # Only the native reader's fixed execution status, never failed result bytes.
         return (
             set(body) == {"schema", "status", "reason_code", "result_ref", "retryable", "recovery_action"}
             and body["schema"] == "hive.runtime_result_page.v1"

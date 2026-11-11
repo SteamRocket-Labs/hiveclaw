@@ -586,3 +586,63 @@ async def test_deadletter_terminal_behind_frontier_cannot_take_prefix_identity(o
     assert await _states(owner_sessionmaker, fx) == states
     assert [row.content for row in ledger.replay_t0_session_events(
         agent_id=fx.agent, session_id=fx.session, data_root=tmp_path)] == ["owner start"]
+
+
+async def test_recovery_rechecks_active_segment_after_locked_terminal_read(
+    owner_sessionmaker, monkeypatch, tmp_path,
+):
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    fx = await _deadletter_frontier(owner_sessionmaker, monkeypatch, tmp_path)
+    original_get, reopened = AsyncSession.get, []
+
+    async def get_with_checkpoint(db, entity, ident, **kwargs):
+        result = await original_get(db, entity, ident, **kwargs)
+        if entity is ChatTranscriptEvent and ident == fx.terminal.id and not reopened:
+            # Recovery has proved the terminal's segment and locked both rows.
+            # Its last awaited read lets an existing checkpoint reopen the tail.
+            sealed = ledger.seal_t0_session_segment(agent_id=fx.agent, session_id=fx.session,
+                reason="session_idle", data_root=tmp_path)
+            assert sealed.segment_id == fx.segment
+            reopened.append(ledger.append_t0_session_event(agent_id=fx.agent, session_id=fx.session,
+                runtime_task_id=fx.owner, event_type="tool_result", content="late owner result",
+                metadata={"turn_id": result.turn_id}, data_root=tmp_path).segment_id)
+        return result
+
+    monkeypatch.setattr(AsyncSession, "get", get_with_checkpoint)
+    assert await bus.sweep_pending_transcript_t0_bridges(session_id=fx.session) == 0
+    assert len(reopened) == 1 and reopened[0] != fx.segment
+    index = ledger._read_index(ledger._session_dir(tmp_path, fx.agent, fx.session))
+    assert all(segment.get("boundary_id") != str(fx.boundary.id) for segment in index["segments"])
+    assert index["active_segment_id"] == reopened[0]
+    assert (await _states(owner_sessionmaker, fx))[-1][1] == 9
+    # One more append refreshes the old diagnostic to the newly opened segment;
+    # once caught up, unchanged polls take the existing attempt-free wait.
+    assert await bus.sweep_pending_transcript_t0_bridges(session_id=fx.session) == 0
+    states = await _states(owner_sessionmaker, fx)
+    assert states[-1][0] == "failed" and states[-1][1] == 10
+    for _ in range(2):
+        assert await bus.sweep_pending_transcript_t0_bridges(session_id=fx.session) == 0
+    assert await _states(owner_sessionmaker, fx) == states
+    assert ledger.get_t0_active_segment_id(agent_id=fx.agent, session_id=fx.session) == reopened[0]
+    assert all(row.metadata.get("boundary_id") != str(fx.boundary.id)
+        for row in ledger.replay_t0_session_events(agent_id=fx.agent, session_id=fx.session, data_root=tmp_path))
+
+
+async def test_invalid_deadletter_terminal_uuid_stays_unselected_without_sweep_error(
+    owner_sessionmaker, monkeypatch, tmp_path,
+):
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox as Boundary
+
+    fx = await _deadletter_frontier(owner_sessionmaker, monkeypatch, tmp_path)
+    async with owner_sessionmaker() as db:
+        boundary = await db.get(Boundary, fx.boundary.id)
+        boundary.binding_json = {**boundary.binding_json, "terminal_event_id": "not-a-uuid"}
+        await db.commit()
+    states = await _states(owner_sessionmaker, fx)
+    monkeypatch.setitem(bus._STATE, "last_error", None)
+    for _ in range(2):
+        assert await bus.sweep_pending_transcript_t0_bridges(session_id=fx.session) == 0
+    assert bus._STATE["last_error"] is None
+    assert await _states(owner_sessionmaker, fx) == states
+    assert ledger.get_t0_active_segment_id(agent_id=fx.agent, session_id=fx.session) == fx.segment

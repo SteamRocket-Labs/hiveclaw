@@ -230,7 +230,7 @@ TERMINAL_OWNER_SEGMENT_RECOVERY_IDEMPOTENCY_KEY = "t0-terminal-owner-recovery"
 
 
 def _terminal_transcript_recovery_boundaries(task: Any, transcript_event: Any, active_segment_id: Any) -> Any:
-    from sqlalchemy import String, Uuid, cast, func, or_
+    from sqlalchemy import String, Uuid, case, cast, func, or_
     from sqlalchemy.orm import aliased
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
@@ -239,9 +239,11 @@ def _terminal_transcript_recovery_boundaries(task: Any, transcript_event: Any, a
     def session_key(value):
         return func.lower(func.replace(value, "-", ""))
 
+    terminal_event_id = session_key(Boundary.binding_json["terminal_event_id"].astext)
+    terminal_event_id = cast(case((terminal_event_id.op("~")("^[0-9a-f]{32}$"), terminal_event_id), else_=None), Uuid)
     terminal = aliased(ChatTranscriptEvent)
     terminal_in_segment = select(terminal.id).where(
-        terminal.id == cast(Boundary.binding_json["terminal_event_id"].astext, Uuid),
+        terminal.id == terminal_event_id,
         terminal.tenant_id == Boundary.tenant_id,
         terminal.agent_id == transcript_event.agent_id,
         terminal.session_id == transcript_event.session_id,
@@ -321,9 +323,10 @@ async def _seal_terminal_boundary_pending_owner(
     This seal does not acknowledge delivery or invent semantic success.
     """
 
-    from app.memory.t0.ledger import seal_t0_session_segment
+    from app.memory.t0.ledger import get_t0_active_segment_id, seal_t0_session_segment
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox as Boundary
 
     owner_uuid = _uuid_or_none(getattr(boundary_error, "active_runtime_task_id", None))
     if owner_uuid is None:
@@ -343,6 +346,7 @@ async def _seal_terminal_boundary_pending_owner(
         # after a redrive wins, the status predicate rejects its pending row.
         boundary = (await db.execute(_terminal_transcript_recovery_boundaries(owner_task, transcript_event,
             boundary_error.active_segment_id)
+            .order_by(Boundary.created_at.desc(), Boundary.id.desc()).limit(1)
             .with_for_update())).scalars().first()
         if boundary is None:
             return False
@@ -376,6 +380,11 @@ async def _seal_terminal_boundary_pending_owner(
         seal_args.update(boundary_id=boundary.id, idempotency_key=boundary.idempotency_key,
             expected_turn_id=str(terminal.turn_id or (owner_task.metadata_json or {}).get("turn_id")
                 or f"turn-{owner_uuid.hex}"))
+    # Recheck after every await: an existing checkpoint can reopen the tail
+    # while the database proof is in flight. Do not seal that new segment.
+    if get_t0_active_segment_id(agent_id=transcript_event.agent_id,
+        session_id=transcript_event.session_id) != boundary_error.active_segment_id:
+        return False
     sealed = seal_t0_session_segment(**seal_args)
     if not canonical_owner and sealed is not None and sealed.segment_id != boundary_error.active_segment_id:
         # Preserve the old receipt; a late event opened a different segment.

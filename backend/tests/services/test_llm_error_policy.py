@@ -5,7 +5,8 @@ from app.services.llm_error_policy import classify_llm_error, is_llm_error_messa
 def test_turn_token_budget_message_is_runtime_failure() -> None:
     message = _turn_token_budget_message(tokens_used=1001, token_budget=1000)
 
-    assert message.startswith("[Runtime Limit]")
+    # The persisted limit text is now Chinese; failure recognition is unchanged.
+    assert message == "这次用完了用量预算，没有完成。"
     assert is_llm_error_message(message)
     assert "higher turn budget" not in message
 
@@ -91,3 +92,21 @@ def test_minimax_token_plan_quota_keeps_body_classification_and_delivery_facts()
         assert error.delivery_state == delivery_state
         assert error.http_status == 429
     assert classify_llm_error(RuntimeError(message)).kind == "quota_exhausted"
+
+
+def test_both_limit_messages_are_excluded_from_compaction_assistant_speech() -> None:
+    from app.kernel.engine import _tool_round_limit_message
+    from app.services.conversation_summarizer import _build_summary_input
+
+    messages = [
+        _turn_token_budget_message(tokens_used=1001, token_budget=1000),
+        _tool_round_limit_message(200),
+    ]
+    for message in messages:
+        assert is_llm_error_message(message)
+    text, dropped = _build_summary_input([
+        {"role": "assistant", "content": message} for message in messages
+    ] + [{"role": "assistant", "content": "The analysis is ready."}], provider="openai")
+    assert all(message not in text for message in messages)
+    assert "assistant: The analysis is ready." in text
+    assert dropped == 0

@@ -4,7 +4,8 @@ Counts and text similarity are heuristic signals: they may warn the model but
 must not decide that legitimate work is finished.  A hard loop outcome is
 available only when a tool explicitly reports retry exhaustion, the operation
 is side-effect-free, and the same progress token proves that state did not
-advance.  The model still authors the terminal explanation.
+advance. Native task-status reads may also stop at the existing identical-call
+threshold when the same task's fixed terminal reason is unchanged across readers.
 """
 
 from __future__ import annotations
@@ -14,8 +15,10 @@ import json
 import math
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
 from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
+from app.services.runtime_display_status import TERMINAL_TASK_READ_PREFIX, is_runtime_failure_observation
 
 _ABORT_MULTIPLIER = 1.5  # abort threshold = ceil(warn threshold × 1.5)
 
@@ -83,6 +86,7 @@ class LoopGuard:
     def __init__(
         self,
         *,
+        runtime_task_id: UUID | str | None = None,
         total_tool_threshold: int = 100,
         failed_tool_threshold: int = 12,
         identical_tool_threshold: int = 5,
@@ -93,6 +97,7 @@ class LoopGuard:
         high_tool_schema_tokens: int = 100_000,
         low_cache_hit_rate: float = 0.05,
     ) -> None:
+        self._runtime_task_id = str(runtime_task_id).replace("-", "") if runtime_task_id else None
         self.total_tool_threshold = total_tool_threshold
         self.failed_tool_threshold = failed_tool_threshold
         self.identical_tool_threshold = identical_tool_threshold
@@ -107,6 +112,7 @@ class LoopGuard:
         self.provider_cost_pressure_count = 0
         self._tool_arg_counts: dict[tuple[str, str], int] = {}
         self._failure_counts: dict[tuple[str, str, str], int] = {}
+        self._terminal_read_counts: dict[tuple[str, str], int] = {}
         self._assistant_text_counts: dict[str, int] = {}
         self._warned: set[str] = set()
 
@@ -149,6 +155,10 @@ class LoopGuard:
         retry_exhausted: bool = False,
         progress_token: str | None = None,
     ) -> LoopGuardDecision | None:
+        if side_effect_free:
+            terminal = self._observe_terminal_task_read(tool_name, args, result)
+            if terminal is not None:
+                return terminal
         # Failure counting is a mechanical outcome and therefore comes only
         # from the typed tool-execution receipt. Natural-language tool output
         # may legitimately discuss timeouts, failures, or exceptions.
@@ -211,6 +221,46 @@ class LoopGuard:
                 args_digest=_digest(canonical),
                 extra_trace={"proof": proof},
             )
+        return None
+
+    def _observe_terminal_task_read(self, tool_name, args, result) -> LoopGuardDecision | None:
+        if tool_name not in {"check_async_task", "task_output", "read_runtime_result", "list_async_tasks"}:
+            return None
+        try:
+            body = json.loads(result)
+        except (TypeError, ValueError):
+            return None
+        if tool_name == "task_output" and isinstance(body, dict):
+            body = body.get("task")
+        observations = body if isinstance(body, list) else [body]
+        if tool_name == "list_async_tasks" and any(
+            isinstance(item, dict) and item.get("status") in {"pending", "running"}
+            and str(item.get("task_id") or "").replace("-", "") != self._runtime_task_id
+            for item in observations
+        ):
+            return None
+        for observation in observations:
+            if not is_runtime_failure_observation(observation):
+                continue
+            identity = observation.get("task_id") or observation.get("result_ref")
+            if not isinstance(identity, str) or not identity:
+                continue
+            try:
+                identity = str(UUID(identity))
+            except ValueError:
+                pass  # An opaque result_ref is already a stable native identity.
+            key = (identity, observation["reason_code"])
+            self._terminal_read_counts[key] = self._terminal_read_counts.get(key, 0) + 1
+            if self._terminal_read_counts[key] >= self.identical_tool_threshold:
+                message = observation["reason"]
+                if observation["reason_code"] != "identical_terminal_task_read":
+                    message = TERMINAL_TASK_READ_PREFIX + message
+                check = _PatternCheck(reason="identical_terminal_task_read", detail=message,
+                    warn_key=f"terminal:{identity}:{key[1]}", count=self._terminal_read_counts[key],
+                    warn_threshold=self.identical_tool_threshold)
+                return self._decision(check, severity="abort", tool_name=tool_name,
+                    args_digest=_digest(_canonical_args(args)),
+                    extra_trace={"identical_terminal_read_count": check.count})
         return None
 
     def observe_assistant_text(self, content: str | None) -> LoopGuardDecision | None:
@@ -350,7 +400,7 @@ def _runtime_outcome_for_loop_guard(
         "severity": severity,
         "count": count,
         "warn_threshold": warn_threshold,
-        "abort_threshold": _abort_threshold(warn_threshold),
+        "abort_threshold": warn_threshold if reason == "identical_terminal_task_read" else _abort_threshold(warn_threshold),
     }
     if severity == "warn":
         return RuntimeOutcome(

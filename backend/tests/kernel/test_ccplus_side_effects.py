@@ -194,7 +194,7 @@ async def test_proven_non_progress_is_summarized_by_model_without_platform_tool_
     from app.kernel import engine
     from app.kernel.loop_guard import LoopGuard
 
-    monkeypatch.setattr(engine, "LoopGuard", lambda: LoopGuard(repeated_failure_threshold=2))
+    monkeypatch.setattr(engine, "LoopGuard", lambda **kwargs: LoopGuard(repeated_failure_threshold=2, **kwargs))
     fake_client = _FakeClient(
         [
             _tool_call_response("read_file", "call_retry_1", '{"path":"same.txt"}'),
@@ -488,8 +488,8 @@ async def test_native_loop_warning_keeps_control_and_tool_body_sources_distinct(
             queued.append({"content": args[0], **kwargs})
             return super().enqueue(*args, **kwargs)
     monkeypatch.setattr(engine, "ReminderScheduler", ObservedScheduler)
-    monkeypatch.setattr(engine, "LoopGuard", lambda: LoopGuard(
-        identical_tool_threshold=2 if kind == "counter" else 100, repeated_failure_threshold=2))
+    monkeypatch.setattr(engine, "LoopGuard", lambda **kwargs: LoopGuard(
+        identical_tool_threshold=2 if kind == "counter" else 100, repeated_failure_threshold=2, **kwargs))
     client = _FakeClient([
         _tool_call_response("read_file", "read-1", '{"path":"same.txt"}'),
         _tool_call_response("read_file", "read-2", '{"path":"same.txt"}'),

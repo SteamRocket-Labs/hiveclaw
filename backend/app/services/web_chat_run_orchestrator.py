@@ -563,6 +563,8 @@ class _WebChatCallbacks:
         await state.stream_batcher.emit_thinking(text)
 
     async def runtime_event(self, data: dict[str, Any]) -> None:
+        if data.get("type") == "turn_token_budget_exhausted":
+            return
         state, events = self.state, self.state.ports.events
         data = {**data, "runtime_task_id": str(state.run_uuid)}
         if data.get("type") == "stream_retry_tombstone":

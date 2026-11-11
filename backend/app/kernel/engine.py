@@ -49,6 +49,7 @@ from app.services.chat_message_parts import (
 from app.services.chat_artifact_delivery import tool_session_write_paths
 from app.services.llm_error_policy import classify_llm_error, should_surface_without_model_fallback
 from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
+from app.services.runtime_display_status import RUNTIME_LIMIT_MESSAGES
 from app.services.llm_client import LLMError, LLMMessage, LLMResponse, STREAM_RETRY_TOMBSTONE
 from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES
 from app.memory.metrics import record_prompt_cache_metrics
@@ -800,10 +801,7 @@ def _build_error_result(
 
 
 def _turn_token_budget_message(*, tokens_used: int, token_budget: int) -> str:
-    return (
-        "[Runtime Limit] This turn stopped because the configured token budget was exhausted "
-        f"({tokens_used}/{token_budget} tokens used)."
-    )
+    return RUNTIME_LIMIT_MESSAGES["turn_token_budget_exhausted"]
 
 
 def _registered_connector_source_items(request: InvocationRequest) -> list[dict[str, Any]]:
@@ -1190,10 +1188,7 @@ def _tool_message_content(text_content: str, raw_result: Any) -> "str | list[dic
 
 
 def _tool_round_limit_message(max_rounds: int) -> str:
-    return (
-        f"I reached the configured tool-round limit ({max_rounds}) before I could finish. "
-        "The current state has been saved; continue the task to resume from here, or raise max_tool_rounds for this agent."
-    )
+    return RUNTIME_LIMIT_MESSAGES["tool_round_limit"]
 
 
 def _is_concurrency_safe_tool(name: str) -> bool:

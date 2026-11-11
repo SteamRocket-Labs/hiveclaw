@@ -321,7 +321,9 @@ def _tool_result_failed(result: Any) -> bool:
         payload = _json.loads(rendered)
     except (TypeError, ValueError):
         return False
-    return isinstance(payload, dict) and (
+    from app.services.runtime_display_status import is_runtime_failure_observation
+
+    return isinstance(payload, dict) and not is_runtime_failure_observation(payload) and (
         payload.get("ok") is False
         or str(payload.get("status") or "").lower() in {"error", "failed", "rejected", "blocked"}
     )

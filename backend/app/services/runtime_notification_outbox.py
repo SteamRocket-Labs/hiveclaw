@@ -581,6 +581,15 @@ async def enqueue_completion_notification(
     if root_runtime_task_id is None and task is not None:
         root_runtime_task_id = task.root_runtime_task_id or task.id
     routing_metadata = _routing_metadata(values["metadata"])
+    budget_run_id = task.budget_run_id if task is not None else None
+    if task is not None and budget_run_id is None and root_runtime_task_id is not None:
+        budget_run_id = await db.scalar(select(RuntimeTask.budget_run_id).where(
+            RuntimeTask.id == root_runtime_task_id, RuntimeTask.tenant_id == tenant_id,
+        ))
+    if budget_run_id is not None:
+        # Completion producers may omit transport metadata. The durable task
+        # binding keeps all results and wakes on the original budget root.
+        routing_metadata["budget_run_id"] = str(budget_run_id)
 
     if existing is None:
         mailbox_sequence = int(cursor.next_mailbox_sequence)

@@ -3821,3 +3821,32 @@ async def test_non_eligible_source_intercept_returns_confirmation_required_fail_
     assert "activate_interactive_plan" not in payload  # agent does NOT plan
     assert "plan_id" not in payload  # nothing materialised — no RPC fallback
     assert registry.calls == []  # tool did NOT execute (fail-closed)
+
+
+@pytest.mark.asyncio
+async def test_failed_check_subagent_keeps_the_existing_tool_failure_classification(monkeypatch):
+    from app.tools.handlers.subagent import check_subagent
+    from app.tools.service import _tool_result_failed
+
+    async def failed_run(*_args, **_kwargs):
+        return {"status": "failed", "result_summary": "subagent failed", "metadata": {}}
+
+    monkeypatch.setattr("app.services.subagent_run_service.get_subagent_run", failed_run)
+    result = await check_subagent(SimpleNamespace(arguments={"run_id": str(uuid4())}, context=SimpleNamespace(
+        agent_id=uuid4(), tenant_id=uuid4(), user_id=uuid4())))
+    assert json.loads(result)["ok"] is True
+    assert json.loads(result)["status"] == "failed"
+    assert _tool_result_failed(result) is True
+
+
+def test_only_fixed_failure_observations_are_successful_failed_status_reads():
+    from app.services.runtime_display_status import runtime_failure_observation
+    from app.tools.service import _tool_result_failed
+
+    observation = runtime_failure_observation("failed", {"error_code": "tool_round_limit"})
+    assert observation["retryable"] is True
+    assert "重试" in observation["reason"]
+    assert _tool_result_failed(json.dumps(observation)) is False
+    assert _tool_result_failed(json.dumps({**observation, "reason_code": "arbitrary_failure"})) is True
+    assert _tool_result_failed(json.dumps({"ok": True, "status": "blocked"})) is True
+    assert _tool_result_failed(json.dumps({"ok": True, "status": "failed", "reason_code": []})) is True

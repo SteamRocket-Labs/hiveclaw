@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.services.runtime_display_status import RUNTIME_LIMIT_MESSAGES
+
 
 LLMErrorKind = Literal[
     "quota_exhausted",
@@ -175,4 +177,5 @@ def is_llm_error_message(content: object) -> bool:
     if not isinstance(content, str):
         return False
     stripped = content.lstrip()
-    return stripped.startswith("[LLM Error]") or stripped.startswith("[Runtime Limit]")
+    return (stripped.startswith("[LLM Error]") or stripped.startswith("[Runtime Limit]")
+        or stripped.rstrip() in RUNTIME_LIMIT_MESSAGES.values())

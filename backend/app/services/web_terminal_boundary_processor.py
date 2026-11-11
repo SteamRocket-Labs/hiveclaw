@@ -3,12 +3,15 @@
 The durable terminal-boundary outbox carries identifiers and hashes only.  This
 module rehydrates the already secret-redacted Session V2 request/result, waits
 until the canonical transcript is present in T0, seals the turn with a stable
-boundary identity, and only then runs learning and the session-summary read
-model.  It never writes Run/Turn terminal facts.
+boundary identity, and runs learning before delivery.  The session-summary read
+model is projected by a detached task started as delivery completes, so a
+slow or failed summary never holds the boundary (or the next input).  It never
+writes Run/Turn terminal facts.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 import hashlib
@@ -40,9 +43,33 @@ class WebTerminalBoundaryPending(RuntimeError):
     """A committed Web terminal is not yet safe to acknowledge."""
 
 
+class _WebSummaryOverlapExpected(WebTerminalBoundaryPending):
+    """An expected detached-summary overlap, not a provider or storage failure.
+
+    Another attempt for the same turn already owns the session's single summary
+    projection slot, so this attempt stands down without invoking the provider
+    again.  Kept a ``WebTerminalBoundaryPending`` so existing hold semantics
+    are unchanged; only the detached wrapper's log level differs.
+    """
+
+
+class _WebSummarySealSuperseded(TerminalBoundaryCanonicalMismatch):
+    """A newer turn claimed the summary slot before this seal; expected overlap.
+
+    The older generator's result is discarded by the same authority check that
+    has always guarded the seal; raising (a subclass keeps the canonical-
+    mismatch semantics) aborts the seal transaction without writing anything.
+    """
+
+
 logger = logging.getLogger(__name__)
 _SUMMARY_PROJECTION_KEY = "terminal_summary_projection"
 _SUMMARY_PROJECTION_SCHEMA = "terminal_summary_projection.v1"
+# Strong references for detached summary projections, so the event loop cannot
+# garbage-collect a still-running generation task (asyncio holds only weak
+# references). Purely in-process bookkeeping; the durable state is the summary
+# projection itself.
+_SUMMARY_PROJECTION_TASKS: set[asyncio.Task[None]] = set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1071,9 +1098,18 @@ async def prepare_web_summary_retry(
         else {}
     )
     state = str(projection.get("state") or "")
-    held = state in {"in_flight", "needs_reconciliation"}
+    unresolved = state in {"in_flight", "needs_reconciliation"}
+    # The summary runs detached from delivery, so the session's single
+    # projection slot can hold an OLDER turn's unresolved summary while this
+    # dead letter belongs to a newer boundary.  Only the dead letter's own
+    # request may gate its redrive: the redelivered turn's summary claims the
+    # slot in ``_project_summary`` and supersedes that older projection.  A
+    # retry disposition aimed at the older projection is a harmless no-op
+    # here; blocking on it would strand the newer boundary with no recovery
+    # short of a manual database edit.
+    held = unresolved and str(projection.get("request_id") or "") == expected_request_id
     if not held:
-        if disposition is not None:
+        if disposition is not None and not unresolved:
             raise ValueError("Web summary projection is not awaiting operator retry")
         return None
     if disposition != "retry":
@@ -1388,8 +1424,19 @@ class WebTerminalBoundaryProcessor:
                 if projection_state == "sealed" and current is not None:
                     return int(current), f"chat-session-summary://{material.session_id}/{current}"
                 if projection_state in {"in_flight", "needs_reconciliation"}:
+                    if projection_state == "in_flight":
+                        # An ack-gap replay of this same turn: another detached
+                        # attempt owns the slot (live, or interrupted by a
+                        # redeploy), so this one stands down without invoking
+                        # the provider a second time.
+                        raise _WebSummaryOverlapExpected(
+                            "summary provider outcome is unknown; another attempt for this"
+                            " turn owns the slot (live or interrupted), and the next"
+                            " successful turn's summary supersedes it"
+                        )
                     raise WebTerminalBoundaryPending(
-                        "summary provider outcome is unknown; operator reconciliation is required"
+                        "summary provider outcome is unknown; the next successful turn's"
+                        " summary supersedes this projection"
                     )
 
             if current is not None and int(current) >= material.terminal_sequence:
@@ -1397,9 +1444,21 @@ class WebTerminalBoundaryProcessor:
                     source = "chat-session-summary" if session.summary is not None else "chat-session-summary-skipped"
                     return int(current), f"{source}://{material.session_id}/{current}"
                 return int(current), f"chat-session-summary-superseded://{material.session_id}/{current}"
-            if projection_state in {"in_flight", "needs_reconciliation"}:
+            # A detached summary runs after its boundary is delivered, so an
+            # older turn's unresolved projection is a normal concurrent state,
+            # not an unknown outcome: this newer turn claims the projection
+            # slot below, and the older task's seal-time authority check
+            # discards its result without ever overwriting a newer summary.
+            # An unresolved projection at or beyond this turn's sequence still
+            # belongs to a live equal/newer attempt and keeps failing closed.
+            if (
+                projection_state in {"in_flight", "needs_reconciliation"}
+                and projection_sequence >= material.terminal_sequence
+            ):
                 raise WebTerminalBoundaryPending(
-                    "summary provider outcome is unknown; operator reconciliation is required"
+                    "summary provider outcome is unknown; an equal or newer turn's summary"
+                    " attempt owns the projection slot; it seals if it succeeds, otherwise"
+                    " the next successful turn's summary supersedes it"
                 )
             if projection_sequence > material.terminal_sequence and projection_state in {"sealed", "skipped"}:
                 return (
@@ -1448,7 +1507,8 @@ class WebTerminalBoundaryProcessor:
                         session.transcript_metadata_json = metadata
                         await db.flush()
             raise WebTerminalBoundaryPending(
-                "summary provider outcome is unknown; operator reconciliation is required"
+                "summary provider outcome is unknown; the next successful turn's summary"
+                " supersedes this projection"
             ) from exc
 
         summary_unavailable = False
@@ -1470,10 +1530,13 @@ class WebTerminalBoundaryProcessor:
             if str(projection.get("request_id") or "") != request_id:
                 if current is not None and int(current) >= material.terminal_sequence:
                     return int(current), f"chat-session-summary-superseded://{material.session_id}/{current}"
-                raise TerminalBoundaryCanonicalMismatch("summary projection authority changed before result seal")
+                # A newer turn claimed the single projection slot while this
+                # older generator ran; discarding here is the expected outcome.
+                raise _WebSummarySealSuperseded("summary projection authority changed before result seal")
             if str(projection.get("state") or "") != "in_flight":
                 raise WebTerminalBoundaryPending(
-                    "summary provider outcome is unknown; operator reconciliation is required"
+                    "summary provider outcome is unknown; the projection is no longer in"
+                    " flight for this attempt, so its result is not sealed"
                 )
 
             normalized_summary = summary.replace("\x00", "") if isinstance(summary, str) else ""
@@ -1507,13 +1570,59 @@ class WebTerminalBoundaryProcessor:
                 await db.flush()
 
         if summary_unavailable:
-            raise WebTerminalBoundaryPending("summary provider returned no semantic result; retry is required")
+            raise WebTerminalBoundaryPending(
+                "summary provider returned no semantic result; the projection is stored as"
+                " retryable, regenerated only if this boundary is processed again, otherwise"
+                " the next successful turn's summary supersedes it"
+            )
 
         if current is None:
             raise TerminalBoundaryCanonicalMismatch("summary result seal has no projection sequence")
         if int(current) != material.terminal_sequence:
             return int(current), f"chat-session-summary-superseded://{material.session_id}/{current}"
         return int(current), f"chat-session-summary://{material.session_id}/{current}"
+
+    async def _project_summary_detached(self, material: _WebTerminalMaterial) -> None:
+        """Run the summary projection without owning the boundary delivery.
+
+        The boundary is already delivered when this runs, so a provider
+        failure can only be logged here; the projection itself records the
+        durable failure state (``needs_reconciliation``/``retryable``).
+        """
+
+        try:
+            await self._project_summary(material)
+        except (_WebSummaryOverlapExpected, _WebSummarySealSuperseded) as exc:
+            # Normal detached overlap: another attempt for this or a newer
+            # turn owns the summary slot and this one stood down cleanly.  No
+            # state is wrong, so this is not a warning.
+            logger.info(
+                "Web session summary projection skipped as an expected overlap"
+                " runtime_task=%s session=%s outcome=%s: %s",
+                material.runtime_task_id,
+                material.session_id,
+                type(exc).__name__,
+                exc,
+            )
+        except Exception as exc:  # noqa: BLE001 - delivery is settled; the projection owns retry state.
+            logger.warning(
+                "Web session summary projection failed runtime_task=%s session=%s error=%s: %s",
+                material.runtime_task_id,
+                material.session_id,
+                type(exc).__name__,
+                exc,
+            )
+
+    def _spawn_detached_summary_projection(self, material: _WebTerminalMaterial) -> None:
+        # The ``runtime-terminal-boundary-`` prefix makes the existing runtime
+        # task snapshot (``_terminal_boundary_execution_snapshot``) report this
+        # task alongside the boundary lane it belongs to.
+        task = asyncio.create_task(
+            self._project_summary_detached(material),
+            name=f"runtime-terminal-boundary-summary:{material.runtime_task_id}",
+        )
+        _SUMMARY_PROJECTION_TASKS.add(task)
+        task.add_done_callback(_SUMMARY_PROJECTION_TASKS.discard)
 
     async def __call__(self, item: ClaimedTerminalBoundary) -> Mapping[str, Any]:
         material = await self._load(item)
@@ -1540,16 +1649,8 @@ class WebTerminalBoundaryProcessor:
         if material.event_kind == "turn_abort" or material.response_commit is None:
             return normalize_terminal_boundary_binding(receipt)
         response_sha256, response_source_refs = await self._project_response(item, material)
-        summary_sequence, summary_source_ref = await self._project_summary(material)
         receipt["source_refs"] = list(dict.fromkeys([*receipt["source_refs"], *response_source_refs]))
-        receipt.update(
-            {
-                "response_projection_sha256": response_sha256,
-                "summary_source_ref": summary_source_ref,
-            }
-        )
-        if summary_sequence is not None:
-            receipt["summary_sequence"] = summary_sequence
+        receipt["response_projection_sha256"] = response_sha256
         if material.has_bound_goal:
             from app.services.goal_continuation_service import continue_committed_goal_turn
             from app.services.chat_transcript import lock_transcript_session
@@ -1567,4 +1668,25 @@ class WebTerminalBoundaryProcessor:
                 if task is None:
                     raise TerminalBoundaryCanonicalMismatch("Goal continuation runtime task disappeared")
                 await continue_committed_goal_turn(db, task=task)
+        # Every committed boundary part the next turn depends on is now done:
+        # the T0 transcript frontier, the sealed turn boundary, the required
+        # RESPONSE_COMPLETE projection, and goal continuation. The session
+        # summary is a user-facing read projection no later turn reads, so its
+        # LLM call must not hold delivery (and with it every follow-up input).
+        # Detached, it stays idempotent and its seal-time authority check means
+        # an older summary can never overwrite a newer one.
+        #
+        # Accepted ceiling for this release (controller ruling 2026-11-11, listed
+        # for the owner in the final report; no sweep, cap, or new state): if
+        # this summary ends unresolved — a provider failure recorded as
+        # needs_reconciliation, a redeploy cancelling the task mid-call and
+        # leaving in_flight, or an empty result stored as retryable — and no
+        # later web turn ever reaches this spawn, nothing takes the projection
+        # over. The session list and
+        # search keep showing the previous summary until the next successful
+        # turn's summary supersedes it. The upgrade path, if that gap ever
+        # matters, is an owner-approved takeover tied to the existing
+        # dead-letter redrive (or an owner-approved sweep), never a widening
+        # of this delivery path.
+        self._spawn_detached_summary_projection(material)
         return normalize_terminal_boundary_binding(receipt)

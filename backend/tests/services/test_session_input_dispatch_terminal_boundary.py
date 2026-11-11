@@ -665,8 +665,9 @@ async def test_ack_gap_replay_after_call_return_invokes_provider_once_and_seals_
         f"runtime-terminal-boundary-summary:{run_id}"
     ]
 
-    # Ack failed after ``__call__`` returned: the outbox reprocesses the
-    # boundary, which runs the callback (and its spawn) a second time.
+    # Stands in for the outbox replay after a failed ack (the ack above
+    # succeeded): run the callback, and its spawn, a second time after
+    # ``__call__`` has returned.
     await processor(claimed[0])
 
     release.set()

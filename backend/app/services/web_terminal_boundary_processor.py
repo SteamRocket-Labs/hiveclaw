@@ -4,7 +4,7 @@ The durable terminal-boundary outbox carries identifiers and hashes only.  This
 module rehydrates the already secret-redacted Session V2 request/result, waits
 until the canonical transcript is present in T0, seals the turn with a stable
 boundary identity, and runs learning before delivery.  The session-summary read
-model is projected by a detached task after the boundary is delivered, so a
+model is projected by a detached task started as delivery completes, so a
 slow or failed summary never holds the boundary (or the next input).  It never
 writes Run/Turn terminal facts.
 """
@@ -1426,17 +1426,17 @@ class WebTerminalBoundaryProcessor:
                 if projection_state in {"in_flight", "needs_reconciliation"}:
                     if projection_state == "in_flight":
                         # An ack-gap replay of this same turn: another detached
-                        # attempt already owns the slot, so this one stands down
-                        # without invoking the provider a second time.
+                        # attempt owns the slot (live, or interrupted by a
+                        # redeploy), so this one stands down without invoking
+                        # the provider a second time.
                         raise _WebSummaryOverlapExpected(
                             "summary provider outcome is unknown; another attempt for this"
-                            " turn is already generating it, and the next successful turn's"
-                            " summary supersedes it"
+                            " turn owns the slot (live or interrupted), and the next"
+                            " successful turn's summary supersedes it"
                         )
                     raise WebTerminalBoundaryPending(
                         "summary provider outcome is unknown; the next successful turn's"
-                        " summary supersedes this projection, or redriving this boundary"
-                        " as a dead letter with summary_disposition=retry clears it"
+                        " summary supersedes this projection"
                     )
 
             if current is not None and int(current) >= material.terminal_sequence:
@@ -1457,8 +1457,8 @@ class WebTerminalBoundaryProcessor:
             ):
                 raise WebTerminalBoundaryPending(
                     "summary provider outcome is unknown; an equal or newer turn's summary"
-                    " attempt owns the projection slot — it seals, or the next successful"
-                    " turn's summary supersedes it"
+                    " attempt owns the projection slot; it seals if it succeeds, otherwise"
+                    " the next successful turn's summary supersedes it"
                 )
             if projection_sequence > material.terminal_sequence and projection_state in {"sealed", "skipped"}:
                 return (
@@ -1508,8 +1508,7 @@ class WebTerminalBoundaryProcessor:
                         await db.flush()
             raise WebTerminalBoundaryPending(
                 "summary provider outcome is unknown; the next successful turn's summary"
-                " supersedes this projection, or redriving this boundary as a dead letter"
-                " with summary_disposition=retry clears it"
+                " supersedes this projection"
             ) from exc
 
         summary_unavailable = False
@@ -1536,8 +1535,8 @@ class WebTerminalBoundaryProcessor:
                 raise _WebSummarySealSuperseded("summary projection authority changed before result seal")
             if str(projection.get("state") or "") != "in_flight":
                 raise WebTerminalBoundaryPending(
-                    "summary provider outcome is unknown; the projection was re-armed for"
-                    " retry and is regenerated when this boundary is next processed"
+                    "summary provider outcome is unknown; the projection is no longer in"
+                    " flight for this attempt, so its result is not sealed"
                 )
 
             normalized_summary = summary.replace("\x00", "") if isinstance(summary, str) else ""
@@ -1571,7 +1570,11 @@ class WebTerminalBoundaryProcessor:
                 await db.flush()
 
         if summary_unavailable:
-            raise WebTerminalBoundaryPending("summary provider returned no semantic result; retry is required")
+            raise WebTerminalBoundaryPending(
+                "summary provider returned no semantic result; the projection is stored as"
+                " retryable, regenerated only if this boundary is processed again, otherwise"
+                " the next successful turn's summary supersedes it"
+            )
 
         if current is None:
             raise TerminalBoundaryCanonicalMismatch("summary result seal has no projection sequence")
@@ -1673,11 +1676,13 @@ class WebTerminalBoundaryProcessor:
         # Detached, it stays idempotent and its seal-time authority check means
         # an older summary can never overwrite a newer one.
         #
-        # Accepted ceiling (owner ruling; no sweep, cap, or new state for this
-        # release): if this summary ends unresolved — a provider failure
-        # recorded as needs_reconciliation, or a redeploy cancelling the task
-        # mid-call and leaving in_flight — and no later web turn ever reaches
-        # this spawn, nothing takes the projection over. The session list and
+        # Accepted ceiling for this release (controller ruling 2026-11-11, listed
+        # for the owner in the final report; no sweep, cap, or new state): if
+        # this summary ends unresolved — a provider failure recorded as
+        # needs_reconciliation, a redeploy cancelling the task mid-call and
+        # leaving in_flight, or an empty result stored as retryable — and no
+        # later web turn ever reaches this spawn, nothing takes the projection
+        # over. The session list and
         # search keep showing the previous summary until the next successful
         # turn's summary supersedes it. The upgrade path, if that gap ever
         # matters, is an owner-approved takeover tied to the existing

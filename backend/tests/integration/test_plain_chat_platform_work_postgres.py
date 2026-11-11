@@ -233,8 +233,6 @@ async def test_plain_chat_platform_work(hello_work, app_user_sessionmaker, monke
         print("A2D_MEMORY_ISSUES", json.dumps({"case": case, "issues": issues}), flush=True)
     assert len(client.requests) == 1 + tool_round
     assert "hello" in json.dumps(client.requests[0]["messages"])
-    if case == "hello":
-        assert totals["before_first_model"] <= 420, totals
     if case == "unverifiable_source":
         assert all(f"MEMORY_DAG_{index}" not in json.dumps(request["messages"])
             for request in client.requests for index in range(4, 10))
@@ -254,6 +252,8 @@ async def test_plain_chat_platform_work(hello_work, app_user_sessionmaker, monke
         tools = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == n.web_run)))
         assert len(tools) == tool_round
         assert all(tool.effect_state == "effect_committed" and tool.result_event_id is not None for tool in tools)
+    if case == "hello":
+        assert totals["before_first_model"] <= 420, totals
 
 
 async def test_later_memory_source_refreshes_platform_skill_lineage(

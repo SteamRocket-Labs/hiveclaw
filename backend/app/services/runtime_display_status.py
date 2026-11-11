@@ -16,9 +16,12 @@ _FAILURE_MESSAGES = {
     "task_killed": "这次任务已停止。",
     "task_skipped": "这次任务已跳过。",
     "task_needs_reconciliation": "这次任务的结果待确认。",
+    "delegation_timeout": "没在时限内完成这项任务。",
 }
 _TERMINAL_READ_MESSAGES = frozenset(TERMINAL_TASK_READ_PREFIX + reason for reason in _FAILURE_MESSAGES.values())
 _FAILURE_MESSAGES["identical_terminal_task_read"] = "任务结果未变化，已停止本次处理。"
+# Every fixed sentence the plain delegation result page may legally carry.
+_FIXED_RESULT_SENTENCES = frozenset(_FAILURE_MESSAGES.values()) | _TERMINAL_READ_MESSAGES
 
 
 FAILED_DELEGATION_MODEL_INSTRUCTION = (
@@ -38,7 +41,9 @@ def runtime_failure_observation(status: str, metadata: dict, *, result_summary: 
         if not isinstance(reason, str) or reason not in _FAILURE_MESSAGES:
             reason = metadata.get("terminal_reason")
         if not isinstance(reason, str) or reason not in _FAILURE_MESSAGES:
-            reason = "task_failed"
+            # A delegation cut by its time limit has no more specific code; the
+            # plain timeout sentence beats the generic task_failed wording.
+            reason = "delegation_timeout" if metadata.get("timed_out") else "task_failed"
     else:
         return None
     message = _FAILURE_MESSAGES[reason]
@@ -55,6 +60,55 @@ def is_runtime_failure_observation(payload: object) -> bool:
     expected = runtime_failure_observation(payload.get("status"), {"error_code": payload.get("reason_code")},
         result_summary=payload.get("reason"))
     return expected is not None and all(payload.get(key) == value for key, value in expected.items())
+
+
+DELEGATION_RESULT_READ_NOTE = "The colleague's task ended without a result body; this notice is all there is to read."
+
+
+def delegation_failure_result_page(
+    *,
+    result_ref: str,
+    task_id: str | None,
+    status: str,
+    metadata: dict,
+    result_summary: str | None = None,
+) -> dict | None:
+    """Model-facing page for reading a finished delegation that has no body.
+
+    The parent model gets plain sentences derived from the same terminal fields
+    the observation uses — never the internal codes (reason codes, retryable
+    flags, status enums) that leak into member-facing prose when quoted.
+    """
+    failure = runtime_failure_observation(status, metadata, result_summary=result_summary)
+    if failure is None:
+        return None
+    page = {
+        "schema": "hive.runtime_result_page.v1",
+        "result_ref": result_ref,
+        "result": failure["reason"],
+        "note": DELEGATION_RESULT_READ_NOTE,
+    }
+    if task_id:
+        page["task_id"] = task_id
+    return page
+
+
+def is_delegation_failure_result_page(page: object) -> bool:
+    """Recognize only the native reader's fixed no-body failure page.
+
+    Like ``is_runtime_failure_observation``, this binds the exact fixed copy:
+    the sentence must come from the fixed failure-message set and the note must
+    be the platform constant, so no other bytes can certify as this projection.
+    """
+    if not isinstance(page, dict):
+        return False
+    if page.get("note") != DELEGATION_RESULT_READ_NOTE or page.get("schema") != "hive.runtime_result_page.v1":
+        return False
+    if page.get("result") not in _FIXED_RESULT_SENTENCES:
+        return False
+    if not isinstance(page.get("result_ref"), str) or not page["result_ref"]:
+        return False
+    return set(page) in ({"schema", "result_ref", "result", "note"}, {"schema", "result_ref", "result", "note", "task_id"})
 
 
 def runtime_display_status(status: str) -> str:

@@ -287,6 +287,9 @@ def _build_delegated_worker_prompt(profile: DelegationToolProfile, parent_name: 
         "<isolation_contract>\n"
         "- The delegated task is the ONLY authoritative context you have.\n"
         "- The parent agent's conversation history is NOT available to you.\n"
+        "- Facts, figures, and short excerpts given in the task message are your source when you cannot read the "
+        "original file: answer from them and say which points rest on the message. Do not spend rounds searching "
+        "for files outside your reach.\n"
         "- Do not assume shared state with the parent beyond what the task says.\n"
         "- Do not leak information about the parent's other tasks or sessions.\n"
         f"{nesting_rule}"
@@ -2321,8 +2324,10 @@ async def _delegate_after_cycle_check(
         )
     except asyncio.TimeoutError:
         _delegation_status = "timeout"
+        # Plain member-language outcome: no seconds, no repeated target name (the
+        # runtime-action line already names the colleague), no "结果未知" vagueness.
         delegation_result = AgentDelegationResult(
-            content=(f"委派给{request.target.name}的任务超过 {request.policy.timeout_seconds:g} 秒未完成，结果未知。"),
+            content="没在时限内完成这项任务。",
             child_session_id=child_session_id,
             trace_id=trace_id,
             depth=request.depth,

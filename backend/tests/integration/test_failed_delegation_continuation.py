@@ -314,7 +314,14 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
     (tmp_path / "reader-observations.json").write_text(json.dumps(observed, ensure_ascii=False, indent=2))
     for identity in ("read-result", "read-output", "read-status"):
         assert identity in observed and short_reason in observed[identity], observed
-        assert terminal_status in observed[identity], observed
+        if identity == "read-result":
+            # R16b: the delegation result page carries plain sentences only — no
+            # reason codes, retryable flags, or status enums the parent could quote.
+            page = json.loads(observed[identity])
+            assert set(page) == {"schema", "result_ref", "task_id", "result", "note"}, page
+            assert page["schema"] == "hive.runtime_result_page.v1"
+        else:
+            assert terminal_status in observed[identity], observed
         assert "PRIVATE_PARTIAL_BODY" not in observed[identity]
         assert "1000001" not in observed[identity] and "[Runtime Limit]" not in observed[identity]
     async with owner_sessionmaker() as db:
@@ -485,9 +492,16 @@ async def test_delegated_child_terminal_read_failure_reaches_parent(
         if message.get("role") == "tool" and message.get("tool_call_id") in {call["id"] for call in reads}]
     assert len(observed) == len(reads)
     for content in observed:
-        assert STOP_REASON in content and '"failed"' in content
+        assert STOP_REASON in content
         assert "needs_reconciliation" not in content and "Delegation terminal output" not in content
         assert "PRIVATE_PARTIAL_BODY" not in content
+        if '"note"' in content:
+            # R16b: the delegation result page is plain sentences only; the task
+            # readers keep their coded projection.
+            page = json.loads(content)
+            assert set(page) == {"schema", "result_ref", "task_id", "result", "note"}, page
+        else:
+            assert '"failed"' in content
     print("R13B3_PARENT_READS", json.dumps(observed, ensure_ascii=False))
     await _assert_member_final(app_user_sessionmaker, seed, parent_answer)
 

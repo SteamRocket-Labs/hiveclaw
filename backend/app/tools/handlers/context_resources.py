@@ -423,17 +423,28 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
         ):
             if result_object.source_kind == "a2a_delegation":
                 from app.models.runtime_task import RuntimeTask
-                from app.services.runtime_display_status import runtime_failure_observation
+                from app.services.runtime_display_status import delegation_failure_result_page
 
                 task = await db.scalar(select(RuntimeTask).where(
                     RuntimeTask.id == uuid.UUID(result_object.source_run_id),
                     RuntimeTask.tenant_id == tenant_id,
                     RuntimeTask.task_type == "delegation",
                 ))
-                failure = runtime_failure_observation(task.status, task.metadata_json or {},
-                    result_summary=task.result_summary) if task else None
-                if failure:
-                    return _json({"schema": schema, "result_ref": result_ref, "task_id": str(task.id), **failure})
+                # Plain sentences only: reason codes, retryable flags, and status
+                # enums quoted here reached the member through the parent's reply (E2E run 12).
+                failure_page = (
+                    delegation_failure_result_page(
+                        result_ref=result_ref,
+                        task_id=str(task.id),
+                        status=task.status,
+                        metadata=task.metadata_json or {},
+                        result_summary=task.result_summary,
+                    )
+                    if task
+                    else None
+                )
+                if failure_page:
+                    return _json(failure_page)
             from app.services.content_input_receipts import ContentInputReceiptError
             from app.services.runtime_result_sources import validate_runtime_result_sources
 

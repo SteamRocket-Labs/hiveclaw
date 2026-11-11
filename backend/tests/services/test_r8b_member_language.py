@@ -56,7 +56,9 @@ async def test_timeout_is_produced_in_chinese_with_typed_failure_facts(monkeypat
         conversation_messages=[{"role": "user", "content": "本周要点"}], owner_id=owner, session_id="child-session",
         policy=OrchestrationPolicy(timeout_seconds=600),
         **_a2a_authority_kwargs(target=target, owner_id=owner, session_id="child-session")))
-    assert result.content == "委派给周报助手的任务超过 600 秒未完成，结果未知。"
+    # R16b: plain member wording — no seconds, no repeated colleague name, no
+    # "结果未知" vagueness (the runtime-action line already names the colleague).
+    assert result.content == "没在时限内完成这项任务。"
     assert result.failed and result.timed_out and result.to_dict()["status"] == "timed_out"
 
 

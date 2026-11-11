@@ -20,7 +20,8 @@ from uuid import UUID
 
 from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
 from app.services.runtime_display_status import (
-    DELEGATED_TASK_RUNNING_MESSAGE, TERMINAL_TASK_READ_PREFIX, is_runtime_failure_observation,
+    DELEGATED_TASK_RUNNING_MESSAGE, TERMINAL_TASK_READ_PREFIX, is_delegation_failure_result_page,
+    is_runtime_failure_observation,
 )
 
 _ABORT_MULTIPLIER = 1.5  # abort threshold = ceil(warn threshold × 1.5)
@@ -245,7 +246,11 @@ class LoopGuard:
             if not isinstance(observation, dict):
                 continue
             running = observation.get("status") in {"pending", "running"} and observation.get("task_type") == "delegation"
-            if not running and (active_listing or not is_runtime_failure_observation(observation)):
+            # R16b: read_runtime_result answers a finished delegation with the plain
+            # no-body page instead of the coded observation; recognize both fixed
+            # projections so identical terminal reads still stop the turn.
+            plain_result_page = is_delegation_failure_result_page(observation)
+            if not running and not plain_result_page and (active_listing or not is_runtime_failure_observation(observation)):
                 continue
             identity = observation.get("task_id") or observation.get("result_ref")
             if not isinstance(identity, str) or not identity:
@@ -256,14 +261,27 @@ class LoopGuard:
                 pass  # An opaque result_ref is already a stable native identity.
             if identity.replace("-", "") == self._runtime_task_id:
                 continue
-            key = (identity, "running" if running else observation["reason_code"])
+            if running:
+                outcome_key, code, message = "running", "running", DELEGATED_TASK_RUNNING_MESSAGE
+            elif plain_result_page:
+                message = observation["result"]
+                outcome_key, code = message, "delegation_result_page"
+                if not message.startswith(TERMINAL_TASK_READ_PREFIX):
+                    message = TERMINAL_TASK_READ_PREFIX + message
+            else:
+                code = observation["reason_code"]
+                message = observation["reason"]
+                # Pool reads of the same fixed outcome sentence across readers, so
+                # the plain page and the coded projection of one task still share
+                # a counter the way the shared reason code used to.
+                outcome_key = message
+                if code != "identical_terminal_task_read":
+                    message = TERMINAL_TASK_READ_PREFIX + message
+            key = (identity, outcome_key)
             self._terminal_read_counts[key] = self._terminal_read_counts.get(key, 0) + 1
             if self._terminal_read_counts[key] >= self.identical_tool_threshold:
-                message = DELEGATED_TASK_RUNNING_MESSAGE if running else observation["reason"]
-                if not running and observation["reason_code"] != "identical_terminal_task_read":
-                    message = TERMINAL_TASK_READ_PREFIX + message
                 check = _PatternCheck(reason="identical_running_task_read" if running else "identical_terminal_task_read", detail=message,
-                    warn_key=f"terminal:{identity}:{key[1]}", count=self._terminal_read_counts[key],
+                    warn_key=f"terminal:{identity}:{code}", count=self._terminal_read_counts[key],
                     warn_threshold=self.identical_tool_threshold)
                 return self._decision(check, severity="abort", tool_name=tool_name,
                     args_digest=_digest(_canonical_args(args)),

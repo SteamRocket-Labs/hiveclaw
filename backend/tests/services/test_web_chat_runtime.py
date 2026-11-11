@@ -839,6 +839,31 @@ def test_empty_company_knowledge_search_replay_states_the_outcome_not_another_ca
     )
     assert json.loads(projection)["instruction"] == empty_note
 
+    # A legacy filtered empty result (no note) must not claim more than the
+    # call searched: the call's own filters choose the sentence.
+    projection = _knowledge_tool_replay_projection(
+        tool_name="search_company_kb",
+        args={"query": "Handbook", "filters": {"namespaces": ["company/general"]}},
+        raw_result=legacy_result,
+    )
+    assert json.loads(projection)["instruction"] == filtered_note
+
+    # A search that did not run (invalid) or did not answer (unavailable) is
+    # not "nothing matched"; it keeps the call-again instruction.
+    for failed in (
+        {"status": "invalid_request", "results": [], "authority": None, "warnings": ["query is required"]},
+        {"status": "unavailable", "results": [], "warnings": ["company_knowledge_backend_unavailable"]},
+    ):
+        projection = _knowledge_tool_replay_projection(
+            tool_name="search_company_kb",
+            args={},
+            raw_result=json.dumps(failed),
+        )
+        assert (
+            json.loads(projection)["instruction"]
+            == "Call search_company_kb/read_company_kb again if the content is needed."
+        )
+
     # Other replay instructions are unchanged.
     projection = _knowledge_tool_replay_projection(
         tool_name="search_personal_kb",

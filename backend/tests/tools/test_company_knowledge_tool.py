@@ -383,7 +383,7 @@ _MEMBER_FILE_NEXT_ACTION = (
     "library, the member opens the account menu 「知识库」 (their personal knowledge page) and, "
     "on a document whose status is ready, uses its 「提交公司审核」 button (\"Submit to Company "
     "review\" in the English UI); a workspace file must first be added to their knowledge base "
-    "and become ready."
+    "and become ready, and credential-level documents are refused."
 )
 _NOT_SUBMITTED_NEXT_ACTION = (
     "The proposal was not submitted; fix what `reason_codes` names and submit again, or tell "
@@ -580,7 +580,12 @@ def test_company_kb_tool_descriptions_as_registered_explain_empty_results_and_ac
         in descriptions["propose_company_kb_update"]
     )
     assert "a member's own file cannot" in descriptions["propose_company_kb_update"]
-    assert "知识库 (Knowledge)" in descriptions["propose_company_kb_update"]
+    assert "「知识库」 (Knowledge)" in descriptions["propose_company_kb_update"]
+    # The model reads only the description before calling: it must name the
+    # button the member sees and the ready-in-the-knowledge-base precondition.
+    assert "「提交公司审核」" in descriptions["propose_company_kb_update"]
+    assert "Submit to Company review" in descriptions["propose_company_kb_update"]
+    assert "a workspace file must first be added to their knowledge base" in descriptions["propose_company_kb_update"]
 
 
 @pytest.mark.asyncio

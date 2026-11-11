@@ -316,7 +316,7 @@ _COMPANY_PROPOSAL_MEMBER_FILE_NEXT_ACTION = (
     "library, the member opens the account menu 「知识库」 (their personal knowledge page) and, "
     "on a document whose status is ready, uses its 「提交公司审核」 button (\"Submit to Company "
     "review\" in the English UI); a workspace file must first be added to their knowledge base "
-    "and become ready."
+    "and become ready, and credential-level documents are refused."
 )
 _COMPANY_PROPOSAL_EVIDENCE_NOT_ACCEPTED_NEXT_ACTION = (
     "The proposal was not submitted: the given `company-evidence://` reference is not accepted "
@@ -654,8 +654,10 @@ async def explain_company_kb_source(request: ToolExecutionRequest) -> str:
             "identity, coverage, sensitivity, and a review policy; only the governed review/publication path can "
             "turn it into Company truth. Only accepted `company-evidence://` references pointing at company "
             "material — including company material published from a member's personal promotion — can back a "
-            "proposal; a member's own file cannot, and the member can submit a ready personal document for "
-            "company review from the account menu's 知识库 (Knowledge) page."
+            "proposal; a member's own file cannot. The member can open the account menu 「知识库」 (Knowledge), "
+            "open a document whose status is ready and use its 「提交公司审核」 button (\"Submit to Company "
+            "review\" in the English UI); a workspace file must first be added to their knowledge base and "
+            "become ready, and credential-level documents are refused."
         ),
         parameters={
             "type": "object",

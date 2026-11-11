@@ -189,7 +189,7 @@ it('keeps escaped markers and code literal while parsing Chinese punctuation', (
 });
 
 it('uses chat history in the recovery banner', () => {
-  expect(zh.agent.chat.sessionBackfillIncomplete).toBe('最新消息已显示，较早的聊天记录仍在恢复。');
+  expect(zh.agent.chat.sessionBackfillIncomplete).toBe('较早的消息还在加载，请稍候。');
 });
 
 it('keeps model-authored words intact even when they contain technical vocabulary', () => {

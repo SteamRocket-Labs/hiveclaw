@@ -45,7 +45,7 @@ it('R16a.1 gives uploaded cards their own phone layout with a two-line name and 
   expect(container.querySelector('.chat-artifact-row.is-upload')).toBeTruthy();
   expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('text/csv · 849 B');
   expect(css).toMatch(/@media\s*\(max-width:\s*600px\)[\s\S]*\.chat-artifact-row\.is-upload\s*\{[^}]*flex-wrap:\s*wrap/);
-  expect(css).toMatch(/\.is-upload\s+\.chat-artifact-name\s*\{[^}]*-webkit-line-clamp:\s*2/);
+  expect(css).toMatch(/\.is-upload\s+\.chat-artifact-stem\s*\{[^}]*-webkit-line-clamp:\s*2/);
   expect(container.querySelector('.chat-artifact-extension')?.textContent).toBe('.csv');
 });
 

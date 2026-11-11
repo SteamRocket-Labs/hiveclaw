@@ -528,6 +528,7 @@ export interface TranscriptReplayState {
 export interface PendingUserMessage {
   message: AgentChatMessage;
   anchorMessageCount: number;
+  anchorMessageId?: string;
 }
 
 export const ACTIVE_RUN_ABSENCE_GRACE_MS = 8_000;
@@ -839,7 +840,10 @@ export function mergePendingUserMessages(
       };
       return;
     }
-    const index = Math.max(0, Math.min(item.anchorMessageCount + offset, merged.length));
+    const anchorIndex = item.anchorMessageId ? merged.findIndex(message =>
+      [message.id, message.messageId, message.transcriptEventId].includes(item.anchorMessageId)) : -1;
+    const index = anchorIndex >= 0 ? anchorIndex + 1
+      : Math.max(0, Math.min(item.anchorMessageCount + offset, merged.length));
     merged.splice(index, 0, item.message);
   });
   return { messages: merged, pending: remaining };

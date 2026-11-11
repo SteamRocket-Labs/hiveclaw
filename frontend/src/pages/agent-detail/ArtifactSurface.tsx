@@ -363,7 +363,7 @@ export function ArtifactCards({
         return (
           <div
             key={`${artifact.id || artifact.path}`}
-            className="chat-artifact-row"
+            className={artifact.source === 'human_input' ? 'chat-artifact-row is-upload' : 'chat-artifact-row'}
           >
             <button
               type="button"
@@ -373,9 +373,12 @@ export function ArtifactCards({
               onClick={openArtifact}
             >
               <IconFileText size={14} className="chat-artifact-icon" />
-              <span className="chat-artifact-name" title={artifact.name}>{artifact.name}</span>
+              <span className="chat-artifact-name" title={artifact.name}>{artifact.source === 'human_input' && artifact.name.lastIndexOf('.') > 0
+                ? <><span className="chat-artifact-stem">{artifact.name.slice(0, artifact.name.lastIndexOf('.'))}</span><span className="chat-artifact-extension">{artifact.name.slice(artifact.name.lastIndexOf('.'))}</span></>
+                : artifact.name}</span>
               <span className="chat-artifact-meta">
-                {[getEffectiveArtifactPreviewKind(artifact) === 'html' ? t('agent.chat.artifacts.preview', 'Preview') : artifact.previewKind, size].filter(Boolean).join(' · ')}
+                {[artifact.source === 'human_input' ? artifact.mimeType || artifact.previewKind || artifact.name.split('.').pop()
+                  : getEffectiveArtifactPreviewKind(artifact) === 'html' ? t('agent.chat.artifacts.preview', 'Preview') : artifact.previewKind, size].filter(Boolean).join(' · ')}
               </span>
             </button>
             <span className="chat-artifact-actions">

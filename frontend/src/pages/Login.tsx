@@ -277,7 +277,7 @@ export default function Login() {
                                 value={form.password}
                                 onChange={(e) => setForm({ ...form, password: e.target.value })}
                                 required
-                                placeholder={t('auth.passwordPlaceholder')}
+                                placeholder={isRegister ? t('auth.passwordPlaceholder') : t('auth.loginPasswordPlaceholder', 'Enter password')}
                             />
                         </div>
 

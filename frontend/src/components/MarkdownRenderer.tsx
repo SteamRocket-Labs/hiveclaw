@@ -22,7 +22,7 @@ const CREDENTIAL_QUERY_KEYS = new Set([
   'token',
 ]);
 
-// CommonMark treats a full-width closing punctuation mark before ** as an
+// CommonMark treats a closing punctuation mark before ** as an
 // opening delimiter when the following character is a letter or digit.
 // Extend the native tokenizer so escaped markers and code keep native rules.
 // Compatibility ceiling: this relies on the attention tokenizer's _close flag
@@ -41,8 +41,10 @@ function remarkChineseStrong(this: Processor) {
         return token;
       } }, code => {
         if (sequence && sequence.end.offset - sequence.start.offset === 2
-          && previous != null && previous > 0 && /[\u3001-\u303f\uff01-\uff65]/u.test(String.fromCodePoint(previous))
-          && code != null && code > 0 && !/\s/u.test(String.fromCodePoint(code))) sequence._close = true;
+          && previous != null && previous > 0 && code != null && code > 0
+          && ((/[\u3001-\u303f\uff01-\uff65]/u.test(String.fromCodePoint(previous)) && !/\s/u.test(String.fromCodePoint(code)))
+            || (/\p{P}/u.test(String.fromCodePoint(previous))
+              && /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}/u.test(String.fromCodePoint(code))))) sequence._close = true;
         return ok(code);
       }, nok);
     },

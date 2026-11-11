@@ -36,6 +36,7 @@ import {
   sessionBelongsToAgent,
   isTerminalRealtimeChatEvent,
   isTerminalRunAcceptedForActiveRun,
+  markActiveRunTerminalInRegistry,
   normalizeSessionRunId,
   reconcileSessionTranscriptSafely,
   shouldClearStaleRuntimeState,
@@ -731,7 +732,7 @@ describe('chatRuntime helpers', () => {
     expect(result.uiStates.work).toEqual(uiForPhase(phase));
   });
 
-  it('ignores terminal run identities and unidentified observations after a session terminal', () => {
+  it('ignores observed active runs once a terminal event closed the same session', () => {
     expect(shouldIgnoreObservedActiveRun({
       key: 'agent-1:session-1',
       run: { runId: 'run-1', status: 'running' },
@@ -739,12 +740,13 @@ describe('chatRuntime helpers', () => {
       terminalSessionKeys: new Set(),
     })).toBe(true);
 
+    // R13a round 2: restore the session guard for terminals with no known run identity.
     expect(shouldIgnoreObservedActiveRun({
       key: 'agent-1:session-1',
       run: { runId: 'run-late-without-terminal-id', status: 'running' },
       terminalRunIds: new Set(),
       terminalSessionKeys: new Set(['agent-1:session-1']),
-    })).toBe(false);
+    })).toBe(true);
 
     expect(shouldIgnoreObservedActiveRun({
       key: 'agent-1:session-1',
@@ -759,6 +761,21 @@ describe('chatRuntime helpers', () => {
       terminalRunIds: new Set(['run-1']),
       terminalSessionKeys: new Set(['agent-1:session-1']),
     })).toBe(false);
+  });
+
+  it('R13a scopes identified terminals to their run and retains the unidentified session guard', () => {
+    const terminalSessionKeys = new Set<string>();
+    const terminalRunIds = new Set<string>();
+    markActiveRunTerminalInRegistry(terminalSessionKeys, terminalRunIds, 'agent-1:session-1',
+      'earlier-run', 'earlier-run', () => {});
+    expect(terminalRunIds).toEqual(new Set(['earlier-run']));
+    expect(terminalSessionKeys).toEqual(new Set());
+    expect(shouldIgnoreObservedActiveRun({ key: 'agent-1:session-1',
+      run: { runId: 'platform-continuation', status: 'running' }, terminalRunIds, terminalSessionKeys })).toBe(false);
+    markActiveRunTerminalInRegistry(terminalSessionKeys, terminalRunIds, 'agent-1:session-2',
+      null, null, () => {});
+    expect(shouldIgnoreObservedActiveRun({ key: 'agent-1:session-2',
+      run: { runId: 'late-active-read', status: 'running' }, terminalRunIds, terminalSessionKeys })).toBe(true);
   });
 
   it('uses UUID identity rather than wire formatting for terminal run ownership', () => {

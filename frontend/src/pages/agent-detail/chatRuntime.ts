@@ -323,8 +323,8 @@ export function markActiveRunTerminalInRegistry(
     if (rejectedRunId) terminalRunIds.add(rejectedRunId);
     return false;
   }
-  terminalSessionKeys.add(key);
   const runId = normalizeSessionRunId(terminalRunId || activeRunId);
+  if (!runId) terminalSessionKeys.add(key);
   if (runId) terminalRunIds.add(runId);
   clearActiveRun();
   return true;
@@ -674,8 +674,8 @@ export function shouldIgnoreObservedActiveRun(input: {
   terminalRunIds: Set<string>;
   terminalSessionKeys: Set<string>;
 }): boolean {
+  if (input.terminalSessionKeys.has(input.key)) return true;
   const runId = normalizeSessionRunId(input.run?.runId ?? input.run?.run_id);
-  if (!runId && input.terminalSessionKeys.has(input.key)) return true;
   return Boolean(runId && [...input.terminalRunIds].some((terminalRunId) => (
     normalizeSessionRunId(terminalRunId) === runId
   )));

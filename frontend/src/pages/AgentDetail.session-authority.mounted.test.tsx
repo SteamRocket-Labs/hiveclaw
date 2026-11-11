@@ -280,7 +280,7 @@ beforeEach(() => {
   mocks.messageStore = null;
 });
 
-afterEach(() => { cleanup(); mocks.activeRunQueryClient?.clear(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); mocks.activeRunQueryClient?.clear(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 it('reuses one input id for three failed retries on the child conversation answer control', async () => {
   mocks.sessionId = 'child-session';
@@ -749,6 +749,8 @@ function disclosureStates() {
 }
 
 it('R13a adopts a platform continuation in one existing active-run poll and stops that exact run', async () => {
+  // Fake only intervals so the 3 s poll is deterministic and async UI waits keep their real timers.
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   mocks.realChat = true;
   mocks.language = 'zh';
   mocks.userRole = 'member';
@@ -763,11 +765,50 @@ it('R13a adopts a platform continuation in one existing active-run poll and stop
   const reads = mocks.getActiveSessionRun.mock.calls.length;
   mocks.activeSessionRun = { run_id: 'platform-continuation', status: 'running' };
   // No send, refetch, rerender, navigation or reload: the existing 3 s query owns discovery.
-  const stop = await screen.findByTestId('session-composer-stop', {}, { timeout: 4_500 });
+  await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+  const stop = await screen.findByTestId('session-composer-stop');
   expect(mocks.getActiveSessionRun).toHaveBeenCalledTimes(reads + 1);
   expectMemberRunState('运行中');
   expect(disclosureStates()).toEqual(['done', 'running']);
   fireEvent.click(stop);
+  await waitFor(() => expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith(
+    'agent-1', 'owned-artifact-work', 'platform-continuation'));
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+  expect(mocks.createSessionRun).not.toHaveBeenCalled();
+});
+
+it('R13a adopts a platform continuation from run.running after an empty active-run read stops polling', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.activeRunQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  mocks.activeSessionRun = { run_id: 'earlier-run', status: 'running' };
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  await mountOwnedArtifactWork();
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBe('earlier-run'));
+  const history = completedRunEvents(1, 'earlier-run');
+  const readsBeforeTerminal = mocks.getActiveSessionRun.mock.calls.length;
+  mocks.activeSessionRun = null;
+  await receiveRunEvents(history);
+  await waitFor(() => expect(mocks.activeRunQueryClient!.getQueryState(
+    ['chat-active-run', 'agent-1', 'owned-artifact-work', 'owner'])).toMatchObject({ data: null, fetchStatus: 'idle' }));
+  expect(mocks.getActiveSessionRun.mock.calls.length).toBeGreaterThan(readsBeforeTerminal);
+  expectMemberRunState('完成');
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
+  const reads = mocks.getActiveSessionRun.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+  expect(mocks.getActiveSessionRun).toHaveBeenCalledTimes(reads);
+  mocks.activeSessionRun = { run_id: 'platform-continuation', status: 'running' };
+  const running = activeRunEvent(6, 'run', 'running', 'platform-continuation');
+  // The real event projector invalidates the stopped query; no manual refetch or page change.
+  mocks.getSessionTranscript.mockResolvedValue([...history, running]);
+  await act(async () => { receiveLiveMessage(running); });
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBe('platform-continuation'));
+  expect(mocks.getActiveSessionRun).toHaveBeenCalledTimes(reads + 1);
+  expectMemberRunState('运行中');
+  expect(disclosureStates()).toEqual(['done', 'running']);
+  fireEvent.click(screen.getByTestId('session-composer-stop'));
   await waitFor(() => expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith(
     'agent-1', 'owned-artifact-work', 'platform-continuation'));
   expect(mocks.startSessionRun).not.toHaveBeenCalled();
@@ -851,6 +892,68 @@ it('R13a clears the old stop notice and state before the next run POST settles',
   expectMemberRunState('运行中');
   expect(disclosureStates()).toEqual(['cancelled', 'running']);
   expect(screen.queryByText(zh.agent.chat.stopRecorded)).toBeNull();
+});
+
+it('R13a keeps a queued resend after stop running when its deferred receipt has no run id', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.activeSessionRun = { run_id: 'stopped-run', status: 'running' };
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  await mountOwnedArtifactWork();
+  fireEvent.click(await screen.findByTestId('session-composer-stop'));
+  await screen.findByText(zh.agent.chat.stopRecorded);
+  const history = completedRunEvents(1, 'stopped-run').slice(0, 3);
+  history.push(activeRunEvent(4, 'run', 'cancelled', 'stopped-run'));
+  await receiveRunEvents(history);
+  expectMemberRunState('已停止');
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 87_000);
+  mocks.activeSessionRun = null;
+  mocks.activeRunObservedAt += 1;
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Start a fresh queued report.' } });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(1));
+  expectMemberRunState('运行中');
+  expect(disclosureStates()).toEqual(['cancelled', 'running']);
+  await act(async () => request.resolve({ schema: 'hive.human_input_receipt', schema_version: 2,
+    intent: 'start_turn', status: 'accepted', admission_state: 'admitted', run: null,
+    dispatch: { kind: 'deferred', code: 'terminal_boundary_ack_pending' } }));
+  await waitFor(() => expect(screen.getByTestId('message-send-status').textContent).toBe('排队中'));
+  expect(mocks.chatProps.activeRunId).toBeNull();
+  expect.soft(disclosureStates()).toEqual(['cancelled', 'running']);
+  expectMemberRunState('运行中');
+  expect(screen.queryByText(zh.agent.chat.stopRecorded)).toBeNull();
+});
+
+it.each(['accepted', 'failed'])('R13a preserves an accepted stop notice during a steer POST that is %s', async outcome => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.activeSessionRun = { run_id: 'stopping-run', status: 'running' };
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  await mountOwnedArtifactWork();
+  fireEvent.click(await screen.findByTestId('session-composer-stop'));
+  await screen.findByText(zh.agent.chat.stopRecorded);
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Keep the current findings.' } });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(1));
+  expect(mocks.chatProps.activeRunId).toBe('stopping-run');
+  expect.soft(screen.queryByText(zh.agent.chat.stopRecorded)).not.toBeNull();
+  await act(async () => {
+    if (outcome === 'accepted') request.resolve({ run_id: 'stopping-run', status: 'running' });
+    else request.reject(new Error('Connection lost'));
+  });
+  if (outcome === 'accepted') expect(screen.queryByText(zh.agent.chat.stopRecorded)).toBeNull();
+  else {
+    await screen.findByText(zh.agent.chat.sendFailed);
+    expect(screen.queryByText(zh.agent.chat.stopRecorded)).not.toBeNull();
+  }
+  expect(mocks.chatProps.activeRunId).toBe('stopping-run');
+  expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith('agent-1', 'owned-artifact-work', 'stopping-run');
 });
 
 it.each([

@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import zhCatalog from '../../i18n/zh.json';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -452,5 +453,61 @@ describe('ThreadItemRenderer', () => {
     expect(shouldRenderThreadItemInConversation(userItem('error'), false)).toBe(true);
     expect(shouldRenderThreadItemInConversation(userItem('plan'), false)).toBe(true);
     expect(shouldRenderThreadItemInConversation(item('event'), true)).toBe(true);
+  });
+
+  it('shows the validity as a localized moment and only member-labeled argument keys in approval details', () => {
+    const approval = {
+      ...item('approval_request'),
+      audience: 'user',
+      user_action: {
+        kind: 'resolve_approval',
+        token: 'permission-7',
+        label: '确认后继续',
+        expires_at: '2026-08-01T09:05:00Z',
+        impact: '可能修改内容',
+        details: [
+          { label: 'url', value: 'https://example.com/report' },
+          { label: 'request_id', value: 'internal-req-9' },
+        ],
+      },
+      operator_details: null,
+    } as ThreadItem;
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={approval} />);
+
+    expect(markup).toContain(new Date('2026-08-01T09:05:00Z').toLocaleString('en'));
+    expect(markup).not.toContain('2026-08-01T09:05:00Z');
+    expect(markup).toContain('https://example.com/report');
+    expect(markup).not.toContain('request_id');
+    expect(markup).not.toContain('internal-req-9');
+  });
+
+  it('localizes the validity of a non-approval user action instead of the raw timestamp string', () => {
+    const decision = {
+      ...item('warning'),
+      audience: 'user',
+      user_action: {
+        kind: 'review',
+        label: '查看并处理',
+        expires_at: '2026-08-01T09:05:00Z',
+        impact: '可能修改内容',
+        details: [{ label: 'file_name', value: 'summary.docx' }],
+      },
+      operator_details: null,
+    } as ThreadItem;
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={decision} />);
+
+    expect(markup).toContain(new Date('2026-08-01T09:05:00Z').toLocaleString('en'));
+    expect(markup).not.toContain('2026-08-01T09:05:00Z');
+    expect(markup).toContain('summary.docx');
+  });
+
+  it('keeps member labels in the zh catalog for every key the approval details may show', () => {
+    // Contract side of MEMBER_FIELD_LABELS: each allowed key must carry a
+    // Chinese label, so a member never sees the raw argument key.
+    const zh = zhCatalog.sessionWorkbench.threadItem.field as Record<string, string>;
+    for (const key of ['command', 'cwd', 'name', 'first_task', 'recipient', 'subject', 'body',
+      'path', 'filename', 'file_name', 'channel', 'target', 'query', 'url', 'title']) {
+      expect(zh[key], `zh label for ${key}`).toMatch(/[\u4e00-\u9fff]/);
+    }
   });
 });

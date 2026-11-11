@@ -9,8 +9,13 @@ export function assistantNameForDisplay(name: string, assistantLabel: string): s
   return name === 'My Assistant' ? assistantLabel : name;
 }
 
+/** The stored platform default for a provisioned assistant's description
+ * (`backend/app/services/assistant_binding.py` ASSISTANT_ROLE). Display layers
+ * map this sentinel to a localized label; stored rows keep the exact bytes. */
+export const PLATFORM_ASSISTANT_ROLE = "The user's assistant";
+
 export function assistantRoleForDisplay(role: string, assistantRoleLabel: string): string {
-  return role === "The user's assistant" ? assistantRoleLabel : role;
+  return role === PLATFORM_ASSISTANT_ROLE ? assistantRoleLabel : role;
 }
 
 export function sidebarAgentLink(agent: { id: string; access_level?: string; agent_type?: string }): string {

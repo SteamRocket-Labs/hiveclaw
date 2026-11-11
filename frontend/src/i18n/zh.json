@@ -231,7 +231,14 @@
         "first_task": "第一项任务",
         "recipient": "收件人",
         "subject": "主题",
-        "body": "正文"
+        "body": "正文",
+        "filename": "文件名",
+        "file_name": "文件名",
+        "channel": "渠道",
+        "target": "目标",
+        "query": "查询内容",
+        "url": "网址",
+        "title": "标题"
       },
       "value": {
         "success": "成功",
@@ -676,7 +683,27 @@
       "resume": "回到原工作",
       "sourceMissing": "无法确认原员工，请刷新后重试。",
       "retry": "重试创建",
-      "title": "中断的创建任务"
+      "title": "中断的创建任务",
+      "failureGeneric": "这次创建没有完成，可以直接重试或放弃。",
+      "failureMissingConfirmation": "缺少创建确认记录，暂时无法继续开通，请重试。",
+      "failureProvisionFailed": "创建过程遇到问题，请重试。",
+      "failureModelMissing": "公司尚未配置可用的模型，请联系管理员后再重试。",
+      "failureCapabilityDenied": "公司规则不允许创建数字员工，请联系管理员。",
+      "failureApprovalRequired": "创建数字员工需要公司批准，请联系管理员。",
+      "failureNeedsOperator": "这次创建的状态需要运营人员核查后才能继续。",
+      "errorGeneric": "操作没有完成，请重试。",
+      "errorStateChanged": "创建状态已变化，请刷新后重试。",
+      "errorMissing": "没有找到这条未完成的创建，请刷新。",
+      "errorRequesterOnly": "只有发起这次创建的成员可以操作。",
+      "errorConfirmationMissing": "缺少创建确认记录，请刷新后重试。",
+      "errorReconciliationRequired": "这次创建的状态需要运营人员核查后才能重试。"
+    },
+    "status": {
+      "creating": "创建中",
+      "running": "运行中",
+      "idle": "待命",
+      "stopped": "已停用",
+      "error": "异常"
     }
   },
   "agentCreate": {
@@ -5905,7 +5932,21 @@
     "resume": "继续",
     "stop": "停止",
     "title": "目标",
-    "transitionFailed": "无法更新此目标。"
+    "transitionFailed": "无法更新此目标。",
+    "status": {
+      "active": "进行中",
+      "paused": "已暂停",
+      "blocked": "需要处理",
+      "usage_limited": "用量已达上限",
+      "budget_limited": "预算已达上限",
+      "complete": "已完成",
+      "cancelled": "已停止"
+    },
+    "facts": {
+      "tokensLeft": "剩余 {{count}} tokens",
+      "turnsLeft": "还可继续 {{count}} 轮",
+      "timeLeft": "剩余 {{duration}}"
+    }
   },
   "teamBudgets": {
     "adminReview": "请管理员检查此运行的其他保护限制。",

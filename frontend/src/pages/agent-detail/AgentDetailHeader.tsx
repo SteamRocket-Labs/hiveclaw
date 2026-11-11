@@ -216,6 +216,7 @@ export default function AgentDetailHeader({
     {canManage && editingRole && <div className="card">
       <EmployeeRoleEditor key={agentId} agentId={agentId}
             value={{ role_description: agent.role_description || '', role_revision: agent.role_revision || '' }}
+            defaultRoleLabel={agentId === assistantAgentId ? t('assistant.role', "The user's assistant") : undefined}
             onSaved={(saved) => {
               queryClient.setQueryData(['agent', agentId], (current: any) => current ? { ...current, ...saved } : current);
               setEditingRole(false); return invalidateAgent();

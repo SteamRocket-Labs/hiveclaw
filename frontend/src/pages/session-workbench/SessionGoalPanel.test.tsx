@@ -1,16 +1,19 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import zhCatalog from '../../i18n/zh.json';
+
+const translate = (_key: string, fallback?: string, values?: Record<string, unknown>) => {
+  if (!fallback) return _key;
+  return Object.entries(values || {}).reduce(
+    (text, [name, value]) => text.replace(`{{${name}}}`, String(value)),
+    fallback,
+  );
+};
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_key: string, fallback?: string, values?: Record<string, unknown>) => {
-      if (!fallback) return _key;
-      return Object.entries(values || {}).reduce(
-        (text, [name, value]) => text.replace(`{{${name}}}`, String(value)),
-        fallback,
-      );
-    },
+    t: translate,
   }),
 }));
 
@@ -103,8 +106,22 @@ describe('SessionGoalPanel', () => {
   });
 
   it('keeps progress formatting deterministic and omits unlimited dimensions', () => {
-    expect(goalProgressFacts({ ...goal, remaining_tokens: null, remaining_time_seconds: null })).toEqual([
+    expect(goalProgressFacts({ ...goal, remaining_tokens: null, remaining_time_seconds: null }, translate)).toEqual([
       '3 turns left',
     ]);
+  });
+
+  it('carries Chinese status and remaining-budget sentences instead of English panel words', () => {
+    // P3: the run status panel is member-visible text; every state and fact
+    // must resolve to Chinese through the zh catalog, never the raw word.
+    const statuses = zhCatalog.sessionGoal.status as Record<string, string>;
+    for (const key of ['active', 'paused', 'blocked', 'usage_limited', 'budget_limited', 'complete', 'cancelled']) {
+      expect(statuses[key], `zh status for ${key}`).toMatch(/[\u4e00-\u9fff]/);
+      expect(statuses[key]).not.toMatch(/Active|Paused|Stopped|Complete/);
+    }
+    const facts = zhCatalog.sessionGoal.facts as Record<string, string>;
+    expect(facts.tokensLeft).toBe('剩余 {{count}} tokens');
+    expect(facts.turnsLeft).toBe('还可继续 {{count}} 轮');
+    expect(facts.timeLeft).toBe('剩余 {{duration}}');
   });
 });

@@ -14,16 +14,61 @@ import './HrCreationRecoveryPanel.css';
 
 const ACTIVE_DRAFT_STATUSES = new Set(['confirmed', 'creating', 'provisioning']);
 
+// Own-key-only dictionaries: a crafted key like `constructor` must fall through
+// to the generic line instead of reaching anything on the prototype chain.
+const FAILURE_LINE_KEYS: Record<string, string> = {
+  missing_confirmation_evidence: 'employees.hrRecovery.failureMissingConfirmation',
+  runtime_task_failed: 'employees.hrRecovery.failureProvisionFailed',
+  provisioning_failed: 'employees.hrRecovery.failureProvisionFailed',
+  missing_creation_model: 'employees.hrRecovery.failureModelMissing',
+  capability_denied: 'employees.hrRecovery.failureCapabilityDenied',
+  approval_required: 'employees.hrRecovery.failureApprovalRequired',
+  runtime_task_needs_reconciliation: 'employees.hrRecovery.failureNeedsOperator',
+  runtime_task_draft_divergence: 'employees.hrRecovery.failureNeedsOperator',
+  cancellation_reconciliation_required: 'employees.hrRecovery.failureNeedsOperator',
+};
+
+const ACTION_ERROR_KEYS: Record<string, string> = {
+  agent_retirement_administrator_required: 'employees.hrRecovery.retirementAdministrator',
+  invalid_status: 'employees.hrRecovery.errorStateChanged',
+  provisioning_task_missing: 'employees.hrRecovery.errorStateChanged',
+  retry_required: 'employees.hrRecovery.errorStateChanged',
+  not_found: 'employees.hrRecovery.errorMissing',
+  requester_mismatch: 'employees.hrRecovery.errorRequesterOnly',
+  confirmation_missing: 'employees.hrRecovery.errorConfirmationMissing',
+  reconciliation_required: 'employees.hrRecovery.errorReconciliationRequired',
+  invalid_task_status: 'employees.hrRecovery.errorStateChanged',
+};
+
+function failureLine(draft: HrCreationDraft, t: (key: string, fallback: string) => string): string | null {
+  const failure = draft.failure;
+  const code = failure && typeof failure === 'object' && typeof (failure as Record<string, unknown>).code === 'string'
+    ? (failure as Record<string, unknown>).code as string : '';
+  if (code && Object.prototype.hasOwnProperty.call(FAILURE_LINE_KEYS, code)) {
+    return t(FAILURE_LINE_KEYS[code], FAILURE_LINE_KEYS[code]);
+  }
+  // The stored English message and the task summary are server diagnostics:
+  // a member gets one stable Chinese line, never the raw sentence (P3).
+  return t('employees.hrRecovery.failureGeneric', 'This creation did not finish. Retry it or abandon it.');
+}
+
+/** One plain Chinese sentence for a refused abandon/retry, mapped from the
+ * server's error code. Raw server text never reaches the member. */
+function actionErrorText(error: Error, t: (key: string, fallback: string) => string): string {
+  if (!(error instanceof ApiError)) return error.message;
+  const data = error.data;
+  const code = data !== null && typeof data === 'object' && !Array.isArray(data)
+    ? String((data as Record<string, unknown>).code || (data as Record<string, unknown>).error || '')
+    : '';
+  if (code && Object.prototype.hasOwnProperty.call(ACTION_ERROR_KEYS, code)) {
+    return t(ACTION_ERROR_KEYS[code], ACTION_ERROR_KEYS[code]);
+  }
+  return t('employees.hrRecovery.errorGeneric', 'The action did not complete. Please try again.');
+}
+
 function draftName(draft: HrCreationDraft): string {
   const name = draft.blueprint?.name;
   return typeof name === 'string' && name.trim() ? name.trim() : 'Unfinished digital employee';
-}
-
-function draftFailure(draft: HrCreationDraft): string | null {
-  const message = draft.failure?.message;
-  if (typeof message === 'string' && message.trim()) return message.trim();
-  const reason = draft.recovery?.reason;
-  return typeof reason === 'string' && reason.trim() ? reason.trim() : null;
 }
 
 export default function HrCreationRecoveryPanel() {
@@ -55,12 +100,12 @@ export default function HrCreationRecoveryPanel() {
   const retryMutation = useMutation({
     mutationFn: (draft: HrCreationDraft) => hrCreationApi.retry(sourceAgentId(draft), draft.blueprint_id),
     onSuccess: refresh,
-    onError: (error: Error) => showAppToast(error.message, 'error'),
+    onError: (error: Error) => showAppToast(actionErrorText(error, t), 'error'),
   });
   const abandonMutation = useMutation({
     mutationFn: (draft: HrCreationDraft) => hrCreationApi.abandon(sourceAgentId(draft), draft.blueprint_id),
     onSettled: refresh,
-    onError: (error: Error) => showAppToast(error.message, 'error'),
+    onError: (error: Error) => showAppToast(actionErrorText(error, t), 'error'),
   });
   const errorData = abandonMutation.error instanceof ApiError ? abandonMutation.error.data : null;
   const retirementRecovery = errorData !== null && typeof errorData === 'object' && 'code' in errorData
@@ -107,7 +152,7 @@ export default function HrCreationRecoveryPanel() {
           const firstTaskRecovery = draft.draft_status === 'completed' && Boolean(draft.provisioning?.first_task);
           const failure = firstTaskRecovery
             ? t('employees.hrRecovery.firstTaskPending', 'The employee is ready; its first task needs recovery.')
-            : draftFailure(draft);
+            : failureLine(draft, t);
           const retirementError = abandonMutation.variables?.blueprint_id === draft.blueprint_id
             ? retirementRecovery : null;
           return (

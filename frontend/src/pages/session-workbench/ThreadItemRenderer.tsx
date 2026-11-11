@@ -18,6 +18,22 @@ import './ThreadItemWorkbench.css';
 
 type Detail = { label: string; value: React.ReactNode };
 
+// Argument keys that carry a member label (sessionWorkbench.threadItem.field.*).
+// Rows outside this set are internal machinery and stay off the member card;
+// their values remain available to operators through the technical inspector.
+const MEMBER_FIELD_LABELS = new Set([
+  'command', 'cwd', 'name', 'first_task', 'recipient', 'subject', 'body',
+  'path', 'filename', 'file_name', 'channel', 'target', 'query', 'url', 'title',
+]);
+
+function memberDetails(details: { label?: unknown; value?: unknown }[]): Detail[] {
+  return details.flatMap((detail) => {
+    const label = typeof detail.label === 'string' ? detail.label : '';
+    const value = typeof detail.value === 'string' ? detail.value : '';
+    return label && value && MEMBER_FIELD_LABELS.has(label) ? [{ label, value }] : [];
+  });
+}
+
 const TITLES: Record<ThreadItemType, string> = {
   user_message: 'User message',
   agent_message: 'Agent message',
@@ -78,21 +94,17 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
         ? `${impact} · ${t('sessionWorkbench.threadItem.value.employeePermanent', 'The employee can be deactivated, but cannot be deleted.')}`
         : impact },
       ...proposalDetails,
-      ...(userAction?.details || []).flatMap((detail) => typeof detail.label === 'string' && typeof detail.value === 'string'
-        && !proposalDetails.some(proposal => proposal.label === detail.label)
-        ? [{ label: detail.label, value: detail.value }] : []),
+      ...memberDetails(userAction?.details || []).filter(
+        (detail) => !proposalDetails.some((proposal) => proposal.label === detail.label),
+      ),
     ];
   }
   if (userAction) {
-    const safeActionDetails = (userAction.details || []).flatMap((detail) => {
-      const label = typeof detail.label === 'string' ? detail.label : '';
-      const value = typeof detail.value === 'string' ? detail.value : '';
-      return label && value ? [{ label, value }] : [];
-    });
     return [
       { label: 'impact', value: userAction.impact },
-      { label: 'expires', value: userAction.expires_at },
-      ...safeActionDetails,
+      { label: 'expires', value: userAction.expires_at
+        ? new Date(userAction.expires_at).toLocaleString(language) : null },
+      ...memberDetails(userAction.details || []),
     ];
   }
   switch (item.item_type) {

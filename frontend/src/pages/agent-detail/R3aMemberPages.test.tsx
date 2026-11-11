@@ -122,6 +122,25 @@ it('renders the assistant name, avatar and default role in Chinese before bindin
   expect(container.querySelector('.agent-detail-avatar')?.textContent).toBe('我');
 });
 
+it('opens the bound assistant description editor on the Chinese default without rewriting the stored row', async () => {
+  vi.spyOn(assistantApi, 'get').mockResolvedValue({ state: 'active', agent: { id: 'bot', name: 'Provisioned Assistant' } } as never);
+  useAuthStore.setState({ user: { id: 'member', role: 'member', tenant_id: 'company' } as never });
+  const update = vi.spyOn(agentApi, 'update').mockResolvedValue({} as never);
+  const agent = { id: 'bot', name: 'Provisioned Assistant', role_description: "The user's assistant", role_revision: 'a'.repeat(64) };
+  mount(<AgentDetailHeader agent={agent} agentId="bot" canManage isOperatorOnly={false} isSystemHr={false}
+    onError={vi.fn()} statusKey="idle" />);
+  // The header name flips to the localized assistant title only once the
+  // binding resolves, so the editor deterministically sees the binding id.
+  await screen.findByRole('heading', { name: '我的助理' });
+  fireEvent.click(screen.getByRole('button', { name: /为你处理工作的助理/ }));
+  const textarea = await screen.findByRole('textbox');
+  // The member edits the localized default; the stored sentinel row is untouched.
+  expect((textarea as HTMLTextAreaElement).value).toBe(zh.assistant.role);
+  fireEvent.click(screen.getByRole('button', { name: zh.common.save }));
+  await waitFor(() => expect(update).not.toHaveBeenCalled());
+  expect(agent.role_description).toBe("The user's assistant");
+});
+
 it.each(['My Assistant ↔ 周报助手', 'Delegation: My Assistant'])('localizes the delegated title in the header and history: %s', (title) => {
   const session = { ...own, title, username: '🤖 My Assistant ↔ 周报助手', session_kind: 'agent_chat', read_only: true };
   const { container } = mount(chat({ activeSession: session, sessions: [session] }));
@@ -156,13 +175,31 @@ it('gives the conversation the phone width while keeping the existing sidebar to
   expect(phone).toMatch(/\.sidebar\.collapsed \.sidebar-collapse-btn\s*\{[^}]*visibility:\s*visible/);
 });
 
+it('measures the phone new-employee header clear of the floating sidebar toggle', () => {
+  const css = readFileSync('src/index.css', 'utf8');
+  const phone = css.match(/@media\s*\(max-width:\s*600px\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  // Measured boxes from the shipped CSS: the floating toggle sits at left 8px
+  // and the platform reserves 60px of clearance for it (the same value the
+  // session workbench header uses), so its right edge is 8 + 60 = 68px.
+  const toggleLeft = Number(phone.match(/\.sidebar\.collapsed \.sidebar-collapse-btn\s*\{[^}]*left:\s*(\d+)px/s)?.[1]);
+  const reserved = Number(phone.match(/\.main-content \.swb-header\s*\{\s*padding-left:\s*(\d+)px/s)?.[1]);
+  const headerPad = Number(phone.match(/\.main-content \.agent-detail-hr-header\s*\{\s*padding-left:\s*(\d+)px/s)?.[1] || 0);
+  const mainPad = Number(readFileSync('src/styles/tokens.css', 'utf8').match(/--space-6:\s*(\d+)px/)?.[1]);
+  const toggleRight = toggleLeft + reserved;
+  const avatarLeft = mainPad + headerPad;
+  expect(avatarLeft).toBeGreaterThanOrEqual(toggleRight);
+  // Desktop is untouched: index.css mentions the header only inside the phone
+  // media block (AgentDetail.css keeps its desktop rules unchanged).
+  expect(css.match(/agent-detail-hr-header/g)?.length).toBe(1);
+});
+
 const storedAssistant = { id: 'bot', name: 'My Assistant', role_description: "The user's assistant",
   status: 'idle', creator_id: 'member', is_owner: true, created_at: '2026-11-07T00:00:00Z' };
 const untranslatedMemberText = /My Assistant|The user's assistant|A2A|Team|Subagents?/;
 
-function memberAgentList() {
+function memberAgentList(extraAgents: unknown[] = []) {
   useAuthStore.setState({ user: { id: 'member', role: 'member', tenant_id: 'company' } as never });
-  vi.spyOn(agentApi, 'list').mockResolvedValue([storedAssistant] as never);
+  vi.spyOn(agentApi, 'list').mockResolvedValue([storedAssistant, ...extraAgents] as never);
 }
 
 it('renders the stored assistant name, role, avatar and team action in the member directory in Chinese', async () => {
@@ -173,7 +210,22 @@ it('renders the stored assistant name, role, avatar and team action in the membe
   expect.soft(container.querySelector('.employee-avatar')?.textContent).toBe('我');
   expect.soft(screen.getByText('为你处理工作的助理')).toBeTruthy();
   expect.soft(screen.getByRole('link', { name: '团队协作' }).getAttribute('href')).toBe('/agents/bot#a2a');
+  // The status badge is member text too: the raw key stays a CSS class only.
+  expect.soft(container.querySelector('.employee-status')?.textContent).toBe(zh.employees.status.idle);
+  expect.soft(container.querySelector('.employee-status')?.className).toContain('idle');
   expect(container.textContent).not.toMatch(untranslatedMemberText);
+});
+
+it('localizes the stopped employee badge instead of showing the stored English status', async () => {
+  memberAgentList([{ id: 'stopped-bot', name: '周报助手', role_description: '整理周报', status: 'stopped',
+    creator_id: 'member', is_owner: true, created_at: '2026-11-07T00:00:00Z' }]);
+  vi.spyOn(hrCreationApi, 'listMine').mockResolvedValue([]);
+  const { container } = mount(<DigitalEmployees />);
+  await screen.findByRole('heading', { name: '周报助手' });
+  const badges = Array.from(container.querySelectorAll('.employee-status'));
+  expect.soft(badges.map((badge) => badge.textContent)).toEqual([zh.employees.status.idle, zh.employees.status.stopped]);
+  expect.soft(badges[1].className).toContain('stopped');
+  expect(container.textContent).not.toMatch(/\bidle\b|\bstopped\b/);
 });
 
 it('localizes the dashboard work card, activity, failure summary and employee selection without changing ids', async () => {

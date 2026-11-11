@@ -1,17 +1,25 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { agentApi, type EmployeeRoleSettings } from '../api/domains/agents';
+import { PLATFORM_ASSISTANT_ROLE } from '../pages/assistant/assistantScope';
 
-export default function EmployeeRoleEditor({ agentId, value, onSaved, onCancel, saveLabel, onBusyChange }: {
+export default function EmployeeRoleEditor({ agentId, value, onSaved, onCancel, saveLabel, onBusyChange, defaultRoleLabel }: {
   agentId: string; value: EmployeeRoleSettings;
   onSaved: (saved: EmployeeRoleSettings) => void | Promise<unknown>;
   onCancel?: () => void; saveLabel?: string; onBusyChange?: (busy: boolean) => void;
+  /** Localized label for the platform default description. When the stored
+   * value is the default sentinel, the member sees this label; leaving it
+   * untouched keeps the stored row byte-identical (no rename). */
+  defaultRoleLabel?: string;
 }) {
   const { t } = useTranslation();
   const id = useId();
   const active = useRef(true);
   const [base, setBase] = useState(value);
-  const [draft, setDraft] = useState(value.role_description);
+  const displayRole = (role: string) => (
+    defaultRoleLabel !== undefined && role === PLATFORM_ASSISTANT_ROLE ? defaultRoleLabel : role
+  );
+  const [draft, setDraft] = useState(() => displayRole(value.role_description));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [reviewed, setReviewed] = useState(false);
@@ -34,15 +42,15 @@ export default function EmployeeRoleEditor({ agentId, value, onSaved, onCancel, 
       value={draft} disabled={busy} onChange={(event) => setDraft(event.target.value)} />
     <p>{t('agent.roleSettings.scope')}</p>
     {error && <p role="alert">{error}</p>}
-    {reviewed && base.role_description !== draft && <details>
+    {reviewed && displayRole(base.role_description) !== draft && <details>
       <summary>{t('agent.roleSettings.current')}</summary>
-      <p style={{ whiteSpace: 'pre-wrap' }}>{base.role_description}</p>
-      <button className="btn btn-secondary" type="button" disabled={busy} onClick={() => setDraft(base.role_description)}>{t('agent.roleSettings.useCurrent')}</button>
+      <p style={{ whiteSpace: 'pre-wrap' }}>{displayRole(base.role_description)}</p>
+      <button className="btn btn-secondary" type="button" disabled={busy} onClick={() => setDraft(displayRole(base.role_description))}>{t('agent.roleSettings.useCurrent')}</button>
     </details>}
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)', marginTop: 'var(--space-3)' }}>
       <button className="btn btn-primary" type="button" disabled={busy || !base.role_revision} onClick={() => void act(async () => {
         let saved = base;
-        if (draft !== base.role_description) {
+        if (draft !== displayRole(base.role_description)) {
           const result = await agentApi.update(agentId, { role_description: draft, expected_role_revision: base.role_revision });
           if (!result.role_revision) throw new Error(t('agent.roleSettings.unavailable'));
           saved = { role_description: result.role_description, role_revision: result.role_revision };

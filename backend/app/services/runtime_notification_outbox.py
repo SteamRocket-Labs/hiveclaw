@@ -29,6 +29,7 @@ from app.models.runtime_task import (
     COMPLETION_OUTBOX_RETRY_SECONDS,
     COMPLETION_OUTBOX_TASK_TYPES,
     COMPLETION_OUTBOX_TERMINAL_STATUSES,
+    TERMINAL_BOUNDARY_RECENT_WINDOW,
     RuntimeTask,
 )
 from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
@@ -275,6 +276,24 @@ def _hold_runtime_task_completion_outbox(task: RuntimeTask, *, reason: str, atte
     task.completion_outbox_last_error = reason[:100]
 
 
+def _record_completion_route_failure(task: RuntimeTask, *, reason: str, attempted_at: datetime) -> None:
+    invalid_id = reason in {"parent_session_id_invalid", "parent_agent_id_invalid"}
+    # Trigger session bindings commit before the session INSERT. Preserve the
+    # existing recovery window for a late commit; unknown terminal ages still hold.
+    missing_session_expired = (
+        reason in {"parent_session_not_found", "child_session_not_found"}
+        and task.completed_at is not None
+        and task.completed_at < attempted_at - TERMINAL_BOUNDARY_RECENT_WINDOW
+    )
+    if invalid_id or missing_session_expired:
+        _settle_runtime_task_completion_outbox(task)
+        metadata = dict(task.metadata_json or {})
+        metadata["completion_delivery_disposition"] = f"undeliverable:{reason}"
+        task.metadata_json = metadata
+    else:
+        _hold_runtime_task_completion_outbox(task, reason=reason, attempted_at=attempted_at)
+
+
 def _explicit_root_runtime_task_id(notification: CompletionNotification) -> uuid.UUID | None:
     raw_value = notification.root_runtime_task_id or (notification.metadata or {}).get("root_runtime_task_id")
     if raw_value is None:
@@ -325,15 +344,16 @@ async def _resolve_completion_route(
     legacy target-session/owner metadata fallback remains: the target
     session may still come from ``metadata.parent_session_id`` and the
     owner from ``metadata.user_id``/``metadata.owner_id`` before falling
-    back to the task row and the parent session. Every failure is a typed,
-    retryable hold on the task row; returns None after holding.
+    back to the task row and the parent session. Invalid stored identifiers
+    and session rows still absent beyond the existing recovery window settle
+    without delivery; recent or undated missing sessions remain typed holds.
     """
 
     if task.task_type == "a2a_continuation":
         try:
             run_session_id = _uuid(task.parent_session_id, field="parent_session_id")
         except ValueError:
-            _hold_runtime_task_completion_outbox(
+            _record_completion_route_failure(
                 task,
                 reason="parent_session_id_invalid",
                 attempted_at=attempted_at,
@@ -349,7 +369,7 @@ async def _resolve_completion_route(
             )
         ).scalar_one_or_none()
         if child_session is None:
-            _hold_runtime_task_completion_outbox(
+            _record_completion_route_failure(
                 task,
                 reason="child_session_not_found",
                 attempted_at=attempted_at,
@@ -367,7 +387,7 @@ async def _resolve_completion_route(
     try:
         target_session_id = _uuid(target_value, field="parent_session_id")
     except ValueError:
-        _hold_runtime_task_completion_outbox(
+        _record_completion_route_failure(
             task,
             reason="parent_session_id_invalid",
             attempted_at=attempted_at,
@@ -376,7 +396,7 @@ async def _resolve_completion_route(
     try:
         parent_agent_id = _uuid(parent_agent_value, field="parent_agent_id")
     except ValueError:
-        _hold_runtime_task_completion_outbox(
+        _record_completion_route_failure(
             task,
             reason="parent_agent_id_invalid",
             attempted_at=attempted_at,
@@ -392,7 +412,7 @@ async def _resolve_completion_route(
         )
     ).scalar_one_or_none()
     if parent_session is None:
-        _hold_runtime_task_completion_outbox(
+        _record_completion_route_failure(
             task,
             reason="parent_session_not_found",
             attempted_at=attempted_at,
@@ -405,7 +425,7 @@ async def _resolve_completion_route(
     try:
         owner_id = _uuid(owner_value, field="parent_user_id")
     except ValueError:
-        _hold_runtime_task_completion_outbox(
+        _record_completion_route_failure(
             task,
             reason="parent_user_id_invalid",
             attempted_at=attempted_at,
@@ -459,9 +479,8 @@ async def produce_terminal_task_completion_notification(
     normal-path payload (100) always wins the CAS. Other eligible types
     retain their existing producer/recovery behavior (e.g. ``team_member``
     has its own richer producer); no claim is made here that every task
-    type has a normal producer through this helper. Returns the outbox id, or None when
-    the task is ineligible or a typed, retryable hold was recorded on the
-    task row.
+    type has a normal producer through this helper. Returns the outbox id, or
+    None when the task is ineligible, held for retry, or settled as undeliverable.
     """
 
     if not _completion_outbox_eligible(task):
@@ -1146,8 +1165,10 @@ class RuntimeNotificationOutboxService:
                     reconciled=True,
                 )
                 if outbox_id is None:
-                    # Ineligible (defense in depth; the SQL pre-filters) or a
-                    # typed, retryable hold was recorded on the task row.
+                    # An undeliverable route is repaired without a notification;
+                    # ineligible tasks and retryable holds remain unchanged.
+                    if task.completion_outbox_settled_at is not None:
+                        repaired += 1
                     continue
                 if task.task_type == "approval_execution":
                     await db.flush()

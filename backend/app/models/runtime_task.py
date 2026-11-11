@@ -70,6 +70,7 @@ TERMINAL_BOUNDARY_GENERATION = 1
 TERMINAL_BOUNDARY_RETRY_SECONDS = 30
 # Normal delivery polls every second, with a 60s lease and eight retries.
 # Keep a full day for short outages without replaying historical results.
+# Also the settle window for completion routes whose session row is absent.
 TERMINAL_BOUNDARY_RECENT_WINDOW = timedelta(hours=24)
 TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES = (
     "web_chat_turn",

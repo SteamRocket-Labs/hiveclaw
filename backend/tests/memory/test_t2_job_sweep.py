@@ -342,7 +342,8 @@ async def test_cancelled_sweep_job_is_recovered_and_retried(tmp_path: Path, monk
     monkeypatch.setattr("app.memory.t2.segment_package._run_t2_llm_agent", blocked_llm)
     task = asyncio.create_task(sweep_t2_jobs(agent_id=manifest["agent_id"], data_root=tmp_path))
     try:
-        await asyncio.wait_for(entered.wait(), timeout=1)
+        # Cancellation is event-driven; this timeout only detects a hung test.
+        await asyncio.wait_for(entered.wait(), timeout=10)
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

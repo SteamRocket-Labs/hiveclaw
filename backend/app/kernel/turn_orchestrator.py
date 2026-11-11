@@ -1327,11 +1327,36 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 recovery_resolution.reason or "authority_unavailable"
             )
 
-        try:
-            resolved_memory_context = await _maybe_await(
+        async def resolve_memory():
+            return await _maybe_await(
                 self._deps.resolve_memory_context(request, runtime_config.tenant_id)
             )
-        except ContextDependencyUnavailable as exc:
+
+        async def resolve_other_contexts():
+            retrieval = ""
+            if self._deps.resolve_retrieval_context:
+                retrieval = await _maybe_await(
+                    self._deps.resolve_retrieval_context(request, runtime_config.tenant_id)
+                )
+            metadata = ""
+            if self._deps.resolve_runtime_metadata_context:
+                try:
+                    metadata = await _maybe_await(
+                        self._deps.resolve_runtime_metadata_context(request, runtime_config.tenant_id)
+                    )
+                except Exception as exc:  # noqa: BLE001 — runtime metadata is optional context
+                    logger.debug("[Kernel] Runtime metadata skipped for agent %s: %s", request.agent_id, exc)
+            name = await _maybe_await(self._deps.resolve_current_user_name(request.user_id))
+            return retrieval, metadata, name
+
+        # These resolvers use the established request/tenant, not the selected
+        # memories. Join both lanes before prompt assembly; no task escapes an
+        # early memory failure, and required-memory errors retain precedence.
+        resolved_memory_context, other_contexts = await asyncio.gather(
+            resolve_memory(), resolve_other_contexts(), return_exceptions=True
+        )
+        if isinstance(resolved_memory_context, ContextDependencyUnavailable):
+            exc = resolved_memory_context
             logger.error(
                 "[Kernel] Required %s context unavailable: %s",
                 exc.dependency,
@@ -1341,21 +1366,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 exc.user_message,
                 terminal_reason=TerminalReason.MEMORY_UNAVAILABLE,
             )
-        resolved_retrieval_context = ""
-        if self._deps.resolve_retrieval_context:
-            resolved_retrieval_context = await _maybe_await(
-                self._deps.resolve_retrieval_context(request, runtime_config.tenant_id)
-            )
-        resolved_runtime_metadata_context = ""
-        if self._deps.resolve_runtime_metadata_context:
-            try:
-                resolved_runtime_metadata_context = await _maybe_await(
-                    self._deps.resolve_runtime_metadata_context(request, runtime_config.tenant_id)
-                )
-            except Exception as exc:  # noqa: BLE001 — runtime metadata is optional context
-                logger.debug("[Kernel] Runtime metadata skipped for agent %s: %s", request.agent_id, exc)
+        if isinstance(resolved_memory_context, BaseException):
+            raise resolved_memory_context
+        if isinstance(other_contexts, BaseException):
+            raise other_contexts
+        resolved_retrieval_context, resolved_runtime_metadata_context, current_user_name = other_contexts
         resolved_permissions_context = _build_permissions_context(request, runtime_config)
-        current_user_name = await _maybe_await(self._deps.resolve_current_user_name(request.user_id))
 
         # Prompt cache: reuse frozen prefix from session if available
         from app.runtime.prompt_builder import (

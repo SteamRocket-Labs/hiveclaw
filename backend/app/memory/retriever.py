@@ -500,7 +500,13 @@ class MemoryRetriever:
     @staticmethod
     def _attach_selection_candidate_ids(items: list[MemoryItem]) -> list[MemoryItem]:
         prepared: list[MemoryItem] = []
-        for index, item in enumerate(items):
+        # Query-dependent activation order must not change the discovery index.
+        ordered = sorted(items, key=lambda item: (
+            item.kind.value, str(item.metadata.get("source_type") or item.kind.value),
+            str(item.metadata.get("entry_id") or item.metadata.get("page_id")
+                or item.metadata.get("session_id") or item.source), item.source, item.content,
+        ))
+        for index, item in enumerate(ordered):
             source_type = str(item.metadata.get("source_type") or item.kind.value)
             locator = str(
                 item.metadata.get("entry_id")
@@ -572,10 +578,13 @@ class MemoryRetriever:
                 output_tokens = 32_768
 
             sections: list[tuple[str, str]] = []
+            observations = {}
             for item in items:
                 descriptor = _selection_descriptor(item)
                 candidate_id = str(descriptor["candidate_id"])
+                observations[candidate_id] = descriptor.pop("observations")
                 sections.append((candidate_id, json.dumps(descriptor, ensure_ascii=False, indent=2, default=str)))
+            sections.append(("activation_observations", json.dumps(observations, ensure_ascii=False, separators=(",", ":"), default=str)))
 
             async def review_chunk(_phase: str, prompt: str) -> str:
                 response = await client.complete(
@@ -612,6 +621,9 @@ class MemoryRetriever:
                 coverage_path=coverage_path,
                 review_chunk=review_chunk,
             )
+            # The per-run proof is dynamic; keep the covered index ahead of it
+            # so unchanged descriptors can share the provider's prefix cache.
+            coverage_ref, _, covered_index = covered.partition("\n")
             response = await client.complete(
                 messages=[
                     LLMMessage(
@@ -625,10 +637,10 @@ class MemoryRetriever:
                             "points; the conversation model can continue with search_memory/load_memory. Do not "
                             "claim the index description is the full memory body. "
                             "Mechanical scores, order, recency, and graph signals are observations only. Return raw "
-                            'JSON only: {"selected_ids":["memory_candidate:..."],"reason":"complete rationale"}'
+                            'JSON only: {"selected_ids":["memory_candidate:..."],"reason":"brief audit note"}'
                         ),
                     ),
-                    LLMMessage(role="user", content=f"<current_query>\n{query}\n</current_query>\n\n{covered}"),
+                    LLMMessage(role="user", content=f"{covered_index}\n\n{coverage_ref}\n\n<current_query>\n{query}\n</current_query>"),
                 ],
                 temperature=0.1,
                 max_tokens=output_tokens,

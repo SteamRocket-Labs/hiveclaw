@@ -707,7 +707,10 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
         ),
         session_id=str(session_id),
         run_uuid=run_id,
-        runtime_task=SimpleNamespace(claimed_by="worker-1", claim_version=3, attempt_count=2),
+        runtime_task=SimpleNamespace(
+            claimed_by="worker-1", claim_version=3, attempt_count=2, task_type="web_chat_turn", metadata_json={}
+        ),
+        internal_runtime_context_turn=False,
         stream_batcher=None,
         cancel_event=asyncio.Event(),
         metadata={

@@ -463,6 +463,7 @@ async def test_execute_web_chat_run_keeps_channel_delivery_tools_visible_for_web
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -537,6 +538,7 @@ async def test_execute_web_chat_run_allows_channel_delivery_tools_for_typed_web_
     session_id = uuid4().hex
     target = {"channel": "feishu", "chat_id": "oc_x"}
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -871,6 +873,7 @@ async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(m
     tenant_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -980,6 +983,7 @@ async def test_execute_web_chat_run_records_turn_tokens_for_goal_accounting(monk
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -1040,6 +1044,7 @@ def _phase_run_fixtures():
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -3498,6 +3503,7 @@ async def test_execute_web_chat_run_does_not_broadcast_done_when_finalization_lo
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -3556,6 +3562,7 @@ async def test_execute_web_chat_run_marks_terminal_persistence_error_when_finali
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -3623,6 +3630,7 @@ async def test_execute_web_chat_run_treats_final_marker_unique_violation_as_lost
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -3689,6 +3697,7 @@ async def test_execute_web_chat_run_disables_tools_for_side_question(monkeypatch
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -3751,6 +3760,7 @@ async def test_execute_web_chat_run_keeps_unbound_external_principal_read_only(m
     external_principal_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -3826,6 +3836,7 @@ async def test_execute_web_chat_run_finalizes_blocking_clarification_without_emp
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -3944,6 +3955,7 @@ async def test_execute_web_chat_run_finalizes_after_terminal_tool_batch(monkeypa
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -4032,6 +4044,7 @@ async def test_execute_web_chat_run_delivers_session_permission_prompt_to_channe
     session_id = uuid4().hex
     permission_request_id = uuid4()
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -4145,6 +4158,7 @@ async def test_execute_web_chat_run_releases_active_run_after_terminal_tool_batc
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -4233,6 +4247,7 @@ async def test_execute_web_chat_run_stops_after_create_employee_success_card(mon
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -4755,6 +4770,7 @@ async def test_worker_materializes_initial_user_turn_to_transcript_without_dupli
     user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_session_id=str(session_id),
         metadata_json={
@@ -5795,6 +5811,7 @@ async def test_execute_web_chat_run_resumes_queued_plan_handoffs_on_terminal_exi
     user_id = uuid4()
     session_id = "sess-1"
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -6175,6 +6192,7 @@ async def test_execute_web_chat_run_injects_restart_resume_context(monkeypatch):
     user_id = uuid4()
     session_id = "sess-resume"
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -6502,6 +6520,7 @@ async def test_execute_web_chat_run_persists_typed_failure_without_platform_auth
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,
@@ -6586,6 +6605,7 @@ async def test_execute_web_chat_run_does_not_deliver_web_turn_to_historical_im_t
     user_id = uuid4()
     session_id = uuid4().hex
     runtime_task = SimpleNamespace(
+        task_type="web_chat_turn",
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=session_id,

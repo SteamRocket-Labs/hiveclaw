@@ -153,7 +153,10 @@ async def test_delegated_provider_400_is_recorded_and_read_by_parent_as_not_retr
     parent = json.loads(await context_resources.read_runtime_result(ToolExecutionRequest(tool_name="read_runtime_result",
         arguments={"result_ref": ref, "offset": 0, "limit": 12000}, context=ToolExecutionContext(
             agent_id=agent, user_id=user, tenant_id=str(tenant), session_id=str(session), workspace=tmp_path))))
-    assert parent["status"] == "ok", parent
-    body = json.loads(parent["content"])
-    assert body["metadata"]["error_code"] == "provider_bad_request"
-    assert body["metadata"]["retryable"] is False
+    # R13b: the parent reads a failed delegation as the fixed terminal observation,
+    # never the failed model's body; it still learns the failure is not retryable.
+    assert parent["status"] == "failed", parent
+    assert parent["reason_code"] == "provider_error"
+    assert parent["reason"] == "这次调用模型失败，没有完成。"
+    assert parent["retryable"] is False
+    assert "content" not in parent

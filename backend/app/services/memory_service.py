@@ -308,10 +308,10 @@ async def _build_memory_context_result(
     retriever = None
     rerank_model_config = await _maybe_await(_get_rerank_model_config(tenant_id))
     attempts = 0
+    retrieve_kwargs = {}
     for attempts in range(1, 3):
         try:
             retriever = MemoryRetriever(data_root=data_root_settings)
-            retrieve_kwargs = {}
             retrieve_params = inspect.signature(retriever.retrieve).parameters
             if "rerank_model_config" in retrieve_params:
                 retrieve_kwargs["rerank_model_config"] = rerank_model_config
@@ -372,6 +372,10 @@ async def _build_memory_context_result(
         except Exception as exc:
             logger.warning("Resident explicit source authority unavailable: %s", type(exc).__name__)
             degraded_components.append("explicit_memory_source_authority")
+            if retrieve_kwargs.get("defer_explicit_sources") and items and any(
+                item.metadata.get("source_type") == "explicit_overlay" for item in items
+            ):
+                retriever._note_withheld("explicit_memory", None, "explicit_memory_source_unavailable")
         if items is not None and retrieve_kwargs.get("defer_explicit_sources"):
             # One post-selection disclosure binds both the selected bodies and
             # the resident index; neither can bypass its final current reader.
@@ -742,13 +746,6 @@ async def _resolve_accountability_context(
     except Exception as exc:
         logger.warning("Failed to resolve activation accountability context for agent %s: %s", agent_id, exc)
         raise
-
-
-async def _fetch_user(db, user_id: uuid.UUID | None) -> User | None:
-    if not user_id:
-        return None
-    result = await db.execute(select(User).where(User.id == user_id))
-    return result.scalar_one_or_none()
 
 
 def _display_name(user: User | None) -> str | None:

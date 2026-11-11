@@ -376,8 +376,7 @@ async def require_agent_execution_access(
 
 
 async def check_agent_access(
-    db: AsyncSession, user: User, agent_id: uuid.UUID, *, _retirement_history: bool = False,
-    _live_agent_row: tuple[Agent | None, bool | None] | None = None,
+    db: AsyncSession, user: User, agent_id: uuid.UUID, *, _retirement_history: bool = False
 ) -> Tuple[Agent, str]:
     """Check whether a user may use or manage a specific Agent.
 
@@ -385,13 +384,13 @@ async def check_agent_access(
     must call :func:`check_agent_operator_reachability` explicitly.
     """
 
-    if _live_agent_row is None:
-        agent = await _load_agent_for_user(db, user, agent_id, retirement_history=_retirement_history)
-    else:
-        # Only the same live SQL read may supply this row; it is not a cached grant.
-        agent, tenant_active = _live_agent_row
-        agent = await _validate_loaded_agent_for_user(db, user, agent if tenant_active is True else None,
-            retirement_history=_retirement_history)
+    agent = await _load_agent_for_user(db, user, agent_id, retirement_history=_retirement_history)
+    return await _agent_access_for_loaded(db, user, agent)
+
+
+async def _agent_access_for_loaded(db, user, agent) -> Tuple[Agent, str]:
+    """Apply the shared ACL to an employee loaded and validated by this module."""
+    agent_id = agent.id
     # Scoped administrators (PDEC-013): organization administrators manage
     # every agent in their own tenant, platform administrators every agent
     # of the authenticated selected company the exact lookup resolved to,
@@ -486,10 +485,16 @@ async def check_agent_access(
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
 
 
+async def _agent_access_for_live_row(db, user, agent, tenant_active):
+    """Validate only the row supplied by the runtime reader's live join."""
+    agent = await _validate_loaded_agent_for_user(db, user, agent if tenant_active is True else None)
+    return await _agent_access_for_loaded(db, user, agent)
+
+
 async def load_runtime_user_agent_access(db, *, tenant_id, user_id, agent_id):
     """Refresh the ordinary reader and employee in one query, with the same ACLs."""
     from app.database import get_current_tenant_id
-    from app.services.runtime_user_identity import load_scoped_runtime_user
+    from app.services.runtime_user_identity import is_scoped_runtime_user, load_scoped_runtime_user
 
     if str(get_current_tenant_id()) != str(tenant_id):
         return None, None
@@ -506,9 +511,9 @@ async def load_runtime_user_agent_access(db, *, tenant_id, user_id, agent_id):
         agent, _access = await check_agent_access(db, user, agent_id)
         return user, agent
     user, agent, active = row
-    if not user.is_active:
+    if not is_scoped_runtime_user(user, tenant_id=tenant_id):
         return None, None
-    agent, _access = await check_agent_access(db, user, agent_id, _live_agent_row=(agent, active))
+    agent, _access = await _agent_access_for_live_row(db, user, agent, active)
     return user, agent
 
 

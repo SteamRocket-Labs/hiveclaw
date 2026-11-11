@@ -731,7 +731,7 @@ describe('chatRuntime helpers', () => {
     expect(result.uiStates.work).toEqual(uiForPhase(phase));
   });
 
-  it('ignores observed active runs once a terminal event closed the same session', () => {
+  it('ignores terminal run identities and unidentified observations after a session terminal', () => {
     expect(shouldIgnoreObservedActiveRun({
       key: 'agent-1:session-1',
       run: { runId: 'run-1', status: 'running' },
@@ -742,6 +742,13 @@ describe('chatRuntime helpers', () => {
     expect(shouldIgnoreObservedActiveRun({
       key: 'agent-1:session-1',
       run: { runId: 'run-late-without-terminal-id', status: 'running' },
+      terminalRunIds: new Set(),
+      terminalSessionKeys: new Set(['agent-1:session-1']),
+    })).toBe(false);
+
+    expect(shouldIgnoreObservedActiveRun({
+      key: 'agent-1:session-1',
+      run: { status: 'running' },
       terminalRunIds: new Set(),
       terminalSessionKeys: new Set(['agent-1:session-1']),
     })).toBe(true);

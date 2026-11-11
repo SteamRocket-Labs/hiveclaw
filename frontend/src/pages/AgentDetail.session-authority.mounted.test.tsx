@@ -3,6 +3,7 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { ApiError } from '../api/core';
 import { ccParityApi } from '../api/domains/ccParity';
@@ -37,6 +38,8 @@ const mocks = vi.hoisted(() => ({
   upload: vi.fn(),
   activeSessionRun: null as null | { run_id: string; status: string },
   activeRunObservedAt: 1,
+  getActiveSessionRun: vi.fn(),
+  activeRunQueryClient: null as QueryClient | null,
   chatProps: null as any,
   answerQuestion: vi.fn(),
   questionControl: false,
@@ -62,9 +65,15 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-vi.mock('@tanstack/react-query', () => ({
+vi.mock('@tanstack/react-query', async importOriginal => {
+  const actual = await importOriginal<typeof import('@tanstack/react-query')>();
+  return ({
+  ...actual,
   useMutation: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useQuery: (options: { queryKey: unknown[]; queryFn?: () => unknown; enabled?: unknown }) => {
+    if (mocks.activeRunQueryClient && options.queryKey[0] === 'chat-active-run') {
+      return actual.useQuery(options as any);
+    }
     mocks.queryCalls.push({ key: options.queryKey, enabled: options.enabled });
     if (options.enabled && options.queryKey[0] === 'activity') {
       const cacheKey = JSON.stringify(options.queryKey);
@@ -102,12 +111,13 @@ vi.mock('@tanstack/react-query', () => ({
       refetch: vi.fn(),
     };
   },
-  useQueryClient: () => ({
+  useQueryClient: () => mocks.activeRunQueryClient || ({
     invalidateQueries: vi.fn(),
     cancelQueries: vi.fn(),
     removeQueries: vi.fn(),
   }),
-}));
+});
+});
 
 vi.mock('react-router-dom', () => ({
   useInRouterContext: () => false,
@@ -143,6 +153,7 @@ vi.mock('../api/domains/chat', () => ({
     startSessionRun: mocks.startSessionRun,
     createSessionRun: mocks.createSessionRun,
     cancelSessionRun: mocks.cancelSessionRun,
+    getActiveSessionRun: mocks.getActiveSessionRun,
     deleteSession: mocks.deleteSession,
     answerQuestion: mocks.answerQuestion,
   },
@@ -262,12 +273,14 @@ beforeEach(() => {
   mocks.deleteSession.mockReset();
   mocks.activeSessionRun = null;
   mocks.activeRunObservedAt = 1;
+  mocks.activeRunQueryClient = null;
+  mocks.getActiveSessionRun.mockImplementation(async () => mocks.activeSessionRun);
   mocks.questionControl = false;
   mocks.language = 'en';
   mocks.messageStore = null;
 });
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); mocks.activeRunQueryClient?.clear(); vi.restoreAllMocks(); });
 
 it('reuses one input id for three failed retries on the child conversation answer control', async () => {
   mocks.sessionId = 'child-session';
@@ -296,7 +309,9 @@ async function mountOwnedArtifactWork() {
   mocks.listSessions.mockResolvedValue([{ id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
     title: 'Saved artifact work', session_kind: 'human_chat', read_only: false, operator_view: false }]);
   mocks.getSessionTranscript.mockResolvedValue([]);
-  render(<AgentDetail />);
+  render(mocks.activeRunQueryClient
+    ? <QueryClientProvider client={mocks.activeRunQueryClient}><AgentDetail /></QueryClientProvider>
+    : <AgentDetail />);
   await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe(mocks.sessionId));
   return mocks.chatProps.onSendMessage as (text: string, options: { expectedSessionId: string; inputId: string; displayContent?: string }) => Promise<unknown>;
 }
@@ -684,6 +699,159 @@ function receiveLiveMessage(data: any) {
     agentId: 'agent-1', sessionId: mocks.sessionId, key: `agent-1:${mocks.sessionId}`, isActiveRuntime: true,
     closeSessionSocket: vi.fn(), failAuthentication: vi.fn() });
 }
+
+function activeRunEvent(sequence: number, kind: string, lifecycle: string, runId: string | null,
+  payload: Record<string, unknown> = {}, itemId = `${kind}-${sequence}`) {
+  const sessionId = 'owned-artifact-work';
+  const round = kind.startsWith('assistant_');
+  const timestamp = new Date(Date.UTC(2026, 10, 10, 0, 0, sequence)).toISOString();
+  return {
+    schema: 'hive.session_event', schema_version: 2, event_id: `active-run-event-${sequence}`, sequence,
+    tenant_id: 'tenant-1', item_id: kind === 'run' ? runId : itemId, item_kind: kind,
+    kind: `${kind}.${lifecycle}`, lifecycle, payload_schema: `hive.session.payload.${kind}.${lifecycle}.v2`,
+    scope: runId ? { level: round ? 'round' : 'run', session_id: sessionId, thread_id: sessionId,
+      turn_id: `turn-${runId}`, run_id: runId, ...(round ? { round_id: `round-${runId}` } : {}) }
+      : { level: 'session', session_id: sessionId, thread_id: sessionId },
+    actor: { type: 'runtime' }, visibility: { audience: 'direct_user' }, payload,
+    occurred_at: timestamp, persisted_at: timestamp,
+  };
+}
+
+function completedRunEvents(sequence: number, runId: string) {
+  return [
+    activeRunEvent(sequence, 'human_input', 'accepted', null,
+      { intent: 'start_turn', content_parts: [{ type: 'text', text: `Request ${runId}` }] }),
+    activeRunEvent(sequence + 1, 'run', 'running', runId),
+    activeRunEvent(sequence + 2, 'assistant_commentary', 'completed', runId,
+      { phase: 'commentary', content: `Preparing ${runId}.` }),
+    activeRunEvent(sequence + 3, 'assistant_final', 'completed', runId, { content: `Result ${runId}.` }),
+    activeRunEvent(sequence + 4, 'run', 'completed', runId),
+  ];
+}
+
+async function receiveRunEvents(events: ReturnType<typeof activeRunEvent>[], transcript: unknown = events) {
+  mocks.getSessionTranscript.mockResolvedValue(transcript);
+  await act(async () => { events.forEach(receiveLiveMessage); });
+  await waitFor(() => expect(mocks.chatProps.chatMessages.some((message: any) =>
+    message.sessionItem?.last_sequence === events.at(-1)?.sequence)).toBe(true));
+}
+
+function expectMemberRunState(state: string) {
+  if (screen.getByTestId('session-runtime-panel').classList.contains('is-collapsed')) {
+    fireEvent.click(screen.getByTestId('session-runtime-collapse-toggle'));
+  }
+  expect(screen.getByTestId('session-workbench-header').querySelector('.swb-header-status')?.textContent).toBe(state);
+  expect(screen.getByTestId('session-runtime-run-status').querySelector('.session-runtime-status')?.textContent).toBe(state);
+}
+
+function disclosureStates() {
+  return screen.queryAllByTestId('run-disclosure-block').map(block => block.getAttribute('data-status'));
+}
+
+it('R13a adopts a platform continuation in one existing active-run poll and stops that exact run', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.activeRunQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  mocks.activeSessionRun = { run_id: 'earlier-run', status: 'running' };
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  await mountOwnedArtifactWork();
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBe('earlier-run'));
+  await receiveRunEvents(completedRunEvents(1, 'earlier-run'));
+  expectMemberRunState('完成');
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
+  const reads = mocks.getActiveSessionRun.mock.calls.length;
+  mocks.activeSessionRun = { run_id: 'platform-continuation', status: 'running' };
+  // No send, refetch, rerender, navigation or reload: the existing 3 s query owns discovery.
+  const stop = await screen.findByTestId('session-composer-stop', {}, { timeout: 4_500 });
+  expect(mocks.getActiveSessionRun).toHaveBeenCalledTimes(reads + 1);
+  expectMemberRunState('运行中');
+  expect(disclosureStates()).toEqual(['done', 'running']);
+  fireEvent.click(stop);
+  await waitFor(() => expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith(
+    'agent-1', 'owned-artifact-work', 'platform-continuation'));
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+  expect(mocks.createSessionRun).not.toHaveBeenCalled();
+});
+
+it.each(['deferred', 'successor'])('R13a keeps finished blocks finished and a %s queued turn visible for 88 seconds', async kind => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.activeSessionRun = { run_id: 'second-run', status: 'running' };
+  await mountOwnedArtifactWork();
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBe('second-run'));
+  const history = [...completedRunEvents(1, 'first-run'), ...completedRunEvents(6, 'second-run')];
+  const terminalRead = deferred<typeof history>();
+  await receiveRunEvents(history, terminalRead.promise);
+  expect(disclosureStates()).toEqual(['done', 'done']);
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Continue the report.' } });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(1));
+  expect.soft(disclosureStates()).toEqual(['done', 'done', 'running']);
+  await act(async () => request.resolve({ schema: 'hive.human_input_receipt', schema_version: 2,
+    intent: kind === 'successor' ? 'queue_next_turn' : 'start_turn', status: 'accepted', admission_state: 'admitted',
+    run: null, dispatch: { kind, code: kind === 'deferred' ? 'terminal_boundary_ack_pending' : undefined } }));
+  await waitFor(() => expect(screen.getByTestId('message-send-status').textContent).toBe('排队中'));
+  expect.soft(disclosureStates()).toEqual(['done', 'done', 'running']);
+  const inputId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  history.push(activeRunEvent(11, 'human_input', 'accepted', null,
+    { intent: 'start_turn', content_parts: [{ type: 'text', text: 'Continue the report.' }] }, inputId));
+  await receiveRunEvents(history, terminalRead.promise);
+  expect.soft(disclosureStates()).toEqual(['done', 'done', 'running']);
+  const now = Date.now();
+  vi.spyOn(Date, 'now').mockReturnValue(now + 88_000);
+  mocks.activeSessionRun = null;
+  mocks.activeRunObservedAt += 1;
+  await act(async () => { mocks.chatProps.onSetChatInput('Next draft'); });
+  expect.soft(disclosureStates()).toEqual(['done', 'done', 'running']);
+  expectMemberRunState('运行中');
+  expect(screen.getByTestId('message-send-status').textContent).toBe('排队中');
+  history.push(activeRunEvent(12, 'run', 'queued', 'queued-run', { input_id: inputId }));
+  await receiveRunEvents(history, terminalRead.promise);
+  mocks.activeSessionRun = { run_id: 'queued-run', status: 'pending' };
+  mocks.activeRunObservedAt += 1;
+  await act(async () => { mocks.chatProps.onSetChatInput('Preserve this draft'); });
+  expect(disclosureStates()).toEqual(['done', 'done', 'running']);
+  expect(screen.queryByTestId('message-send-status')).toBeNull();
+  await act(async () => terminalRead.resolve(history));
+});
+
+it('R13a clears the old stop notice and state before the next run POST settles', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.activeSessionRun = { run_id: 'stopped-run', status: 'running' };
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  await mountOwnedArtifactWork();
+  await screen.findByTestId('session-composer-stop');
+  fireEvent.click(screen.getByTestId('session-composer-stop'));
+  await screen.findByText(zh.agent.chat.stopRecorded);
+  const history = completedRunEvents(1, 'stopped-run').slice(0, 3);
+  history.push(activeRunEvent(4, 'run', 'cancelled', 'stopped-run'));
+  await receiveRunEvents(history);
+  expectMemberRunState('已停止');
+  expect(screen.queryByText(zh.agent.chat.stopRecorded)).toBeNull();
+  const now = Date.now();
+  vi.spyOn(Date, 'now').mockReturnValue(now + 87_000);
+  mocks.activeSessionRun = null;
+  mocks.activeRunObservedAt += 1;
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'Start a fresh report.' } });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledTimes(1));
+  expect.soft(screen.queryByText(zh.agent.chat.stopRecorded)).toBeNull();
+  expectMemberRunState('运行中');
+  expect(disclosureStates()).toEqual(['cancelled', 'running']);
+  await act(async () => request.resolve({ run_id: 'next-run', status: 'running' }));
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBe('next-run'));
+  expectMemberRunState('运行中');
+  expect(disclosureStates()).toEqual(['cancelled', 'running']);
+  expect(screen.queryByText(zh.agent.chat.stopRecorded)).toBeNull();
+});
 
 it.each([
   ['terminal-first', 'stream'], ['reply-first', 'stream'], ['terminal-first', 'rest'], ['reply-first', 'rest'],

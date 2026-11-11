@@ -3158,6 +3158,39 @@
 }
 
 @media (max-width: 600px) {
+  .chat-artifact-main {
+    flex-wrap: wrap;
+    row-gap: 2px;
+    padding-right: 10px;
+  }
+
+  .chat-artifact-name {
+    flex: 1;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .chat-artifact-meta {
+    flex: 0 0 100%;
+    padding-left: 22px;
+  }
+
+  .run-disclosure-header {
+    flex-wrap: wrap;
+  }
+
+  .run-disclosure-duration,
+  .run-disclosure-stat,
+  .run-disclosure-count {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .run-disclosure-summary.is-aggregate {
+    display: contents;
+  }
+
   .main-content {
     margin-left: 0;
     width: 100vw;

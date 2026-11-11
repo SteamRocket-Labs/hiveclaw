@@ -2635,6 +2635,8 @@
           "filesUpdated_other": "已更新 {{count}} 个文件"
         },
         "failure": {
+          "tokenBudget": "这次用完了用量预算，没有完成。",
+          "toolRound": "这次已达到运行轮次上限，没有完成。可以重试继续。",
           "arguments": "这次操作缺少必要信息，或提供的信息不正确。",
           "permission": "当前没有权限完成这次操作。",
           "authority": "暂时无法确认这次操作所需的授权。",

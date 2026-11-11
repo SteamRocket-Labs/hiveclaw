@@ -7,7 +7,7 @@ import { assistantApi, type AssistantBinding, type AssistantScopeEcho } from '..
 import { agentApi } from '../../api/domains/agents';
 import { useAuthStore } from '../../stores';
 import AssistantPanel from './AssistantPanel';
-import { assistantScopeStillCurrent, entryShouldNavigate, sidebarAgentLink, sortSidebarAgents, useAssistantTenant } from './assistantScope';
+import { assistantBindingQuery, assistantScopeStillCurrent, entryShouldNavigate, sidebarAgentLink, sortSidebarAgents, useAssistantTenant } from './assistantScope';
 import './assistant.css';
 
 function currentScope() {
@@ -56,13 +56,14 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const actionLock = useRef(false);
-  const bindingKey = ['assistant', scope.userId || '', scope.tenantId || '', scope.role || ''];
-  // Entry owns automatic provisioning; the sidebar's read must not win query deduplication.
+  const bindingQuery = assistantBindingQuery(scope.userId, scope.tenantId, scope.role);
+  const bindingKey = bindingQuery.queryKey;
+  // Share the sidebar read; entry alone owns automatic provisioning.
   const queryKey = ['assistant-entry', ...bindingKey.slice(1), settings];
   const query = useQuery({
     queryKey,
     queryFn: async ({ signal }) => {
-      let result = await assistantApi.get(echo(scope), { signal });
+      let result = await queryClient.fetchQuery(bindingQuery);
       signal.throwIfAborted();
       if (!stillCurrent(scope, result)) throw new ApiError(409, 'scope changed', { state: 'scope_changed' });
       const attempted = automaticOpens.get(queryClient) || new Set<string>();
@@ -73,11 +74,12 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
         attempted.add(scopeKey);
         try {
           result = await assistantApi.open(echo(scope), { signal });
+          signal.throwIfAborted();
         } catch (error) {
-          if (!signal.aborted) attempted.delete(scopeKey);
+          if (signal.aborted) queryClient.removeQueries({ queryKey: bindingKey, exact: true, type: 'inactive' });
+          else attempted.delete(scopeKey);
           throw error;
         }
-        signal.throwIfAborted();
         if (!stillCurrent(scope, result)) throw new ApiError(409, 'scope changed', { state: 'scope_changed' });
         // Drop a sidebar GET started before this write before publishing the binding.
         await queryClient.cancelQueries({ queryKey: bindingKey, exact: true });

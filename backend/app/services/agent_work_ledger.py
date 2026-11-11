@@ -106,6 +106,8 @@ def _normalize_status(status: Any, *, default: str = "pending") -> str:
 
 def _normalize_task_status(status: Any, *, default: str = "pending") -> str:
     normalized = _normalize_status(status, default=default)
+    if normalized == "stopped":
+        return normalized
     if normalized in {"completed", "skipped"}:
         return "completed"
     if normalized in {"running", "in_progress"}:
@@ -318,6 +320,25 @@ def _set_items_complete(
         if (ids and item_id in ids) or (all_required and bool(item.get("required", True))):
             item["status"] = "completed"
             item["updated_at"] = now
+
+
+def stop_agent_work_ledger(
+    *,
+    agent_id: uuid.UUID,
+    runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
+) -> None:
+    """Record a member stop without completing or discarding unfinished work."""
+    scope = {"runtime_task_id": runtime_task_id, "session_id": session_id}
+    ledger = load_agent_work_ledger(agent_id=agent_id, **scope)
+    if ledger is None:
+        return
+    now = _now_iso()
+    for item in [*(ledger.get("todo_items") or []), *(ledger.get("verification") or [])]:
+        if _normalize_task_status(item.get("status")) in OPEN_ITEM_STATUSES:
+            item.update(status="stopped", updated_at=now)
+    ledger.update(status="stopped", current_phase="stopped")
+    _write_ledger(agent_id=agent_id, payload=ledger, path=_ledger_path(agent_id=agent_id, **scope))
 
 
 def append_agent_work_ledger_progress(
@@ -772,11 +793,7 @@ def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dic
             "progress_count": 0,
         }
 
-    todos = [
-        item
-        for item in ledger.get("todo_items", [])
-        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) != "completed"
-    ]
+    todos = _open_required_items(ledger.get("todo_items", []))
     findings = [
         item
         for item in ledger.get("findings", [])
@@ -787,11 +804,7 @@ def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dic
         for item in ledger.get("failures", [])
         if not bool(item.get("resolved", False)) and _clean_text(item.get("error"))
     ]
-    verification = [
-        item
-        for item in ledger.get("verification", [])
-        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) != "completed"
-    ]
+    verification = _open_required_items(ledger.get("verification", []))
     return {
         "schema": LEDGER_RESUME_SCHEMA,
         "present": True,
@@ -811,7 +824,7 @@ def _open_required_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         item
         for item in items
-        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) != "completed"
+        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) in OPEN_ITEM_STATUSES
     ]
 
 
@@ -1354,7 +1367,7 @@ def build_agent_work_ledger_display_view(
     todo_open = sum(
         1
         for item in todos
-        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) not in COMPLETE_ITEM_STATUSES
+        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) in OPEN_ITEM_STATUSES
     )
     verification_pending = sum(
         1
@@ -1563,8 +1576,17 @@ def validate_agent_work_ledger_completion(
         return checks
 
     summary = build_agent_work_ledger_resume_summary(ledger)
-    open_todos = summary["open_required_todos"]
-    verification_pending = summary["verification_pending"]
+    # Stopped items are no longer active, but they are not completed work.
+    open_todos = [
+        _clean_text(item.get("title"))
+        for item in ledger.get("todo_items", [])
+        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) != "completed"
+    ]
+    verification_pending = [
+        _clean_text(item.get("title"))
+        for item in ledger.get("verification", [])
+        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) != "completed"
+    ]
     recent_failures = summary["recent_failures"]
     checks.append(
         _check(
@@ -1615,6 +1637,7 @@ __all__ = [
     "render_work_ledger_reminder_snapshot",
     "render_work_ledger_resume_block",
     "should_enable_work_ledger",
+    "stop_agent_work_ledger",
     "upsert_agent_work_ledger_todo",
     "validate_agent_work_ledger_completion",
 ]

@@ -424,7 +424,9 @@ async def _validate_input_dependencies(
             try:
                 await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
             finally:
-                scope.visiting.remove(reader_key)
+                # The scope may have closed (and cleared visiting) while this
+                # validation awaited; a closed scope never caches the result.
+                scope.visiting.discard(reader_key)
             if scope.active and transaction is not None:
                 # A cyclic walk cannot complete and enter this preflight's cache.
                 scope.verified[reader_key] = (user, runtime_request)

@@ -294,6 +294,7 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
         _call("read_runtime_result", {"result_ref": seed["result_ref"]}, "read-result"),
         _call("task_output", {"runtime_task_id": str(seed["child_id"])}, "read-output"),
         _call("check_async_task", {"task_id": str(seed["child_id"])}, "read-status"),
+        _call("list_async_tasks", {}, "read-list"),
     ]
     client = kernel_cases.ScriptedLLMClient([
         {"tool_calls": reads, "finish_reason": "tool_calls"}, {"content": member_text},
@@ -309,12 +310,13 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
             if call.result_event_id:
                 event = await db.get(ChatTranscriptEvent, call.result_event_id)
                 body = json.loads(_event_payload(event)["content"])
-                task = body.get("task") or body
+                task = body.get("task") if isinstance(body, dict) else None
+                task = task if isinstance(task, dict) else (body if isinstance(body, dict) else {})
                 raw[call.tool_name] = {key: task.get(key) for key in ("status", "result", "reason_code", "reason")}
         print("R13B_RAW_READERS", json.dumps(raw, ensure_ascii=False))
     print("R13B_FAILED_CHILD_READERS", json.dumps(observed, ensure_ascii=False))
     (tmp_path / "reader-observations.json").write_text(json.dumps(observed, ensure_ascii=False, indent=2))
-    for identity in ("read-result", "read-output", "read-status"):
+    for identity in ("read-result", "read-output", "read-status", "read-list"):
         assert identity in observed and short_reason in observed[identity], observed
         # R16b round 2: every reader hands the parent the same plain failure
         # page — no reason codes, retryable flags, timed_out flags, or status
@@ -324,6 +326,9 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
         if identity == "read-output":
             assert page["ok"] is True, page
             page = page["task"]
+        elif identity == "read-list":
+            assert isinstance(page, list), page
+            page = next(task for task in page if UUID(task.get("task_id") or "") == seed["child_id"])
         assert set(page) == ({"schema", "result_ref", "task_id", "result", "note"} if identity == "read-result"
             else {"schema", "task_id", "result", "note"}), page
         assert page["schema"] == "hive.runtime_result_page.v1"

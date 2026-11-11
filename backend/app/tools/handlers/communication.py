@@ -245,8 +245,10 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, executi
                 "target_artifacts": {
                     "type": "array",
                     "description": (
-                        "Structured cross-workspace artifact contract. Use this whenever the task references "
-                        "one or more existing files/artifacts across agent workspaces."
+                        "Structured cross-workspace artifact contract. Use this when the worker must "
+                        "update or deliver one or more existing files across agent workspaces. These "
+                        "paths are delivery targets, not sources to read — the worker cannot read your "
+                        "workspace, so carry any material it needs in the message."
                     ),
                     "items": {
                         "type": "object",

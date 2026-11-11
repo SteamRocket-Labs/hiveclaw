@@ -12,10 +12,10 @@ DELEGATION_BRIEF_CONTRACT = (
     "Use this structure for delegated work so the worker can run independently, return a useful "
     "digest, and stop at the right boundary. Do not ask the worker to infer missing scope silently; "
     "name assumptions or ask the parent/user before delegating if the ambiguity changes the outcome. "
-    "If the request names existing workspace artifacts, use the cross-workspace artifact contract: "
-    "explicitly name every target path and ask the worker to update the same path. This applies to "
-    "presentations, spreadsheets, code files, and documents. Do not create replacement artifacts unless "
-    "the user asked for separate deliverables."
+    "If the request names existing workspace artifacts the worker must update or deliver, use the "
+    "cross-workspace artifact contract: name every target path the worker must write or deliver. "
+    "This applies to presentations, spreadsheets, code files, and documents. Do not create replacement "
+    "artifacts unless the user asked for separate deliverables."
 )
 
 

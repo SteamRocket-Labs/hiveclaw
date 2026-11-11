@@ -9,13 +9,16 @@ because the reminder lives only in the tail.
 
 import pytest
 
+from app.runtime.prompt_sections.tone_style import MEMBER_LANGUAGE_RULE
 from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
 from tests.integration.test_r5e_unavailable_app_postgres import app_work as app_work
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
-LANGUAGE_REMINDER = "in the member's language (Chinese if unclear)"
+# R16b round 2 (N6): the reminder is the rule itself, so the placement marker is
+# the whole § Environment line (the rule also ships inside the frozen prefix).
+LANGUAGE_REMINDER = f"- Language: {MEMBER_LANGUAGE_RULE}"
 
 
 def _system_blocks(request: dict) -> tuple[str, str]:

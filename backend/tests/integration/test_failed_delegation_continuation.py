@@ -223,8 +223,10 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
                     nested = [task for task in body if UUID(task["task_id"]) == seed["nested_id"]]
                     assert len(nested) == 1, body
                     body = nested[0]
-                assert body["status"] == "failed"
-                assert body["reason"] == "这次用完了用量预算，没有完成。"
+                # R16b round 2: the task readers hand the model the same plain
+                # failure page read_runtime_result uses — no status enums or codes.
+                assert set(body) == {"schema", "task_id", "result", "note"}, body
+                assert body["result"] == "这次用完了用量预算，没有完成。"
                 assert "PRIVATE_PARTIAL_BODY" not in content
         else:
             assert child.status == "failed" and child.metadata_json["terminal_reason"] == "tool_budget", child.metadata_json
@@ -314,14 +316,19 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
     (tmp_path / "reader-observations.json").write_text(json.dumps(observed, ensure_ascii=False, indent=2))
     for identity in ("read-result", "read-output", "read-status"):
         assert identity in observed and short_reason in observed[identity], observed
-        if identity == "read-result":
-            # R16b: the delegation result page carries plain sentences only — no
-            # reason codes, retryable flags, or status enums the parent could quote.
-            page = json.loads(observed[identity])
-            assert set(page) == {"schema", "result_ref", "task_id", "result", "note"}, page
-            assert page["schema"] == "hive.runtime_result_page.v1"
-        else:
-            assert terminal_status in observed[identity], observed
+        # R16b round 2: every reader hands the parent the same plain failure
+        # page — no reason codes, retryable flags, timed_out flags, or status
+        # enums the parent could quote (the old assertions locked the coded
+        # projection for the two task readers).
+        page = json.loads(observed[identity])
+        if identity == "read-output":
+            assert page["ok"] is True, page
+            page = page["task"]
+        assert set(page) == ({"schema", "result_ref", "task_id", "result", "note"} if identity == "read-result"
+            else {"schema", "task_id", "result", "note"}), page
+        assert page["schema"] == "hive.runtime_result_page.v1"
+        assert page["result"] == short_reason
+        assert page["task_id"] == str(seed["child_id"])
         assert "PRIVATE_PARTIAL_BODY" not in observed[identity]
         assert "1000001" not in observed[identity] and "[Runtime Limit]" not in observed[identity]
     async with owner_sessionmaker() as db:
@@ -495,13 +502,13 @@ async def test_delegated_child_terminal_read_failure_reaches_parent(
         assert STOP_REASON in content
         assert "needs_reconciliation" not in content and "Delegation terminal output" not in content
         assert "PRIVATE_PARTIAL_BODY" not in content
-        if '"note"' in content:
-            # R16b: the delegation result page is plain sentences only; the task
-            # readers keep their coded projection.
-            page = json.loads(content)
-            assert set(page) == {"schema", "result_ref", "task_id", "result", "note"}, page
-        else:
-            assert '"failed"' in content
+        # R16b round 2: all three readers return the plain page (the task
+        # readers no longer add a coded status projection).
+        body = json.loads(content)
+        page = body["task"] if isinstance(body, dict) and "task" in body else body
+        assert set(page) in ({"schema", "result_ref", "task_id", "result", "note"},
+            {"schema", "task_id", "result", "note"}), page
+        assert page["result"] == STOP_REASON
     print("R13B3_PARENT_READS", json.dumps(observed, ensure_ascii=False))
     await _assert_member_final(app_user_sessionmaker, seed, parent_answer)
 
@@ -591,20 +598,30 @@ async def test_listed_running_child_ends_turn_before_stale_failure_counting(
     ] + [{"content": "The terminal read stop did not fire."}])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
     await _execute(owner_sessionmaker, seed["return_id"], "r13b4-list-reader")
+
+    def _listed_status(entry):
+        # R16b round 2: a failed entry is the plain page — no status word; the
+        # fixed failure sentence tells the parent it failed.
+        if entry.get("status"):
+            return entry["status"]
+        from app.services.runtime_display_status import is_delegation_failure_result_page
+
+        assert is_delegation_failure_result_page(entry), entry
+        return "failed"
+
     for index, request in enumerate(client.requests[1:]):
         outputs = [message["content"] for message in request["messages"]
             if message.get("role") == "tool" and message.get("tool_call_id") == f"list-{index}"]
         assert len(outputs) == 1
         body = json.loads(outputs[0])
         assert isinstance(body, list), body
-        statuses = {UUID(task["task_id"]): task["status"] for task in body}
+        statuses = {UUID(task["task_id"]): _listed_status(task) for task in body}
         assert statuses[seed["return_id"]] == "running", body
         assert statuses[seed["child_id"]] == "failed"
         assert statuses[seed["running_id"]] == ("running" if index < running_reads else "failed"), body
         if index >= running_reads:
             assert not any(status in {"pending", "running"} for task_id, status in statuses.items()
-                if task_id != seed["return_id"]), [
-                (task["task_id"], task["task_type"], task["status"]) for task in body]
+                if task_id != seed["return_id"]), body
     async with owner_sessionmaker() as db:
         returned = await db.get(RuntimeTask, seed["return_id"])
         models = list(await db.scalars(select(SessionModelResult).where(

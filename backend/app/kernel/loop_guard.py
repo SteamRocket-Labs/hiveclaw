@@ -20,8 +20,8 @@ from uuid import UUID
 
 from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
 from app.services.runtime_display_status import (
-    DELEGATED_TASK_RUNNING_MESSAGE, TERMINAL_TASK_READ_PREFIX, is_delegation_failure_result_page,
-    is_runtime_failure_observation,
+    DELEGATED_TASK_RUNNING_MESSAGE, IDENTICAL_TERMINAL_READ_MESSAGE, TERMINAL_TASK_READ_PREFIX,
+    is_delegation_failure_result_page, is_runtime_failure_observation,
 )
 
 _ABORT_MULTIPLIER = 1.5  # abort threshold = ceil(warn threshold × 1.5)
@@ -246,9 +246,10 @@ class LoopGuard:
             if not isinstance(observation, dict):
                 continue
             running = observation.get("status") in {"pending", "running"} and observation.get("task_type") == "delegation"
-            # R16b: read_runtime_result answers a finished delegation with the plain
-            # no-body page instead of the coded observation; recognize both fixed
-            # projections so identical terminal reads still stop the turn.
+            # R16b: every reader answers a finished delegation with the plain
+            # no-body page; the coded observation survives only in already-stored
+            # records. Recognize both fixed projections so identical terminal
+            # reads still stop the turn.
             plain_result_page = is_delegation_failure_result_page(observation)
             if not running and not plain_result_page and (active_listing or not is_runtime_failure_observation(observation)):
                 continue
@@ -262,26 +263,26 @@ class LoopGuard:
             if identity.replace("-", "") == self._runtime_task_id:
                 continue
             if running:
-                outcome_key, code, message = "running", "running", DELEGATED_TASK_RUNNING_MESSAGE
-            elif plain_result_page:
-                message = observation["result"]
-                outcome_key, code = message, "delegation_result_page"
-                if not message.startswith(TERMINAL_TASK_READ_PREFIX):
-                    message = TERMINAL_TASK_READ_PREFIX + message
+                outcome_key, message = "running", DELEGATED_TASK_RUNNING_MESSAGE
             else:
-                code = observation["reason_code"]
-                message = observation["reason"]
+                sentence = observation["result"] if plain_result_page else observation["reason"]
                 # Pool reads of the same fixed outcome sentence across readers, so
                 # the plain page and the coded projection of one task still share
                 # a counter the way the shared reason code used to.
-                outcome_key = message
-                if code != "identical_terminal_task_read":
-                    message = TERMINAL_TASK_READ_PREFIX + message
+                outcome_key = sentence
+                # The bare stop sentence already is the fixed detail; prefixing it
+                # would double it ("…已停止本次处理：…已停止本次处理。").
+                message = sentence if (
+                    sentence.startswith(TERMINAL_TASK_READ_PREFIX)
+                    or sentence == IDENTICAL_TERMINAL_READ_MESSAGE
+                ) else TERMINAL_TASK_READ_PREFIX + sentence
             key = (identity, outcome_key)
             self._terminal_read_counts[key] = self._terminal_read_counts.get(key, 0) + 1
             if self._terminal_read_counts[key] >= self.identical_tool_threshold:
+                # warn_key is inert on this path (the abort decision bypasses
+                # _escalate's once-per-pattern set); _PatternCheck requires one.
                 check = _PatternCheck(reason="identical_running_task_read" if running else "identical_terminal_task_read", detail=message,
-                    warn_key=f"terminal:{identity}:{code}", count=self._terminal_read_counts[key],
+                    warn_key=f"terminal:{identity}", count=self._terminal_read_counts[key],
                     warn_threshold=self.identical_tool_threshold)
                 return self._decision(check, severity="abort", tool_name=tool_name,
                     args_digest=_digest(_canonical_args(args)),

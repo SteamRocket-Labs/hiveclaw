@@ -2326,8 +2326,10 @@ async def _delegate_after_cycle_check(
         _delegation_status = "timeout"
         # Plain member-language outcome: no seconds, no repeated target name (the
         # runtime-action line already names the colleague), no "结果未知" vagueness.
+        from app.services.runtime_display_status import DELEGATION_TIMEOUT_MESSAGE
+
         delegation_result = AgentDelegationResult(
-            content="没在时限内完成这项任务。",
+            content=DELEGATION_TIMEOUT_MESSAGE,
             child_session_id=child_session_id,
             trace_id=trace_id,
             depth=request.depth,
@@ -2339,7 +2341,8 @@ async def _delegate_after_cycle_check(
         reconciliation_required = isinstance(
             exc, (ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired, ToolLifecyclePersistenceError)
         )
-        # Keep the full exception message available to the parent model; the stack remains server-side.
+        # The full exception type, trace, and depth stay in server logs and task
+        # metadata; the member line carries the fixed plain sentence only.
         logger.error(
             "[Orchestrator] Child agent %s failed (depth=%d, trace=%s): %s",
             request.target.name,
@@ -2348,11 +2351,10 @@ async def _delegate_after_cycle_check(
             exc,
             exc_info=True,
         )
+        from app.services.runtime_display_status import TASK_FAILED_MESSAGE
+
         delegation_result = AgentDelegationResult(
-            content=(
-                f"⚠️ Delegation to {request.target.name} failed: {type(exc).__name__}: {str(exc)}\n"
-                f"Trace: {trace_id}, depth: {request.depth}"
-            ),
+            content=TASK_FAILED_MESSAGE,
             child_session_id=child_session_id,
             trace_id=trace_id,
             depth=request.depth,

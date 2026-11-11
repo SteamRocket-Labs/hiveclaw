@@ -321,11 +321,18 @@ def _tool_result_failed(result: Any) -> bool:
         payload = _json.loads(rendered)
     except (TypeError, ValueError):
         return False
-    from app.services.runtime_display_status import is_runtime_failure_observation
+    from app.services.runtime_display_status import is_delegation_failure_result_page, is_runtime_failure_observation
 
-    return isinstance(payload, dict) and not is_runtime_failure_observation(payload) and (
-        payload.get("ok") is False
-        or str(payload.get("status") or "").lower() in {"error", "failed", "rejected", "blocked"}
+    # The plain no-body failure page is exempt the same way the coded
+    # observation is: reading a failed colleague is a successful read.
+    return (
+        isinstance(payload, dict)
+        and not is_runtime_failure_observation(payload)
+        and not is_delegation_failure_result_page(payload)
+        and (
+            payload.get("ok") is False
+            or str(payload.get("status") or "").lower() in {"error", "failed", "rejected", "blocked"}
+        )
     )
 
 

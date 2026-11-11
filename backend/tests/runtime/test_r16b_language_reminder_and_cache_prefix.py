@@ -17,8 +17,11 @@ from app.runtime.prompt_builder import (
 )
 from app.runtime.prompt_sections import build_tone_style_section
 from app.runtime.prompt_sections.environment import build_environment_section
+from app.runtime.prompt_sections.tone_style import MEMBER_LANGUAGE_RULE
 
-LANGUAGE_REMINDER = "in the member's language (Chinese if unclear)"
+# R16b round 2 (N6): § Environment restates MEMBER_LANGUAGE_RULE verbatim instead
+# of a paraphrase, so the marker is the whole § Environment line.
+LANGUAGE_REMINDER = f"- Language: {MEMBER_LANGUAGE_RULE}"
 
 
 def _frozen_prefix() -> str:

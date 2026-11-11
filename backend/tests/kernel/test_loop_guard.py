@@ -342,12 +342,18 @@ def test_pending_read_observations_do_not_abort_or_count_as_terminal_failures():
 @pytest.mark.parametrize("mode", ["id_format", "rotation", "pagination", "listing"])
 def test_terminal_reads_count_observed_task_across_tools_and_arguments(mode):
     from app.kernel.loop_guard import LoopGuard
-    from app.services.runtime_display_status import runtime_failure_observation
+    from app.services.runtime_display_status import delegation_failure_result_page, runtime_failure_observation
 
     guard, task_id = LoopGuard(), uuid4()
     ref = f"runtime-result://{uuid4()}/{'a' * 64}"
     failure = {"task_id": str(task_id), "task_type": "delegation",
         **runtime_failure_observation("failed", {"error_code": "provider_error"})}
+    # R16b round 2: read_runtime_result answers with the plain no-body page, so
+    # rotation and pagination feed it the page while the task readers keep the
+    # coded projection (still produced by pre-deploy replays).
+    result_page = delegation_failure_result_page(
+        result_ref=ref, task_id=str(task_id), status="failed", metadata={"error_code": "provider_error"}
+    )
     for index in range(guard.identical_tool_threshold):
         name, args, body = "check_async_task", {"task_id": str(task_id)}, failure
         if mode == "id_format":
@@ -356,11 +362,12 @@ def test_terminal_reads_count_observed_task_across_tools_and_arguments(mode):
         elif mode == "rotation":
             name = ("check_async_task", "task_output", "read_runtime_result")[index % 3]
             args = {"result_ref": ref} if name == "read_runtime_result" else {"runtime_task_id": task_id.hex}
-            body = {"task": failure} if name == "task_output" else {**failure, "result_ref": ref}
+            body = {"task": failure} if name == "task_output" else (
+                result_page if name == "read_runtime_result" else {**failure, "result_ref": ref})
         elif mode == "pagination":
             name, args = "read_runtime_result", {"result_ref": ref, "offset": index, "limit": index + 1,
                 "expected_sha256": str(index) * 64}
-            body = {**failure, "result_ref": ref}
+            body = result_page
         elif mode == "listing":
             name, args, body = "list_async_tasks", {"limit": index + 1}, [failure]
         decision = guard.observe_tool_result(name, args, json.dumps(body),

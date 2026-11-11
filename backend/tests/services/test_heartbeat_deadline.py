@@ -51,6 +51,8 @@ async def heartbeat_run(owner_sessionmaker, monkeypatch):
         tasks=[],
         sessions=0,
         entered=asyncio.Event(),
+        queued=asyncio.Event(),
+        deadlines=[],
         core_calls=0,
         phase=None,
     )
@@ -60,6 +62,32 @@ async def heartbeat_run(owner_sessionmaker, monkeypatch):
     monkeypatch.setattr(daemon_concurrency, "_semaphores", {})
     state.semaphore = daemon_concurrency.get_daemon_semaphore("heartbeat")
     starting_slots = state.semaphore._value
+    original_semaphore_acquire = state.semaphore.acquire
+
+    async def track_semaphore_acquire():
+        state.queued.set()
+        return await original_semaphore_acquire()
+
+    def controlled_timeout(delay):
+        assert delay == 0.3
+        deadline = asyncio.timeout(None)
+        state.deadlines.append(deadline)
+        return deadline
+
+    async def expire_deadline():
+        for deadline in state.deadlines:
+            deadline.reschedule(asyncio.get_running_loop().time())
+        if state.deadlines:
+            # A watchdog for a hung test, not a deadline/lease timing margin.
+            done, _ = await asyncio.wait(state.tasks, timeout=10)
+            assert len(done) == len(state.tasks), "the expired deadline must settle the heartbeat"
+
+    async def held_lease(key, value, **kwargs):
+        # Keep the real Redis NX acquisition, but freeze expiry atomically so
+        # database reads cannot consume the shortened lease before assertions.
+        async with redis.pipeline(transaction=True) as pipe:
+            acquired, _ = await pipe.set(key, value, **kwargs).persist(key).execute()
+        return acquired
 
     @asynccontextmanager
     async def tracked_session(*args, **kwargs):
@@ -145,11 +173,21 @@ async def heartbeat_run(owner_sessionmaker, monkeypatch):
 
     state.records = records
     state.redis = redis
+    state.start = track_create_task
+    state.expire_deadline = expire_deadline
+    if hasattr(heartbeat, "_HEARTBEAT_TIMEOUT_SECONDS"):
+        assert heartbeat._HEARTBEAT_TIMEOUT_SECONDS < heartbeat._HEARTBEAT_LEASE_TTL_SECONDS
+    monkeypatch.setattr(redis, "set", held_lease)
+    monkeypatch.setattr(state.semaphore, "acquire", track_semaphore_acquire)
     monkeypatch.setattr(heartbeat, "tenant_scoped_session", tracked_session)
     monkeypatch.setattr(heartbeat, "get_redis", get_redis)
     monkeypatch.setattr(heartbeat, "_try_acquire_heartbeat_lease_async", acquire)
     monkeypatch.setattr(heartbeat, "_create_heartbeat_runtime_task", create_task)
-    monkeypatch.setattr(heartbeat.asyncio, "create_task", track_create_task)
+    monkeypatch.setattr(
+        heartbeat,
+        "asyncio",
+        SimpleNamespace(**{**vars(asyncio), "create_task": track_create_task, "timeout": controlled_timeout}),
+    )
     monkeypatch.setattr(heartbeat, "_HEARTBEAT_TIMEOUT_SECONDS", 0.3, raising=False)
     monkeypatch.setattr(heartbeat, "_run_memory_lifecycle_maintenance", lambda *args: {})
     monkeypatch.setattr(heartbeat, "_run_t2_job_sweep", sweep)
@@ -180,22 +218,29 @@ async def test_deadline_prevents_expired_lease_overlap(heartbeat_run):
     state = heartbeat_run
     state.phase = "t2"
     await heartbeat._heartbeat_tick()
-    await asyncio.wait_for(state.entered.wait(), timeout=1)
+    await asyncio.wait_for(state.entered.wait(), timeout=10)
     tasks, _, _ = await state.records()
     assert [task.status for task in tasks] == ["running"]
 
     await heartbeat._heartbeat_tick()
     assert len(state.task_ids) == 1, "an in-flight lease must reject another tick"
-    await asyncio.sleep(1.1)
+    await state.expire_deadline()
+    lease_key = f"heartbeat_lease:{state.agent_id}"
+    released_before_expiry = not await state.redis.exists(lease_key)
+    # Advance past the lease TTL only after the earlier deadline checkpoint.
+    # EXPIRE 0 also expires the still-held lease on the unbounded baseline.
+    await state.redis.expire(lease_key, 0)
+    state.entered.clear()
     await heartbeat._heartbeat_tick()
-    # Let a newly admitted run reach the same blocked sweep on the baseline.
-    await asyncio.sleep(0.1)
+    if len(state.tasks) > 1:
+        await asyncio.wait_for(state.entered.wait(), timeout=10)
     tasks, agent, idle_transactions = await state.records()
     assert len(tasks) == 1, "an expired lease must never overlap a previous heartbeat"
     assert tasks[0].status == "failed"
     assert "TimeoutError" in tasks[0].result_summary
     assert agent.last_heartbeat_at is not None
     assert state.sessions == idle_transactions == 0
+    assert released_before_expiry, "the deadline must release the lease before its TTL"
     assert not await state.redis.exists(f"heartbeat_lease:{state.agent_id}")
     assert state.core_calls == 0
 
@@ -206,10 +251,12 @@ async def test_deadline_settles_slow_run_as_failed(heartbeat_run, phase):
 
     state = heartbeat_run
     state.phase = phase
-    task = asyncio.create_task(heartbeat._execute_heartbeat(state.agent_id, tenant_id=state.tenant_id))
-    await asyncio.wait_for(state.entered.wait(), timeout=1)
-    done, _ = await asyncio.wait([task], timeout=0.65)
-    assert task in done, f"{phase} must end before the one-second lease expires"
+    task = state.start(heartbeat._execute_heartbeat(state.agent_id, tenant_id=state.tenant_id))
+    await asyncio.wait_for(state.entered.wait(), timeout=10)
+    tasks, _, _ = await state.records()
+    assert [record.status for record in tasks] == ["running"]
+    await state.expire_deadline()
+    assert task.done(), f"{phase} must end before the lease expires"
     await task
     tasks, agent, idle_transactions = await state.records()
     assert [task.status for task in tasks] == ["failed"]
@@ -249,17 +296,17 @@ async def test_deadline_starts_after_runtime_task_creation(heartbeat_run, monkey
         return task_id
 
     monkeypatch.setattr(heartbeat, "_create_heartbeat_runtime_task", delayed_create_task)
-    task = asyncio.create_task(heartbeat._execute_heartbeat(state.agent_id, tenant_id=state.tenant_id))
+    task = state.start(heartbeat._execute_heartbeat(state.agent_id, tenant_id=state.tenant_id))
     try:
-        await asyncio.wait_for(creation_committed.wait(), timeout=1)
-        done, _ = await asyncio.wait([task], timeout=0.4)
-        assert task not in done, "the heartbeat deadline must not cancel a committed task before its id returns"
+        await asyncio.wait_for(creation_committed.wait(), timeout=10)
+        assert not state.deadlines, "the heartbeat deadline must not start before the committed task id returns"
+        assert not task.done(), "the heartbeat deadline must not cancel a committed task before its id returns"
         tasks, _, _ = await state.records()
         assert [record.status for record in tasks] == ["running"]
     finally:
         release_creation.set()
 
-    await asyncio.wait_for(task, timeout=1)
+    await asyncio.wait_for(task, timeout=10)
     tasks, _, idle_transactions = await state.records()
     assert [record.status for record in tasks] == ["completed"]
     assert state.sessions == idle_transactions == 0
@@ -273,11 +320,13 @@ async def test_deadline_includes_waiting_for_concurrency_slot(heartbeat_run):
     slots = state.semaphore._value
     for _ in range(slots):
         await state.semaphore.acquire()
+    state.queued.clear()
     try:
         await heartbeat._heartbeat_tick()
         # The baseline queues before creating the durable run; the fix records
         # and bounds the queued run inside the lease.
-        await asyncio.sleep(0.65)
+        await asyncio.wait_for(state.queued.wait(), timeout=10)
+        await state.expire_deadline()
         tasks, agent, idle_transactions = await state.records()
         assert [task.status for task in tasks] == ["failed"]
         assert "TimeoutError" in tasks[0].metadata_json["error"]

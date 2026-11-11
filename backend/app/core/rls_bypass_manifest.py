@@ -928,7 +928,13 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # task's budget_run_id under an explicit tenant predicate. R13c/R13d: module sources of
 # session_tool_runtime, session_permission_runtime, session_model_round and
 # web_chat_runtime. Still 122 callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "587b071b0df6223539c5784b28e243d706bbb5910f55da7b389afe092cc6a1aa"
+# Land19 (R15a, R15g) versus land17: still 794 entries. R15g: the completion-outbox sweep
+# settles routes that can never deliver through the existing settle helper (bodies of
+# reconcile_terminal_tasks_once x2, _resolve_completion_route,
+# produce_terminal_task_completion_notification and the module source of
+# runtime_notification_outbox). R15a: module source of session_model_round. Still 122
+# callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "4aa206d8a0886ee4e88c29849a299495b4088ce0e6f98fb4c7dc34f032442799"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

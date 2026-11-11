@@ -165,8 +165,13 @@ function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
   return <IconTool size={size} stroke={2.1} />;
 }
 
-function commandOutcome(details: unknown): 'done' | 'failed' | null {
+function commandOutcome(details: unknown): 'done' | 'failed' | 'unknown' | null {
   const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
+  const execution = record.executionResult as { exit_code?: unknown; timed_out?: unknown } | undefined;
+  if (execution) {
+    if (execution.timed_out === true || typeof execution.exit_code !== 'number' || !Number.isFinite(execution.exit_code)) return 'unknown';
+    return execution.exit_code === 0 ? 'done' : 'failed';
+  }
   const values = [details, record.result, record.rawResult];
   const records = values.flatMap(value => {
     if (typeof value === 'string') {
@@ -174,18 +179,10 @@ function commandOutcome(details: unknown): 'done' | 'failed' | null {
     }
     return value && typeof value === 'object' && !Array.isArray(value) ? [value as Record<string, unknown>] : [];
   });
-  const texts = values.filter((value): value is string => typeof value === 'string');
+  if (records.some(value => value.timed_out === true || value.ok === false || value.error || value.error_class)) return 'unknown';
   const exitCodes = records.flatMap(value => typeof value.exit_code === 'number' && Number.isFinite(value.exit_code)
     ? [value.exit_code] : []);
-  if (exitCodes.some(code => code !== 0)
-    || records.some(value => value.ok === false || value.error || value.error_class || value.timed_out === true)
-    // Native text results append a nonzero exit footer; zero needs a
-    // structured result rather than a successful-looking stdout line.
-    || texts.some(text => [...text.matchAll(/^Exit code: (-?\d+)\s*$/gm)].some(match => Number(match[1]) !== 0))
-    // Run 8 captured this shell failure in output even though the tool event
-    // itself was marked done. Do not mistake that event status for success.
-    || texts.some(text => /^(?:bash|sh|zsh): (?:line \d+: )?[^\r\n]+: command not found\s*$/m.test(text)
-      || /^❌ Execution error:/m.test(text))) return 'failed';
+  if (exitCodes.some(code => code !== 0)) return 'failed';
   return exitCodes.includes(0) ? 'done' : null;
 }
 
@@ -194,7 +191,8 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   if (toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)) {
     const toolName = toolNameOf(step);
     const command = step.kind === 'command' || ['run_command', 'execute_code', 'run_skill_tool'].includes(toolName || '');
-    const summary = toolOutputForDisplay(step.details, t, step.status, !command);
+    const outcome = command ? commandOutcome(step.details) : null;
+    const summary = command && outcome !== null ? null : toolOutputForDisplay(step.details, t, step.status, !command);
     if (summary) return <p>{summary}</p>;
     const details = step.details as { args?: Record<string, unknown>; result?: unknown } | null;
     const result = typeof step.details === 'string' ? step.details : details?.result;
@@ -216,11 +214,12 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
     }
     const path = step.kind === 'file' ? details?.args?.path ?? details?.args?.file_path : null;
     const file = typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).pop() : undefined;
-    const outcome = command ? commandOutcome(step.details) : null;
-    const status = step.status === 'failed' || outcome === 'failed'
-      ? t('agent.chat.disclosure.failure.generic', 'The operation did not complete; the outcome is unconfirmed.')
-      : outcome === 'done' ? runtimeStatusLabel('done', t)
-        : step.status !== 'done' ? runtimeStatusLabel(step.status, t)
+    const status = outcome === 'unknown' ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
+      : outcome === 'done' ? t('agent.chat.disclosure.resultSucceeded', 'Succeeded')
+      : outcome === 'failed' || step.status === 'failed'
+        ? command ? runtimeStatusLabel('failed', t)
+          : t('agent.chat.disclosure.failure.generic', 'The operation did not complete; the outcome is unconfirmed.')
+      : step.status !== 'done' ? runtimeStatusLabel(step.status, t)
           : command ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
             : t('agent.chat.disclosure.resultReturned', 'Result returned');
     const action = localizedToolTitle(step, t);

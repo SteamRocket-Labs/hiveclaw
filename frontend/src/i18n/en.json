@@ -2614,6 +2614,7 @@
         "toolRunning": "Using {{tool}}",
         "resultReturned": "Result returned",
         "resultUnconfirmed": "The outcome is unconfirmed.",
+        "resultSucceeded": "Succeeded",
         "resultFile": "{{action}}: {{file}}. {{status}}",
         "resultAction": "{{action}}. {{status}}",
         "toolCompleted": "Used tools: {{tools}}",

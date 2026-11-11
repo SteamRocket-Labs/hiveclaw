@@ -342,12 +342,17 @@ def _with_code_execution_evidence(
     result: CodeExecutionResult,
     *,
     artifacts: tuple[dict[str, Any], ...] = (),
-) -> str | ToolContentEnvelope:
-    if not result.evidence and not artifacts:
-        return text
+) -> ToolContentEnvelope:
+    exit_code = None if result.timed_out or (result.error and result.exit_code == 0) else result.exit_code
     return ToolContentEnvelope(
         text=text,
-        metadata={"code_execution_evidence": dict(result.evidence)} if result.evidence else {},
+        metadata={
+            "code_execution_result": {
+                "exit_code": exit_code,
+                "timed_out": result.timed_out,
+            },
+            **({"code_execution_evidence": dict(result.evidence)} if result.evidence else {}),
+        },
         artifacts=artifacts,
     )
 

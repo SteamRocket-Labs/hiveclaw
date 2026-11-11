@@ -21,10 +21,11 @@ function expand(container: HTMLElement) {
 }
 
 // Run 8 output snippets plus a None stdout counterexample from the brief.
+// R13c round 2 owner decision: raw output never determines command status.
 it.each([
   ['execute_code', { code: 'print(summary)' }, "📤 Output:\n{'file': 'sales-run8.csv', 'rows': 20, 'cols': ['日期', '地区', '产品', '数量', '单价', '销售额'], 'dates': ('2026-10-01', '2026-10-20'), 'region_product_1to1': True, 'qty_diffs': {'华南': [4.0], '华北': [4.0], '华东': [4.0], '西部': [4.0]}, 'qty_is_arith': True, 'price_constant_per_product': True, 'prices': {'基础版': ['100'], '进阶版': ['150'], '专业版': ['200'], '企业版': ['250']}}", '运行命令', '结果尚未确认。'],
   ['execute_code', { code: "print({'error': None})" }, "📤 Output:\n{'error': None}", '运行命令', '结果尚未确认。'],
-  ['run_command', { command: 'which gh git curl 2>/dev/null; echo "---gh auth---"; gh auth status 2>&1 | head -20; echo "---gh api---"; gh api notifications --jq \'.[].subject.title\' 2>&1 | head -20' }, '📤 Output:\n/opt/git/bin/git\n/usr/bin/curl\n---gh auth---\nbash: line 1: gh: command not found\n---gh api---\nbash: line 1: gh: command not found', '运行命令', '操作未能完成，结果尚未确认。'],
+  ['run_command', { command: 'which gh git curl 2>/dev/null; echo "---gh auth---"; gh auth status 2>&1 | head -20; echo "---gh api---"; gh api notifications --jq \'.[].subject.title\' 2>&1 | head -20' }, '📤 Output:\n/opt/git/bin/git\n/usr/bin/curl\n---gh auth---\nbash: line 1: gh: command not found\n---gh api---\nbash: line 1: gh: command not found', '运行命令', '结果尚未确认。'],
 ] as const)('projects recorded %s output into a member summary without mutating the model payload', (toolName, toolArgs, toolResult, label, status) => {
   const message: AgentChatMessage = { id: toolName, role: 'tool_call', content: '', toolName, toolArgs, toolResult, toolStatus: 'done' };
   const before = JSON.stringify(message);
@@ -71,18 +72,21 @@ it.each([
   expect((timeline.steps[0].details as { rawResult: string }).rawResult).toBe(JSON.stringify(envelope));
 });
 
+// R13c round 2 owner decision: only structured numeric exits without errors
+// confirm legacy command outcomes; raw text and error envelopes stay unconfirmed.
 it.each([
-  ['run_command', { exit_code: 0, output: 'PRIVATE_STDOUT', stderr: 'PRIVATE_STDERR' }, '完成'],
-  ['execute_code', { exit_code: 7, output: 'PRIVATE_STDOUT' }, '操作未能完成，结果尚未确认。'],
-  ['run_skill_tool', { exit_code: 0, error: 'PRIVATE_ERROR' }, '操作未能完成，结果尚未确认。'],
-  ['run_command', { ok: false, error: 'PRIVATE_ERROR' }, '操作未能完成，结果尚未确认。'],
-  ['execute_code', { timed_out: true }, '操作未能完成，结果尚未确认。'],
+  ['run_command', { exit_code: 0, output: 'PRIVATE_STDOUT', stderr: 'PRIVATE_STDERR' }, '成功'],
+  ['execute_code', { exit_code: 7, output: 'PRIVATE_STDOUT' }, '失败'],
+  ['run_skill_tool', { exit_code: 0, error: 'PRIVATE_ERROR' }, '结果尚未确认。'],
+  ['run_command', { ok: false, error: 'PRIVATE_ERROR' }, '结果尚未确认。'],
+  ['execute_code', { timed_out: true }, '结果尚未确认。'],
   ['run_command', { exit_code: '0', output: 'PRIVATE_STDOUT' }, '结果尚未确认。'],
   ['run_command', '{broken PRIVATE_STDOUT', '结果尚未确认。'],
   ['run_command', '📤 Output:\nExit code: 0', '结果尚未确认。'],
   ['run_command', undefined, '结果尚未确认。'],
   ['run_skill_tool', '报告内容已读取。', '结果尚未确认。'],
-  ['execute_code', '📤 Output:\nPRIVATE_STDOUT\n\nExit code: 1', '操作未能完成，结果尚未确认。'],
+  ['execute_code', '📤 Output:\nPRIVATE_STDOUT\n\nExit code: 1', '结果尚未确认。'],
+  ['execute_code', '❌ Execution error: PRIVATE_ERROR', '结果尚未确认。'],
 ] as const)('uses execution facts for %s with result %j', (toolName, rawResult, status) => {
   const message: AgentChatMessage = { role: 'tool_call', content: '', toolName,
     toolArgs: { command: 'PRIVATE_COMMAND' }, toolStatus: 'done',
@@ -234,11 +238,11 @@ it('preserves recalled conversation lines beside a recall error notice', () => {
 });
 
 it.each([
-  ['command', undefined, 0, '完成'],
-  ['tool', 'run_command', 0, '完成'],
-  ['tool', 'execute_code', 0, '完成'],
-  ['tool', 'run_skill_tool', 0, '完成'],
-  ['tool', 'run_command', 7, '操作未能完成，结果尚未确认。'],
+  ['command', undefined, 0, '成功'],
+  ['tool', 'run_command', 0, '成功'],
+  ['tool', 'execute_code', 0, '成功'],
+  ['tool', 'run_skill_tool', 0, '成功'],
+  ['tool', 'run_command', 7, '失败'],
   ['tool', 'execute_code', undefined, '结果尚未确认。'],
 ] as const)('uses only command execution facts for %s / %s beside an envelope (exit %s)', (kind, toolName, exit_code, status) => {
   const result = 'PRIVATE_STDOUT\n{"schema":"hive.explicit_memory_availability.v1"}\nPRIVATE_STDERR';

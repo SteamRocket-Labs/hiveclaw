@@ -104,6 +104,8 @@ def _execution_evidence(trace: dict[str, Any]) -> dict[str, Any]:
         if isinstance(trace.get("native_clock_read_evidence"), dict) else None,
         "native_tool_timeout_evidence": dict(trace["native_tool_timeout_evidence"])
         if isinstance(trace.get("native_tool_timeout_evidence"), dict) else None,
+        "code_execution_result": dict(trace["code_execution_result"])
+        if isinstance(trace.get("code_execution_result"), dict) else None,
     }
 
 

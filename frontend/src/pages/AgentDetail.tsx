@@ -2020,6 +2020,7 @@ function AgentDetailInner() {
                 message.id === acceptedInputId ? { ...message, ...patch } : message)));
         };
         if (!goalModeRequested) {
+            if (!activeRunStateRef.current[sendKey]?.runId) setTransportNotice(null);
             if (retryMessageId) {
                 pendingUserMessagesRef.current[sendKey] = (pendingUserMessagesRef.current[sendKey] || []).filter(item => item.message.id !== retryMessageId);
                 setChatMessagesAfterQueuedForSession(sendSessionId, prev => prev.filter(message => message.id !== retryMessageId));

@@ -323,8 +323,8 @@ export function markActiveRunTerminalInRegistry(
     if (rejectedRunId) terminalRunIds.add(rejectedRunId);
     return false;
   }
-  terminalSessionKeys.add(key);
   const runId = normalizeSessionRunId(terminalRunId || activeRunId);
+  if (!runId) terminalSessionKeys.add(key);
   if (runId) terminalRunIds.add(runId);
   clearActiveRun();
   return true;

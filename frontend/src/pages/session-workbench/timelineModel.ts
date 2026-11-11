@@ -2269,6 +2269,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     input.messages,
     null, null, input.sessionWorkbench?.runtime_tasks, sessionRunId,
   );
+  const latestUserIndex = latestUserMessageIndex(input.messages);
   const latestTurnAnswered = hasAssistantAnswerAfterLatestUser(input.messages);
   const latestAnsweredRunId = latestTurnAnswered
     ? messageRunId([...input.messages].reverse().find(isRenderableAssistantAnswer))
@@ -2299,8 +2300,9 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     && !latestTurnAnswered;
   const retainedProcessRun = keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending);
   const trailingUserTurn = cells.at(-1)?.kind === 'user_turn';
-  const latestUser = input.messages[latestUserMessageIndex(input.messages)];
+  const latestUser = input.messages[latestUserIndex];
   const acceptedUserTurnPending = trailingUserTurn && (latestUser?.sendState === 'sending'
+    || latestUser?.sendState === 'queued'
     || (latestUser?.sessionItem?.kind === 'human_input' && latestUser.sessionItem.lifecycle === 'accepted'));
   const interruptedUserTurn = trailingUserTurn && runtimePhaseValue === 'cancelled'
     && !input.isWaiting && !input.isStreaming && !acceptedUserTurnPending;
@@ -2364,6 +2366,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     cells: applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle, sessionWorkbench?.runtime_tasks,
       sessionRunId)
       .map(cell => terminalStatePending && cell.kind === 'active_run'
+        && cell.sourceMessages.some(({ index }) => index > latestUserIndex)
         && (!headerRunId || !cell.runId || isSameSessionRunId(cell.runId, headerRunId))
         && cell.timeline.status === 'done'
         ? { ...cell, timeline: { ...cell.timeline, status: 'running' as const }, phase: undefined }

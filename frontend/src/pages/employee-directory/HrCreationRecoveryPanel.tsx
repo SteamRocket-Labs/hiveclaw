@@ -34,10 +34,20 @@ const ACTION_ERROR_KEYS: Record<string, string> = {
   provisioning_task_missing: 'employees.hrRecovery.errorStateChanged',
   retry_required: 'employees.hrRecovery.errorStateChanged',
   not_found: 'employees.hrRecovery.errorMissing',
-  requester_mismatch: 'employees.hrRecovery.errorRequesterOnly',
   confirmation_missing: 'employees.hrRecovery.errorConfirmationMissing',
+  // A direct-creation request whose authorization evidence expired: the
+  // member's remedy is to ask again, not to keep retrying this draft.
+  missing_confirmation_evidence: 'agent.chat.toolResults.creationExpired',
   reconciliation_required: 'employees.hrRecovery.errorReconciliationRequired',
   invalid_task_status: 'employees.hrRecovery.errorStateChanged',
+  // Capability/identity refusals the retry handler can raise: the sentence
+  // keeps telling the member what to do (often: ask an administrator) instead
+  // of collapsing into the generic retry line.
+  capability_denied: 'employees.hrRecovery.failureCapabilityDenied',
+  approval_required: 'employees.hrRecovery.failureApprovalRequired',
+  capability_unavailable: 'employees.hrRecovery.errorCapabilityUnavailable',
+  source_execute_denied: 'employees.hrRecovery.errorSourceExecuteDenied',
+  direct_human_input_required: 'employees.hrRecovery.errorDirectInputRequired',
 };
 
 function failureLine(draft: HrCreationDraft, t: (key: string, fallback: string) => string): string | null {
@@ -47,8 +57,14 @@ function failureLine(draft: HrCreationDraft, t: (key: string, fallback: string) 
   if (code && Object.prototype.hasOwnProperty.call(FAILURE_LINE_KEYS, code)) {
     return t(FAILURE_LINE_KEYS[code], FAILURE_LINE_KEYS[code]);
   }
-  // The stored English message and the task summary are server diagnostics:
-  // a member gets one stable Chinese line, never the raw sentence (P3).
+  const legacyMessage = failure && typeof failure === 'object' && typeof (failure as Record<string, unknown>).message === 'string'
+    ? (failure as Record<string, unknown>).message as string : '';
+  const legacyReason = typeof draft.recovery?.reason === 'string' ? draft.recovery.reason : '';
+  // A failure line exists only for a draft that actually failed: an unmapped
+  // code or a codeless legacy message/reason keeps one stable Chinese line
+  // (never the stored English sentence), while a draft still awaiting
+  // confirmation or provisioning shows no failure line at all.
+  if (!code && !legacyMessage.trim() && !legacyReason.trim()) return null;
   return t('employees.hrRecovery.failureGeneric', 'This creation did not finish. Retry it or abandon it.');
 }
 
@@ -66,9 +82,11 @@ function actionErrorText(error: Error, t: (key: string, fallback: string) => str
   return t('employees.hrRecovery.errorGeneric', 'The action did not complete. Please try again.');
 }
 
-function draftName(draft: HrCreationDraft): string {
+function draftName(draft: HrCreationDraft, t: (key: string, fallback: string) => string): string {
   const name = draft.blueprint?.name;
-  return typeof name === 'string' && name.trim() ? name.trim() : 'Unfinished digital employee';
+  return typeof name === 'string' && name.trim()
+    ? name.trim()
+    : t('employees.hrRecovery.unnamedDraft', 'Unfinished digital employee');
 }
 
 export default function HrCreationRecoveryPanel() {
@@ -129,7 +147,7 @@ export default function HrCreationRecoveryPanel() {
       message: t(
         'employees.hrRecovery.removeConfirm',
         'Abandon the unfinished creation of {{name}}? Its employee, files and history are kept and stay until a company admin deactivates them.',
-        { name: draftName(draft) },
+        { name: draftName(draft, t) },
       ),
       confirmLabel: t('employees.hrRecovery.remove', 'Abandon unfinished creation'),
       danger: true,
@@ -159,7 +177,7 @@ export default function HrCreationRecoveryPanel() {
             <article className="hr-recovery-item" key={draft.blueprint_id} data-status={draft.draft_status}>
               <div>
                 <div className="hr-recovery-title-row">
-                  <h3>{draftName(draft)}</h3>
+                  <h3>{draftName(draft, t)}</h3>
                   <span>{blueprintStatusLabel(draft.draft_status, t)}</span>
                 </div>
                 {failure && <p role={recovery?.requires_operator ? 'alert' : undefined}>{failure}</p>}

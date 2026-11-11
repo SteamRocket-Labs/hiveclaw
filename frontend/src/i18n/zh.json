@@ -696,7 +696,11 @@
       "errorMissing": "没有找到这条未完成的创建，请刷新。",
       "errorRequesterOnly": "只有发起这次创建的成员可以操作。",
       "errorConfirmationMissing": "缺少创建确认记录，请刷新后重试。",
-      "errorReconciliationRequired": "这次创建的状态需要运营人员核查后才能重试。"
+      "errorReconciliationRequired": "这次创建的状态需要运营人员核查后才能重试。",
+      "errorCapabilityUnavailable": "暂时无法读取公司的创建规则，请稍后重试。",
+      "errorSourceExecuteDenied": "请在自己的对话中提出创建请求，或重新登录后再试。",
+      "errorDirectInputRequired": "请你在当前对话中亲自提出创建请求；代发或后台任务不能创建数字员工。",
+      "unnamedDraft": "未完成的数字员工"
     },
     "status": {
       "creating": "创建中",

@@ -105,3 +105,33 @@ it('keeps a legacy failed draft without a failure code on the generic Chinese li
   expect(screen.getByText(zh.employees.hrRecovery.failureGeneric)).toBeTruthy();
   expect(screen.queryByText(/Legacy failed HR draft/)).toBeNull();
 });
+
+it('shows an in-progress draft with its status only and no failure line', async () => {
+  // The mine list also returns awaiting_confirmation/confirmed/creating/
+  // provisioning drafts that have not failed; those never carried a failure
+  // line before, and the generic sentence is not their status.
+  mount([{ ...draft, draft_status: 'provisioning', failure: null,
+    recovery: { can_resume: true, can_retry: true } }]);
+  expect(await screen.findByText(zh.agent.chat.toolResults.statusProvisioning)).toBeTruthy();
+  expect(screen.queryByText(zh.employees.hrRecovery.failureGeneric)).toBeNull();
+});
+
+it('maps a refused retry that needs an administrator to the administrator sentence', async () => {
+  mount([{ ...draft, failure: null, recovery: { can_resume: true, can_retry: true } }]);
+  mocks.retry.mockRejectedValue(new ApiError(403, 'Company policy does not allow creating digital employees.', {
+    error: 'capability_denied', message: '公司规则不允许创建数字员工，请联系管理员。',
+  }));
+  fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+  await waitFor(() => expect(mocks.showAppToast).toHaveBeenCalledTimes(1));
+  const [toastText] = mocks.showAppToast.mock.calls[0];
+  // "Ask an administrator" stays an administrator sentence instead of
+  // collapsing into the generic "please retry" line.
+  expect(toastText).toBe(zh.employees.hrRecovery.failureCapabilityDenied);
+  expect(toastText).not.toBe(zh.employees.hrRecovery.errorGeneric);
+});
+
+it('names an unnamed draft in Chinese on the card', async () => {
+  mount([{ ...draft, blueprint: {} }]);
+  expect(await screen.findByRole('heading', { name: zh.employees.hrRecovery.unnamedDraft })).toBeTruthy();
+  expect(screen.queryByText('Unfinished digital employee')).toBeNull();
+});

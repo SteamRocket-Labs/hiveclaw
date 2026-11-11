@@ -721,7 +721,11 @@
       "errorMissing": "This unfinished creation was not found. Reload the page.",
       "errorRequesterOnly": "Only the member who requested this creation can act on it.",
       "errorConfirmationMissing": "Creation confirmation is missing. Reload and try again.",
-      "errorReconciliationRequired": "This creation needs an operator review before retry."
+      "errorReconciliationRequired": "This creation needs an operator review before retry.",
+      "errorCapabilityUnavailable": "The company's creation rules are temporarily unavailable. Please try again later.",
+      "errorSourceExecuteDenied": "Start the creation request from your own conversation, or sign in again and retry.",
+      "errorDirectInputRequired": "Ask for the digital employee yourself in this conversation; forwarded or background requests cannot create one.",
+      "unnamedDraft": "Unfinished digital employee"
     },
     "status": {
       "creating": "Creating",

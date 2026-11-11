@@ -448,7 +448,8 @@ def split_context_message(message, sections):
         refs, unknown = section["sources"], section["unbound"]
         parts.append(LLMMessage(role=message.role, content=text, context_origin=ContextMessageOrigin.capture(
             kind=origin.kind, role=message.role, content=text, sources=refs, unbound=unknown,
-            sections=[{"name": section["name"]}] if section.get("name") else [])))
+            sections=[{key: section[key] for key in ("name", "source_ref") if key in section}]
+                if section.get("name") else [])))
         sources = [ref for ref in sources if ref not in refs]
         unbound = [reason for reason in unbound if reason not in unknown]
     if remainder.strip():

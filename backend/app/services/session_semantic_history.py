@@ -14,7 +14,7 @@ import copy
 import json
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -35,6 +35,7 @@ from app.services.session_user_checkpoint import (
 
 _BRANCH_PREFIX_SOURCE = "conversation_branch_prefix"
 _USER_STOP_MARKER = "[Request interrupted by user; its plan and todos are stopped. Resume only if asked.]"
+_USER_STOP_NOTICE = f"Previous run: {_USER_STOP_MARKER}\nAnswer the member's latest message."
 
 
 class SessionSemanticHistoryUnavailable(RuntimeError):
@@ -86,6 +87,7 @@ class SessionSemanticMessage:
     thinking_signature: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str | None = None
+    stop_notice_active: bool = False
 
     @property
     def sequence(self) -> int:
@@ -834,6 +836,11 @@ async def load_session_semantic_history(
         ) from exc
 
     cancelled, stop_windows, queued_starts = _cancelled_run_messages(views, current_run_id=current_run_id)
+    completed_sequence = max((view.sequence for view in views
+        if view.source.item_kind == "run" and view.source.lifecycle == "completed"
+        and _source_scope_run_id(view.source) != current_run_id), default=0)
+    cancelled = [replace(message, stop_notice_active=message.sequence_end > completed_sequence)
+        for message in cancelled]
     messages = [*users, *rounds, *legacy, *remote, *cancelled]
 
     def history_order(message):

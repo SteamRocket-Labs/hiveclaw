@@ -217,10 +217,20 @@ def _bind_system_prompt_suffix_sections(
                 **({"tools_for_llm": tool_schema_provider()} if tool_schema_provider is not None else {}),
             ),
         ]
-        if source_maps is not None:
-            from app.runtime.context import ensure_runtime_assembly_state
+        from app.runtime.context import ensure_runtime_assembly_state
 
-            state = ensure_runtime_assembly_state(session_ctx)
+        state = ensure_runtime_assembly_state(session_ctx)
+        stop = next((message for message in reversed(request.messages)
+            if message.get("stop_notice_active")
+            and str(message.get("source_ref", "")).startswith("session-run-cancelled:")), None)
+        if stop is not None:
+            from app.services.session_semantic_history import _USER_STOP_NOTICE
+
+            sections.append(_USER_STOP_NOTICE)
+            state.record_context_sources(agent_id=request.agent_id, content=_USER_STOP_NOTICE,
+                sources=(), unbound=(), sections=[{"name": "member_stop", "content": _USER_STOP_NOTICE,
+                    "sources": (), "unbound": (), "source_ref": stop["source_ref"]}])
+        if source_maps is not None:
             sources, unbound = source_maps
             offset = int(bool((request.system_prompt_suffix or "").strip()))
             for index, section in enumerate(sections):
@@ -2142,7 +2152,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
                         for part in split_context_message(dynamic_notice, _dynamic_message_sections()):
                             sections = ()
-                            for content in (resolved_memory_context, resolved_permissions_context):
+                            for content in (resolved_memory_context, resolved_permissions_context, part.content):
                                 if content and content in part.content:
                                     sections = ensure_runtime_assembly_state(session_ctx).context_sections_for(
                                         agent_id=request.agent_id, content=content)

@@ -213,3 +213,44 @@ async def test_pre_click_queue_follows_stop_only_when_consumed_by_successor(monk
     assert [message.content for message in result.messages] == [
         "Plan the migration", *stop_and_queue, "Rollback answer",
     ]
+
+
+@pytest.mark.parametrize("later_outcome,sequence,active", [
+    (None, 0, True), ("failed", 12, True), ("completed", 5, True), ("completed", 12, False),
+])
+async def test_stop_tail_eligibility_expires_only_after_later_normal_completion(
+    monkeypatch, later_outcome, sequence, active,
+):
+    from app.services import session_semantic_history as history
+
+    now, stopped_run, control_id = datetime.now(timezone.utc), uuid.uuid4(), str(uuid.uuid4())
+    views = []
+
+    def event(point, lifecycle, run_id, **payload):
+        row = SimpleNamespace(id=uuid.uuid4(), sequence=point, item_kind="run", lifecycle=lifecycle,
+            run_id=run_id, input_id=None, item_id=run_id, scope_json={}, created_at=now,
+            schema_version=2, metadata_json={"v2_payload": payload})
+        views.append(history._EventView(target=row, source=row))
+
+    event(10, "cancelled", stopped_run, control_id=control_id)
+    if later_outcome:
+        event(sequence, later_outcome, uuid.uuid4())
+
+    async def load_views(*_args, **_kwargs):
+        return views, {}
+
+    async def rounds(*_args, **_kwargs):
+        return [], [], 0
+
+    class DB:
+        async def execute(self, _statement):
+            return SimpleNamespace(all=lambda: [])
+
+    monkeypatch.setattr(history, "_load_event_views", load_views)
+    monkeypatch.setattr(history, "_committed_round_messages", rounds)
+    result = await history.load_session_semantic_history(
+        DB(), tenant_id=uuid.uuid4(), agent_id=uuid.uuid4(), session_id=uuid.uuid4())
+    marker, = result.messages
+    assert marker.content == history._USER_STOP_MARKER
+    assert marker.id == f"session-run-cancelled:{views[0].source.id}"
+    assert marker.stop_notice_active is active

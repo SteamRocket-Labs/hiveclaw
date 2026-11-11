@@ -107,6 +107,28 @@ async def test_known_platform_guidance_can_have_complete_inventory_without_grant
         assert origin["dependency_coverage"] == {"complete": True, "unbound": []}
 
 
+@pytest.mark.parametrize("source", ["missing", "human_event"])
+async def test_member_stop_notice_requires_a_cancelled_event(owner_sessionmaker, app_user_sessionmaker, source):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.session_semantic_history import _USER_STOP_NOTICE
+
+    scope = await _bound_input(owner_sessionmaker)
+    section = {"name": "member_stop"}
+    if source == "human_event":
+        async with owner_sessionmaker() as db:
+            event = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == scope[2],
+                ChatTranscriptEvent.item_kind == "human_input", ChatTranscriptEvent.lifecycle == "accepted"))
+            assert event is not None
+            section["source_ref"] = f"session-run-cancelled:{event.id}"
+    context = _context_message(role="user", content=_USER_STOP_NOTICE, kind="dynamic_prompt",
+        sections=[section], unbound=())
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, scope[0])
+        snapshot = await _prepare(db, scope, context)
+        assert snapshot["input_bindings"]["messages"][0]["status"] == "withheld"
+        assert _USER_STOP_NOTICE not in str(snapshot["wire_request"])
+
+
 @pytest.mark.parametrize("change", ["dictionary", "changed_bytes"])
 async def test_untrusted_or_stale_context_tags_never_become_canonical_origins(owner_sessionmaker, app_user_sessionmaker, change):
     scope = await _bound_input(owner_sessionmaker)

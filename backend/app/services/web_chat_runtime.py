@@ -1554,6 +1554,8 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                 entry["reasoning_signature"] = msg.thinking_signature
             if isinstance(getattr(msg, "id", None), str):
                 entry["source_ref"] = msg.id
+            if getattr(msg, "stop_notice_active", False):
+                entry["stop_notice_active"] = True
             conversation.append(entry)
             continue
 

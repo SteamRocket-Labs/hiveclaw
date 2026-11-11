@@ -941,7 +941,13 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # module source of runtime_terminal_settlement); the terminal boundary processor ignores
 # those display items (_latest_run_event and its module source). P1s is frontend only.
 # Still 122 callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "c8f81b0ff44f3555a4eeae918337f7170a8e059b576bcff9f5be5cf3a03eb0b1"
+# Land21 (R15h, R15i, R16a) versus land20: still 794 entries. R15h: the T0 transcript
+# sweep reads only the index pointer when idle and recovers finished owners
+# (sweep_pending_transcript_t0_bridges and the module source of runtime_control_bus).
+# R15i: the session summary runs as a detached task after delivery (module source of
+# web_terminal_boundary_processor). R16a is frontend only. Still 122 callsites, no new
+# bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "4346954286de2981f95c5edd511bd7442dda1ee7f86c0cfb35c3af40a1d28276"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

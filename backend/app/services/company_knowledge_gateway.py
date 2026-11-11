@@ -216,11 +216,19 @@ class CompanyKnowledgeSearchHit:
 # An empty retrieval result must tell the model the outcome instead of echoing
 # the discover/search actions the policy evaluated; a literal action list here
 # reads as an instruction to keep searching (E2E run 13: 61 identical empty
-# results drove a 15-minute loop).
-EMPTY_COMPANY_LIBRARY_NOTE = (
-    "Nothing in the company library matched; rewording the query will not find material that "
-    "is not there, so tell the member what was not found."
+# results drove a 15-minute loop). Each sentence stays true for the input that
+# produced it: a filtered search only speaks about "these filters", and the
+# document list (no query at all) never mentions rewording one.
+EMPTY_COMPANY_SEARCH_NOTE = (
+    "No company material visible to this member matched this search; rewording the same request "
+    "will not find material that is not there, so tell the member what was not found."
 )
+EMPTY_COMPANY_SEARCH_NOTE_WITH_FILTERS = (
+    "No company material visible to this member matched this search within these filters; "
+    "rewording the same request will not look outside them, so tell the member what was not "
+    "found within these filters."
+)
+EMPTY_COMPANY_DOCUMENT_LIST_NOTE = "No company documents are visible here."
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +236,7 @@ class CompanyKnowledgeSearchResult(_JsonResult):
     status: str
     results: tuple[CompanyKnowledgeSearchHit, ...]
     warnings: tuple[str, ...] = ()
+    filters_applied: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         authority: dict[str, Any] = {
@@ -245,7 +254,9 @@ class CompanyKnowledgeSearchResult(_JsonResult):
         }
         if not self.results:
             del authority["required_actions"]
-            payload["note"] = EMPTY_COMPANY_LIBRARY_NOTE
+            payload["note"] = (
+                EMPTY_COMPANY_SEARCH_NOTE_WITH_FILTERS if self.filters_applied else EMPTY_COMPANY_SEARCH_NOTE
+            )
         return payload
 
 
@@ -367,7 +378,7 @@ class CompanyKnowledgeDocumentListResult(_JsonResult):
         }
         if not self.documents:
             del authority["required_actions"]
-            payload["note"] = EMPTY_COMPANY_LIBRARY_NOTE
+            payload["note"] = EMPTY_COMPANY_DOCUMENT_LIST_NOTE
         return payload
 
 
@@ -759,6 +770,7 @@ class CompanyKnowledgeGateway:
         return CompanyKnowledgeSearchResult(
             status="ok" if results else "empty",
             results=tuple(results),
+            filters_applied=bool(filters),
         )
 
     async def _select_bundle(

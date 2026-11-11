@@ -48,6 +48,7 @@ from app.services.chat_message_parts import (
 )
 from app.services.chat_artifact_delivery import create_chat_artifacts_for_message, tool_session_write_paths
 from app.services.chat_transcript import append_session_event, lock_transcript_session
+from app.services.company_knowledge_gateway import EMPTY_COMPANY_SEARCH_NOTE
 from app.services.conversation_interaction_service import mark_latest_pending_clarification_answered
 from app.services.llm_client import STREAM_RETRY_TOMBSTONE
 from app.services.knowledge_provenance import ontology_result_source_rows
@@ -1489,17 +1490,24 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
             "references": references,
             "content_omitted": True,
             "instruction": (
-                ("Call query_company_ontology/get_company_object/explain_company_fact again if the content is needed.")
-                if tool_name
-                in {
-                    "query_company_ontology",
-                    "get_company_object",
-                    "explain_company_fact",
-                }
+                # An empty replayed company search must keep the truth the
+                # boundary computed (its `note` names the filters case), not
+                # invite another call for content that is not there.
+                str(payload.get("note") or EMPTY_COMPANY_SEARCH_NOTE)
+                if tool_name == "search_company_kb" and not rows
                 else (
-                    "Call search_company_kb/read_company_kb again if the content is needed."
-                    if scope == "company"
-                    else "Call search_personal_kb/read_personal_kb again if the content is needed."
+                    ("Call query_company_ontology/get_company_object/explain_company_fact again if the content is needed.")
+                    if tool_name
+                    in {
+                        "query_company_ontology",
+                        "get_company_object",
+                        "explain_company_fact",
+                    }
+                    else (
+                        "Call search_company_kb/read_company_kb again if the content is needed."
+                        if scope == "company"
+                        else "Call search_personal_kb/read_personal_kb again if the content is needed."
+                    )
                 )
             ),
         }

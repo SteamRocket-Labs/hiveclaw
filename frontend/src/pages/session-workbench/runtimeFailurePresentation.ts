@@ -27,7 +27,7 @@ export function runtimeFailurePresentation(
   if (failureCode === 'identical_refused_result_read') {
     return {
       kind: 'refused_result',
-      fallback: "The colleague's result could not be read safely this time, so I could not finish the summary. You can ask me to arrange the work again.",
+      fallback: "This result couldn't be read safely this time, so I couldn't continue. You can ask me to arrange this work again.",
     };
   }
   if (failureCode === 'timeout' && deliveryState === 'unknown') {

@@ -465,7 +465,7 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                         "status": "source_access_denied" if exc.status_code == 403 else "source_unavailable",
                         "reason_code": exc.code,
                         "result_ref": result_ref,
-                        "retryable": False,
+                        "retryable": exc.status_code == 503,
                         "recovery_action": "reconcile_result_sources",
                     }
                 )

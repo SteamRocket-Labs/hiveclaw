@@ -128,6 +128,8 @@ class LoopGuard:
         self._tool_arg_counts: dict[tuple[str, str], int] = {}
         self._failure_counts: dict[tuple[str, str, str], int] = {}
         self._terminal_read_counts: dict[tuple[str, str], int] = {}
+        self._refused_result_read_counts: dict[tuple[str, str], int] = {}
+        self._refused_result_read_rounds: dict[str, int] = {}
         self._empty_search_counts: dict[str, int] = {}
         self._empty_search_material_found = False
         # Per-tool warnings whose warned model round has already run: a tool's
@@ -362,12 +364,20 @@ class LoopGuard:
                 tool_name == "read_runtime_result"
                 and observation.get("schema") == "hive.runtime_result_page.v1"
                 and observation.get("status") in {
-                    "source_access_denied", "source_unavailable", "authority_denied", "integrity_error",
+                    "source_access_denied", "source_unavailable", "integrity_error",
                 }
                 and observation.get("retryable") is False
                 and isinstance(observation.get("result_ref"), str)
                 and observation["result_ref"] == (args or {}).get("result_ref")
             )
+            requested_ref = (args or {}).get("result_ref")
+            if (tool_name == "read_runtime_result" and not refused
+                and observation.get("schema") == "hive.runtime_result_page.v1"
+                and isinstance(requested_ref, str)
+                and (observation.get("result_ref") is None or observation.get("result_ref") == requested_ref)):
+                for key in list(self._refused_result_read_counts):
+                    if key[0] == requested_ref:
+                        del self._refused_result_read_counts[key]
             running = observation.get("status") in {"pending", "running"} and observation.get("task_type") == "delegation"
             # R16b: every reader answers a finished delegation with the plain
             # no-body page; the coded observation survives only in already-stored
@@ -388,6 +398,11 @@ class LoopGuard:
             if identity.replace("-", "") == self._runtime_task_id:
                 continue
             if refused:
+                # All calls in a model round are observed before its results.
+                # Their final total is an existing in-turn batch marker.
+                if self._refused_result_read_rounds.get(identity) == self.total_tool_calls:
+                    continue
+                self._refused_result_read_rounds[identity] = self.total_tool_calls
                 # Compare the complete fixed refusal page, independently of
                 # paging arguments. This successful tool response certifies
                 # that rereading this result cannot recover its bytes.
@@ -407,14 +422,15 @@ class LoopGuard:
                     or sentence == IDENTICAL_TERMINAL_READ_MESSAGE
                 ) else TERMINAL_TASK_READ_PREFIX + sentence
             key = (identity, outcome_key)
-            self._terminal_read_counts[key] = self._terminal_read_counts.get(key, 0) + 1
-            if self._terminal_read_counts[key] >= self.identical_tool_threshold:
+            counts = self._refused_result_read_counts if refused else self._terminal_read_counts
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] >= self.identical_tool_threshold:
                 # warn_key is inert on this path (the abort decision bypasses
                 # _escalate's once-per-pattern set); _PatternCheck requires one.
                 reason = ("identical_refused_result_read" if refused else
                     "identical_running_task_read" if running else "identical_terminal_task_read")
                 check = _PatternCheck(reason=reason, detail=message,
-                    warn_key=f"terminal:{identity}", count=self._terminal_read_counts[key],
+                    warn_key=f"terminal:{identity}", count=counts[key],
                     warn_threshold=self.identical_tool_threshold)
                 return self._decision(check, severity="abort", tool_name=tool_name,
                     args_digest=_digest(_canonical_args(args)),
@@ -558,7 +574,9 @@ def _runtime_outcome_for_loop_guard(
         "severity": severity,
         "count": count,
         "warn_threshold": warn_threshold,
-        "abort_threshold": warn_threshold if reason in {"identical_terminal_task_read", "identical_running_task_read"} else _abort_threshold(warn_threshold),
+        "abort_threshold": warn_threshold if reason in {
+            "identical_terminal_task_read", "identical_running_task_read", "identical_refused_result_read",
+        } else _abort_threshold(warn_threshold),
     }
     if severity == "warn":
         return RuntimeOutcome(

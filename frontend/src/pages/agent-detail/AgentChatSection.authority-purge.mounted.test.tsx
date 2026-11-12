@@ -487,7 +487,9 @@ it.each(['live', 'history'] as const)('shows the safe result refusal sentence wi
     historyMsgs={[]} chatMessagesSessionId="result-session"
     chatMessages={[{ id: 'request', role: 'user', content: 'Summarize the colleague result.' }, ...cards]}
     onBranchMessage={vi.fn()} />);
-  expect(screen.getByText('同事的结果这次没法安全读取，我没能完成整理。你可以让我重新安排这项工作。')).toBeTruthy();
+  // Approval, remote, subagent and creation results also use this code; name no
+  // colleague or summarization task in either live or historical cards.
+  expect(screen.getByText('这份结果这次没法安全读取，我没能继续。你可以让我重新安排这项工作。')).toBeTruthy();
   expect(screen.queryByTestId('thread-item-retry-turn')).toBeNull();
 });
 

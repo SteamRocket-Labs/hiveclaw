@@ -107,3 +107,50 @@ async def test_source_refusal_log_omits_non_uuid_components():
         logger.remove(sink)
     assert len(warnings) == 1 and f"source_id={identity}" in warnings[0]
     assert "PRIVATE_NAME" not in warnings[0] and "workspace/" not in warnings[0] and "\n" not in warnings[0]
+
+
+@pytest.mark.parametrize(("kind", "logged"), [
+    ("remote_a2a_result", "remote_a2a_result"),
+    ("t0_session_ledger", "t0_session_ledger"),
+    ("x" * 64, "x" * 64),
+    ("x" * 65, "unknown"),
+    ("_private", "unknown"),
+    ("workspace/PRIVATE_NAME", "unknown"),
+    ("kind\nPRIVATE_NAME", "unknown"),
+])
+async def test_source_kind_log_uses_bounded_machine_identifiers(kind, logged):
+    from app.services.content_input_receipts import ContentInputReceiptError, log_source_refusal
+
+    error = ContentInputReceiptError("content_source_unavailable", "The source is unavailable.", 503)
+    identity = uuid4()
+    error.dependency = {"source_kind": kind, "source_id": str(identity), "source_version": "a" * 64}
+    warnings = []
+    sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING")
+    try:
+        log_source_refusal(error, operation="read_runtime_result")
+    finally:
+        logger.remove(sink)
+    # remote_a2a_result and t0_session_ledger are real identifiers with digits;
+    # paths, names, invalid prefixes and unbounded values remain suppressed.
+    assert warnings == [f"Source refusal operation=read_runtime_result code=content_source_unavailable "
+        f"message=The source is unavailable. source_kind={logged} source_id={identity}"]
+
+
+async def test_dependency_cycle_keeps_its_innermost_context(monkeypatch):
+    from app.services import content_input_receipts as receipts
+
+    outer = {"source_kind": "future_source", "source_id": str(uuid4()), "source_version": "outer"}
+    inner = {**outer, "source_id": str(uuid4()), "source_version": "inner"}
+    db, user, tenant = SimpleNamespace(get_transaction=lambda: None), SimpleNamespace(id=uuid4()), uuid4()
+
+    async def recurse(db, tenant_id, dependencies, **kwargs):
+        await receipts._validate_input_dependencies(db, tenant_id,
+            [inner] if dependencies[0] == outer else dependencies, **kwargs)
+
+    monkeypatch.setattr(receipts, "_validate_input_dependency_batch", recurse)
+    with receipts.group_source_read() as scope:
+        with pytest.raises(receipts.ContentInputReceiptError) as caught:
+            await receipts.validate_browser_input_dependencies(db, tenant, user, [outer])
+        assert caught.value.code == "content_source_unavailable" and caught.value.status_code == 503
+        assert caught.value.dependency == inner
+        assert scope.visiting == scope.revisiting == set()

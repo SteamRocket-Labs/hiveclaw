@@ -30,7 +30,7 @@ from app.services.plan_authorization_lease import (
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.business_task_runtime import BusinessTaskExecutionPause, TaskExecutionOutcome, TaskExecutionStatus
-from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
+from app.services.runtime_display_status import _FAILURE_MESSAGES
 
 
 _BUSINESS_TASK_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
@@ -799,12 +799,9 @@ async def execute_task(
         logger.info(f"[TaskExec] Task {task_id} persisted assistant evidence for atomic finalization")
 
     if terminal_reason_value != TerminalReason.TURN_STOP.value:
-        # R18a round 3 (ruling 3): the empty-search stop's outcome carries the
-        # plain member sentence and is not retryable — a retry would rerun the
-        # whole task, possibly including tools with effects, to relearn that
-        # nothing was found. Every other code (identical_terminal_task_read,
-        # tool_round_limit, provider errors) keeps its summary and retry.
-        empty_search_stop = str(failure_code or "") == "repeated_empty_search"
+        # These stops give the member a plain sentence without rerunning the
+        # whole task. Other failures retain their existing summary and retry.
+        member_stop = failure_code in {"repeated_empty_search", "identical_refused_result_read"}
         return TaskExecutionOutcome(
             status=(
                 TaskExecutionStatus.CANCELLED
@@ -812,13 +809,13 @@ async def execute_task(
                 else TaskExecutionStatus.FAILED
             ),
             summary=(
-                EMPTY_SEARCH_FINAL_MESSAGE
-                if empty_search_stop
+                _FAILURE_MESSAGES[failure_code]
+                if member_stop
                 else f"Business task ended without a canonical completion ({terminal_reason_value or 'unknown'})."
             ),
             error_code=str(failure_code or terminal_reason_value or "terminal_abort"),
             retryable=(
-                terminal_reason_value != TerminalReason.USER_CANCEL.value and not empty_search_stop
+                terminal_reason_value != TerminalReason.USER_CANCEL.value and not member_stop
             ),
             reflection_session_id=str(reflection_session_id),
             terminal_reason=terminal_reason_value or None,

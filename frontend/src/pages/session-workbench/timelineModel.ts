@@ -6,8 +6,10 @@ import {
   buildRunTimelineFromMessages,
   isAssistantAnswer as isRenderableAssistantAnswer,
   isDisclosureStepMessage,
+  type RunStepSnapshot,
   type RunTimelineSnapshot,
 } from '../agent-detail/chatDisclosureReducer';
+import { assistantReplyForDisplay } from '../agent-detail/CanonicalCardAssistantSupplement';
 import {
   agentChatMessageRunId as messageRunId,
   isSameSessionRunId,
@@ -1638,15 +1640,36 @@ function buildRunCell(
   );
   const runId = messageRunId(answer?.message)
     ?? visibleSourceMessages.map((entry) => messageRunId(entry.message)).find((value): value is string => Boolean(value));
+  // The final answer renders as its own message right below the block; an
+  // in-run prose copy with the same bytes must not repeat it inside the block.
+  const dedupedSteps = answer
+    ? dropStepsRepeatingAnswer(timeline.steps, answer.message)
+    : timeline.steps;
   return {
     kind: 'active_run',
     id: `run-${runIndex}-${sourceMessages[0]?.index ?? answer?.index ?? 0}`,
     ...(runId ? { runId } : {}),
     timeline: answer
-      ? { ...timeline, answerMessageId: messageId(answer.message, `assistant-${answer.index}`) }
+      ? {
+          ...timeline,
+          steps: dedupedSteps,
+          summary: buildRunAggregateSummary(dedupedSteps),
+          answerMessageId: messageId(answer.message, `assistant-${answer.index}`),
+        }
       : timeline,
     sourceMessages: visibleSourceMessages,
   };
+}
+
+/** Hide in-run prose/commentary steps whose text is exactly the final answer. */
+function dropStepsRepeatingAnswer(steps: RunStepSnapshot[], answer: AgentChatMessage): RunStepSnapshot[] {
+  const answerText = assistantReplyForDisplay(answer.content || '').trim();
+  if (!answerText) return steps;
+  return steps.filter((step) => {
+    if (step.kind !== 'prose' && step.kind !== 'commentary') return true;
+    const stepText = assistantReplyForDisplay(typeof step.details === 'string' ? step.details : '').trim();
+    return stepText !== answerText;
+  });
 }
 
 function hasOpenRunCell(cells: ThreadTimelineCell[]): boolean {

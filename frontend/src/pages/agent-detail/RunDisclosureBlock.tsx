@@ -166,6 +166,12 @@ function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
   return <IconTool size={size} stroke={2.1} />;
 }
 
+/** One plain line for raw provider text; never a wall of markdown. */
+function compactStepText(text: string, limit: number): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  return normalized.length <= limit ? normalized : `${normalized.slice(0, Math.max(0, limit - 1))}…`;
+}
+
 function commandOutcome(details: unknown): 'done' | 'failed' | 'unknown' | null {
   const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
   const execution = record.executionResult as { exit_code?: unknown; timed_out?: unknown } | undefined;
@@ -216,8 +222,14 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
       try {
         JSON.parse(result);
       } catch {
-        // Native breaks retain line layout while DOM text reads as a sentence.
-        const lines = result.trim().split(/\r?\n/);
+        // Provider dumps (page scrapes, feeds) are not member prose: long raw
+        // text reads as one short plain line (X1 run 15 step 8c); short plain
+        // results keep their line layout.
+        const trimmed = result.trim();
+        if (trimmed.length > 400) {
+          return <p className="run-detail-summary">{compactStepText(trimmed, 200)}</p>;
+        }
+        const lines = trimmed.split(/\r?\n/);
         return <p>{lines.map((line, index) => (
           <React.Fragment key={index}>
             {index > 0 && <br />}
@@ -281,9 +293,9 @@ function RunStepRow({ step, resultPreview }: { step: RunStepSnapshot; resultPrev
           )}
           <span className="run-step-title">{localizedToolTitle(step, t)}</span>
           {preview && !(expanded && step.status === 'failed') && <span className="run-step-summary">{
-            resultPreview && !preview.includes('[REDACTED_SECRET]')
-              ? <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown>
-              : <PastedCredentialText content={preview} />
+            preview.includes('[REDACTED_SECRET]')
+              ? <PastedCredentialText content={preview} />
+              : <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown>
           }</span>}
         </button>
         {expanded && <RunStepDetails step={step} />}

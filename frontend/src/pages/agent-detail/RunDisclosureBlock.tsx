@@ -393,7 +393,6 @@ function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
   if (steps.some((step) => step.status === 'failed')) return 'failed';
   if (steps.some((step) => step.status === 'blocked')) return 'blocked';
   if (steps.some((step) => step.status === 'cancelled')) return 'cancelled';
-  if (steps.some((step) => step.status === 'interrupted')) return 'interrupted';
   return 'done';
 }
 
@@ -442,17 +441,14 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
   // the group is interrupted the collapsed row must say so instead of reading
   // as a completed action.
   const allInterrupted = steps.length > 0 && steps.every((step) => step.status === 'interrupted');
+  const namedTools = Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · ');
   const label = named.length === 0
     ? t('agent.chat.disclosure.otherAction', 'Other action')
     : status === 'running'
       ? t('agent.chat.disclosure.toolRunning', 'Using {{tool}}', { tool: toolStepLabel(currentStep, t) })
       : allInterrupted
-        ? t('agent.chat.disclosure.toolInterrupted', 'Interrupted: {{tools}}', {
-          tools: Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · '),
-        })
-        : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', {
-          tools: Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · '),
-        });
+        ? t('agent.chat.disclosure.toolInterrupted', 'Interrupted: {{tools}}', { tools: namedTools })
+        : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', { tools: namedTools });
   const historyLabel = t('agent.chat.disclosure.toolHistory', 'Tool call history');
   return (
     <details data-testid="run-disclosure-tool-group" data-status={status} className="run-tool-group">

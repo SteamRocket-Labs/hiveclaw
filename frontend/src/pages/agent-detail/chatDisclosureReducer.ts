@@ -359,9 +359,17 @@ function eventTitle(message: AgentChatMessage): string {
   if (message.eventType === 'child_session' && String(message.eventReason || '').startsWith('delegation_')) {
     // The direction matters: a completed/blocked/failed receipt came BACK
     // from the colleague; only started/progress updates go the other way.
-    return message.eventReason === 'delegation_completed'
+    // The event's terminal status decides (X1-r3 ruling 6): delegation_terminal
+    // covers every non-completed terminal reason (failed/killed; skipped
+    // projects to blocked) and a contract mismatch projects to blocked —
+    // confirmed against direct_invocation_terminal_boundary_processor.py and
+    // orchestrator.py, which never emit a completed status for these. The
+    // reason literals stay as a fallback for events that carry no status.
+    const terminalStatus = String(message.eventStatus || '').toLowerCase();
+    return terminalStatus === 'completed'
       ? 'Delegation result'
-      : ['delegation_blocked', 'delegation_failed'].includes(String(message.eventReason))
+      : ['blocked', 'failed', 'cancelled', 'canceled', 'killed'].includes(terminalStatus)
+        || ['delegation_blocked', 'delegation_failed'].includes(String(message.eventReason))
         ? 'Delegation unfinished'
         : 'Delegation update';
   }

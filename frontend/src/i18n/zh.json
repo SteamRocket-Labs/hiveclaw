@@ -240,7 +240,11 @@
         "query": "查询内容",
         "url": "网址",
         "title": "标题",
-        "content": "内容"
+        "content": "内容",
+        "code": "代码",
+        "message": "消息",
+        "cc": "抄送",
+        "attachments": "附件"
       },
       "value": {
         "success": "成功",
@@ -249,8 +253,9 @@
         "oneAction": "仅本次操作",
         "destructive": "不可撤销的操作",
         "reversible": "可逆或只读",
-        "approvalUncertain": "批准后这次操作才会执行，完成后结果会回到这里。",
-        "employeePermanent": "创建后可停用，但不能删除。"
+        "approvalUncertain": "这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。",
+        "employeePermanent": "创建后可停用，但不能删除。",
+        "approvalProceeds": "批准后这次操作才会执行，完成后结果会回到这里。"
       },
       "inspectTechnicalDetails": "查看技术详情",
       "operatorOnly": "技术详情仅在运营视图中可用。",
@@ -2608,7 +2613,7 @@
         "waitingForRequester": "等待原请求人决定。",
         "applying": "正在应用决定…",
         "reconcileRequired": "需要先核对工具执行结果，才能继续此工作。",
-        "fullArguments": "完整参数"
+        "fullArguments": "查看将要执行的完整内容"
       },
       "actions": {
         "like": "喜欢",

@@ -18,6 +18,37 @@ import './ThreadItemWorkbench.css';
 
 type Detail = { label: string; value: React.ReactNode };
 
+/** Tools whose plain summary rows come from the live arguments. Each entry
+ * maps the argument keys the member must see; UNTRUNCATED keeps the full
+ * text on the card (the fold always shows the complete arguments). */
+const APPROVAL_ARGUMENT_SUMMARIES: Record<string, Array<[string, string]>> = {
+  run_command: [['command', 'command'], ['cwd', 'workspace-dir']],
+  create_employee_from_request: [['name', 'name'], ['first_task', 'first_task']],
+  send_email: [['recipient', 'to'], ['subject', 'subject'], ['body', 'body'], ['cc', 'cc'], ['attachments', 'attachments']],
+  reply_email: [['recipient', 'to'], ['subject', 'subject'], ['body', 'body'], ['cc', 'cc'], ['attachments', 'attachments']],
+  plaza_create_post: [['content', 'content']],
+  plaza_add_comment: [['content', 'content']],
+  execute_code: [['code', 'code']],
+  run_skill_tool: [['code', 'code']],
+  delegate_to_agent: [['agent', 'agent_name'], ['message', 'message']],
+  send_message_to_agent: [['agent', 'agent_name'], ['message', 'message']],
+  send_channel_message: [['channel', 'channel'], ['message', 'message']],
+  send_feishu_message: [['recipient', 'member_name'], ['message', 'message']],
+  send_web_message: [['recipient', 'recipient'], ['channel', 'channel'], ['message', 'message']],
+  write_file: [['path', 'path']],
+  fs_write: [['path', 'path']],
+  edit_file: [['path', 'path']],
+  delete_file: [['path', 'path']],
+};
+/** Argument keys whose text is never cut on the card (X1-r2 ruling 1). */
+const UNTRUNCATED_APPROVAL_FIELDS = new Set(['body', 'content']);
+/** The member must see the caution regardless of what the rows show. */
+const ALWAYS_CAUTION_TOOLS = new Set(['execute_code', 'run_skill_tool']);
+/** Tools that may trade the caution for the calm sentence once every
+ * argument is shown on the card. Sends and writes stay cautious — an
+ * outward or mutating effect is exactly what the caution names. */
+const PROCEEDS_WHEN_COVERED = new Set(['plaza_create_post']);
+
 // Argument keys that carry a member label (sessionWorkbench.threadItem.field.*).
 // Rows outside this set are internal machinery and stay off the member card;
 // their values remain available to operators through the technical inspector.
@@ -74,20 +105,41 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
     const expires = userAction?.expires_at || data.expires_at;
     const args = approvalArguments && typeof approvalArguments === 'object' && !Array.isArray(approvalArguments)
       ? approvalArguments as Record<string, unknown> : null;
-    const summary = args ? data.tool_name === 'run_command' ? { command: args.command, cwd: 'workspace/' }
-      : data.tool_name === 'create_employee_from_request' ? { name: args.name, first_task: args.first_task }
-        : ['send_email', 'reply_email'].includes(data.tool_name || '') ? { recipient: args.to || args.recipient, subject: args.subject, body: args.body }
-          : data.tool_name === 'plaza_create_post' ? { content: args.content }
-            : {} : {};
-    const proposalDetails = Object.entries(summary).flatMap(([label, value]) => {
-      const text = Array.isArray(value) ? value.join(', ') : value;
-      return typeof text === 'string' && text ? [{ label, value: text.length > 240 ? `${text.slice(0, 240)}…` : text }] : [];
-    });
-    const impact = data.destructive
+    const summaryMap = APPROVAL_ARGUMENT_SUMMARIES[data.tool_name || ''];
+    const proposalDetails: Detail[] = [];
+    const shownKeys = new Set<string>();
+    if (args && summaryMap) {
+      for (const [label, argKey] of summaryMap) {
+        const raw = argKey === 'workspace-dir' ? 'workspace/' : args[argKey];
+        const text = Array.isArray(raw) ? raw.map(String).join(', ') : raw;
+        if (typeof text !== 'string' || !text) continue;
+        shownKeys.add(argKey);
+        proposalDetails.push({
+          label,
+          value: !UNTRUNCATED_APPROVAL_FIELDS.has(label) && text.length > 240
+            ? `${text.slice(0, 240)}…`
+            : text,
+        });
+      }
+    }
+    // Every argument the request carries must appear on the card before the
+    // calm sentence may replace the caution (X1-r2 ruling 1).
+    const coversArguments = Boolean(summaryMap) && Boolean(args)
+      && Object.entries(args as Record<string, unknown>).every(([key, value]) =>
+        value === undefined || value === null || value === '' || shownKeys.has(key));
+    const caution = data.destructive
       ? t('sessionWorkbench.threadItem.value.destructive', 'Irreversible action')
       : data.tool_name === 'run_command' && isSimpleWorkspaceRead((args || data.arguments)?.command)
         ? t('sessionWorkbench.threadItem.value.reversible', 'Reversible or read-only')
-        : t('sessionWorkbench.threadItem.value.approvalUncertain', 'May modify content, read sensitive information, or affect areas outside the workspace');
+        // Commands stay cautious unless they are simple reads (base rule);
+        // the calm sentence only replaces the caution where every argument
+        // is on the card and the action is internally scoped (X1-r2 ruling 1).
+        : data.tool_name === 'run_command'
+          || ALWAYS_CAUTION_TOOLS.has(data.tool_name || '')
+          || !(PROCEEDS_WHEN_COVERED.has(data.tool_name || '') && coversArguments)
+          ? t('sessionWorkbench.threadItem.value.approvalUncertain', 'This step may read sensitive information or affect areas outside the workspace; review exactly what will run before approving.')
+          : t('sessionWorkbench.threadItem.value.approvalProceeds', 'It runs only after you approve; the outcome returns to this conversation.');
+    const impact = caution;
     // The action already leads the member sentence; a repeated 工具 row adds
     // internal vocabulary without new information (X1 run 14/15).
     return [
@@ -290,6 +342,21 @@ export function ThreadItemRenderer({
     : item.item_type === 'approval_request'
     ? approvalSentence(item, t)
     : item.user_summary || item.content;
+  // The fold is the card's only complete view of the arguments; every tool
+  // that can ask for approval keeps it (X1-r2 ruling 1).
+  const argumentsBody = item.item_type === 'approval_request' && approvalArguments != null && (
+    <>
+      <button type="button" className="btn btn-secondary" aria-expanded={showArguments} onClick={() => setShowArguments(!showArguments)}>
+        <IconChevronRight size={13} aria-hidden="true" style={{ transform: showArguments ? 'rotate(90deg)' : undefined }} />
+        {t('agent.chat.permission.fullArguments', 'See exactly what will run')}
+      </button>
+      {showArguments && <pre
+        className="thread-item-arguments"
+        aria-label={t('agent.chat.permission.actionDetails', 'Action details')}
+        style={{ maxHeight: '240px', overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
+      >{JSON.stringify(approvalArguments, null, 2)}</pre>}
+    </>
+  );
   const detailBody = details.length > 0 && (
     <dl className="thread-item-details">
       {details.map((detail) => (
@@ -342,15 +409,21 @@ export function ThreadItemRenderer({
         ) : null}
       </header>
       {visibleContent && <div className="thread-item-content">{visibleContent}</div>}
-      {detailBody && (shouldCollapse(item) ? (
+      {(detailBody || argumentsBody) && (shouldCollapse(item) ? (
         <details className="thread-item-disclosure">
           <summary>
             <IconChevronRight size={13} aria-hidden="true" />
             {t('sessionWorkbench.threadItem.details', 'Details')}
           </summary>
           {detailBody}
+          {argumentsBody}
         </details>
-      ) : detailBody)}
+      ) : (
+        <>
+          {detailBody}
+          {argumentsBody}
+        </>
+      ))}
       {item.item_type === 'approval_request' && approvalActions && (
         <div className="thread-item-actions" aria-label={t('sessionWorkbench.threadItem.approvalActions', 'Approval actions')}>
           {approvalActions}

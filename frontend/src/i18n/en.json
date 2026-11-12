@@ -240,7 +240,11 @@
         "query": "Query",
         "url": "URL",
         "title": "Title",
-        "content": "Content"
+        "content": "Content",
+        "code": "Code",
+        "message": "Message",
+        "cc": "Cc",
+        "attachments": "Attachments"
       },
       "value": {
         "success": "success",
@@ -249,8 +253,9 @@
         "oneAction": "one action",
         "destructive": "destructive",
         "reversible": "reversible or read-only",
-        "approvalUncertain": "It runs only after you approve; the outcome returns to this conversation.",
-        "employeePermanent": "The employee can be deactivated, but cannot be deleted."
+        "approvalUncertain": "This step may read sensitive information or affect areas outside the workspace; review exactly what will run before approving.",
+        "employeePermanent": "The employee can be deactivated, but cannot be deleted.",
+        "approvalProceeds": "It runs only after you approve; the outcome returns to this conversation."
       },
       "inspectTechnicalDetails": "Inspect technical details",
       "operatorOnly": "Technical details are available only in Operator View.",
@@ -2608,7 +2613,7 @@
         "waitingForRequester": "Waiting for the original requester to decide.",
         "applying": "Applying decision…",
         "reconcileRequired": "The tool outcome needs review before this work can continue.",
-        "fullArguments": "Full parameters"
+        "fullArguments": "See exactly what will run"
       },
       "actions": {
         "like": "Like",

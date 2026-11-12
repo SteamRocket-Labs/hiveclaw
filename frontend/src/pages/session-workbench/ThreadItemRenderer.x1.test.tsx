@@ -40,10 +40,14 @@ it('a plaza post approval says what is sent and where, without raw JSON or 工�
   expect(details.textContent).toContain('内容');
   expect(details.textContent).toContain('[E2E] 第十五轮测试帖，请忽略');
   expect(details.textContent).not.toContain('工具');
+  // Plaza is fully shown and internally scoped, so the calm sentence stays
+  // and the fold carries the complete arguments behind a plain label.
   expect(details.textContent).toContain('批准后这次操作才会执行，完成后结果会回到这里。');
-  expect(details.textContent).not.toContain('影响工作区以外');
   expect(container.querySelector('pre')).toBeNull();
   expect(screen.queryByRole('button', { name: '完整参数' })).toBeNull();
+  const fold = screen.getByRole('button', { name: '查看将要执行的完整内容' });
+  fireEvent.click(fold);
+  expect(container.querySelector('pre')?.textContent).toContain('[E2E] 第十五轮测试帖，请忽略');
 });
 
 it('a replayed upload keeps its file size for the card', () => {

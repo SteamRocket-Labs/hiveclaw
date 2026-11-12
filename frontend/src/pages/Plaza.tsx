@@ -386,7 +386,7 @@ function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, ma
 export default function Plaza() {
     const { t } = useTranslation();
     const { user } = useAuthStore();
-    const assistantAgentId = useAssistantAgentId(user, user?.tenant_id ?? null);
+    const assistantAgentId = useAssistantAgentId(user, user?.tenant_id ?? undefined);
     const queryClient = useQueryClient();
     const [searchParams] = useSearchParams();
     const [newPost, setNewPost] = useState('');

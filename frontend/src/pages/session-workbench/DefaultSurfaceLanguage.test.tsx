@@ -321,20 +321,20 @@ describe('default screen language (B2)', () => {
     } as unknown as ThreadItem;
     const markup = renderToStaticMarkup(<ThreadItemRenderer item={item} approvalArguments={{ command }}
       approvalActions={<button>允许本次</button>} />);
-    expect(markup).toContain('批准后这次操作才会执行，完成后结果会回到这里。');
+    expect(markup).toContain('这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。');
     expect(markup).not.toMatch(/可逆或只读|可撤销或只读操作/);
     expect(markup).toContain('允许本次');
   });
 
   it.each<[string, Record<string, unknown>, boolean, string]>([
-    ['execute_code', { language: 'bash', code: "env | grep -iE key; find / -name '*.pem'" }, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
-    ['run_skill_tool', {}, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
-    ['send_email', {}, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
-    ['write_file', { path: 'report.md' }, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
-    ['unknown_tool', {}, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
+    ['execute_code', { language: 'bash', code: "env | grep -iE key; find / -name '*.pem'" }, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
+    ['run_skill_tool', {}, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
+    ['send_email', {}, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
+    ['write_file', { path: 'report.md' }, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
+    ['unknown_tool', {}, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
     ...['ls', 'ls -la', 'wc -l report.csv', 'grep foo workspace/x.md', 'cat report.md']
       .map((command): [string, Record<string, unknown>, boolean, string] => ['run_command', { command }, false, '可逆或只读']),
-    ['run_command', {}, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
+    ['run_command', {}, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
     ['delete_file', { path: 'report.md' }, true, '不可撤销的操作'],
     ['create_employee_from_request', {}, true, '不可撤销的操作'],
   ])('localizes the impact of %s with %j', (toolName, toolArguments, destructive, expected) => {
@@ -488,6 +488,20 @@ describe('default screen language (B2)', () => {
     expect(view.container.querySelector('pre')).toBeNull();
     expect(screen.queryByRole('button', { name: '完整参数' })).toBeNull();
     cleanup();
+  });
+
+  it('shows the code and the caution on an execute_code approval card (X1-r2 ruling 1)', () => {
+    const approval = {
+      schema: 'hive.thread_item.v1', schema_version: 1, id: 'approval-exec', sequence: 1,
+      item_type: 'approval_request', item_status: 'waiting_user', audience: 'user',
+      item_data: { tool_name: 'execute_code', arguments: {}, destructive: false }, user_action: null,
+    } as unknown as ThreadItem;
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={approval}
+      approvalArguments={{ language: 'bash', code: "env | grep -iE key; find / -name '*.pem'" }} />);
+    expect(markup).toContain('代码');
+    expect(markup).toContain('env | grep -iE key; find / -name');
+    expect(markup).toContain('这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。');
+    expect(markup).not.toContain('批准后这次操作才会执行，完成后结果会回到这里。');
   });
 
   it('renders one disclosure on the approval card, not two', () => {

@@ -339,14 +339,41 @@ async def _grow(n, size, owner_sessionmaker, app_user_sessionmaker):
 
 
 async def _graph_live_checkpoints(n, owner_sessionmaker):
-    from sqlalchemy import text
-    from app.services import content_input_receipts as receipts
+    from app.models.invocation_span import InvocationSpan
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 
-    sql = next(value for value in receipts._preload_execution_sources.__code__.co_consts
-        if isinstance(value, str) and "WITH RECURSIVE sources" in value)
+    # Walk the fixture's retained rows, independently of production discovery.
+    # A dropped CTE node must not also shrink this test's statement budget.
     async with owner_sessionmaker() as db:
-        sources = list(await db.execute(text(sql), {"dependencies": json.dumps([{
-            "source_kind": "workspace_artifact", "source_id": str(n.receipts[-1].id)}]), "tenant_id": n.tenant}))
+        receipts = list(await db.scalars(select(ContentInputReceipt).where(ContentInputReceipt.tenant_id == n.tenant)))
+        tools = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.tenant_id == n.tenant)))
+        models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.tenant_id == n.tenant)))
+        spans = list(await db.scalars(select(InvocationSpan).where(InvocationSpan.tenant_id == n.tenant)))
+    children = {(row.carrier_kind, str(row.id)): list(row.dependencies_json or []) for row in receipts}
+    model_inputs = {(row.session_id, row.run_id, row.provider_request_id):
+        row.model_request_snapshot_json["input_bindings"]["dependencies"] for row in models}
+    for tool in tools:
+        dependencies = list(model_inputs[tool.session_id, tool.run_id, tool.provider_request_id])
+        for span in spans:
+            metadata = span.metadata_json or {}
+            for key in ("workspace_execution_evidence", "workspace_input_evidence", "memory_result"):
+                evidence = metadata.get(key) or {}
+                if evidence.get("invocation_id") != str(tool.id):
+                    continue
+                dependencies.extend((evidence.get("execution_inputs") or {}).get("sources", []))
+                dependencies.extend(evidence.get("sources", []))
+                if evidence.get("content_input_receipt_id"):
+                    dependencies.append({"source_kind": evidence.get("carrier_kind", "workspace_artifact"),
+                        "source_id": evidence["content_input_receipt_id"]})
+        children["session_tool_invocation", str(tool.id)] = dependencies
+    pending, sources = [("workspace_artifact", str(n.receipts[-1].id))], set()
+    while pending:
+        source = pending.pop()
+        if source in sources:
+            continue
+        sources.add(source)
+        pending.extend((item["source_kind"], item["source_id"]) for item in children.get(source, []))
+    kinds = Counter(kind for kind, _raw in sources)
     # R12a/R7b require one fresh read at each live check point. Directory
     # scope/current roster, memory before/after, and skill access/current
     # package are independent points; none can borrow another point's rows.
@@ -355,8 +382,11 @@ async def _graph_live_checkpoints(n, owner_sessionmaker):
         "explicit_memory": 2, "agent_platform_skill_file": 2, "agent_context_resource": 1,
         "agent_identity": 1, "owner_action_policy": 1, "agent_resident_memory": 1}
     # The root is already read by artifact ingress, accounted for in C.
-    return (sum(points[kind] for kind, _ in sources) - 1
-        + sum(kind == "agent_context_resource" and raw.split("\n", 1)[-1] == "channels" for kind, raw in sources))
+    print("R15E_FIXTURE_SOURCES", json.dumps(dict(kinds)), flush=True)
+    # Channels retain base's two independent configuration queries, in
+    # addition to the context reader check. They occur once per dependency.
+    return (sum(points[kind] * count for kind, count in kinds.items()) - 1
+        + 2 * sum(kind == "agent_context_resource" and raw.split("\n", 1)[-1] == "channels" for kind, raw in sources))
 
 
 async def _history(n, count, app_user_sessionmaker):

@@ -947,7 +947,13 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # R15i: the session summary runs as a detached task after delivery (module source of
 # web_terminal_boundary_processor). R16a is frontend only. Still 122 callsites, no new
 # bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "4346954286de2981f95c5edd511bd7442dda1ee7f86c0cfb35c3af40a1d28276"
+# Land22 (R17a, R17b, R17c) versus land21: still 794 entries. R17b takes the session
+# advisory before row locks on the result-resume path (project_reply in remote_a2a_chat,
+# _record in remote_a2a_tasks, commit_sealed_model_round and recover_sealed_model_rounds_once
+# in session_model_round, and their module sources; prepare_model_request reuses that
+# advisory for its prepared event); R17a changes the module source of web_chat_runtime.
+# R17c touches no bypass-reachable function. Still 122 callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "547c16fa31ad578c3d2011ea6ce9750de6441489522ab236e43f31558bd00f13"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

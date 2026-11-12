@@ -12,6 +12,7 @@ from typing import Any, Iterable
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import (
@@ -702,19 +703,26 @@ async def prepare_model_request(
         run_id=run_id,
         round_id=round_id,
     )
-    carries = list(
-        (
-            await db.execute(
-                select(SessionCarryForward).where(
+    # Reuse this transaction's advisory for the prepared event as well. Read
+    # its Session alongside the carries without adding a query or a row lock.
+    carry_rows = (
+        await db.execute(
+            select(ChatSession, SessionCarryForward)
+            .outerjoin(
+                SessionCarryForward,
+                and_(
                     SessionCarryForward.tenant_id == tenant_id,
                     SessionCarryForward.session_id == session_id,
                     SessionCarryForward.target_turn_id == turn_id,
                     SessionCarryForward.target_round_id == round_id,
                     SessionCarryForward.state == "round_bound",
-                )
+                ),
             )
-        ).scalars()
-    )
+            .where(ChatSession.id == session_id, ChatSession.tenant_id == tenant_id)
+        )
+    ).all()
+    locked_session = carry_rows[0][0] if carry_rows else None
+    carries = [carry for _, carry in carry_rows if carry is not None]
     canonical_wire_request = _canonical(
         wire_request
         or {
@@ -985,6 +993,7 @@ async def prepare_model_request(
             tenant_id=tenant_id,
             agent_id=agent_id,
             session_id=session_id,
+            locked_session=locked_session,
             drafts=[
                 SessionEventDraft(
                     item_id=result.id,

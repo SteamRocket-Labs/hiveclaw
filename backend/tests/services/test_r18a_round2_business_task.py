@@ -160,7 +160,9 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
         assert outcome.summary == EMPTY_SEARCH_FINAL_MESSAGE
         assert outcome.retryable is False
     elif running_read:
-        assert outcome.summary == "同事还在处理，这次我先停下了。等同事完成后，你可以让我继续整理。"
+        # The real business return test observes a new web turn in user_task;
+        # the original Task remains failed while the result returns there.
+        assert outcome.summary == "同事还在处理，这次我先停下了。同事完成后，结果会回到这项任务的对话里。"
         assert outcome.retryable is False
     else:
         # Every other code keeps its English summary and retry (green on the

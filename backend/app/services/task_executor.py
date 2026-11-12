@@ -33,6 +33,10 @@ from app.services.business_task_runtime import BusinessTaskExecutionPause, TaskE
 from app.services.runtime_display_status import BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE, EMPTY_SEARCH_FINAL_MESSAGE
 
 
+_PLAIN_BUSINESS_STOPS = {
+    "repeated_empty_search": EMPTY_SEARCH_FINAL_MESSAGE,
+    "identical_running_task_read": BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE,
+}
 _BUSINESS_TASK_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 
 
@@ -801,7 +805,7 @@ async def execute_task(
     if terminal_reason_value != TerminalReason.TURN_STOP.value:
         # These guard stops have plain member copy; retrying the whole business
         # task would repeat work. Other codes keep their summary and retry.
-        plain_guard_stop = str(failure_code or "") in {"repeated_empty_search", "identical_running_task_read"}
+        plain = _PLAIN_BUSINESS_STOPS.get(str(failure_code or ""))
         return TaskExecutionOutcome(
             status=(
                 TaskExecutionStatus.CANCELLED
@@ -809,15 +813,13 @@ async def execute_task(
                 else TaskExecutionStatus.FAILED
             ),
             summary=(
-                BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE
-                if failure_code == "identical_running_task_read"
-                else EMPTY_SEARCH_FINAL_MESSAGE
-                if plain_guard_stop
+                plain
+                if plain is not None
                 else f"Business task ended without a canonical completion ({terminal_reason_value or 'unknown'})."
             ),
             error_code=str(failure_code or terminal_reason_value or "terminal_abort"),
             retryable=(
-                terminal_reason_value != TerminalReason.USER_CANCEL.value and not plain_guard_stop
+                terminal_reason_value != TerminalReason.USER_CANCEL.value and plain is None
             ),
             reflection_session_id=str(reflection_session_id),
             terminal_reason=terminal_reason_value or None,

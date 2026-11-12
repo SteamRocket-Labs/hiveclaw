@@ -411,13 +411,15 @@ async def test_tool_search_text_and_schema_agree_on_mcp(monkeypatch, tmp_path):
     agent_id = uuid4()
 
     async def fake_enumerator(_agent_id, _query):
-        return ["mcp_github_issue_search"]
+        # G4b r2: the single source now returns (name, connection label) pairs;
+        # a faked entry carries no label, like a non-MCP tool.
+        return [("mcp_github_issue_search", "")]
 
     # Step 3 unified the two surfaces: both route through
     # discoverable_tool_names_for_query, which reads the MCP enumerator from the
     # agent_tools module global at call time. Patching the single source proves the
     # two surfaces can no longer diverge — one patch point covers both.
-    monkeypatch.setattr(agent_tools, "list_agent_mcp_deferred_tools", fake_enumerator)
+    monkeypatch.setattr(agent_tools, "list_agent_mcp_deferred_tools_with_labels", fake_enumerator)
 
     text = await _tool_search(tmp_path, "github", agent_id=agent_id)
     schema_names = await invoker._deferred_tool_names_for_query(agent_id, "github")

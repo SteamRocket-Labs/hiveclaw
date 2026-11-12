@@ -22,9 +22,11 @@ async def test_tool_search_returns_structured_discovery_sections(monkeypatch, tm
     )
 
     async def fake_discoverable_tool_names(_agent_id, _query):
-        return ["firecrawl_fetch", "mcp_github_issue_search"]
+        # G4b r2: _tool_search consumes the pairs variant (name, connection
+        # label) so the search text can carry the connection host.
+        return [("firecrawl_fetch", ""), ("mcp_github_issue_search", "")]
 
-    monkeypatch.setattr(agent_tools, "discoverable_tool_names_for_query", fake_discoverable_tool_names)
+    monkeypatch.setattr(agent_tools, "discoverable_deferred_tools_for_query", fake_discoverable_tool_names)
 
     text = await _tool_search(tmp_path, "web", agent_id=uuid4())
 

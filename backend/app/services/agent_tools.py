@@ -666,7 +666,9 @@ async def discoverable_deferred_tools_for_query(agent_id: uuid.UUID, query: str)
             requested.append((tool_name, ""))
             seen.add(tool_name)
     mcp_query = select_target or query
-    for mcp_name, connection_label in await enumerate_agent_mcp_deferred_tools(agent_id, mcp_query):
+    # Module-global read at call time: one patch point covers the text and the
+    # schema path (Step 3 / 🦴#2), now with the connection label attached.
+    for mcp_name, connection_label in await list_agent_mcp_deferred_tools_with_labels(agent_id, mcp_query):
         if mcp_name in CORE_TOOL_NAMES or mcp_name in seen:
             continue
         requested.append((mcp_name, connection_label))
@@ -808,12 +810,12 @@ async def gather_deferred_tool_candidates_for_agent(
     return candidates
 
 
-async def enumerate_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[tuple[str, str]]:
-    """Same governed enumeration as :func:`list_agent_mcp_deferred_tools`, but
-    yields ``(tool_name, connection_label)`` where the label is the validated
-    MCP URL's host (``_safe_endpoint_host``) — trusted-only text, never the
-    stored ``mcp_server_name`` (G4b r2). One enumeration serves names, search
-    text and labels."""
+async def list_agent_mcp_deferred_tools_with_labels(agent_id: uuid.UUID, query: str = "") -> list[tuple[str, str]]:
+    """The single governed MCP enumeration (G4b r2): yields
+    ``(tool_name, connection_label)`` where the label is the validated MCP
+    URL's host (``_safe_endpoint_host``) — trusted-only text, never the stored
+    ``mcp_server_name``. One enumeration serves names, schema loading and the
+    tool_search suffix; patch THIS seam to fake the pipeline end to end."""
 
     from app.models.tool import AgentTool, Tool
     from app.services.mcp_metadata_trust import _safe_endpoint_host
@@ -885,7 +887,7 @@ async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") ->
     that, with the matching tightening in :func:`get_agent_tools_for_llm`, closes
     the discovery force-enable escalation (§J #1).
     """
-    return [name for name, _connection_label in await enumerate_agent_mcp_deferred_tools(agent_id, query)]
+    return [name for name, _connection_label in await list_agent_mcp_deferred_tools_with_labels(agent_id, query)]
 
 
 async def get_agent_tools_for_llm(

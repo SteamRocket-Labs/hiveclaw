@@ -60,6 +60,7 @@ export function toolStepLabel(toolName: string | null, t: TFunction, sentinel?: 
   if (known) return t(`agent.chat.disclosure.toolTitle.${known[0]}`, known[1]);
   const action = approvalActionFor(toolName);
   if (action) return t(action.key, action.fallback);
+  if (toolName?.startsWith('mcp_')) return t('agent.chat.disclosure.toolTitle.useConnection', 'Use a connected app');
   const title = toolName ? titleForToolMessage({ toolName })
     : sentinel && Object.prototype.hasOwnProperty.call(TOOL_TITLE_KEY, sentinel) ? sentinel : titleForToolMessage({ toolName: sentinel });
   return t(TOOL_TITLE_KEY[title] ?? TOOL_TITLE_KEY['Tool call'], title === 'Tool call' ? 'Tool' : title);

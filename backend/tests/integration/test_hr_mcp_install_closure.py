@@ -14,7 +14,7 @@ from tests.integration.test_m1g_originated_creation_postgres import (  # noqa: F
     _arguments, _client, direct_origin, origin,
 )
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = pytest.mark.usefixtures("migrated_pg_url", "public_mcp_dns")
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ async def test_hr_installs_and_reuses_reviewable_mcp_for_only_requested_employee
     monkeypatch.setattr("app.tools.handlers.hr._resolve_employee_refinement_model", no_model)
     monkeypatch.setattr("app.tools.handlers.hr._refine_soul_inputs", refinement)
     monkeypatch.setattr(agent_tools, "_agent_has_feishu_cli_access", no_external_office_probe)
-    endpoint = "http://127.0.0.1:55114/mcp/" + context.agent_id.hex
+    endpoint = "http://public-mcp.example:55114/mcp/" + context.agent_id.hex
     requests = []
 
     def respond(request):

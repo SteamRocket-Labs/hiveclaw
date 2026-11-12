@@ -13,6 +13,8 @@ from fastapi import FastAPI
 import httpx
 import pytest
 
+pytestmark = pytest.mark.usefixtures("public_mcp_dns")
+
 
 @pytest.mark.parametrize("entry", ["streamable", "sse_connect", "sse_request"])
 async def test_mcp_redirects_scope_authorization_to_configured_origin(monkeypatch, entry):
@@ -37,7 +39,7 @@ async def test_mcp_redirects_scope_authorization_to_configured_origin(monkeypatc
             return httpx.Response(200, json={"result": {"tools": []}})
 
         monkeypatch.setattr("app.services.mcp_client.httpx.AsyncClient",
-            lambda **kwargs: client_type(transport=httpx.MockTransport(provider), **kwargs))
+            lambda **kwargs: client_type(**{**kwargs, "transport": httpx.MockTransport(provider)}))
         client = MCPClient(server_url, api_key="D9sRound2SyntheticBearer")
         if entry == "streamable":
             await client._streamable_request("tools/list")
@@ -158,7 +160,7 @@ async def test_mcp_origin_error_has_no_local_bridge_hint(monkeypatch):
 
     client_type = httpx.AsyncClient
     monkeypatch.setattr("app.services.mcp_client.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=httpx.MockTransport(provider), **kwargs))
+        lambda **kwargs: client_type(**{**kwargs, "transport": httpx.MockTransport(provider)}))
     with pytest.raises(ValueError) as failure:
         await MCPClient("https://mcp.example/sse")._sse_connect()
     rendered = _render_mcp_authz_error("read", failure.value)

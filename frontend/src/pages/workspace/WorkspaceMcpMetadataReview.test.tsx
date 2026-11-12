@@ -52,7 +52,7 @@ describe('McpMetadataReviewPanel', () => {
 
     expect(html).toContain('Metadata review');
     expect(html).toContain('Runtime blocked');
-    expect(html).toContain('External MCP search operation.');
+    expect(html).toContain('Use the reviewed external tool: Search');
     expect(html).toContain('Raw remote evidence');
     expect(html).toContain('&lt;script&gt;window.pwned=true&lt;/script&gt;');
     expect(html).not.toContain('<script>window.pwned=true</script>');

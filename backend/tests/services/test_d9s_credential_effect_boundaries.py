@@ -7,6 +7,8 @@ from fastapi import FastAPI
 import httpx
 import pytest
 
+pytestmark = pytest.mark.usefixtures("public_mcp_dns")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["success", "error", "exception"])
@@ -75,7 +77,7 @@ async def test_mcp_rejects_cross_origin_sse_endpoint_before_post(monkeypatch, en
 
     client_type = httpx.AsyncClient
     monkeypatch.setattr("app.services.mcp_client.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=httpx.MockTransport(provider), **kwargs))
+        lambda **kwargs: client_type(**{**kwargs, "transport": httpx.MockTransport(provider)}))
     client = MCPClient("https://mcp.example/sse", api_key="D9sSyntheticMcpBearer")
     with pytest.raises(Exception, match="连接地址与配置不一致") as failure:
         await (client.list_tools() if entry == "request" else client._sse_connect())
@@ -101,7 +103,7 @@ async def test_mcp_same_origin_endpoint_still_executes(monkeypatch, endpoint):
 
     client_type = httpx.AsyncClient
     monkeypatch.setattr("app.services.mcp_client.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=httpx.MockTransport(provider), **kwargs))
+        lambda **kwargs: client_type(**{**kwargs, "transport": httpx.MockTransport(provider)}))
     client = MCPClient("https://mcp.example/sse", api_key="D9sSyntheticMcpBearer")
     client._transport = "sse"
     assert (await client.list_tools())[0]["name"] == "read"

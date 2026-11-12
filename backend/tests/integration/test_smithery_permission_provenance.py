@@ -13,7 +13,7 @@ from app.database import pin_rls_tenant_context
 from tests.integration.test_m1g6_role_configuration_postgres import _app
 from tests.integration.test_m1g7_routine_settings_postgres import scoped_runtime_factories  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = pytest.mark.usefixtures("migrated_pg_url", "public_mcp_dns")
 
 
 @pytest.mark.parametrize("source,change", [
@@ -83,8 +83,7 @@ async def test_approved_smithery_reauthorization_rechecks_exact_permission_evide
         return {"namespace": "synthetic", "connection_id": "ledger"}
 
     original_client = httpx.AsyncClient
-    monkeypatch.setattr(discovery.httpx, "AsyncClient", lambda **kwargs: original_client(
-        transport=httpx.MockTransport(respond), **kwargs))
+    monkeypatch.setattr(discovery.httpx, "AsyncClient", lambda **kwargs: original_client(**{**kwargs, "transport": httpx.MockTransport(respond)}))
     monkeypatch.setattr(discovery, "SMITHERY_API_BASE", "http://127.0.0.1:55103")
     monkeypatch.setattr(discovery, "_ensure_smithery_connection", existing_connection)
     initial = await discovery.import_mcp_from_smithery(registry_id, agent_id,

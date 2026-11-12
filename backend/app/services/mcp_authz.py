@@ -35,6 +35,10 @@ class MCPOriginMismatchError(MCPAuthzError):
     """An announced MCP endpoint differs from the configured credential origin."""
 
 
+class MCPPublicAddressError(MCPAuthzError):
+    """An MCP address is invalid or cannot be reached through public egress."""
+
+
 class MCPStoredCredentialRequired(MCPAuthzError):
     """A stored MCP credential has no current scoped assignment."""
 
@@ -50,7 +54,7 @@ async def validate_mcp_public_url(server_url: str):
     try:
         return await validate_public_http_url(server_url)
     except GovernedEgressError as exc:
-        raise MCPAuthzError(
+        raise MCPPublicAddressError(
             "连接失败：请使用可访问的公开的 HTTP 或 HTTPS 地址；不支持本机、内网、链路本地、共享地址或云元数据地址。"
         ) from exc
 

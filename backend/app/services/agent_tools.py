@@ -894,6 +894,7 @@ async def get_agent_tools_for_llm(
     if requested_set:
         requested_set |= CORE_TOOL_NAMES
 
+    capability_group_policies = None
     try:
         from app.models.tool import Tool, AgentTool
         from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
@@ -1020,6 +1021,11 @@ async def get_agent_tools_for_llm(
     # Fallback to the collected tool surface when DB is unavailable.
     # Route through ToolRegistry to ensure schemas are sanitized (Gemini compatibility).
     fallback = get_combined_openai_tools()
+    # Provider credentials do not authorize MCP installation. Preserve the
+    # existing L2 decision when the database-backed schema load falls back.
+    fallback = [tool for tool in fallback if tool["function"]["name"] not in {"discover_resources", "import_mcp_server"}
+        or (capability_group_policies is not None
+            and is_capability_group_enabled(capability_group_policies, "mcp_admin_pack"))]
     allowed_feishu_names = {
         tool["function"]["name"]
         for tool in _filter_feishu_tools_for_access(

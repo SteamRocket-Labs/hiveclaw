@@ -9,6 +9,8 @@ from pathlib import Path
 from threading import Thread
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("public_mcp_dns")
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event, select
@@ -292,6 +294,7 @@ async def test_r2_nit_installed_httpx_strips_authorization_on_cross_host_redirec
     else:
         from app.services import mcp_client
 
+        endpoint = endpoint.replace("127.0.0.1", "public-mcp.example")
         monkeypatch.setattr(mcp_client, "assert_mcp_cloud_transport_allowed", lambda _url: None)
         client = mcp_client.MCPClient(endpoint + "/redirect", api_key="synthetic-company")
         assert "content" in (await client._streamable_request("tools/call"))["result"]
@@ -416,7 +419,8 @@ def provider_endpoint():
             requests.append({"path": self.path, "authorization": self.headers.get("Authorization")})
             if self.path == "/redirect":
                 self.send_response(307)
-                self.send_header("Location", f"http://localhost:{self.server.server_port}/landing")
+                host = "other-mcp.example" if self.headers.get("Host", "").startswith("public-mcp.example") else "localhost"
+                self.send_header("Location", f"http://{host}:{self.server.server_port}/landing")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
@@ -453,6 +457,8 @@ async def test_s3_real_handlers_bind_inherited_keys_to_their_endpoint(
     from app.services.agent_tool_domains import web_mcp
 
     endpoint, requests = provider_endpoint
+    if name == "exa_fetch":
+        endpoint = endpoint.replace("127.0.0.1", "public-mcp.example")
     async with owner_sessionmaker() as db:
         state = await seed_handover(db)
         tool = await builtin(db, name)

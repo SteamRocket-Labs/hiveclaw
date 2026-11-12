@@ -49,6 +49,47 @@ def pytest_addoption(parser):
     parser.addoption("--failure-receipts", type=Path, help="Append failed test reports as JSON lines.")
 
 
+@pytest.fixture
+def public_mcp_dns(monkeypatch):
+    """Public DNS for synthetic MCP peers; real fixture sockets stay loopback."""
+    import httpcore
+    from app.services import governed_egress
+
+    async def resolve(_host, _port):
+        return ("93.184.216.34",)
+    monkeypatch.setattr(governed_egress, "resolve_public_addresses", resolve)
+
+    class FixtureStream(httpcore.AsyncNetworkStream):
+        def __init__(self, stream):
+            self.stream = stream
+        async def read(self, max_bytes, timeout=None):
+            return await self.stream.read(max_bytes, timeout)
+        async def write(self, buffer, timeout=None):
+            return await self.stream.write(buffer, timeout)
+        async def aclose(self):
+            return await self.stream.aclose()
+        async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+            return FixtureStream(await self.stream.start_tls(ssl_context, server_hostname, timeout))
+        def get_extra_info(self, info):
+            return ("93.184.216.34", 0) if info == "server_addr" else self.stream.get_extra_info(info)
+
+    class FixtureBackend(httpcore.AsyncNetworkBackend):
+        def __init__(self):
+            self.backend = httpcore.AnyIOBackend()
+        async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            assert host == "93.184.216.34", "Only the public fixture pin may reach the local stub"
+            return FixtureStream(await self.backend.connect_tcp("127.0.0.1", port, timeout, local_address, socket_options))
+        async def connect_unix_socket(self, *args, **kwargs):
+            raise AssertionError("MCP fixture may not use Unix sockets")
+        async def sleep(self, seconds):
+            await self.backend.sleep(seconds)
+
+    original = governed_egress.PinnedPublicNetworkBackend.__init__
+    def initialize(self, backend=None, allowed_networks=()):
+        original(self, backend=backend or FixtureBackend(), allowed_networks=allowed_networks)
+    monkeypatch.setattr(governed_egress.PinnedPublicNetworkBackend, "__init__", initialize)
+
+
 def pytest_configure(config):
     """Pin every test process to a disposable filesystem authority root.
 

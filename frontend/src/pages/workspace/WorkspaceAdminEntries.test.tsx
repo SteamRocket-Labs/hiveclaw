@@ -14,4 +14,6 @@ it('links company connections to the existing company knowledge upload and impor
   expect(markup).toContain('href="/enterprise/knowledge"');
   expect(markup).toContain('Company knowledge');
   expect(markup).toContain('Upload and import');
+  expect(markup).toContain('href="/enterprise/extensions"');
+  expect(markup).toContain('Connect applications and review tools');
 });

@@ -116,7 +116,9 @@ export function McpMetadataReviewPanel({
       ) : (
         <div className="ws-mcp-review-list">
           {tools.map((tool) => {
-            const draft = drafts[tool.tool_id] ?? tool.canonical_description;
+            const draft = drafts[tool.tool_id] ?? (tool.trust_status === 'pending_review'
+              ? `${t('enterprise.tools.mcpReviewDefaultDescription', 'Use the reviewed external tool')}: ${tool.display_name}`
+              : tool.canonical_description);
             const busy = busyTool === tool.tool_id;
             return (
               <article key={tool.tool_id} className="ws-mcp-review-card">
@@ -132,14 +134,14 @@ export function McpMetadataReviewPanel({
                   </span>
                 </div>
                 <div className="ws-mcp-review-meta">
-                  <span>{tool.trust_status}</span>
-                  <span>{tool.trust_tier}</span>
+                  <span>{t(`enterprise.tools.mcpTrustStatus.${tool.trust_status}`, tool.trust_status)}</span>
+                  <span>{t(`enterprise.tools.mcpTrustTier.${tool.trust_tier}`, tool.trust_tier)}</span>
                   <code title={tool.metadata_fingerprint}>{tool.metadata_fingerprint.slice(0, 12)}</code>
                 </div>
                 <ActivationFacts tool={tool} />
                 {tool.risk_flags.length > 0 ? (
                   <div className="ws-mcp-risk-flags">
-                    {tool.risk_flags.map((flag) => <span key={flag}>{flag}</span>)}
+                    {tool.risk_flags.map((flag) => <span key={flag}>{t(`enterprise.tools.mcpRisk.${flag}`, flag)}</span>)}
                   </div>
                 ) : null}
                 <label className="ws-mcp-canonical-field">
@@ -148,6 +150,7 @@ export function McpMetadataReviewPanel({
                     rows={3}
                     maxLength={500}
                     value={draft}
+                    placeholder={t('enterprise.tools.mcpDescriptionPlaceholder', 'Describe what employees may use this tool for.')}
                     onChange={(event) => setDrafts((current) => ({
                       ...current,
                       [tool.tool_id]: event.target.value,

@@ -755,6 +755,13 @@ async def create_tool(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    if data.type == "mcp":
+        from app.services.mcp_authz import validate_mcp_public_url
+
+        try:
+            await validate_mcp_public_url(data.mcp_server_url or "")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     tool = Tool(
         id=uuid.uuid4(),
         name=data.name,
@@ -773,6 +780,19 @@ async def create_tool(
         is_default=data.is_default,
         tenant_id=current_user.tenant_id,
     )
+    if tool.type == "mcp":
+        from app.services.mcp_metadata_trust import apply_mcp_metadata_candidate, prepare_mcp_metadata_candidate
+
+        try:
+            candidate = prepare_mcp_metadata_candidate(
+                server_name=tool.mcp_server_name or "MCP Server", server_url=tool.mcp_server_url,
+                tool_name=tool.mcp_tool_name or tool.name, raw_description=data.description,
+                raw_schema=data.parameters_schema or {}, configuration=tool.config,
+                permissions=(tool.config or {}).get("permissions"),
+            )
+            apply_mcp_metadata_candidate(tool, candidate)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.add(tool)
     await db.flush()
 
@@ -785,15 +805,20 @@ async def create_tool(
             agent_id=agent_id,
             tool_id=tool.id,
             tenant_id=current_user.tenant_id,
-            enabled=data.enabled,
+            enabled=data.enabled if tool.type != "mcp" else False,
             # Company MCP configuration stays on Tool; copying it would turn
             # defaults into employee overrides that survive company rotation.
             config={} if tool.type == "mcp" else data.config or {},
             source="system",
             merge_config=False,
+            quarantine_for_mcp_trust=tool.type == "mcp" and data.enabled,
         )
 
     await db.commit()
+    if tool.type == "mcp":
+        from app.services.mcp_server_service import register_imported_server
+
+        await register_imported_server(db, current_user.tenant_id, tool.mcp_server_name, tool.mcp_server_url)
     return _serialize_tool(tool)
 
 

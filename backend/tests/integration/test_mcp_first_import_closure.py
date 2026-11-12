@@ -56,7 +56,10 @@ async def test_first_import_retains_reviewed_employee_capability_and_exact_serve
     async with app_user_sessionmaker() as db:
         assert (await db.execute(text(
             "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user"))).one() == (False, False)
-    endpoint = "http://127.0.0.1:55104/mcp/" + agent_id.hex
+    endpoint = "http://public-mcp.example:55104/mcp/" + agent_id.hex
+    async def public_dns(_host, _port):
+        return ("93.184.216.34",)
+    monkeypatch.setattr("app.services.governed_egress.resolve_public_addresses", public_dns)
     registry_id, display_name = "synthetic/ledger", "Fresh Ledger"
     remote = {"tools": [{"name": "lookup", "description": "Read a ledger entry.",
         "inputSchema": {"type": "object", "properties": {"item": {"type": "string"}}},
@@ -87,8 +90,10 @@ async def test_first_import_retains_reviewed_employee_capability_and_exact_serve
         return {"namespace": "synthetic", "connection_id": "fresh-ledger"}
 
     original_client = httpx.AsyncClient
-    monkeypatch.setattr(discovery.httpx, "AsyncClient", lambda **kwargs: original_client(
-        transport=httpx.MockTransport(respond), **kwargs))
+    def transport_client(**kwargs):
+        kwargs["transport"] = httpx.MockTransport(respond)
+        return original_client(**kwargs)
+    monkeypatch.setattr(discovery.httpx, "AsyncClient", transport_client)
     monkeypatch.setattr(discovery, "SMITHERY_API_BASE", "http://127.0.0.1:55105")
     monkeypatch.setattr(discovery, "_ensure_smithery_connection", existing_connection)
     arguments = ({"server_id": display_name, "config": {"mcp_url": endpoint}} if origin == "direct" else {
@@ -130,6 +135,8 @@ async def test_first_import_retains_reviewed_employee_capability_and_exact_serve
         (tmp_path / "fresh-import-after-review.json").write_text(json.dumps({"origin": origin,
             "servers": after.json(), "available": [row["function"]["name"] for row in available]}, indent=2))
         assert tool_name in {row["function"]["name"] for row in available}, (snapshot, after.text)
+        peer_tools = await agent_tools.get_agent_tools_for_llm(peer_id, requested_names=[tool_name])
+        assert tool_name in {row["function"]["name"] for row in peer_tools}
         assert after.json()[0]["enabled"] is True
         remote["tools"][0]["permissions"] = ["ledger:read", "ledger:write"]
         await import_mcp_server(agent_id, {**arguments, "reauthorize": True, "config": dict(arguments["config"])})

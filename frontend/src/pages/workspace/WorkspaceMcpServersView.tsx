@@ -93,12 +93,13 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
         ...(decision === 'approve' ? { canonical_description: canonicalDescription.trim() } : {}),
       });
       setMetadataTools(await extensionsApi.listEnterpriseMcpServerTools(openServerId));
+      await load();
     } catch (error) {
       setMetadataError(error instanceof Error ? error.message : 'Failed to review MCP metadata.');
     } finally {
       setBusyTool(null);
     }
-  }, [openServerId]);
+  }, [load, openServerId]);
 
   return (
     <div>
@@ -120,7 +121,7 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
                     <div className="ws-tools-row-6">
                       <span className="ws-tools-title-13">{server.name}</span>
                       <span className="ws-tools-tag ws-tools-tag-mcp">MCP</span>
-                      <span className="ws-tools-tiny-muted">{server.transport}</span>
+                      <span className="ws-tools-tiny-muted">{t('enterprise.tools.mcpHttpConnection', 'HTTP connection')}</span>
                     </div>
                     <div className="ws-tools-meta-row">
                       <span className="ws-tools-inline-4">

@@ -32,8 +32,11 @@ def _available_mcp_tools(tenant_id):
 
 
 def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
-    from app.services.mcp_authz import MCPOriginMismatchError, MCPStoredCredentialRequired
+    from app.services.mcp_authz import MCPOriginMismatchError, MCPPublicAddressError, MCPStoredCredentialRequired
 
+    if isinstance(exc, MCPPublicAddressError):
+        return render_tool_error(tool_name=tool_name, error_class="bad_arguments", message=str(exc),
+            provider="mcp", retryable=False, actionable_hint="请提供可访问的公开 HTTP 或 HTTPS 连接地址。")
     if isinstance(exc, MCPStoredCredentialRequired):
         return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
             provider="mcp", retryable=False,

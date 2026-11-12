@@ -520,22 +520,30 @@ async def creation_receipt_notification(db, draft, task, *, legacy_summary: bool
         return
     first = (draft.provisioning_json or {}).get("first_task") or {}
     first_status = first.get("status", "not_requested")
+    # The verifiable bytes must not read a mutable display name: the name is
+    # pinned by the draft's blueprint hash (X1-r2 ruling 5) and is quoted the
+    # way identity prompts do, so a quote or newline inside it cannot split
+    # the sentence (X1-r3 ruling 10 note 3).
+    blueprint = draft.blueprint_json if isinstance(draft.blueprint_json, dict) else {}
+    employee_name = str(blueprint.get("name") or "").strip() or None
     if legacy_summary:
         summary = (f"Employee creation: {draft.status}; employee_id={draft.created_agent_id or 'none'}; "
                    f"first_task={first_status}; first_task_error={first.get('error', 'none')}; "
                    f"creation_error={draft.failure_code or 'none'}; draft_id={draft.id}. "
                    "Creation readiness is not evidence of task completion. Continue this original work from these facts.")
     else:
-        # The verifiable bytes must not read a mutable display name: the name
-        # is pinned by the draft's blueprint hash (X1-r2 ruling 5).
-        blueprint = draft.blueprint_json if isinstance(draft.blueprint_json, dict) else {}
-        employee_name = str(blueprint.get("name") or "").strip() or None
+        collapsed_name = " ".join(employee_name.split()) if employee_name else None
+        quoted_name = json.dumps(collapsed_name, ensure_ascii=False) if collapsed_name else None
         route = f"/agents/{draft.created_agent_id}" if draft.created_agent_id else None
-        if employee_name and route:
-            head = (f'Employee creation: {draft.status}. The new employee "{employee_name}" is ready; '
+        if draft.status == "completed" and quoted_name and route:
+            head = (f"Employee creation: {draft.status}. The new employee {quoted_name} is ready; "
                     f"link it at {route}. ")
-        elif draft.created_agent_id:
+        elif draft.status == "completed" and draft.created_agent_id:
             head = f"Employee creation: {draft.status}. The new employee was created. "
+        elif draft.created_agent_id:
+            # An employee row whose draft did not complete never reads as
+            # "ready" (X1-r3 ruling 2); one true sentence, no link.
+            head = f"Employee creation: {draft.status}. The employee record exists but setup did not finish. "
         else:
             head = f"Employee creation: {draft.status}. No employee was created. "
         tail = _FIRST_TASK_SENTENCES.get(first_status, "No first task was requested.")
@@ -551,10 +559,13 @@ async def creation_receipt_notification(db, draft, task, *, legacy_summary: bool
                      "link target only and is never quoted; never mention any internal id. "
                    + "Internal: " + "; ".join(internal) + ".")
     if draft.created_agent_id and first.get("status") in {"blocked", "unknown"}:
-        target = await db.get(Agent, draft.created_agent_id)
+        # The recovery request replays the hash-pinned blueprint name too: a
+        # later rename must not break re-verification of these bytes; replay
+        # is then refused by the agent_name == target.name resume check
+        # (X1-r3 ruling 3).
         summary += "\nRecorded first-task recovery request: " + json.dumps({
             "tool_name": "delegate_to_agent", "arguments": {
-                "first_task_draft_id": str(draft.id), "agent_name": target.name if target else None,
+                "first_task_draft_id": str(draft.id), "agent_name": employee_name,
                 "target_agent_id": str(draft.created_agent_id), "message": evidence["first_task"],
             },
         }, ensure_ascii=False)

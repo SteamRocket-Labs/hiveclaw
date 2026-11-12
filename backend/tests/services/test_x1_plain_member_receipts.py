@@ -36,13 +36,14 @@ class _StubDB:
 class _StubDraft:
     """Minimal HrCreationDraft shape for the pure summary builder."""
 
-    def __init__(self, *, created_agent_name="陈小满", first_status="dispatched", failure_code=None, first_error=None):
+    def __init__(self, *, created_agent_name="陈小满", first_status="dispatched", failure_code=None,
+                 first_error=None, status="completed"):
         self.id = uuid.uuid4()
         self.tenant_id = uuid.uuid4()
         self.hr_agent_id = uuid.uuid4()
         self.session_id = uuid.uuid4()
         self.requested_by_user_id = uuid.uuid4()
-        self.status = "completed"
+        self.status = status
         self.blueprint_hash = "hash"
         self.blueprint_json = {"name": "陈小满"}
         self.created_agent_id = uuid.uuid4() if created_agent_name is not None else None
@@ -99,6 +100,15 @@ async def test_creation_receipt_keeps_error_codes_when_they_are_real():
     notification = await _creation_receipt_notification(_StubDB(_StubAgent("陈小满")), draft, task)
     tail = notification.summary.split("Internal:", 1)[1]
     assert "creation_error=model_denied" in tail and "first_task_error=approval_required" in tail
+
+
+async def test_failed_creation_with_employee_row_says_setup_did_not_finish():
+    """X1-r3 ruling 2: an employee row whose draft failed is never "ready"."""
+    draft, task = _StubDraft(status="failed", failure_code="workspace_init_failed"), _StubTask()
+    notification = await _creation_receipt_notification(_StubDB(_StubAgent("陈小满")), draft, task)
+    assert "is ready" not in notification.summary
+    assert "The employee record exists but setup did not finish." in notification.summary
+    assert f"/agents/{draft.created_agent_id}" not in notification.summary.split("Internal:", 1)[0]
 
 
 async def test_creation_receipt_legacy_summary_still_reproduces_old_bytes():

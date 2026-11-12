@@ -32,7 +32,9 @@ def _hash(value) -> str:
     ).hexdigest()
 
 
-async def _seed_creation(db_sessionmaker, *, name="周报助手", first_task="介绍一下你自己"):
+async def _seed_creation(db_sessionmaker, *, name="周报助手", first_task="介绍一下你自己",
+                         first_status="dispatched", draft_status="completed", task_status="completed",
+                         failure_code=None):
     """Craft one complete, hash-pinned creation chain and store its receipt."""
     from app.services.config_versioning import canonical_content_hash  # noqa: F401  (parity import)
     from app.services.hr_provisioning_runtime import build_hr_provisioning_runtime_task
@@ -123,7 +125,7 @@ async def _seed_creation(db_sessionmaker, *, name="周报助手", first_task="�
             blueprint_hash=_bp_hash(dict(tool_arguments)),
             blueprint_version=1,
             preview_json={},
-            provisioning_json={"first_task": {"status": "dispatched"}},
+            provisioning_json={"first_task": {"status": first_status}},
         )
         db.add(draft)
         await db.flush()
@@ -159,10 +161,12 @@ async def _seed_creation(db_sessionmaker, *, name="周报助手", first_task="�
         db.add(task)
         await db.flush()
         draft.provisioning_task_id = task.id
-        draft.status = "completed"
-        task.status = "completed"
-        task.result_summary = "completed"
+        draft.status = draft_status
+        task.status = task_status
+        task.result_summary = task_status
         draft.created_agent_id = agent_id
+        if failure_code:
+            draft.failure_code = failure_code
         await db.flush()
         await db.commit()
         return {"tenant_id": tenant_id, "agent_id": agent_id, "draft_id": draft.id, "task_id": task.id}
@@ -241,3 +245,79 @@ async def test_renaming_the_employee_after_storage_still_verifies(owner_sessionm
         await db.commit()
     verified = await _verify(owner_sessionmaker, result_id)
     assert verified is not False and verified is not None
+
+
+async def _rebuild_notification(db_sessionmaker, seed):
+    from app.models.hr_creation import HrCreationDraft
+    from app.models.runtime_task import RuntimeTask
+    from app.services.employee_first_task import creation_receipt_notification
+
+    async with db_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, seed["draft_id"], populate_existing=True)
+        task = await db.get(RuntimeTask, seed["task_id"], populate_existing=True)
+        return await creation_receipt_notification(db, draft, task)
+
+
+async def test_failed_draft_with_created_agent_row_never_says_ready(owner_sessionmaker):
+    """X1-r3 ruling 2: a provisioning failure after the employee row exists
+    must not tell the model the employee "is ready" with a link."""
+    from app.services.runtime_notification_outbox import enqueue_completion_notification
+
+    seed = await _seed_creation(owner_sessionmaker, draft_status="failed", task_status="failed",
+                                failure_code="workspace_init_failed")
+    notification = await _rebuild_notification(owner_sessionmaker, seed)
+    assert notification is not None
+    assert "is ready" not in notification.summary
+    assert "The employee record exists but setup did not finish." in notification.summary
+    # No link before the internal tail (the /agents/<id> rule sentence stays).
+    assert f"/agents/{seed['agent_id']}" not in notification.summary.split("Internal: employee_id=", 1)[0]
+    async with owner_sessionmaker() as db:
+        await enqueue_completion_notification(db, notification)
+        await db.commit()
+    result_id, _sha = await _stored_result(owner_sessionmaker, seed)
+    # A failed creation never verifies as a completed one.
+    assert await _verify(owner_sessionmaker, result_id) is False
+
+
+@pytest.mark.parametrize("first_status", ["blocked", "unknown"])
+async def test_blocked_or_unknown_first_task_survives_a_rename(owner_sessionmaker, first_status):
+    """X1-r3 ruling 3: the recovery request's bytes read the hash-pinned
+    blueprint name, so a rename after the receipt neither breaks verification
+    nor silently authorizes a replay."""
+    seed = await _seed_creation(owner_sessionmaker, first_status=first_status)
+    await _enqueue(owner_sessionmaker, seed, legacy=False)
+    result_id, _sha = await _stored_result(owner_sessionmaker, seed)
+    assert await _verify(owner_sessionmaker, result_id) is not False
+    async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, seed["agent_id"])
+        agent.name = "改名后的员工"
+        await db.commit()
+    # Verification still passes: head and recovery bytes use the blueprint name.
+    verified = await _verify(owner_sessionmaker, result_id)
+    assert verified is not False and verified is not None
+    # Recovery is refused, as before: the recorded request replays the
+    # blueprint name, which no longer equals the renamed row, so the resume
+    # check at employee_first_task (arguments.agent_name == target.name)
+    # refuses with first_task_arguments_mismatch.
+    notification = await _rebuild_notification(owner_sessionmaker, seed)
+    request = json.loads(notification.summary.split("Recorded first-task recovery request: ", 1)[1])
+    assert request["arguments"]["agent_name"] == "周报助手"
+    async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, seed["agent_id"])
+        assert request["arguments"]["agent_name"] != agent.name
+
+
+async def test_blueprint_name_with_quote_and_newline_cannot_split_the_head(owner_sessionmaker):
+    """X1-r3 ruling 10 note 3: the head quotes the collapsed name as one JSON
+    string, so a quote or newline cannot forge a second sentence or an
+    ``Internal:`` line."""
+    seed = await _seed_creation(owner_sessionmaker, name='周报"助手\n小心')
+    await _enqueue(owner_sessionmaker, seed, legacy=False)
+    result_id, _sha = await _stored_result(owner_sessionmaker, seed)
+    verified = await _verify(owner_sessionmaker, result_id)
+    assert verified is not False and verified is not None
+    notification = await _rebuild_notification(owner_sessionmaker, seed)
+    # The collapsed name stays one JSON string, and the quote/newline cannot
+    # forge a second Internal line before the real one.
+    assert json.dumps('周报"助手 小心', ensure_ascii=False) in notification.summary
+    assert notification.summary.count("Internal:") == 1

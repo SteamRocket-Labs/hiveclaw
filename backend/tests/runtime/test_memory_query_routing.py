@@ -9,7 +9,9 @@ from app.runtime.session import SessionContext
 
 
 @pytest.mark.asyncio
-async def test_resolve_memory_context_uses_single_query_scoped_retrieval(monkeypatch):
+async def test_resolve_memory_context_loads_resident_context_once_per_call_even_with_cached_prefix(monkeypatch):
+    """A2m: the resident context has no query; it loads once per call, and the
+    cached prompt prefix never skips it."""
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest
 

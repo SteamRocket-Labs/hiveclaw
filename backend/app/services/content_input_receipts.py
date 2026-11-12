@@ -409,7 +409,7 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                     selected_ids.add(uuid.UUID(actor[field]))
                 except (KeyError, TypeError, ValueError, AttributeError):
                     pass
-    if actor_sessions:
+    if actor_sessions and not immutable_only:
         await _load_source_rows(ChatSession, actor_sessions)
     if actor_tasks and not immutable_only:
         from app.models.runtime_task import RuntimeTask
@@ -2140,7 +2140,8 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
             resource_permission_rows("workspace_file", workspace_resource_id(agent_id, path), tenant_id))
             .outerjoin(WorkspaceResourceManifest, (WorkspaceResourceManifest.tenant_id == tenant_id)
                 & (WorkspaceResourceManifest.agent_id == agent_id) & (WorkspaceResourceManifest.path == path))
-            .outerjoin(current, current.id == latest_id))).first()
+            .outerjoin(current, current.id == latest_id)
+            .options(load_only(current.id, current.revision, current.content_sha256)))).first()
         manifest, latest = (facts[5], facts[6]) if facts is not None else (None, None)
         source_facts = (manifest, facts[7], facts[8]) if facts is not None else None
     else:

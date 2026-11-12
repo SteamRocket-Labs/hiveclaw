@@ -447,7 +447,7 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
         active_workspace_receipts=active_receipts | {receipt.id})
     latest = None
     if joined:
-        from sqlalchemy.orm import aliased
+        from sqlalchemy.orm import aliased, load_only
 
         current = aliased(ContentInputReceipt)
         latest_id = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
@@ -455,7 +455,8 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
             ).order_by(ContentInputReceipt.revision.desc()).limit(1).scalar_subquery()
         facts = (await db.execute(source_reader_statement(user, agent_id).add_columns(User, ChatSession, current)
             .outerjoin(User, User.id == user.id).outerjoin(ChatSession, ChatSession.id == session.id)
-            .outerjoin(current, current.id == latest_id).options(*reader_columns(User, ChatSession)))).first()
+            .outerjoin(current, current.id == latest_id).options(*reader_columns(User, ChatSession),
+                load_only(current.id, current.authority_json)))).first()
         requester, current_session, latest = (facts[5], facts[6], facts[7]) if facts is not None else (None,) * 3
     else:
         requester = await db.get(User, user.id, populate_existing=True)

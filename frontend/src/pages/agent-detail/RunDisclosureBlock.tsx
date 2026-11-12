@@ -176,7 +176,8 @@ function ColleagueConversationLink({ metadata }: { metadata: Record<string, unkn
   // Some render hosts (tests, static projections) mount without a provider;
   // without a known cache there is nothing to gate on, so no link.
   const queryClient = React.useContext(QueryClientContext) as ReturnType<typeof useQueryClient> | null;
-  const agentId = typeof metadata.target_agent_id === 'string' ? metadata.target_agent_id : '';
+  const rawAgentId = metadata.target_agent_id ?? metadata.to_agent;
+  const agentId = typeof rawAgentId === 'string' ? rawAgentId : '';
   const sessionId = typeof metadata.child_session_id === 'string' ? metadata.child_session_id : '';
   const tenantId = localStorage.getItem('current_tenant_id')
     || useAuthStore.getState().user?.tenant_id

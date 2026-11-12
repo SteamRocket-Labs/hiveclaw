@@ -10,7 +10,6 @@ import pytest
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
-from app.memory.retriever import MemoryRetriever
 from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
 from app.models.organization_identity import ContentInputReceipt
 from app.models.session_v2 import SessionModelResult
@@ -134,17 +133,6 @@ async def test_revoked_document_derived_memory_is_withheld_from_later_model_requ
             "source_version": document.canonical_md_sha256,
         }
 
-    selected_bodies = []
-
-    async def choose(_self, *, items, **_kwargs):
-        selected_bodies.append("\n".join(item.content for item in items))
-        return [item.metadata["selection_candidate_id"] for item in items], "Use the authorized release facts"
-
-    async def reference_config(*_args, **_kwargs):
-        return {"provider": "synthetic", "model": "local-reference"}
-
-    monkeypatch.setattr(MemoryRetriever, "_select_with_model", choose)
-    monkeypatch.setattr(memory_service, "_get_rerank_model_config", reference_config)
     loaded, read_invocation = await memory_call(
         n, app_user_sessionmaker, "read_personal_kb", {"document_id": str(document.id)},
         user=n.foreign, session=s.second_session, run=s.second_run, command="Read the granted release document",
@@ -188,7 +176,9 @@ async def test_revoked_document_derived_memory_is_withheld_from_later_model_requ
     assert replayed_body["references"], replayed_body
     assert DOCUMENT_MARKER not in json.dumps(replayed_read), replayed_read
     if surface == "automatic":
-        assert selected_bodies and DERIVED_MARKER in selected_bodies[-1], selected_bodies
+        # The resident index preview carries the derived fact; its receipt
+        # binds the context section so the model gate can recheck it.
+        assert DERIVED_MARKER in before, before
         assert memory_dependency in recalled.source_refs, recalled
     else:
         assert any(
@@ -213,7 +203,6 @@ async def test_revoked_document_derived_memory_is_withheld_from_later_model_requ
     )
     assert DOCUMENT_MARKER not in direct_read, direct_read
 
-    selected_bodies.clear()
     after, recalled = await _recall(s, app_user_sessionmaker, surface, [entry_id])
     denied = await _model_request(
         s, app_user_sessionmaker, context=recalled if surface == "automatic" else None,
@@ -224,7 +213,6 @@ async def test_revoked_document_derived_memory_is_withheld_from_later_model_requ
     assert DOCUMENT_MARKER not in json.dumps(denied_snapshot["wire_request"]), denied_snapshot
     for marker in (DOCUMENT_MARKER, DERIVED_MARKER):
         assert marker not in after, after
-        assert all(marker not in body for body in selected_bodies), selected_bodies
     if surface != "automatic":
         assert "content_source_access_denied" in after, after
     # A withheld source stays in provenance (A4d round-5 ruling); whatever stays

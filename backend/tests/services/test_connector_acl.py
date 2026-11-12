@@ -285,11 +285,11 @@ async def test_memory_retriever_does_not_inject_connector_sources(tmp_path) -> N
         ),
     )
 
-    items = await MemoryRetriever(data_root=tmp_path).retrieve(
+    items = await MemoryRetriever(data_root=tmp_path)._gather_authorized_candidates(
         agent_id,
         "policy",
-        session_id=None,
-        tenant_id=str(tenant_id),
+        None,
+        str(tenant_id),
         activation_context=context,
     )
 

@@ -980,11 +980,6 @@ async def _consume_memory_context_status(
         "authority_context_available": result.authority_context_available,
         "durable_write_available": result.durable_write_available,
         "external_effects_available": result.external_effects_available,
-        "auto_surfaced_bytes": result.auto_surfaced_bytes,
-        "auto_surface_total_bytes": result.auto_surface_total_bytes,
-        "auto_surface_remaining_bytes": result.auto_surface_remaining_bytes,
-        "auto_surface_selected_count": result.auto_surface_selected_count,
-        "selection_receipt": result.selection_receipt,
         "duration_ms": round(max(0.0, float(duration_ms)), 3),
     }
     metadata["memory_context_status"] = status_fact

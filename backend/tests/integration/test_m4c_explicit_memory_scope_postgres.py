@@ -7,15 +7,12 @@ from uuid import uuid4, uuid5
 import pytest
 from sqlalchemy import select
 
-from app.memory.activation import ActivationContext
-from app.memory.retriever import MemoryRetriever
 from app.memory.write_gate import MemoryWriteDecision
 from app.database import tenant_scoped_session
 from app.models.agent import AgentPermission
 from app.models.capability_policy import CapabilityPolicy
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
-from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 from tests.integration.test_m1g24_workspace_artifact_authority_postgres import native_workspace  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -145,7 +142,7 @@ async def shared_memory(native_workspace, owner_sessionmaker, app_user_sessionma
     return SimpleNamespace(n=n, second_session=second_session, second_run=second_run, entry_id=entry["id"])
 
 
-@pytest.mark.parametrize("surface", ["search", "load", "automatic", "raw_file", "resident"])
+@pytest.mark.parametrize("surface", ["search", "load", "raw_file", "resident"])
 async def test_another_members_work_cannot_consume_private_explicit_memory(shared_memory, monkeypatch, surface):
     s = shared_memory
     n = s.n
@@ -166,34 +163,17 @@ async def test_another_members_work_cannot_consume_private_explicit_memory(share
         result = str(await n.service.execute("read_file", arguments, agent_id=n.agent, user_id=n.foreign,
             session_id=str(s.second_session), runtime_task_id=str(s.second_run), emit_runtime_hooks=False))
     else:
-        retriever = MemoryRetriever(data_root=n.root.parent)
+        # The resident index carries the owner's saved fact and withholds it
+        # from the other member with no model call anywhere on the path.
+        from app.services import memory_service
 
-        async def reference_selection(*, items, **_kwargs):
-            return [item.metadata["selection_candidate_id"] for item in items], "Use available authorized evidence"
-
-        monkeypatch.setattr(retriever, "_select_with_model", reference_selection)
-        if surface == "resident":
-            from app.services import memory_service
-
-            async def reference_config(*_args, **_kwargs):
-                return {"provider": "synthetic", "model": "local-reference"}
-
-            monkeypatch.setattr(memory_service, "_get_rerank_model_config", reference_config)
-            monkeypatch.setattr(MemoryRetriever, "_select_with_model", lambda _self, **kwargs: reference_selection(**kwargs))
-            own_context = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(n.session),
-                current_user_id=n.user, query="release")
-            assert "ORCHID_PRIVATE_MARKER" in own_context, own_context
-            result = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(s.second_session),
-                current_user_id=n.foreign, query="release")
-            assert "ORCHID_PRIVATE_MARKER" not in result, result
-            return
-        principal = ActivationContext(query="release", principal_stack=PrincipalStack(
-            current_user=Principal(PrincipalRole.CURRENT_USER, str(n.foreign)),
-            direct_owner=Principal(PrincipalRole.OWNER, str(n.user))))
-        items = await retriever.retrieve(n.agent, "release", str(s.second_session), str(n.tenant),
-            activation_context=principal, rerank_model_config={"provider": "synthetic", "model": "local-reference"})
-        result = "\n".join(item.content for item in items)
-    assert "ORCHID_PRIVATE_MARKER" not in result, result
+        own_context = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(n.session),
+            current_user_id=n.user, query="release")
+        assert "ORCHID_PRIVATE_MARKER" in own_context, own_context
+        result = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(s.second_session),
+            current_user_id=n.foreign, query="release")
+        assert "ORCHID_PRIVATE_MARKER" not in result, result
+        return
 
 
 @pytest.mark.parametrize("tool_name", ["update_memory", "retire_memory"])

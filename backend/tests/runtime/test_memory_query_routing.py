@@ -284,47 +284,40 @@ async def test_resolve_memory_context_emits_durable_degraded_fact_and_model_mark
 
 
 @pytest.mark.asyncio
-async def test_resolve_memory_context_passes_durable_turn_and_surfaces_budget_pressure(monkeypatch) -> None:
+async def test_resolve_memory_context_passes_durable_turn_and_surfaces_degraded_status(monkeypatch) -> None:
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest
     from app.services.memory_service import MemoryContextResult
 
     captured: dict[str, object] = {}
 
-    async def budget_exhausted(
+    async def auxiliary_degraded(
         _agent_id,
         _tenant_id,
         *,
         session_id=None,
         query="",
-        turn_id=None,
         return_result=False,
         **_kwargs,
     ):
         captured.update(
             session_id=session_id,
             query=query,
-            turn_id=turn_id,
             return_result=return_result,
         )
         return MemoryContextResult(
             content="RESIDENT_INDEX",
             status="degraded",
-            code="memory_auto_surface_budget_exhausted",
-            user_message=(
-                "Session automatic memory surfacing budget is exhausted; conversation can continue and "
-                "search_memory/load_memory remain available."
-            ),
-            retryable=False,
-            auto_surfaced_bytes=0,
-            auto_surface_total_bytes=60 * 1024,
-            auto_surface_remaining_bytes=0,
+            code="memory_auxiliary_degraded",
+            user_message="Core memory is available, but an auxiliary memory component is temporarily degraded.",
+            retryable=True,
+            degraded_components=("resident_budget_telemetry",),
         )
 
     async def ignore_span(**_kwargs):
         return None
 
-    monkeypatch.setattr(invoker, "build_memory_context", budget_exhausted)
+    monkeypatch.setattr(invoker, "build_memory_context", auxiliary_degraded)
     monkeypatch.setattr(invoker, "persist_invocation_span", ignore_span)
     request = AgentInvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1"),
@@ -343,14 +336,14 @@ async def test_resolve_memory_context_passes_durable_turn_and_surfaces_budget_pr
     assert captured == {
         "session_id": "session-budget",
         "query": "continue",
-        "turn_id": "turn-durable-17",
         "return_result": True,
     }
     assert "RESIDENT_INDEX" in context
-    assert "search_memory/load_memory remain available" in context
+    assert "do not assume complete recall" in context
     status = request.session_context.metadata["memory_context_status"]
-    assert status["auto_surface_total_bytes"] == 60 * 1024
-    assert status["auto_surface_remaining_bytes"] == 0
+    assert status["code"] == "memory_auxiliary_degraded"
+    assert status["degraded_components"] == ["resident_budget_telemetry"]
+    assert "selection_receipt" not in status
     assert status["external_effects_available"] is True
 
 

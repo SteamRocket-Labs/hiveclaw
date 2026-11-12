@@ -15,7 +15,7 @@ This is the anchor gate for the dynamic recall layer work:
 
 The fixture is a deterministic on-disk knowledge/milestones page graph and the
 runners call the REAL retrieval paths (``search_wiki_pages`` and
-``MemoryRetriever.retrieve`` + ``ActivationScorer``) — no mocks, no LLM.
+``MemoryRetriever._gather_authorized_candidates`` + ``ActivationScorer``) — no mocks, no LLM.
 """
 
 from __future__ import annotations

@@ -249,14 +249,10 @@ async def test_current_group_member_can_save_and_another_member_can_recall_witho
     assert "GROUP_RELEASE_MARKER" not in revoked, revoked
 
 
-@pytest.mark.parametrize("surface", ["load", "raw_file", "automatic", "resident", "group_load", "group_automatic", "group_resident"])
+@pytest.mark.parametrize("surface", ["load", "raw_file", "resident", "group_load", "group_resident"])
 async def test_group_memory_reaches_each_authorized_consumer_without_private_memory(
     group_memory, app_user_sessionmaker, monkeypatch, surface,
 ):
-    from app.memory.retriever import MemoryRetriever
-    from app.memory.activation import ActivationContext
-    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
-
     g = group_memory
     n = g.n
     await save_group(g, app_user_sessionmaker)
@@ -271,31 +267,12 @@ async def test_group_memory_reaches_each_authorized_consumer_without_private_mem
         result = str(await n.service.execute(name, arguments, agent_id=n.agent,
             user_id=user, session_id=str(session), runtime_task_id=str(run), emit_runtime_hooks=False))
     else:
-        observed = []
+        # The resident index carries the group fact for its live member and
+        # never the other member's private memory; no model call runs.
+        from app.services import memory_service
 
-        async def choose(_self, *, items, **_kwargs):
-            observed.extend(item.content for item in items)
-            return [item.metadata["selection_candidate_id"] for item in items], "Use the authorized group release fact"
-
-        monkeypatch.setattr(MemoryRetriever, "_select_with_model", choose)
-        if surface.endswith("resident"):
-            from app.services import memory_service
-
-            async def model(*_args, **_kwargs):
-                return {"provider": "reference", "model": "local-reference"}
-
-            monkeypatch.setattr(memory_service, "_get_rerank_model_config", model)
-            result = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(session),
-                runtime_task_id=str(run), current_user_id=user, query="release")
-        else:
-            activation = ActivationContext(query="release", principal_stack=PrincipalStack(
-                current_user=Principal(PrincipalRole.CURRENT_USER, str(user)),
-                direct_owner=Principal(PrincipalRole.OWNER, str(n.user))))
-            items = await MemoryRetriever(data_root=n.root.parent).retrieve(n.agent, "release", str(session), str(n.tenant),
-                runtime_task_id=str(run), activation_context=activation,
-                rerank_model_config={"provider": "reference", "model": "local-reference"})
-            result = "\n".join(item.content for item in items)
-        assert all("ORCHID_PRIVATE_MARKER" not in body for body in observed), observed
+        result = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(session),
+            runtime_task_id=str(run), current_user_id=user, query="release")
     assert "GROUP_RELEASE_MARKER" in result and "ORCHID_PRIVATE_MARKER" not in result, result
 
 
@@ -398,34 +375,6 @@ async def test_group_cannot_consume_another_groups_memory_even_when_requester_be
     elsewhere = SimpleNamespace(n=g.n, session=other.id, runs={}, rounds={})
     result, _invocation = await group_call(elsewhere, app_user_sessionmaker, "load_memory", {"ids": [g.entry_id]})
     assert "GROUP_RELEASE_MARKER" not in result and "Memory Availability" not in result, result
-
-
-async def test_membership_withdrawal_during_model_selection_withholds_selected_body(
-    group_memory, app_user_sessionmaker, monkeypatch,
-):
-    from app.memory.retriever import MemoryRetriever
-    from app.memory.activation import ActivationContext
-    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
-
-    g = group_memory
-    n = g.n
-    await save_group(g, app_user_sessionmaker)
-    observed = []
-
-    async def select_then_leave(_self, *, items, **_kwargs):
-        observed.extend(item.content for item in items)
-        g.members.remove("memory-member")
-        return [item.metadata["selection_candidate_id"] for item in items], "Use the group fact"
-
-    monkeypatch.setattr(MemoryRetriever, "_select_with_model", select_then_leave)
-    principal = ActivationContext(query="release", principal_stack=PrincipalStack(
-        current_user=Principal(PrincipalRole.CURRENT_USER, str(n.foreign)),
-        direct_owner=Principal(PrincipalRole.OWNER, str(n.user))))
-    items = await MemoryRetriever(data_root=n.root.parent).retrieve(n.agent, "release", str(g.s.second_session), str(n.tenant),
-        runtime_task_id=str(g.s.second_run), activation_context=principal,
-        rerank_model_config={"provider": "reference", "model": "local-reference"})
-    assert any("GROUP_RELEASE_MARKER" in body for body in observed), observed
-    assert all("GROUP_RELEASE_MARKER" not in item.content for item in items), items
 
 
 async def test_nonmember_administrator_can_inspect_derived_business_file_but_cannot_use_group_sources_in_agent_work(

@@ -310,7 +310,6 @@ async def prepare_send(db, *, task, state, agent, endpoint):
         agent.id,
         task.tenant_id,
         session_id=str(session_id),
-        turn_id=task.metadata_json["turn_id"],
         runtime_task_id=str(task.id),
         query="\n".join(str(message["content"]) for message in current_messages),
         current_user_id=task.root_user_id,

@@ -235,19 +235,9 @@ async def test_recovered_attachment_is_removed_from_rejections(monkeypatch):
     assert task.metadata_json["rejected_artifact_paths"] == []
 
 
-def test_withheld_note_has_no_internal_code_or_id():
-    from app.services.memory_service import _render_withheld_note
-
-    note = _render_withheld_note({"explicit_memory": {"count": 1, "code": "explicit_memory_source_partial"}})
-    assert "1" in note
-    assert "explicit_memory" not in note
-    assert "source_partial" not in note
-
-
 @pytest.mark.parametrize("resident_index", [False, True])
 async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_path, resident_index):
     from app.memory.activation import ActivationContext
-    from app.memory.types import MemoryItem, MemoryKind
     from app.runtime.context_candidates import ContextMessageOrigin
     from app.services import memory_service, session_model_round
     from app.services.llm_client import LLMMessage
@@ -260,24 +250,21 @@ async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_p
     bad = {"source_kind": "explicit_memory", "source_id": "revoked", "source_version": "v1"}
     good = {"source_kind": "explicit_memory", "source_id": "valid", "source_version": "v1"}
 
-    class Retriever:
-        async def retrieve(self, *args, **kwargs):
-            return [MemoryItem(kind=MemoryKind.SEMANTIC, content=text, score=1, source=ref["source_id"],
-                source_refs=(ref,), metadata={"entry_id": ref["source_id"]}) for ref, text in (
-                    (bad, "REVOKED_RECALL_SECRET"), (good, "VALID_RECALLED_MEMORY"))]
-
     monkeypatch.setattr(memory_service, "get_settings", lambda: NS(AGENT_DATA_DIR=str(tmp_path)))
-    monkeypatch.setattr(memory_service, "MemoryRetriever", lambda **kwargs: Retriever())
-    monkeypatch.setattr(memory_service, "_get_rerank_model_config", AsyncMock(return_value=None))
     monkeypatch.setattr(memory_service, "_resolve_activation_context",
         AsyncMock(return_value=ActivationContext(query="q", principal_stack=PrincipalStack())))
     authorized = [(NS(entry_id="revoked", content="REVOKED_RECALL_SECRET", category="project",
         status="active", sensitivity="PL1_public", created_at="2026-11-06"),
-        NS(id="revoked", content_sha256="v1"))] if resident_index else []
+        NS(id="revoked", content_sha256="v1")),
+        (NS(entry_id="valid", content="VALID_RECALLED_MEMORY", category="project",
+        status="active", sensitivity="PL1_public", created_at="2026-11-06"),
+        NS(id="valid", content_sha256="v1"))] if resident_index else []
     monkeypatch.setattr("app.services.explicit_memory_authority.authorized_explicit_entries", AsyncMock(return_value=authorized))
     result = await memory_service.build_memory_context(aid, tenant, query="q", session_id=str(uuid.uuid4()),
         current_user_id=uuid.uuid4(), return_result=True)
-    assert "VALID_RESIDENT_MEMORY" in result.content and "REVOKED_RECALL_SECRET" in result.content
+    assert "VALID_RESIDENT_MEMORY" in result.content
+    # The index preview is the only place the revoked entry's bytes appear.
+    assert ("REVOKED_RECALL_SECRET" in result.content) is resident_index
     message = LLMMessage(role="system", content=result.content, context_origin=ContextMessageOrigin.capture(
         kind="dynamic_prompt", role="system", content=result.content,
         sources=result.source_refs, unbound=result.source_unbound))
@@ -291,4 +278,7 @@ async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_p
     wire = await validate(db, bindings, messages)
     assert "REVOKED_RECALL_SECRET" not in json.dumps(wire)
     assert "VALID_RESIDENT_MEMORY" in json.dumps(wire)
-    assert "VALID_RECALLED_MEMORY" in json.dumps(wire)
+    if resident_index:
+        assert "VALID_RECALLED_MEMORY" in json.dumps(wire)
+    else:
+        assert "VALID_RECALLED_MEMORY" not in json.dumps(wire)

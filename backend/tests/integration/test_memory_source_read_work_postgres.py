@@ -12,7 +12,6 @@ from sqlalchemy import event, select
 
 from app.database import tenant_scoped_session
 from app.memory.explicit_overlay import load_explicit_overlay_entries, prepare_explicit_memory_entry
-from app.memory.retriever import MemoryRetriever
 from app.memory.write_gate import MemoryWriteDecision
 from app.models.agent import Agent
 from app.models.capability_policy import CapabilityPolicy
@@ -162,14 +161,6 @@ async def memory_dag(native_workspace, owner_sessionmaker, app_user_sessionmaker
     n.active = [entry for entry in load_explicit_overlay_entries(n.root.parent, n.agent) if entry.status == "active"]
     assert len(n.active) == 6
 
-    async def selection(_self, *, items, **_kwargs):
-        return [item.metadata["selection_candidate_id"] for item in items[:5]], "Select authorized fixture memories"
-
-    async def config(*_args, **_kwargs):
-        return {"provider": "synthetic", "model": "local-reference"}
-
-    monkeypatch.setattr(MemoryRetriever, "_select_with_model", selection)
-    monkeypatch.setattr(memory_service, "_get_rerank_model_config", config)
     return n
 
 
@@ -243,19 +234,15 @@ async def test_one_authorization_walk_validates_each_completed_source_once(memor
 
 
 @pytest.mark.parametrize("change", ["revoked", "bytes", "skill", "cycle"])
-async def test_selection_await_rechecks_memory_sources(memory_dag, owner_sessionmaker, monkeypatch, change):
+async def test_index_authority_rechecks_current_sources(memory_dag, owner_sessionmaker, monkeypatch, change):
     n = memory_dag
-    selected = False
 
-    async def selection(_self, *, items, **_kwargs):
-        nonlocal selected
-        assert items
-        selected = True
+    async def apply_change():
         if change == "bytes":
-            n.entries[9].path.write_text(n.entries[9].path.read_text() + "\nChanged during selection.\n")
+            n.entries[9].path.write_text(n.entries[9].path.read_text() + "\nChanged after the original owner witness.\n")
         elif change == "skill":
             path = n.shared[0]["source_id"].split("\n")[1]
-            (n.root / path).write_text("Changed application Skill bytes during selection.\n")
+            (n.root / path).write_text("Changed application Skill bytes after the witness.\n")
         else:
             async with owner_sessionmaker() as db:
                 row = await db.get(ContentInputReceipt, n.receipts[9].id)
@@ -264,12 +251,9 @@ async def test_selection_await_rechecks_memory_sources(memory_dag, owner_session
                 else:
                     row.dependencies_json = [*row.dependencies_json, source_dependency(row)]
                 await db.commit()
-        return [item.metadata["selection_candidate_id"] for item in items
-            if item.metadata.get("entry_id") == "dag-9"], "Choose the entry changed while awaiting selection"
 
-    monkeypatch.setattr(MemoryRetriever, "_select_with_model", selection)
+    await apply_change()
     result = await resolve(n)
-    assert selected
     assert "MEMORY_DAG_9" not in result.content, result.content
     # Revoked entries are deliberately omitted without an availability issue;
     # changed or cyclic sources retain their existing degraded classification.

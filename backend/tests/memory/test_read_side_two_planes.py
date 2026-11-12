@@ -1,11 +1,12 @@
-"""Read-side tests for complete evidence and model-owned semantic selection.
+"""Read-side tests for complete evidence and on-demand memory bodies.
 
 - Resident plane (P0, no retrieval, no LLM): self/self.md + profiles/*.md stay
   resident; explicit overlay contributes a bounded ID/preview index, never all
   bodies. Full entries remain recoverable through load_memory.
 - Retrieval plane: knowledge/milestones pages expose every active page and its
-  complete Markdown to the model selector. BM25/PPR remain ranking evidence;
-  they never choose a top-k or hide zero-score pages from model judgment.
+  complete Markdown to the deterministic recall eval; BM25/PPR remain ranking
+  evidence and never choose a top-k or hide zero-score pages. The conversation
+  model reaches bodies itself through search_memory / load_memory.
 """
 
 from __future__ import annotations
@@ -142,9 +143,9 @@ def test_explicit_index_sources_bind_actual_manifest_and_visible_entry_bytes(tmp
     assert resident.source_refs and refs["memory/explicit/entries/visible.md"] == hashlib.sha256(raw).hexdigest()
 
 
-def test_explicit_recall_keeps_reader_sources_through_selection_and_rendering(tmp_path: Path) -> None:
+def test_explicit_recall_keeps_reader_sources_for_the_resident_index(tmp_path: Path) -> None:
     import hashlib
-    from app.memory.assembler import MemoryAssembler
+
     from app.memory.retriever import MemoryRetriever
 
     agent_id = uuid4()
@@ -155,19 +156,13 @@ def test_explicit_recall_keeps_reader_sources_through_selection_and_rendering(tm
         f"{agent_id}\n{p}": hashlib.sha256((root / p).read_bytes()).hexdigest()
         for p in ["memory/explicit/manifest.jsonl", "memory/explicit/entries/visible.md"]
     }
+    # Reader witnesses stay separate from model-facing metadata: a forged
+    # metadata origin never replaces the observed file digests.
     items[0].metadata["source_refs"] = [{"source_id": "FORGED_METADATA_ORIGIN"}]
-    items = MemoryRetriever._annotate_selection(
-        MemoryRetriever._attach_selection_candidate_ids(items), status="model_selected"
-    )
-    assert {ref["source_id"]: ref["source_version"] for ref in items[0].source_refs} == expected
+    refs = items[0].source_refs
+    assert {ref["source_id"]: ref["source_version"] for ref in refs} == expected, refs
     (root / "memory/explicit/entries/visible.md").write_text("REPLACED_AFTER_READ")
-    observed = []
-    assert "周报永远用中文" in MemoryAssembler().assemble(items, source_observer=observed.append)
-    assert observed == items
-    assert {ref["source_id"]: ref["source_version"] for ref in observed[0].source_refs} == expected
-    observed.clear()
-    assert MemoryAssembler().assemble(items, budget_chars=0, source_observer=observed.append) == ""
-    assert observed == []
+    assert {ref["source_id"]: ref["source_version"] for ref in refs} == expected
 
 
 @pytest.mark.parametrize("alias", ["symlink", "hardlink"])
@@ -392,70 +387,11 @@ def test_knowledge_search_returns_every_active_page_with_complete_markdown(tmp_p
 
 
 def test_legacy_threshold_rerank_machinery_is_retired() -> None:
-    """The model selector must not inherit the retired score-threshold reranker."""
+    """The on-demand path must not inherit the retired score-threshold reranker."""
     from app.memory import retriever as retriever_module
 
     assert not hasattr(retriever_module, "_rerank_semantic_items")
     assert not hasattr(retriever_module, "_RERANK_THRESHOLD")
-
-
-# --- end-to-end assembly: resident + retrieved, resident never trimmed ---
-
-
-@pytest.mark.asyncio
-async def test_build_memory_context_prepends_resident_untrimmed(tmp_path: Path, monkeypatch) -> None:
-    from app.memory.activation import ActivationContext
-    from app.services import memory_service
-    from tests.memory.authority_fixtures import reference_explicit_memory_authority
-
-    reference_explicit_memory_authority(monkeypatch)
-
-    agent_id = uuid4()
-    tenant_id = uuid4()
-    _write_resident_files(tmp_path, agent_id)
-    _write_overlay_entry(tmp_path, agent_id, entry_id="ex-lang")
-    _write_knowledge_page(
-        tmp_path,
-        agent_id,
-        slug="l2-rollup",
-        title="L2 Rollup",
-        body="## Current Claim\nrollup 扩容。\n## Relations\n- is_a [[k:Scaling]]\n",
-    )
-
-    class _Principal:
-        current_user = None
-
-        def can_access_sensitivity(self, _s: str) -> bool:
-            return True
-
-    async def fake_activation(**_kwargs):
-        return ActivationContext(query="rollup", principal_stack=_Principal())
-
-    async def fake_rerank(_tenant_id):
-        return {"provider": "fake", "model": "fake"}
-
-    async def select_knowledge(self, *, items, **_kwargs):
-        candidate = next(item for item in items if item.metadata.get("source_type") == "knowledge_ppr")
-        return [candidate.metadata["selection_candidate_id"]], "knowledge page answers the query"
-
-    monkeypatch.setattr(memory_service, "_resolve_activation_context", lambda **kw: fake_activation(**kw))
-    monkeypatch.setattr(memory_service, "_get_rerank_model_config", fake_rerank)
-    monkeypatch.setattr(memory_service.MemoryRetriever, "_select_with_model", select_knowledge)
-    monkeypatch.setattr(
-        memory_service,
-        "get_settings",
-        lambda: type("S", (), {"AGENT_DATA_DIR": str(tmp_path), "MEMORY_RESIDENT_BUDGET_CHARS": 20_000.0})(),
-    )
-
-    context = await memory_service.build_memory_context(
-        agent_id, tenant_id, query="rollup 扩容", current_user_id=uuid4()
-    )
-
-    assert "需求含糊时爱自己猜" in context  # active failure mode on top
-    assert "偏好简洁中文汇报" in context  # profiles whole
-    assert "周报永远用中文" in context  # overlay in resident
-    assert "L2 Rollup" in context  # retrieved knowledge
-    assert context.index("需求含糊时爱自己猜") < context.index("L2 Rollup")
 
 
 def test_resident_budget_setting_exists() -> None:

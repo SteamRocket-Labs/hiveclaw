@@ -15,7 +15,6 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-from app.memory.types import MemoryKind
 from app.models.chat_session import ChatSession
 from app.models.invocation_span import InvocationSpan
 from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor
@@ -92,35 +91,6 @@ async def _capture_reference(db, *, item, data_root, tenant_id, reader, user):
     source = {"source_kind": SOURCE_KIND, "source_id": str(source_id), "source_version": version}
     return replace(item, content=_render(payload), source_refs=(source,),
         metadata={"source_ref": item.source, "native_reference": True})
-
-
-async def project_unverified_t2(items, *, data_root, tenant_id, principal):
-    """Keep other context available when an optional reference cannot be authorized."""
-    from app.database import tenant_scoped_session
-    from app.services.workspace_resource_authority import WorkspaceAuthorityError
-    from sqlalchemy.exc import SQLAlchemyError
-
-    candidates = [item for item in items if getattr(item, "kind", None) == MemoryKind.EPISODIC
-        and item.metadata.get("source_type") == "t2_package" and not item.source_refs]
-    if not candidates:
-        return items, 0
-    candidate_ids = {id(item) for item in candidates}
-    other = [item for item in items if id(item) not in candidate_ids]
-    projected = {}
-    try:
-        async with tenant_scoped_session(tenant_id, require_tenant=True, source="memory_resource_reference") as db:
-            reader, user = await _runtime_input_actor(db, tenant_id, principal)
-            for item in candidates:
-                try:
-                    projected[id(item)] = await _capture_reference(db, item=item, data_root=data_root,
-                        tenant_id=tenant_id, reader=reader, user=user)
-                except (ContentInputReceiptError, OSError, ValueError, WorkspaceAuthorityError):
-                    continue
-            await db.commit()
-    except (ContentInputReceiptError, SQLAlchemyError, OSError):
-        return other, len(candidates)
-    return [projected[id(item)] if id(item) in projected else item for item in items
-        if id(item) not in candidate_ids or id(item) in projected], len(candidates) - len(projected)
 
 
 async def validate_reference(db, tenant_id, dependency, *, user=None, runtime_request=None):

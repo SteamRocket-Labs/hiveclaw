@@ -6,6 +6,7 @@ import {
 } from '../session-workbench/threadItemReducer';
 import { sourceAccessHold, type SessionItemV2 } from '../session-workbench/sessionEventStore';
 import { normalizeToolCallResult, type ToolCallMeta } from './toolResultEnvelope';
+import { memberToolSummaryFromRecord, type MemberToolSummary } from './memberToolSummary';
 import type { RuntimeBudgetState } from './runtimeBudgetState';
 
 export const MIN_COMPOSER_HEIGHT = 44;
@@ -68,6 +69,8 @@ export interface AgentChatMessage {
   toolStatus?: 'running' | 'done';
   toolResult?: string;
   toolRawResult?: string;
+  /** X3 typed member summary: replaces the raw result text for summarized tools. */
+  toolMemberSummary?: MemberToolSummary;
   toolMeta?: ToolCallMeta | null;
 	  timestamp?: string;
 	  participant_id?: string | null;
@@ -1152,6 +1155,7 @@ function toolResultFromTranscriptEvent(event: ChatTranscriptEventPayload): {
   args?: Record<string, unknown>;
   status?: string;
   runtimeStepMeta?: ToolCallMeta | null;
+  memberSummary?: MemberToolSummary | null;
 } {
   const content = event.content || '';
   const metadataToolName = toolNameFromTranscriptEvent(event);
@@ -1197,6 +1201,9 @@ function toolResultFromTranscriptEvent(event: ChatTranscriptEventPayload): {
             status: status || null,
           }
         : null,
+      // X3: the backend member projection replaces the raw result with this
+      // typed summary (compatibility envelopes carry it on metadata).
+      memberSummary: memberToolSummaryFromRecord(meta.member_summary),
     };
   }
   return { toolName: metadataToolName, result: content };
@@ -1414,6 +1421,7 @@ export function applyTranscriptEvent(
       toolStatus,
       toolResult: normalized.displayResult,
       toolRawResult: normalized.raw,
+      toolMemberSummary: toolPayload.memberSummary || undefined,
       toolMeta,
 	      artifacts: artifacts.length > 0 ? artifacts : undefined,
 	      timestamp,
@@ -1917,6 +1925,7 @@ export function normalizeStoredChatMessage(payload: any): AgentChatMessage {
       toolStatus: payload?.toolStatus,
       toolResult: normalized.toolMeta ? normalized.displayResult : payload?.toolResult,
       toolRawResult: payload?.toolRawResult ?? payload?.toolResult ?? normalized.raw,
+      toolMemberSummary: memberToolSummaryFromRecord(payload?.toolMemberSummary) || undefined,
       toolMeta,
       artifacts: artifacts.length > 0 ? artifacts : undefined,
       thinking: payload?.thinking,

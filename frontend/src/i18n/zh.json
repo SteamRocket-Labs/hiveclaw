@@ -2922,7 +2922,26 @@
         "workflowProposalReadyGoal": "自动化流程方案已就绪：{{goal}}",
         "workflowProposalReady": "自动化流程方案已就绪。",
         "workflowPreviewConfirm": "执行预览已就绪，请确认后再执行。",
-        "workflowPreviewReady": "执行预览已就绪。"
+        "workflowPreviewReady": "执行预览已就绪。",
+        "memberSummary": {
+          "memorySearch": "查了记忆",
+          "memorySearchFailed": "记忆这次没有读到",
+          "memoryRead": "读取了记忆",
+          "memoryReadFailed": "记忆这次没有读到",
+          "colleagueResult": "读取了同事的结果",
+          "colleagueResultFailed": "同事的结果这次没读到",
+          "taskList": "查看了进行中的任务",
+          "taskListFailed": "任务列表这次没有读到",
+          "webFetch": "打开了网页",
+          "webFetchHost": "打开了网页 {{host}}",
+          "webFetchFailed": "网页没有打开",
+          "webSearch": "搜索了网页",
+          "webSearchFailed": "网页搜索没有完成",
+          "capabilityLookup": "查找了可用的能力",
+          "capabilityLookupFailed": "这次没有查到可用的能力",
+          "skillLoad": "加载了技能",
+          "skillLoadFailed": "技能没有加载成功"
+        }
       },
       "workLedger": {
         "title": "在办的事",

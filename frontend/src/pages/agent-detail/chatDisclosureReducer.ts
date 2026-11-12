@@ -696,6 +696,7 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
         args: message.toolArgs,
         result: message.toolResult,
         rawResult: message.toolRawResult,
+        memberSummary: message.toolMemberSummary,
         executionResult: message.sessionItem?.payload?.code_execution_result,
         meta: message.toolMeta,
       },

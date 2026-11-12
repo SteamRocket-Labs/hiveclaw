@@ -36,10 +36,6 @@ logger = logging.getLogger(__name__)
 
 SCHEMA = "hive.assistant_binding.v1"
 ASSISTANT_EMPLOYEE_NAME = "My Assistant"
-# Same untouched platform default, provisioned for Chinese-interface members.
-# Existing rows keep their stored bytes; display layers map both sentinels.
-ASSISTANT_EMPLOYEE_NAME_ZH = "我的助理"
-DEFAULT_ASSISTANT_NAMES = frozenset({ASSISTANT_EMPLOYEE_NAME, ASSISTANT_EMPLOYEE_NAME_ZH})
 ASSISTANT_ROLE = "The user's assistant"
 HR_AGENT_NAME = "__system_hr__"
 HIDDEN_CHAT_SOURCES = ("trigger", "task", "heartbeat")
@@ -88,7 +84,6 @@ async def open_assistant(
     expected_tenant_id: uuid.UUID | None = None,
     idempotency_key: str | None = None,
     replace_unavailable: bool = False,
-    ui_language: str | None = None,
 ) -> dict[str, Any]:
     tenant_id = await _tenant(db, user)
     _reject_stale_scope(user, tenant_id, expected_user_id, expected_tenant_id)
@@ -142,7 +137,7 @@ async def open_assistant(
             db,
             requester=user,
             tenant_id=tenant_id,
-            name=(ASSISTANT_EMPLOYEE_NAME_ZH if (ui_language or "").lower().startswith("zh") else ASSISTANT_EMPLOYEE_NAME),
+            name=ASSISTANT_EMPLOYEE_NAME,
             role_description=ASSISTANT_ROLE,
             primary_model_id=model_id,
             audit_action="assistant.provisioned",

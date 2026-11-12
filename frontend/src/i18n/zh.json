@@ -573,7 +573,9 @@
     "identity": "员工",
     "workspaceMissing": "员工工作区还没准备好",
     "historyKept": "之前的会话仍保留",
-    "legacyUnresolved": "没有可确认的既有绑定"
+    "legacyUnresolved": "没有可确认的既有绑定",
+    "ownerLabel": "{{owner}}的助理",
+    "neutralLabel": "助理"
   },
   "nav": {
     "dashboard": "工作台",

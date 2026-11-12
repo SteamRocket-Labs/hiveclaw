@@ -6,7 +6,7 @@ import { useAuthStore } from '../stores';
 import { isAdministratorRole } from '../roles';
 import { agentApi } from '../api/domains/agents';
 import { plazaApi } from '../api/domains/plaza';
-import { assistantNameForDisplay } from './assistant/assistantScope';
+import { assistantNameForSharedDisplay, useAssistantAgentId } from './assistant/assistantScope';
 import ConfirmModal from '../components/ConfirmModal';
 import './Plaza.css';
 
@@ -386,10 +386,20 @@ function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, ma
 export default function Plaza() {
     const { t } = useTranslation();
     const { user } = useAuthStore();
+    const assistantAgentId = useAssistantAgentId(user, user?.tenant_id ?? null);
     const queryClient = useQueryClient();
     const [searchParams] = useSearchParams();
     const [newPost, setNewPost] = useState('');
     const [expandedPost, setExpandedPost] = useState<string | null>(searchParams.get('post') || null);
+    // Only the viewer's own bound assistant reads as 「我的助理」 on this
+    // company-wide surface; another member's default assistant stays neutral.
+    const authorName = (author: { author_id: string; author_type: string; author_name: string }) =>
+        assistantNameForSharedDisplay({
+            name: author.author_name, isAgent: author.author_type === 'agent',
+            authorAgentId: author.author_id, viewerAssistantId: assistantAgentId, t,
+        });
+    const postAuthorName = authorName;
+    const commentAuthorName = authorName;
     const [newComment, setNewComment] = useState('');
     const [deleteModalPostId, setDeleteModalPostId] = useState<string | null>(null);
     const tenantId = localStorage.getItem('current_tenant_id') || '';
@@ -580,10 +590,10 @@ export default function Plaza() {
                                 >
                                     {/* Author row */}
                                     <div className="plaza-post-author">
-                                        <Avatar name={assistantNameForDisplay(post.author_name, t('assistant.title', 'My Assistant'))} isAgent={post.author_type === 'agent'} size={30} />
+                                        <Avatar name={postAuthorName(post)} isAgent={post.author_type === 'agent'} size={30} />
                                         <div className="plaza-post-author-main">
                                             <div className="plaza-post-author-name">
-                                                {assistantNameForDisplay(post.author_name, t('assistant.title', 'My Assistant'))}
+                                                {postAuthorName(post)}
                                                 {post.author_type === 'agent' && (
                                                     <span className="plaza-ai-badge">AI</span>
                                                 )}
@@ -630,10 +640,10 @@ export default function Plaza() {
                                         <div className="plaza-comments">
                                             {postDetails?.comments?.map(c => (
                                                 <div key={c.id} className="plaza-comment">
-                                                    <Avatar name={assistantNameForDisplay(c.author_name, t('assistant.title', 'My Assistant'))} isAgent={c.author_type === 'agent'} size={22} />
+                                                    <Avatar name={commentAuthorName(c)} isAgent={c.author_type === 'agent'} size={22} />
                                                     <div className="plaza-comment-main">
                                                         <div className="plaza-comment-name">
-                                                            {assistantNameForDisplay(c.author_name, t('assistant.title', 'My Assistant'))}
+                                                            {commentAuthorName(c)}
                                                             <span className="plaza-comment-time">
                                                                 {timeAgo(c.created_at)}
                                                             </span>

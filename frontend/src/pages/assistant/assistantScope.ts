@@ -9,6 +9,30 @@ export function assistantNameForDisplay(name: string, assistantLabel: string): s
   return name === 'My Assistant' ? assistantLabel : name;
 }
 
+/**
+ * Name a default assistant on a surface other viewers also read.
+ * The viewer's own bound assistant keeps the possessive label; someone else's
+ * default assistant gets the owner's label (or a neutral one); a human author
+ * is never relabeled.
+ */
+export function assistantNameForSharedDisplay(input: {
+  name: string;
+  isAgent: boolean;
+  authorAgentId?: string | null;
+  viewerAssistantId?: string | null;
+  ownerName?: string | null;
+  t: (key: string, fallback: string, values?: Record<string, unknown>) => string;
+}): string {
+  const { name, isAgent, authorAgentId, viewerAssistantId, ownerName, t } = input;
+  if (!isAgent || name !== 'My Assistant') return name;
+  if (authorAgentId && viewerAssistantId && String(authorAgentId) === String(viewerAssistantId)) {
+    return t('assistant.title', 'My Assistant');
+  }
+  return ownerName
+    ? t('assistant.ownerLabel', '{{owner}}的助理', { owner: ownerName })
+    : t('assistant.neutralLabel', '助理');
+}
+
 /** The stored platform default for a provisioned assistant's description
  * (`backend/app/services/assistant_binding.py` ASSISTANT_ROLE). Display layers
  * map this sentinel to a localized label; stored rows keep the exact bytes. */

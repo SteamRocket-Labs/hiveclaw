@@ -598,7 +598,9 @@
     "identity": "Employee",
     "workspaceMissing": "The employee workspace is not ready",
     "historyKept": "Earlier conversations are kept",
-    "legacyUnresolved": "No previous assistant binding could be confirmed"
+    "legacyUnresolved": "No previous assistant binding could be confirmed",
+    "ownerLabel": "{{owner}}'s assistant",
+    "neutralLabel": "Assistant"
   },
   "nav": {
     "dashboard": "Dashboard",

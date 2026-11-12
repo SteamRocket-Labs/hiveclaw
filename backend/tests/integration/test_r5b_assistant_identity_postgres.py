@@ -37,9 +37,9 @@ async def test_renamed_bound_assistant_uses_both_interface_titles_and_a_natural_
             assert '"我的助理" in the Chinese interface or "My Assistant" in the English interface' in prompt
             # X1: the member hears the name matching their language; the English
             # default is never offered as the self-introduction.
-            assert 'call yourself by the name that matches the member\'s language ("我的助理" when writing Chinese)' in prompt
+            assert 'call yourself by the name that matches the member\'s language ("我的助理" when writing Chinese, "My Assistant" in English)' in prompt
             assert '"我是你的助理"' in prompt
-            assert 'never quote the stored default name, an id, or a status code as your identity' in prompt
+            assert 'never quote an id or a status code as your identity' in prompt
             assert 'You are "Renamed private assistant"' not in prompt
         else:
             assert 'You are "Renamed private assistant",' in prompt

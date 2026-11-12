@@ -2,7 +2,6 @@ import { useRef, useState } from 'react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import i18n from 'i18next';
 import { ApiError } from '../../api/core';
 import { assistantApi, type AssistantBinding, type AssistantScopeEcho } from '../../api/domains/assistant';
 import { agentApi } from '../../api/domains/agents';
@@ -27,11 +26,6 @@ const automaticOpens = new WeakMap<QueryClient, Set<string>>();
 
 function echo(scope: Scope): AssistantScopeEcho {
   return { expected_user_id: scope.userId || undefined, expected_tenant_id: scope.tenantId || undefined };
-}
-
-/** Provisioning follows the opener's interface language for the default name. */
-function openBody(scope: Scope, extra: Record<string, unknown> = {}) {
-  return { ...echo(scope), ui_language: i18n.language || undefined, ...extra };
 }
 
 function stillCurrent(started: Scope, payload?: AssistantBinding) {
@@ -79,7 +73,7 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
         && ['unbound', 'provision_incomplete'].includes(result.state) && !attempted.has(scopeKey)) {
         attempted.add(scopeKey);
         try {
-          result = await assistantApi.open(openBody(scope), { signal });
+          result = await assistantApi.open(echo(scope), { signal });
           signal.throwIfAborted();
         } catch (error) {
           if (signal.aborted) queryClient.removeQueries({ queryKey: bindingKey, exact: true, type: 'inactive' });
@@ -166,11 +160,11 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
     errorState={errorState}
     actionError={actionError}
     busy={pending}
-    onOpen={(replace) => { void saveBinding(() => assistantApi.open(openBody(scope, { replace_unavailable: replace }))); }}
+    onOpen={(replace) => { void saveBinding(() => assistantApi.open({ ...echo(scope), replace_unavailable: replace })); }}
     onSelect={(agentId) => { void saveBinding(() => assistantApi.select({ ...echo(scope), agent_id: agentId })); }}
     onRetry={() => {
       if (payload?.state === 'provision_incomplete') {
-        void saveBinding(() => assistantApi.open(openBody(scope)));
+        void saveBinding(() => assistantApi.open(echo(scope)));
       } else {
         setActionError(null);
         void query.refetch();

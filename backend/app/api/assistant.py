@@ -27,9 +27,6 @@ class AssistantScope(BaseModel):
 class AssistantOpenIn(AssistantScope):
     idempotency_key: str | None = Field(default=None, max_length=200)
     replace_unavailable: bool = False
-    # The opener's interface language; only "zh*" selects the localized default
-    # name for a newly provisioned assistant. Existing rows are never rewritten.
-    ui_language: str | None = Field(default=None, max_length=8)
 
 
 class AssistantSelectIn(AssistantScope):
@@ -72,7 +69,6 @@ async def open_my_assistant(
             expected_tenant_id=body.expected_tenant_id,
             idempotency_key=body.idempotency_key,
             replace_unavailable=body.replace_unavailable,
-            ui_language=body.ui_language,
         )
     except AssistantError as exc:
         _raise(exc)

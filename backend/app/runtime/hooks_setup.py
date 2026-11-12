@@ -455,6 +455,8 @@ async def project_committed_response_complete(ctx: HookContext) -> dict[str, obj
     session_projection, fast_reflection = await asyncio.gather(
         _project_on_response(ctx), _fast_reflection_on_response(ctx), return_exceptions=True,
     )
+    if isinstance(session_projection, BaseException) and isinstance(fast_reflection, BaseException):
+        logger.warning("[Hooks] Required fast reflection also failed error_type=%s", type(fast_reflection).__name__)
     # Finish both required consumers before a retry can replay either one.
     for result in (session_projection, fast_reflection):
         if isinstance(result, BaseException):

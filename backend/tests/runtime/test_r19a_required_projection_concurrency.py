@@ -65,3 +65,26 @@ async def test_required_projections_join_before_success_or_failure(monkeypatch, 
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_both_projection_failures_log_secondary_type_without_content(monkeypatch, caplog):
+    ctx = _context()
+    primary = ValueError("PRIVATE_SESSION_CONTENT")
+    secondary = RuntimeError("PRIVATE_REFLECTION_CONTENT")
+
+    async def session(_ctx):
+        raise primary
+
+    async def reflection(_ctx):
+        raise secondary
+
+    monkeypatch.setattr(hooks_setup, "_project_on_response", session)
+    monkeypatch.setattr(hooks_setup, "_fast_reflection_on_response", reflection)
+    with caplog.at_level("WARNING", logger=hooks_setup.__name__):
+        with pytest.raises(ValueError) as caught:
+            await hooks_setup.project_committed_response_complete(ctx)
+    assert caught.value is primary
+    assert any("RuntimeError" in record.getMessage() for record in caplog.records)
+    assert "PRIVATE_SESSION_CONTENT" not in caplog.text and "PRIVATE_REFLECTION_CONTENT" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+    assert not ctx.metadata.get("required_response_complete_projected")

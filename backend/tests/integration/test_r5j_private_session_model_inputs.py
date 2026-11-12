@@ -180,7 +180,30 @@ async def test_unverified_t2_reference_read_delivers_complete_body(
     s = t2_work
     path = s["package_path"] + "/summary.md"
     body = (s["agent_root"] / path).read_text()
+    # This agent has a prior session, so its self-model is no longer the empty
+    # bootstrap skeleton (profile_plane.py skips that); a non-empty resident
+    # plane is what makes the prompt carry the memory section at all
+    # (prompt_builder.py:578 renders it only for a non-empty memory_snapshot).
+    self_path = s["agent_root"] / "memory/self/self.md"
+    self_path.parent.mkdir(parents=True, exist_ok=True)
+    self_path.write_text("# Self\n\nPrior sessions produced reviewed evidence packages.\n")
+    # Owner decision 2026-11-12 (改为按需取): the per-turn preselection pointer
+    # that used to name this record ("Inspect complete authorized files: …" from
+    # the deleted memory_resource_references._render) is gone. The on-demand
+    # route is the static Using-Memory-Tools section naming memory/t2/sessions/
+    # (app/runtime/prompt_sections/memory.py), then a discovery call, then the
+    # read. R5j keeps protecting the same two facts: the old body never reaches
+    # the model as if current, and the authorized read delivers it complete.
     client = ScriptedLLMClient([
+        {"tool_calls": [{"id": "locate-t2", "type": "function", "function": {
+            "name": "list_files", "arguments": json.dumps({"path": "memory/t2/sessions"})}}],
+            "finish_reason": "tool_calls"},
+        {"tool_calls": [{"id": "descend-session", "type": "function", "function": {
+            "name": "list_files", "arguments": json.dumps(
+                {"path": f"memory/t2/sessions/{s['previous']}"})}}], "finish_reason": "tool_calls"},
+        {"tool_calls": [{"id": "descend-segments", "type": "function", "function": {
+            "name": "list_files", "arguments": json.dumps(
+                {"path": f"memory/t2/sessions/{s['previous']}/segments"})}}], "finish_reason": "tool_calls"},
         {"tool_calls": [{"id": "recover-t2", "type": "function", "function": {
             "name": "read_file", "arguments": json.dumps({"path": path})}}], "finish_reason": "tool_calls"},
         {"content": "Read the complete original record.", "finish_reason": "stop"},
@@ -191,9 +214,19 @@ async def test_unverified_t2_reference_read_delivers_complete_body(
         await execute_web_chat_run(s["run_id"])
     finally:
         reset_runtime_task_fence(fence)
-    assert len(client.requests) == 2
+    assert len(client.requests) == 5
     first = json.dumps(client.requests[0]["messages"], ensure_ascii=False)
-    assert "Inspect complete authorized files" in first and path in first
+    # The static route names the folder this record lives in, not the record.
+    assert "memory/t2/sessions/" in first and "read_file" in first, first
+    assert "Inspect complete authorized files" not in first
     assert "OLD_UNVERIFIED_T2_BODY" not in first
-    reads = [m for m in client.requests[1]["messages"] if m.get("tool_call_id") == "recover-t2"]
-    assert len(reads) == 1 and body in json.loads(reads[0]["content"])["content"], client.requests[1]
+    locate = [m for m in client.requests[1]["messages"] if m.get("tool_call_id") == "locate-t2"]
+    assert len(locate) == 1 and str(s["previous"]) in locate[0]["content"], locate
+    descend_session = [m for m in client.requests[2]["messages"] if m.get("tool_call_id") == "descend-session"]
+    assert len(descend_session) == 1 and "segments" in descend_session[0]["content"], descend_session
+    descend_segments = [m for m in client.requests[3]["messages"] if m.get("tool_call_id") == "descend-segments"]
+    assert len(descend_segments) == 1 and "seg-1" in descend_segments[0]["content"], descend_segments
+    for request in client.requests[1:4]:
+        assert "OLD_UNVERIFIED_T2_BODY" not in json.dumps(request["messages"], ensure_ascii=False)
+    reads = [m for m in client.requests[4]["messages"] if m.get("tool_call_id") == "recover-t2"]
+    assert len(reads) == 1 and body in json.loads(reads[0]["content"])["content"], client.requests[4]

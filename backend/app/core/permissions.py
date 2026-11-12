@@ -393,6 +393,9 @@ async def agent_access_from_facts(db, user, facts) -> Tuple[Agent, str]:
     from app.services.source_read_queries import permission_rows
 
     agent, active, permissions, teams, resources = facts[:5] if facts is not None else (None,) * 5
+    # A source reader may become global when its live User row is refreshed.
+    if agent is not None and user.role == "platform_admin":
+        return await check_agent_access(db, user, agent.id)
     agent = await _validate_loaded_agent_for_user(db, user, agent if active is True else None)
     team_ids = [uuid.UUID(value) for value in teams or []] if (
         getattr(user, "is_active", True) is True and user.tenant_id == agent.tenant_id) else []

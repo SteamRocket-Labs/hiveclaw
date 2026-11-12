@@ -531,12 +531,14 @@ async def test_sources_are_validated_once_and_authority_checks_stay_live(native_
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, path):
     from app.core import permissions
     from app.core.source_read_purpose import current_source_recipient
+    from app.models.chat_session import ChatSession
     from app.services import content_input_receipts as receipts
 
     n = await _graph(native_workspace, 10, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
     validations, authority, checks, resolutions = Counter(), Counter(), Counter(), Counter()
     validate, access = receipts._validate_input_dependency_batch, permissions.check_agent_access
     live_access = permissions._agent_access_for_live_row
+    facts_access = getattr(permissions, "agent_access_from_facts", None)
     authorize, resolve = receipts._authorize_session_input_source, receipts._resolve_session_input_source
 
     async def observe_validation(db, tenant, dependencies, **context):
@@ -560,6 +562,13 @@ async def test_sources_are_validated_once_and_authority_checks_stay_live(native_
         count_access(user, agent.id)
         return await live_access(db, user, agent, tenant_active)
 
+    async def observe_facts_access(db, user, facts):
+        # Preserve the session-source scope of the original hook. Base's
+        # workspace ACL uses a separate imported check_agent_access entry.
+        if isinstance(facts[5], ChatSession):
+            count_access(user, facts[0].id)
+        return await facts_access(db, user, facts)
+
     def authority_key(db, tenant, session, context):
         return (receipts._DISCLOSURE_SOURCE_VALIDATIONS.get(), db.get_transaction(), tenant, session.id,
             id(context.get("user")), id(context.get("runtime_request")))
@@ -575,6 +584,9 @@ async def test_sources_are_validated_once_and_authority_checks_stay_live(native_
     monkeypatch.setattr(receipts, "_validate_input_dependency_batch", observe_validation)
     monkeypatch.setattr(permissions, "check_agent_access", observe_access)
     monkeypatch.setattr(permissions, "_agent_access_for_live_row", observe_live_access)
+    if facts_access is not None:
+        monkeypatch.setattr(permissions, "agent_access_from_facts", observe_facts_access)
+        monkeypatch.setattr(receipts, "agent_access_from_facts", observe_facts_access)
     monkeypatch.setattr(receipts, "_authorize_session_input_source", observe_check)
     monkeypatch.setattr(receipts, "_resolve_session_input_source", observe_resolution)
     operation = {"download": lambda: _browser(n, "download"), "heartbeat_t2": lambda: _heartbeat(n),

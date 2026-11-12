@@ -17,6 +17,8 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from tests.integration.test_r15e_artifact_graph_reads_postgres import graph, native_workspace  # noqa: F401
 from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+from tests.integration.test_m4c_explicit_memory_scope_postgres import shared_memory  # noqa: F401
+from tests.integration.test_m4g_learned_skill_sources_postgres import learned_skill  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -125,24 +127,38 @@ async def test_org_admin_downloads_platform_observer_from_another_home_tenant(
 ):
     n = graph
     home = uuid.uuid4()
-    url, body = await _deliver(n, n.common.directory, owner_sessionmaker, app_user_sessionmaker)
     async with owner_sessionmaker() as db:
         db.add(Tenant(id=home, name="Platform observer home", slug=f"observer-{home.hex}"))
         await db.flush()
         observer = await db.get(User, n.user)
-        observer.role, observer.tenant_id = "platform_admin", home
-        reader = await db.get(User, n.foreign)
-        reader.role = "org_admin"
+        observer.role = "org_admin"
         await db.commit()
+    url, body = await _deliver(n, n.common.directory, owner_sessionmaker, app_user_sessionmaker)
     from app.core.security import get_current_user
 
+    authenticated_reader = None
+
     async def current_reader():
+        nonlocal authenticated_reader
+        if authenticated_reader is not None:
+            return authenticated_reader
         async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
-            return await db.get(User, n.foreign)
+            authenticated_reader = await db.get(User, n.user)
+            assert authenticated_reader.role == "org_admin"
+            db.expunge(authenticated_reader)
+        # Authentication has already captured this request's org-admin
+        # frame. The live observer identity changes before source reads.
+        # Keeping the same subject also preserves base's directory audience.
+        async with owner_sessionmaker() as writer:
+            observer = await writer.get(User, n.user)
+            observer.role, observer.tenant_id = "platform_admin", home
+            await writer.commit()
+        return authenticated_reader
 
     n.client._transport.app.dependency_overrides[get_current_user] = current_reader
     n.monkeypatch.setattr("app.api.files._load_download_user_from_jwt", lambda **_kwargs: current_reader())
     response = await n.client.get(url)
+    assert authenticated_reader is not None
     assert response.status_code == 200, response.text
     assert response.content == body
 
@@ -303,3 +319,100 @@ async def test_remote_action_span_is_read_live_after_preload(
             second = await _input_row(db, InvocationSpan, span_id)
             assert second.status == "completed"
             assert second.metadata_json == {"phase": "completed"}
+
+
+async def test_explicit_facts_preserve_platform_admin_owner_bypass(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker,  # noqa: F811
+):
+    from fastapi import HTTPException
+    from app.core.permissions import agent_access_from_facts, check_agent_access
+    from app.services.source_read_queries import source_reader_statement
+
+    n, home = native_workspace, uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=home, name="Owner home", slug=f"owner-{home.hex}"))
+        await db.flush()
+        owner = await db.get(User, n.foreign)
+        owner.tenant_id, owner.is_active = home, False
+        (await db.get(User, n.user)).role = "platform_admin"
+        (await db.get(Agent, n.agent)).owner_user_id = n.foreign
+        await db.commit()
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        user = await db.get(User, n.user)
+        with pytest.raises(HTTPException) as base_denied:
+            await check_agent_access(db, user, n.agent)
+        assert base_denied.value.status_code == 410
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        user = await db.get(User, n.user)
+        # A source point can refresh the reader's role after it selected the
+        # ordinary joined path. Its tenant-visible owner join is insufficient
+        # for the now-global reader; retain the base audited owner lookup.
+        facts = (await db.execute(source_reader_statement(user, n.agent))).first()
+        assert facts[0].owner is None
+        with pytest.raises(HTTPException) as joined_denied:
+            await agent_access_from_facts(db, user, facts)
+        assert joined_denied.value.status_code == base_denied.value.status_code
+
+
+@pytest.mark.parametrize("seal_after_preload", [False, True])
+async def test_download_retains_learned_skill_with_tool_only_model_source(
+    learned_skill, owner_sessionmaker, app_user_sessionmaker, monkeypatch, seal_after_preload,  # noqa: F811
+):
+    from app.models.chat_artifact import ChatArtifact
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.config_revision import ConfigRevision
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.services import skill_source_receipts as skills
+    from app.services.config_versioning import save_revision
+    from app.services.learned_skill_sources import model_source
+    from app.services.session_model_inputs import tool_result_source_hash
+    from app.services.session_semantic_history import _event_payload
+
+    shared, submission = learned_skill
+    n = shared.n
+    async with owner_sessionmaker() as db:
+        tool = await db.get(SessionToolInvocation, submission.id)
+        model = (await db.scalars(select(SessionModelResult).where(SessionModelResult.session_id == tool.session_id,
+            SessionModelResult.run_id == tool.run_id, SessionModelResult.provider_request_id == tool.provider_request_id))).one()
+        model_id, seal = model.id, deepcopy(model.seal_json)
+        tool_dependency = {"source_kind": "session_tool_invocation", "source_id": str(tool.id),
+            "source_version": tool_result_source_hash(_event_payload(await db.get(ChatTranscriptEvent, tool.result_event_id)))}
+        install = (await db.scalars(select(ConfigRevision).where(ConfigRevision.tenant_id == n.tenant,
+            ConfigRevision.entity_type == "agent_skill_install", ConfigRevision.is_active.is_(True),
+            ConfigRevision.content["folder_name"].astext == n.first_learned_skill_path.split("/")[1]))).one()
+        content = deepcopy(install.content)
+        # Retain the actual submitted method's sealed model as review evidence.
+        # All candidate, installation and file validators remain enabled.
+        content["learning"]["review_dependencies"].append(model_source(model))
+        install = await save_revision(db, tenant_id=n.tenant, entity_type="agent_skill_install",
+            entity_id=install.entity_id, change_source="evolve", changed_by_user_id=n.user,
+            changed_by_agent_id=n.agent, content=content, change_message="Retain the submitted method's sealed model source")
+        dependency = {"source_kind": "learned_skill_file", "source_id":
+            f"{n.agent}\n{n.first_learned_skill_path}\n{install.id}", "source_version": content["files"][n.first_learned_skill_path]}
+        await db.commit()
+    url, body = await _deliver(n, dependency, owner_sessionmaker, app_user_sessionmaker)
+    async with owner_sessionmaker() as db:
+        artifact = await db.get(ChatArtifact, uuid.UUID(url.split("/")[-2]))
+        receipt = await db.get(ContentInputReceipt, uuid.UUID(artifact.snapshot_json["content_input_receipt_id"]))
+        # The closure discovers the model through this tool, not a direct
+        # model dependency. The Skill's review evidence is read later.
+        receipt.dependencies_json = [dependency, tool_dependency]
+        if seal_after_preload:
+            (await db.get(SessionModelResult, model_id)).seal_json = None
+        await db.commit()
+    validate, restored = skills.validate_skill_file_dependency, False
+
+    async def restore_at_skill_point(db, tenant_id, source, **context):
+        nonlocal restored
+        if source == dependency and seal_after_preload and not restored:
+            async with owner_sessionmaker() as writer:
+                (await writer.get(SessionModelResult, model_id)).seal_json = seal
+                await writer.commit()
+            restored = True
+        return await validate(db, tenant_id, source, **context)
+
+    monkeypatch.setattr(skills, "validate_skill_file_dependency", restore_at_skill_point)
+    response = await n.client.get(url)
+    assert restored is seal_after_preload
+    assert response.status_code == 200, response.text
+    assert response.content == body

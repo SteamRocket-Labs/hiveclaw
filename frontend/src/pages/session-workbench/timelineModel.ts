@@ -1664,7 +1664,9 @@ function buildRunCell(
 /** Mark only the run's last assistant_text prose step whose display text is
  * byte-identical to the final answer. Commentary, report_progress notes and
  * anything carrying a toolCallId stay visible even if the text matches
- * (X1-r2 ruling 3). */
+ * (X1-r2 ruling 3). When a later identical assistant_text arrives, the
+ * earlier copy's flag is cleared so only the final copy hides
+ * (X1-r3 ruling 10 note 2). */
 function markStepsRepeatingAnswer(steps: RunStepSnapshot[], answer: AgentChatMessage): RunStepSnapshot[] {
   const answerText = assistantReplyForDisplay(answer.content || '').trim();
   if (!answerText) return steps;
@@ -1676,7 +1678,9 @@ function markStepsRepeatingAnswer(steps: RunStepSnapshot[], answer: AgentChatMes
   const last = steps[lastIndex];
   const lastText = assistantReplyForDisplay(typeof last.details === 'string' ? last.details : '').trim();
   if (lastText !== answerText) return steps;
-  return steps.map((step, index) => (index === lastIndex ? { ...step, repeatsAnswer: true } : step));
+  return steps.map((step, index) => (index === lastIndex
+    ? { ...step, repeatsAnswer: true }
+    : step.repeatsAnswer ? { ...step, repeatsAnswer: false } : step));
 }
 
 function hasOpenRunCell(cells: ThreadTimelineCell[]): boolean {

@@ -24,7 +24,10 @@ describe('X1 expanded block does not repeat the final answer', () => {
     const model = buildThreadTimeline({ messages, isWaiting: false, isStreaming: false, activeRunStatus: null });
     expect(model.cells.some((cell) => cell.kind === 'assistant_final')).toBe(true);
     const run = model.cells.find((cell) => cell.kind === 'active_run');
-    if (!run || run.kind !== 'active_run') return;
+    // X1-r3 ruling 10 note 1: a missing run unit must fail the test, not
+    // return early and pass vacuously.
+    expect(run).toBeTruthy();
+    if (run?.kind !== 'active_run') throw new Error('active run cell missing');
     expect(run.timeline.answerMessageId).toBeTruthy();
     // The in-run copy stays as a counted record but is marked for the
     // renderer; the block keeps its real process steps.
@@ -100,4 +103,33 @@ describe('X1 expanded block does not repeat the final answer', () => {
     if (run?.kind !== 'active_run') throw new Error('run cell missing');
     expect(run.timeline.steps.some((step) => step.kind === 'prose' && step.details === note)).toBe(true);
   });
+  it('a second identical assistant_text clears the earlier copy\'s flag (X1-r3 ruling 10 note 2)', () => {
+    // The answer closes the run; an identical assistant_text arriving after
+    // it appends late. Only the final copy may hide — the earlier one keeps
+    // rendering.
+    const answer = '已经把周报发到广场。';
+    const messages: AgentChatMessage[] = [
+      { id: 'input', role: 'user', content: '发周报', timestamp: '2026-11-12T08:00:00Z' },
+      {
+        id: 'assistant-text-1', role: 'assistant', content: answer, timestamp: '2026-11-12T08:00:10Z',
+        sessionItem: { id: 'assistant-text-1', kind: 'assistant_text', lifecycle: 'completed', terminal: true, scope: { run_id: 'run-1' } } as AgentChatMessage['sessionItem'],
+      },
+      {
+        id: 'assistant-final-1', role: 'assistant', content: answer, timestamp: '2026-11-12T08:00:11Z',
+        sessionItem: { id: 'assistant-final-1', kind: 'assistant_final', lifecycle: 'completed', terminal: true, scope: { run_id: 'run-1' } } as AgentChatMessage['sessionItem'],
+      },
+      {
+        id: 'assistant-text-2', role: 'assistant', content: answer, timestamp: '2026-11-12T08:00:20Z',
+        sessionItem: { id: 'assistant-text-2', kind: 'assistant_text', lifecycle: 'completed', terminal: true, scope: { run_id: 'run-1' } } as AgentChatMessage['sessionItem'],
+      },
+    ];
+    const model = buildThreadTimeline({ messages, isWaiting: false, isStreaming: false, activeRunStatus: null });
+    const run = model.cells.find((cell) => cell.kind === 'active_run');
+    if (run?.kind !== 'active_run') throw new Error('active run cell missing');
+    const copies = run.timeline.steps.filter((step) => step.kind === 'prose' && step.details === answer);
+    expect(copies).toHaveLength(2);
+    expect(copies[0].repeatsAnswer).not.toBe(true);
+    expect(copies[1].repeatsAnswer).toBe(true);
+  });
 });
+

@@ -85,6 +85,12 @@ it('maps every approval summary row from the tool\'s real schema keys (X1-r3 rul
     ['send_channel_message', { message: '合同价 12 万' }, [['消息', '合同价 12 万']]],
     ['send_feishu_message', { member_name: '覃彤', user_id: 'ou_x', message: '合同价 12 万' },
       [['收件人', '覃彤'], ['消息', '合同价 12 万']]],
+    // The Feishu recipient falls back member_name → user_id → open_id
+    // (X1-r3 ruling 10, finding 3).
+    ['send_feishu_message', { user_id: 'ou_x', message: '合同价 12 万' },
+      [['收件人', 'ou_x'], ['消息', '合同价 12 万']]],
+    ['send_feishu_message', { open_id: 'om_y', message: '合同价 12 万' },
+      [['收件人', 'om_y'], ['消息', '合同价 12 万']]],
     ['send_web_message', { username: '覃彤', message: '合同价 12 万' },
       [['收件人', '覃彤'], ['消息', '合同价 12 万']]],
     ['write_file', { path: 'workspace/report.md', content: '# 报告' }, [['路径', 'workspace/report.md']]],
@@ -98,6 +104,21 @@ it('maps every approval summary row from the tool\'s real schema keys (X1-r3 rul
       .map((dt) => [dt.textContent, dt.nextElementSibling?.textContent] as [string, string]);
     for (const row of rows) expect(pairs, tool).toContainEqual(row);
   }
+});
+
+it('shows the command\'s own working directory, not a hard-coded workspace (X1-r3 ruling 10)', () => {
+  const args = { command: 'ls', cwd: '/etc' };
+  const { container } = render(<ThreadItemRenderer item={approvalItem('run_command', args)} approvalArguments={args} />);
+  const pairs = Array.from(container.querySelectorAll('.thread-item-details dt'))
+    .map((dt) => [dt.textContent, dt.nextElementSibling?.textContent] as [string, string]);
+  expect(pairs).toContainEqual(['命令', 'ls']);
+  expect(pairs).toContainEqual(['工作目录', '/etc']);
+  // Without a cwd the card keeps the workspace default.
+  const plain = { command: 'ls' };
+  const second = render(<ThreadItemRenderer item={approvalItem('run_command', plain)} approvalArguments={plain} />);
+  const plainPairs = Array.from(second.container.querySelectorAll('.thread-item-details dt'))
+    .map((dt) => [dt.textContent, dt.nextElementSibling?.textContent] as [string, string]);
+  expect(plainPairs).toContainEqual(['工作目录', 'workspace/']);
 });
 
 it('a replayed upload keeps its file size for the card', () => {

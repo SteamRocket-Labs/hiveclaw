@@ -22,8 +22,8 @@ type Detail = { label: string; value: React.ReactNode };
  * maps the argument keys the member must see; the keys are the tool's real
  * input_schema names (X1-r3 ruling 4); UNTRUNCATED keeps the full text on
  * the card (the fold always shows the complete arguments). */
-const APPROVAL_ARGUMENT_SUMMARIES: Record<string, Array<[string, string]>> = {
-  run_command: [['command', 'command'], ['cwd', 'workspace-dir']],
+const APPROVAL_ARGUMENT_SUMMARIES: Record<string, Array<[string, string | string[]]>> = {
+  run_command: [['command', 'command'], ['cwd', ['cwd', 'workspace-dir']]],
   create_employee_from_request: [['name', 'name'], ['first_task', 'first_task']],
   send_email: [['recipient', 'to'], ['subject', 'subject'], ['body', 'body'], ['cc', 'cc'], ['attachments', 'attachments']],
   reply_email: [['recipient', 'to'], ['subject', 'subject'], ['body', 'body'], ['cc', 'cc'], ['attachments', 'attachments']],
@@ -34,7 +34,7 @@ const APPROVAL_ARGUMENT_SUMMARIES: Record<string, Array<[string, string]>> = {
   delegate_to_agent: [['agent', 'agent_name'], ['message', 'message']],
   send_message_to_agent: [['agent', 'agent_name'], ['message', 'message']],
   send_channel_message: [['message', 'message']],
-  send_feishu_message: [['recipient', 'member_name'], ['message', 'message']],
+  send_feishu_message: [['recipient', ['member_name', 'user_id', 'open_id']], ['message', 'message']],
   send_web_message: [['recipient', 'username'], ['message', 'message']],
   write_file: [['path', 'path']],
   fs_write: [['path', 'path']],
@@ -104,7 +104,12 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
     const proposalDetails: Detail[] = [];
     if (args && summaryMap) {
       for (const [label, argKey] of summaryMap) {
-        const raw = argKey === 'workspace-dir' ? 'workspace/' : args[argKey];
+        // A list reads the first present key (X1-r3 ruling 10): the Feishu
+        // recipient prefers member_name, then user_id, then open_id, and the
+        // working directory shows args.cwd with the workspace as fallback.
+        const keys = Array.isArray(argKey) ? argKey : [argKey];
+        const raw = keys.map((key) => (key === 'workspace-dir' ? 'workspace/' : args[key]))
+          .find((value) => value !== undefined && value !== null && value !== '');
         const text = Array.isArray(raw) ? raw.map(String).join(', ') : raw;
         if (typeof text !== 'string' || !text) continue;
         proposalDetails.push({

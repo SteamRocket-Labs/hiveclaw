@@ -109,3 +109,12 @@ def test_creation_tool_instructs_public_readiness_without_losing_identifiers():
     assert create_employee_from_request is not None
     assert "do not repeat internal identifiers, status codes, or A2A terminology" in description
     assert "retain them for subsequent tool calls" in description
+
+
+def test_creation_tool_blueprint_fields_are_member_language_plain_words():
+    # X1 run15 step 4: the card's 边界 section showed 「保存于自身 workspace」.
+    from app.tools.decorator import get_all_registered_tools
+    description = get_all_registered_tools()["create_employee_from_request"][0].description
+    assert "shown to the member on the creation card" in description
+    assert "the member's language in plain words" in description
+    assert "「工作区」, never \"workspace\"" in description

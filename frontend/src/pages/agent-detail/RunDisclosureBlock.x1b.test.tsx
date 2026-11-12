@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -21,47 +20,43 @@ const receiptStep = {
   systemEvent: {
     type: 'child_session',
     metadata: {
-      target_agent_id: 'agent-colleague',
+      to_agent: 'agent-colleague',
       child_session_id: 'session-colleague',
-      target_agent_name: '周报助手',
+      to_agent_name: '周报助手',
     },
   },
 };
 
-function renderBlock(step: typeof receiptStep, listedAgents: Array<{ id: string }>) {
-  const client = new QueryClient();
-  client.setQueryData(['agents', 'tenant-1'], listedAgents);
-  window.localStorage.setItem('current_tenant_id', 'tenant-1');
+function renderBlock(step: typeof receiptStep, viewerOwnsSession: boolean) {
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <RunDisclosureBlock timeline={{ id: 'run', status: 'running', steps: [step] }} />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <RunDisclosureBlock timeline={{ id: 'run', status: 'running', steps: [step] }}
+        viewerOwnsSession={viewerOwnsSession} />
+    </MemoryRouter>,
   );
 }
 
 it('titles the receipt by its direction: the result came back from the colleague', () => {
-  const { container } = renderBlock(receiptStep, []);
+  const { container } = renderBlock(receiptStep, false);
   expect(container.textContent).toContain('同事交回的结果');
   expect(container.textContent).not.toContain('交给其他数字员工');
 });
 
-it('links to the colleague conversation only when the member already sees that employee', () => {
-  const { container } = renderBlock(receiptStep, [{ id: 'agent-colleague' }]);
+it('links to the colleague conversation inside the viewer\'s own session (X1-r2 ruling 6)', () => {
+  const { container } = renderBlock(receiptStep, true);
   fireEvent.click(container.querySelector('.run-step-toggle') as HTMLButtonElement);
   const link = container.querySelector(`a[href="/agents/agent-colleague/sessions/session-colleague"]`);
   expect(link).toBeTruthy();
   expect(link?.textContent).toContain('查看这位同事的对话');
 });
 
-it('renders no colleague link when the employee is not in the member list', () => {
-  const { container } = renderBlock(receiptStep, [{ id: 'agent-other' }]);
+it('renders no colleague link for a viewer who does not own the session (a group member)', () => {
+  const { container } = renderBlock(receiptStep, false);
   fireEvent.click(container.querySelector('.run-step-toggle') as HTMLButtonElement);
   expect(container.querySelector('a[href^="/agents/agent-colleague"]')).toBeNull();
 });
 
 it('a started delegation keeps the outgoing title', () => {
-  const { container } = renderBlock({ ...receiptStep, title: 'Delegation update' }, []);
+  const { container } = renderBlock({ ...receiptStep, title: 'Delegation update' }, false);
   expect(container.textContent).toContain('交给其他数字员工');
 });

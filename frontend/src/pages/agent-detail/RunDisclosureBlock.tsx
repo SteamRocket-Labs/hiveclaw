@@ -169,21 +169,16 @@ function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
   return <IconTool size={size} stroke={2.1} />;
 }
 
-/** Open the colleague's conversation only when the member's own, already
- * authority-filtered employee list contains it (no new permission logic). */
+/** The colleague's conversation link renders only inside the viewer's own
+ * private session — the delegated child's owner is the requester, so the
+ * existing session read rules already admit this viewer (X1-r2 ruling 6).
+ * The member's thread-item projection strips every id; the link reads the
+ * raw replayed event's to_agent, which was always present. */
 function ColleagueConversationLink({ metadata }: { metadata: Record<string, unknown> }) {
   const { t } = useTranslation();
-  // Some render hosts (tests, static projections) mount without a provider;
-  // without a known cache there is nothing to gate on, so no link.
-  const queryClient = React.useContext(QueryClientContext) as ReturnType<typeof useQueryClient> | null;
-  const rawAgentId = metadata.target_agent_id ?? metadata.to_agent;
-  const agentId = typeof rawAgentId === 'string' ? rawAgentId : '';
+  const agentId = typeof metadata.to_agent === 'string' ? metadata.to_agent : '';
   const sessionId = typeof metadata.child_session_id === 'string' ? metadata.child_session_id : '';
-  const tenantId = localStorage.getItem('current_tenant_id')
-    || useAuthStore.getState().user?.tenant_id
-    || '';
-  const listed = queryClient?.getQueryData<Array<{ id: string }>>(['agents', tenantId]) || [];
-  if (!agentId || !sessionId || !listed.some((agent) => agent.id === agentId)) return null;
+  if (!agentId || !sessionId) return null;
   return (
     <p className="run-colleague-link">
       <Link to={`/agents/${agentId}/sessions/${sessionId}`}>{t('agent.chat.disclosure.openColleagueConversation', 'Open this colleague\'s conversation')}</Link>
@@ -212,7 +207,7 @@ function commandOutcome(details: unknown): 'done' | 'failed' | 'unknown' | null 
   return exitCodes.includes(0) ? 'done' : null;
 }
 
-function RunStepDetails({ step }: { step: RunStepSnapshot }) {
+function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; viewerOwnsSession?: boolean }) {
   const { t } = useTranslation();
   if (toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)) {
     const toolName = toolNameOf(step);
@@ -272,13 +267,13 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   }
   const detailText = typeof step.details === 'string' ? step.details : '';
   if (detailText.includes('[REDACTED_SECRET]')) return <pre className="run-detail-pre"><PastedCredentialText content={detailText} /></pre>;
-  const colleagueLink = step.title === 'Delegation result' && step.systemEvent
+  const colleagueLink = step.title === 'Delegation result' && step.systemEvent && viewerOwnsSession
     ? <ColleagueConversationLink metadata={step.systemEvent.metadata} /> : null;
   if (detailText) return <>{<MarkdownRenderer content={detailText} />}{colleagueLink}</>;
   return colleagueLink;
 }
 
-function RunStepRow({ step, resultPreview }: { step: RunStepSnapshot; resultPreview: boolean }) {
+function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepSnapshot; resultPreview: boolean; viewerOwnsSession?: boolean }) {
   const { t } = useTranslation();
   const running = step.status === 'running';
   // Commands, arguments and output wait behind this toggle: the default layer
@@ -316,7 +311,7 @@ function RunStepRow({ step, resultPreview }: { step: RunStepSnapshot; resultPrev
               : <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown>
           }</span>}
         </button>
-        {expanded && <RunStepDetails step={step} />}
+        {expanded && <RunStepDetails step={step} viewerOwnsSession={viewerOwnsSession} />}
       </div>
     </div>
   );
@@ -503,19 +498,21 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
   );
 }
 
-function RunTimelineItem({ item, resultPreview }: { item: RunRenderItem; resultPreview: boolean }) {
+function RunTimelineItem({ item, resultPreview, viewerOwnsSession }: { item: RunRenderItem; resultPreview: boolean; viewerOwnsSession?: boolean }) {
   if (item.kind === 'tool_group') return <ToolActivityGroup steps={item.steps} />;
   if (item.step.kind === 'commentary' || item.step.kind === 'prose') return <RunProse step={item.step} />;
   if (item.step.kind === 'compaction') return <RunCompactionBoundary step={item.step} />;
-  return <RunStepRow step={item.step} resultPreview={resultPreview} />;
+  return <RunStepRow step={item.step} resultPreview={resultPreview} viewerOwnsSession={viewerOwnsSession} />;
 }
 
 export default function RunDisclosureBlock({
   timeline,
   presentationKey = null,
+  viewerOwnsSession = false,
 }: {
   timeline: RunTimelineSnapshot;
   presentationKey?: string | null;
+  viewerOwnsSession?: boolean;
 }) {
   const { t } = useTranslation();
   const running = timeline.status === 'running';
@@ -605,7 +602,7 @@ export default function RunDisclosureBlock({
         </button>
         {expanded && (
           <div className="run-disclosure-steps">
-            {renderItems.map((item) => <RunTimelineItem key={item.id} item={item} resultPreview={resultsKept} />)}
+            {renderItems.map((item) => <RunTimelineItem key={item.id} item={item} resultPreview={resultsKept} viewerOwnsSession={viewerOwnsSession} />)}
           </div>
         )}
       </div>

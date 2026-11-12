@@ -390,7 +390,7 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                     "retryable": True,
                 }
             )
-        from app.services.content_input_receipts import ContentInputReceiptError
+        from app.services.content_input_receipts import ContentInputReceiptError, log_source_refusal
         from app.services.runtime_result_sources import runtime_result_publication_bound
 
         try:
@@ -398,6 +398,7 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                 db, result=result_object, agent_id=context.agent_id, session_id=session_id, user_id=context.user_id
             )
         except ContentInputReceiptError as exc:
+            log_source_refusal(exc, operation="read_runtime_result")
             return _json(
                 {
                     "schema": schema,
@@ -457,6 +458,7 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                         db, result=result_object, agent_id=context.agent_id, user_id=context.user_id
                     )
             except ContentInputReceiptError as exc:
+                log_source_refusal(exc, operation="read_runtime_result")
                 return _json(
                     {
                         "schema": schema,

@@ -143,10 +143,28 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
 
 
 class ContentInputReceiptError(ValueError):
-    def __init__(self, code: str, message: str, status_code: int = 409):
+    def __init__(self, code: str, message: str, status_code: int = 409, *, dependency=None):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+        self.dependency = dependency
+
+
+def log_source_refusal(exc: ContentInputReceiptError, *, operation: str) -> None:
+    from loguru import logger
+
+    dependency = exc.dependency or {}
+    # Composite source IDs can contain file names. Retain UUID components only.
+    identities = []
+    for part in dependency.get("source_id", "").split("\n"):
+        try:
+            identities.append(str(uuid.UUID(part)))
+        except ValueError:
+            pass
+    kind = dependency.get("source_kind", "unknown")
+    kind = kind if kind.replace("_", "").isalpha() and kind.isascii() else "unknown"
+    logger.warning("Source refusal operation={} code={} message={} source_kind={} source_id={}",
+        operation, exc.code, str(exc).replace("\n", "\\n"), kind, ":".join(identities) or "unknown")
 
 
 def _preflight_inputs(db, *, authority=False):
@@ -537,11 +555,16 @@ async def _validate_input_dependencies(
             # the cycle; a second re-entry means no kind check fires on this cycle.
             if reader_key in scope.revisiting:
                 raise ContentInputReceiptError(
-                    "content_source_unavailable", "The source dependency chain is cyclic.", 503
+                    "content_source_unavailable", "The source dependency chain is cyclic.", 503,
+                    dependency=dependency,
                 )
             scope.revisiting.add(reader_key)
             try:
                 await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+            except ContentInputReceiptError as exc:
+                if exc.dependency is None:
+                    exc.dependency = dependency
+                raise
             finally:
                 scope.revisiting.discard(reader_key)
             continue
@@ -557,6 +580,10 @@ async def _validate_input_dependencies(
             scope.visiting.add(reader_key)
             try:
                 await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+            except ContentInputReceiptError as exc:
+                if exc.dependency is None:
+                    exc.dependency = dependency
+                raise
             finally:
                 # The scope may have closed (and cleared visiting) while this
                 # validation awaited; a closed scope never caches the result.

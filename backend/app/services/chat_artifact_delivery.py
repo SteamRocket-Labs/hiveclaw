@@ -1244,6 +1244,7 @@ async def create_chat_artifacts_for_message(
     from app.services.content_input_receipts import (
         ContentInputReceiptError,
         group_source_read,
+        log_source_refusal,
         validate_artifact_content_receipt,
         validate_published_workspace_receipt,
         validate_runtime_workspace_receipt,
@@ -1361,6 +1362,7 @@ async def create_chat_artifacts_for_message(
     )
 
     def record_source_error(path, exc):
+        log_source_refusal(exc, operation="artifact_delivery")
         if publication_errors is not None:
             publication_errors.append(
                 {

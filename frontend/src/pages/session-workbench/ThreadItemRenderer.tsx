@@ -203,6 +203,10 @@ function translateRuntimeFailure(t: TFunction, presentation: RuntimeFailurePrese
     case 'empty_search':
       // R18a round 2: the loop guard's plain nothing-found answer.
       return t('sessionWorkbench.threadItem.failure.emptySearch', presentation.fallback);
+    case 'terminal_task_read':
+      return t('sessionWorkbench.threadItem.failure.terminalTaskRead', presentation.fallback);
+    case 'running_task_read':
+      return t('sessionWorkbench.threadItem.failure.runningTaskRead', presentation.fallback);
     default:
       throw new Error(`Unhandled runtime failure presentation: ${String(presentation.kind)}`);
   }

@@ -29,6 +29,7 @@ _FAILURE_MESSAGES = {
 }
 _TERMINAL_READ_MESSAGES = frozenset(TERMINAL_TASK_READ_PREFIX + reason for reason in _FAILURE_MESSAGES.values())
 _FAILURE_MESSAGES["identical_terminal_task_read"] = IDENTICAL_TERMINAL_READ_MESSAGE
+_FAILURE_MESSAGES["identical_running_task_read"] = DELEGATED_TASK_RUNNING_MESSAGE
 # R18a round 2/3: readers of a run stopped by the empty-search guard map this
 # failure code to the plain sentence — the web member card via the frontend
 # failure-code mapping, the parent of a delegated colleague through

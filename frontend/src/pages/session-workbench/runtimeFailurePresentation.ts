@@ -1,5 +1,5 @@
 export type RuntimeFailurePresentation = {
-  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error' | 'timeout' | 'empty_search';
+  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error' | 'timeout' | 'empty_search' | 'terminal_task_read' | 'running_task_read';
   fallback: string;
 };
 
@@ -22,6 +22,18 @@ export function runtimeFailurePresentation(
     return {
       kind: 'empty_search',
       fallback: 'Several searches found no matching material.',
+    };
+  }
+  if (failureCode === 'identical_terminal_task_read') {
+    return {
+      kind: 'terminal_task_read',
+      fallback: 'The colleague’s task ended without success, so I stopped checking it. You can ask me to arrange it again.',
+    };
+  }
+  if (failureCode === 'identical_running_task_read') {
+    return {
+      kind: 'running_task_read',
+      fallback: 'The colleague is still working. This conversation will continue when the result arrives.',
     };
   }
   if (failureCode === 'timeout' && deliveryState === 'unknown') {

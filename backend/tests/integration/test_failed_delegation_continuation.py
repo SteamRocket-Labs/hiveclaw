@@ -44,7 +44,8 @@ async def _execute(owner, run_id, worker):
 
 
 async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rounds=8, parent_tokens=30,
-    child_terminal_reader=None, second_child=False):
+    child_terminal_reader=None, second_child=False, nested_running=False, child_success=False,
+    before_notification=None, deliver=True, before_child_completion=None):
     import app.database as database
     import app.runtime.invoker as invoker
     import app.services.tenant_resolver as tenant_resolver
@@ -155,20 +156,25 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
                 creator_id=seed["user_id"], owner_user_id=seed["user_id"], primary_model_id=model.id)
             db.add(nested_agent)
             await db.flush()
-            nested = RuntimeTask(id=uuid4(), task_type="delegation", status="failed",
+            nested = RuntimeTask(id=uuid4(), task_type="delegation", status="running" if nested_running else "failed",
                 tenant_id=child.tenant_id, parent_agent_id=child.child_agent_id,
                 child_agent_id=nested_agent.id, parent_session_id=str(UUID(child.child_session_id)),
                 child_session_id=str(uuid4()), root_user_id=child.root_user_id,
                 root_session_id=child.root_session_id, root_runtime_task_id=child.root_runtime_task_id,
                 delegation_chain_json=[*(child.delegation_chain_json or []), str(nested_agent.id)],
-                result_summary="PRIVATE_PARTIAL_BODY", metadata_json={"error_code": "turn_token_budget_exhausted"})
+                result_summary=None if nested_running else "PRIVATE_PARTIAL_BODY",
+                metadata_json={} if nested_running else {"error_code": "turn_token_budget_exhausted"})
             db.add(nested)
             seed["nested_id"] = nested.id
         await db.commit()
+    if before_child_completion is not None:
+        await before_child_completion(seed)
     child_client = kernel_cases.ScriptedLLMClient([{
         "tool_calls": [_call("get_current_time", {}, "child-check")],
         "usage": {"total_tokens": 1_000_001}, "finish_reason": "tool_calls",
     }])
+    if child_success:
+        child_client = kernel_cases.ScriptedLLMClient([{"content": "Three sales points: quality, service, value."}])
     if child_terminal_reader:
         from functools import wraps
 
@@ -212,12 +218,17 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
             print("R13B3_DELEGATED_STOP", child_terminal_reader, child.status, child.result_summary, len(child_client.requests))
             assert child.status == "failed", (child.status, child.result_summary)
             assert child.metadata_json["terminal_reason"] == "loop_guard"
-            assert child.metadata_json["error_code"] == "identical_terminal_task_read"
-            assert child.result_summary == STOP_REASON
+            assert child.metadata_json["error_code"] == (
+                "identical_running_task_read" if nested_running else "identical_terminal_task_read")
+            assert child.result_summary == (
+                "同事正在处理，结果回来后会在这里继续。" if nested_running else STOP_REASON)
             assert len(child_client.requests) == LoopGuard().identical_tool_threshold
             assert len(child_observed) == LoopGuard().identical_tool_threshold
             for content in child_observed:
                 body = json.loads(content)
+                if nested_running:
+                    assert body["status"] == "running" and body["result"] is None
+                    continue
                 if child_terminal_reader == "list_async_tasks":
                     assert isinstance(body, list), body
                     nested = [task for task in body if UUID(task["task_id"]) == seed["nested_id"]]
@@ -228,9 +239,15 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
                 assert set(body) == {"schema", "task_id", "result", "note"}, body
                 assert body["result"] == "这次用完了用量预算，没有完成。"
                 assert "PRIVATE_PARTIAL_BODY" not in content
+        elif child_success:
+            assert child.status == "completed" and child.result_summary == "Three sales points: quality, service, value."
+            assert len(child_client.requests) == 1
         else:
             assert child.status == "failed" and child.metadata_json["terminal_reason"] == "tool_budget", child.metadata_json
             assert len(child_client.requests) == 1
+
+    if not deliver:
+        return seed, parent_client
 
     from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
     from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
@@ -242,6 +259,9 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
         process_callback=processor, task_types=("delegation",))
     assert drained["delivered"] == 1, drained
 
+    if before_notification is not None:
+        await before_notification(seed)
+
     service = RuntimeNotificationOutboxService(session_factory=app_factory)
     claimed = await service.claim_batch(worker_id="r13b-return", limit=100)
     pages = await service.prepare_integration_pages(worker_id="r13b-return",
@@ -249,16 +269,36 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
     assert len(pages) == 1
     delivered = await service._deliver_page(pages[0])
     assert delivered.get("ok") is True, delivered
+    seed["delivery_page"] = pages[0]
     async with owner() as db:
         notification = await db.scalar(select(RuntimeNotificationOutbox).where(
             RuntimeNotificationOutbox.source_run_id == str(seed["child_id"])))
         returned = await db.scalar(select(RuntimeTask).where(RuntimeTask.parent_agent_id == seed["agent_id"],
             RuntimeTask.metadata_json["integration_page_id"].astext == str(pages[0].id)))
+        if before_notification is not None:
+            seed.update(return_id=returned.id if returned else None, result_ref=notification.result_ref)
+            await service._mark_page_delivered(page=pages[0], worker_id="r13b-return", receipt=delivered)
+            return seed, parent_client
         assert returned is not None and returned.root_runtime_task_id == seed["run_id"]
         seed["budget_inherited"] = returned.budget_run_id == seed["budget_run_id"]
         print("R13B_BUDGET_INHERITED", seed["budget_inherited"], "admission", returned.budget_admission_status)
         seed.update(return_id=returned.id, result_ref=notification.result_ref)
     return seed, parent_client
+
+
+async def test_repeated_running_child_read_fails_without_transcript_reconciliation(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        child_terminal_reader="check_async_task", nested_running=True)
+    async with owner_sessionmaker() as db:
+        child = await db.get(RuntimeTask, seed["child_id"])
+        from app.services.runtime_display_status import delegation_failure_result_page
+
+        page = delegation_failure_result_page(task_id=str(child.id), status=child.status,
+            metadata=child.metadata_json, result_summary=child.result_summary)
+        assert page["result"] == "同事正在处理，结果回来后会在这里继续。"
+        assert "待确认" not in page["result"]
 
 
 async def test_result_return_keeps_the_original_runtime_budget(
@@ -345,7 +385,8 @@ async def test_failed_child_reason_reaches_parent_through_all_existing_readers(
     await _assert_member_final(app_user_sessionmaker, seed, member_text)
 
 
-async def _assert_member_final(app_user_sessionmaker, seed, expected, *, provider_final=True, failed=False):
+async def _assert_member_final(app_user_sessionmaker, seed, expected, *, provider_final=True, failed=False,
+    failure_code="identical_terminal_task_read"):
     # Native finals reference the text blocks delivered by the member API.
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
@@ -376,7 +417,7 @@ async def _assert_member_final(app_user_sessionmaker, seed, expected, *, provide
             and event.get("run_id", event.get("scope", {}).get("run_id")) == str(seed["return_id"])]
         assert len(failures) == 1, response.json()
         assert failures[0]["payload"]["content"] == expected
-        assert failures[0]["payload"]["failure_code"] == "identical_terminal_task_read"
+        assert failures[0]["payload"]["failure_code"] == failure_code
         assert sum(event.get("payload", {}).get("content") == expected for event in response.json()) == 1
         assert "[Runtime Limit]" not in json.dumps(response.json())
         return
@@ -635,13 +676,16 @@ async def test_listed_running_child_ends_turn_before_stale_failure_counting(
             "terminal_reads", max(len(client.requests) - running_reads, 0), "calls", len(client.requests),
             "rounds", len(models), "status", returned.status, "summary", returned.result_summary)
         assert len(client.requests) == len(models) == threshold
-        assert returned.status == "completed"
-        assert returned.metadata_json["terminal_reason"] == "turn_stop"
-        assert returned.result_summary == "同事正在处理，结果回来后会在这里继续。"
+        # A runtime-authored stop has no sealed model final. Use the same
+        # typed failure as the delegation lane instead of an uncommittable TURN_STOP.
+        assert returned.status == "failed"
+        assert returned.metadata_json["terminal_reason"] == "loop_guard"
+        assert returned.metadata_json["error_code"] == "identical_running_task_read"
+        assert returned.result_summary == "loop_guard"  # Web failures store the typed terminal reason.
         assert (await db.get(RuntimeTask, seed["running_id"])).status == "running"
         assert (await db.get(RuntimeTask, seed["child_id"])).status == "failed"
     await _assert_member_final(app_user_sessionmaker, seed,
-        "同事正在处理，结果回来后会在这里继续。", provider_final=False)
+        "同事正在处理，结果回来后会在这里继续。", failed=True, failure_code="identical_running_task_read")
 
 
 async def test_continuation_cannot_reset_the_shared_root_provider_call_pool(

@@ -160,7 +160,9 @@
         "unavailable": "The model service could not finish this task. Ask an administrator to check the model configuration.",
         "persistenceError": "This task did not finish. Please try again later.",
         "timeout": "The model service timed out and this task did not finish. Please try again later.",
-        "emptySearch": "Several searches found no matching material."
+        "emptySearch": "Several searches found no matching material.",
+        "terminalTaskRead": "The colleague’s task ended without success, so I stopped checking it. You can ask me to arrange it again.",
+        "runningTaskRead": "The colleague is still working. This conversation will continue when the result arrives."
       },
       "permissionNeeded": "This needs your approval: {{tool}}.",
       "thisTool": "this tool",

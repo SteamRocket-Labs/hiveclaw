@@ -1052,14 +1052,14 @@ class DirectInvocationTerminalBoundaryProcessor:
                 "t0_sequence": int(seal.sequence),
             }
         )
+        parent_receipt = await self._delegation_parent_projector(material)
+        if parent_receipt is not None:
+            receipt["result_content_sha256"] = _sha256(parent_receipt)
         if material.event_kind == "turn_stop":
             receipt["response_projection_sha256"] = await self._project_response(item, material)
         self._project_trigger_artifact(material)
         if material.event_kind == "turn_stop":
             await _project_trigger_dream(material)
-        parent_receipt = await self._delegation_parent_projector(material)
-        if parent_receipt is not None:
-            receipt["result_content_sha256"] = _sha256(parent_receipt)
         await self._emit_custom_terminal(item, material)
         return normalize_terminal_boundary_binding(receipt)
 

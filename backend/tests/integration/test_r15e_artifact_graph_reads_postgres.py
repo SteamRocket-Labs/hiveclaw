@@ -27,7 +27,7 @@ _SQL_SOURCE = ContextVar("r15e_sql_source", default="request")
 
 
 @contextmanager
-def _profile(monkeypatch):
+def _profile(monkeypatch, *, delay=0):
     from app.services import content_input_receipts as receipts
 
     original = receipts._validate_input_dependency_batch
@@ -60,6 +60,8 @@ def _profile(monkeypatch):
 
     def before(_conn, _cursor, _statement, _parameters, context, _many):
         context.r15e = time.perf_counter(), caller(), _SQL_SOURCE.get()
+        if delay:
+            time.sleep(delay)
 
     def after(_conn, _cursor, _statement, _parameters, context, _many):
         started, function, kind = context.r15e
@@ -78,17 +80,17 @@ def _profile(monkeypatch):
             event.remove(Engine, "after_cursor_execute", after)
 
 
-async def _read(n, endpoint, monkeypatch, *, history=0):
+async def _read(n, endpoint, monkeypatch, *, history=0, delay=0):
     url = (
         f"/agents/{n.agent}/office/artifacts/{n.artifact}/preview" if endpoint == "preview"
         else f"/agents/{n.agent}/files/content?path={n.path}" if endpoint == "workspace"
         else f"/agents/{n.agent}/files/artifacts/{n.artifact}/{endpoint}"
     )
     started = time.perf_counter()
-    with _profile(monkeypatch) as totals:
+    with _profile(monkeypatch, delay=delay) as totals:
         response = await n.client.get(url)
     row = {"nodes": len(n.receipts), "history": history, "endpoint": endpoint,
-        "depth": n.depth,
+        "depth": n.depth, "injected_rtt": delay,
         "statements": sum(item["statements"] for item in totals.values()),
         "seconds": round(time.perf_counter() - started, 4), "status": response.status_code,
         "by_function_kind": [{"function": function, "kind": kind,
@@ -212,7 +214,7 @@ async def graph(native_workspace, owner_sessionmaker, app_user_sessionmaker, mon
     async def expose_sources(db, **kwargs):
         from app.kernel.engine import _context_message
 
-        prefix = _context_message(role="system", kind="dynamic_prompt", content="Prepare the authorized report.",
+        prefix = _context_message(role="system", kind="dynamic_prompt", content=getattr(n, "production_context", "Prepare the authorized report."),
             sources=n.sources, unbound=())
         return await prepare(db, **{**kwargs, "messages": [prefix, *kwargs["messages"]]})
 

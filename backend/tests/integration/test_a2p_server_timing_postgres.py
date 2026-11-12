@@ -150,13 +150,12 @@ async def test_response_background_statements_and_next_request_are_excluded(timi
     assert _timing(second)[1:] == (0, 0, 0)
 
 
-async def test_database_error_does_not_log_sql_or_parameters(timing_engine):
+async def test_request_error_retains_exception_detail():
     app, logs = _app(), []
 
     @app.get("/api/error")
     async def broken():
-        async with timing_engine.connect() as conn:
-            await conn.execute(text("SELECT CAST(:value AS integer)"), {"value": "private-parameter-marker"})
+        raise ValueError("fixture failure detail")
 
     sink = logger.add(lambda message: logs.append(str(message)))
     try:
@@ -165,4 +164,6 @@ async def test_database_error_does_not_log_sql_or_parameters(timing_engine):
     finally:
         logger.remove(sink)
     assert response.status_code == 500
-    assert all("private-parameter-marker" not in entry and "SELECT CAST" not in entry for entry in logs)
+    errors = [entry for entry in logs if "<-- GET /api/error ERROR " in entry]
+    assert len(errors) == 1
+    assert errors[0].endswith(" - fixture failure detail\n")

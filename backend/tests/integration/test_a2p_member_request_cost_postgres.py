@@ -19,6 +19,9 @@ from app.models.agent import AgentPermission
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.models.user_assistant_binding import UserAssistantBinding
+from tests.integration.conftest import (  # noqa: F401
+    app_user_engine, app_user_sessionmaker, owner_engine, owner_sessionmaker, migrated_pg_url,
+)
 from tests.integration.test_m1f_assistant_binding_postgres import _agent, _model
 from tests.services.test_session_permission_runtime import _seed_waiting_batch
 
@@ -86,7 +89,7 @@ class _ResponseClock:
 
 
 @pytest.fixture
-async def member_request(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, request):
+async def member_request(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, request):  # noqa: F811
     from app.api import assistant, chat_sessions, upload
     from app.config import get_settings
     from app.core.tenant_middleware import TenantMiddleware
@@ -228,7 +231,7 @@ async def test_member_request_statement_ceiling(member_request, endpoint):
 
 
 async def test_later_candidate_observes_revocation_within_the_same_request(
-    member_request, owner_sessionmaker, monkeypatch,
+    member_request, owner_sessionmaker, monkeypatch,  # noqa: F811
 ):
     from sqlalchemy import delete, select
     from app.models.agent import Agent
@@ -262,16 +265,16 @@ async def test_later_candidate_observes_revocation_within_the_same_request(
 
 
 async def test_candidate_sql_structure_is_built_once_without_reusing_rows(member_request, monkeypatch):
-    from app.services import source_read_queries
+    from app.services import assistant_binding
 
     _seed, client, _sample, _factory = member_request
-    original, built = source_read_queries.source_reader_statement, []
+    original, built = assistant_binding.source_reader_statement, []
 
     def statement(*args, **kwargs):
         built.append(True)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(source_read_queries, "source_reader_statement", statement)
+    monkeypatch.setattr(assistant_binding, "source_reader_statement", statement)
     response = await client.get("/api/assistant")
     assert response.status_code == 200
     assert len(response.json()["candidates"]) == 16

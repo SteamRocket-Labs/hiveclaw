@@ -51,7 +51,9 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
                 logger.warning(
                     f"slow_request method={request.method} path={request.url.path} "
                     f"status={response.status_code} duration_ms={duration * 1000:.0f} "
-                    f"threshold_s={slow_threshold}"
+                    f"threshold_s={slow_threshold} "
+                    f"db_ms={timing.db_seconds * 1000:.1f} statements={timing.statements} "
+                    f"pool_ms={timing.pool_seconds * 1000:.1f}"
                 )
 
             # Log response
@@ -61,7 +63,7 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
 
         except Exception as exc:
             duration = time.perf_counter() - start_time
-            logger.error(f"<-- {request.method} {request.url.path} ERROR {duration:.3f}s - {type(exc).__name__}")
+            logger.error(f"<-- {request.method} {request.url.path} ERROR {duration:.3f}s - {exc}")
             raise
         finally:
             timing.active = False

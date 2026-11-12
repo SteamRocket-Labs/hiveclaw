@@ -6,7 +6,7 @@ from time import perf_counter
 
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import AsyncAdaptedQueuePool, Pool
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 
 @dataclass
@@ -23,16 +23,6 @@ class RequestTiming:
 
 
 request_timing: ContextVar[RequestTiming | None] = ContextVar("request_timing", default=None)
-_checkout_start: ContextVar[tuple[RequestTiming, float] | None] = ContextVar("checkout_start", default=None)
-
-
-def _finish_checkout() -> None:
-    started = _checkout_start.get()
-    if started is not None:
-        timing, clock = started
-        if timing.active:
-            timing.pool_seconds += perf_counter() - clock
-        _checkout_start.set(None)
 
 
 class TimedAsyncAdaptedQueuePool(AsyncAdaptedQueuePool):
@@ -42,19 +32,12 @@ class TimedAsyncAdaptedQueuePool(AsyncAdaptedQueuePool):
         timing = request_timing.get()
         if timing is None or not timing.active:
             return super().connect()
-        token = _checkout_start.set((timing, perf_counter()))
+        start = perf_counter()
         try:
             return super().connect()
         finally:
-            # Successful checkout ends at the pool event; a failed checkout
-            # (including timeout) still contributes its actual waiting time.
-            _finish_checkout()
-            _checkout_start.reset(token)
-
-
-@event.listens_for(Pool, "checkout")
-def _checked_out(_connection, _record, _proxy):
-    _finish_checkout()
+            if timing.active:
+                timing.pool_seconds += perf_counter() - start
 
 
 def _cursor_started(_connection, _cursor, _statement, _parameters, context, _many):

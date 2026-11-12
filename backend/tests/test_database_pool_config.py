@@ -38,6 +38,7 @@ def test_engine_pool_kwargs_reads_settings() -> None:
     from app.database import _engine_pool_kwargs
 
     settings = get_settings()
+    # Request checkout timing selects TimedAsyncAdaptedQueuePool as poolclass.
     assert _engine_pool_kwargs(settings) == {
         "poolclass": TimedAsyncAdaptedQueuePool,
         "pool_size": settings.DB_POOL_SIZE,

@@ -1,4 +1,4 @@
-"""Reproducible CPU profiles for the real member request fixtures."""
+"""Profile real member requests; cold converter imports are not steady-state cost."""
 
 import cProfile
 import json
@@ -82,7 +82,7 @@ async def test_non_database_profile(member_request, app_user_engine, monkeypatch
         monkeypatch.setattr(owner, attribute, async_call if asynchronous else sync_call)
 
     from app.api import chat_sessions, upload
-    from app.services import assistant_binding, credential_boundary_loader, source_read_queries, upload_originals
+    from app.services import assistant_binding, credential_boundary_loader, upload_originals
     from app.services.document_conversion import DocumentConversionService
     from app.services.personal_knowledge_service import PersonalKnowledgeService
 
@@ -99,7 +99,7 @@ async def test_non_database_profile(member_request, app_user_engine, monkeypatch
     for owner, attribute, name in (
         (upload, "_write_upload_copy", "file_write"),
         (DocumentConversionService, "convert", "conversion"),
-        (source_read_queries, "source_reader_statement", "acl_sql_build"),
+        (assistant_binding, "source_reader_statement", "acl_sql_build"),
     ):
         observe(owner, attribute, name, asynchronous=False)
 
@@ -144,6 +144,8 @@ async def test_non_database_profile(member_request, app_user_engine, monkeypatch
     if endpoint == "upload":
         body = response.json()
         assert body["size"] == 725 and body["conversion"]["status"] == "converted"
+        # CSV uses the canonical converter, including its original engine label.
+        assert body["conversion"]["engine"] == "local_markitdown"
         assert body["personal_kb_candidate"]["status"] == "queued"
     header = response.headers["server-timing"]
     parsed = re.fullmatch(r'app;dur=([\d.]+), db;dur=([\d.]+);desc="(\d+)", pool;dur=([\d.]+)', header)

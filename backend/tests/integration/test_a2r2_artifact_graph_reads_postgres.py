@@ -340,3 +340,115 @@ async def test_platform_reader_keeps_live_owner_bypass(
     assert response.status_code == 403, response.text
     assert response.json()["detail"]["code"] == "content_source_access_denied"
     assert b"COMPANY_SOURCE_MARKER" not in response.content
+
+
+@pytest.mark.parametrize("endpoint", ["download", "content"])
+async def test_session_source_binding_stays_live_after_catalog(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch, endpoint,  # noqa: F811
+):
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.services import content_input_receipts as receipts
+    from tests.integration.test_r12a_source_graph_work_postgres import _graph
+
+    n = await _graph(native_workspace, 4, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    replacement = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Agent(id=replacement, tenant_id=n.tenant, creator_id=n.user, name="Rebound source employee"))
+        await db.commit()
+    validate, rebound = receipts._validate_session_dependencies, False
+
+    async def rebind_before_live_point(db, tenant_id, dependencies, **context):
+        nonlocal rebound
+        if not rebound and any(item["source_kind"] == "session_tool_invocation" for item in dependencies):
+            async with owner_sessionmaker() as writer:
+                (await writer.get(ChatSession, n.session)).agent_id = replacement
+                await writer.commit()
+            rebound = True
+        return await validate(db, tenant_id, dependencies, **context)
+
+    monkeypatch.setattr(receipts, "_validate_session_dependencies", rebind_before_live_point)
+    response = await n.client.get(f"/agents/{n.agent}/files/artifacts/{n.artifact}/{endpoint}")
+    print("A2R2_SESSION_REBIND", json.dumps({"endpoint": endpoint, "committed": rebound,
+        "status": response.status_code}), flush=True)
+    assert rebound
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["code"] == "content_source_changed"
+    assert b"COMPANY_SOURCE_MARKER" not in response.content
+
+
+async def test_settled_approval_abort_keeps_its_exact_evidence_after_batch_loading(
+    owner_sessionmaker, monkeypatch,
+):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services import agent_tools
+    from app.services.content_input_receipts import group_source_read, _input_row, _preload_execution_sources
+    from app.services.session_model_inputs import permission_abort_result_bound, tool_result_source_hash
+    from app.services.session_permission_runtime import resolve_session_tool_permission
+    from app.services.session_semantic_history import _event_payload
+    from tests.services.test_session_permission_runtime import _seed_waiting_batch, _authority
+
+    seed = await _seed_waiting_batch(owner_sessionmaker)
+
+    async def unavailable_before_effect(*_args, **_kwargs):
+        raise RuntimeError("runtime unavailable before effect authority")
+
+    monkeypatch.setattr(agent_tools, "execute_session_permission_tool", unavailable_before_effect)
+    async with owner_sessionmaker() as db:
+        _user, authority = await _authority(db, seed)
+        receipt = await resolve_session_tool_permission(db, authority=authority,
+            permission_request_id=seed.permission_ids[0], decision="allow_once")
+        assert receipt.status == "resolved"
+        invocation = await db.get(SessionToolInvocation, seed.invocation_ids[0])
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        payload = _event_payload(event)
+        assert await permission_abort_result_bound(db, invocation=invocation, event=event, content=payload["content"])
+        dependency = {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
+            "source_version": tool_result_source_hash(payload)}
+        with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True):
+            await _preload_execution_sources(db, seed.tenant_id, [dependency])
+            loaded = await _input_row(db, ChatTranscriptEvent, invocation.result_event_id)
+            assert await permission_abort_result_bound(db, invocation=invocation, event=loaded,
+                content=_event_payload(loaded)["content"])
+
+
+async def test_skill_access_and_package_each_use_one_fresh_read_for_a_granted_reader(
+    graph, owner_sessionmaker, app_user_sessionmaker, monkeypatch,  # noqa: F811
+):
+    from app.models.agent import AgentPermission
+    from app.models.user import User
+    from app.services.content_input_receipts import ContentInputReceiptError, group_source_read
+    from app.services.skill_source_receipts import validate_skill_file_dependency
+    from tests.integration.test_r15e_artifact_graph_reads_postgres import _profile
+
+    n, permission_id = graph, uuid.uuid4()
+    async with owner_sessionmaker() as writer:
+        writer.add(AgentPermission(id=permission_id, tenant_id=n.tenant, agent_id=n.agent,
+            scope_type="user", scope_id=n.foreign, access_level="use"))
+        await writer.commit()
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        user = await db.get(User, n.foreign)
+        with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as scope:
+            scope.browser_reader = user
+            with _profile(monkeypatch) as positive:
+                await validate_skill_file_dependency(db, n.tenant, n.leaves["agent_platform_skill_file"],
+                    user=user, runtime_request=None)
+            # Access and current package are separate existing live points.
+            assert sum(row["statements"] for row in positive.values()) == 2, dict(positive)
+            async with owner_sessionmaker() as writer:
+                await writer.delete(await writer.get(AgentPermission, permission_id))
+                await writer.commit()
+            with _profile(monkeypatch) as negative:
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await validate_skill_file_dependency(db, n.tenant, n.leaves["agent_platform_skill_file"],
+                        user=user, runtime_request=None)
+            assert denied.value.code == "content_source_access_denied"
+            assert sum(row["statements"] for row in negative.values()) == 1, dict(negative)
+            missing = {**n.leaves["agent_platform_skill_file"], "source_id":
+                str(uuid.uuid4()) + "\n" + n.leaves["agent_platform_skill_file"]["source_id"].split("\n", 1)[1]}
+            with _profile(monkeypatch) as absent:
+                with pytest.raises(ContentInputReceiptError) as unavailable:
+                    await validate_skill_file_dependency(db, n.tenant, missing, user=user, runtime_request=None)
+            assert unavailable.value.code == "content_source_access_denied"
+            assert sum(row["statements"] for row in absent.values()) == 1, dict(absent)

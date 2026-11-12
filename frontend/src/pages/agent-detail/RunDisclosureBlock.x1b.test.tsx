@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -27,12 +28,19 @@ const receiptStep = {
   },
 };
 
-function renderBlock(step: typeof receiptStep, viewerOwnsSession: boolean) {
+function renderBlock(step: typeof receiptStep, viewerOwnsSession: boolean, roster: Array<{ id: string }> = [{ id: 'agent-colleague' }]) {
+  // The roster gate reads the permission-filtered ['agents', tenantId] cache
+  // Layout already holds (X1-r3 ruling 1); no component request is made.
+  window.localStorage.setItem('current_tenant_id', 'tenant-1');
+  const client = new QueryClient();
+  client.setQueryData(['agents', 'tenant-1'], roster);
   return render(
-    <MemoryRouter>
-      <RunDisclosureBlock timeline={{ id: 'run', status: 'running', steps: [step] }}
-        viewerOwnsSession={viewerOwnsSession} />
-    </MemoryRouter>,
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <RunDisclosureBlock timeline={{ id: 'run', status: 'running', steps: [step] }}
+          viewerOwnsSession={viewerOwnsSession} />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -54,6 +62,21 @@ it('renders no colleague link for a viewer who does not own the session (a group
   const { container } = renderBlock(receiptStep, false);
   fireEvent.click(container.querySelector('.run-step-toggle') as HTMLButtonElement);
   expect(container.querySelector('a[href^="/agents/agent-colleague"]')).toBeNull();
+});
+
+it('renders no colleague link when the colleague is outside the member\'s roster (X1-r3 ruling 1)', () => {
+  // Owning the session does not prove the member can open this colleague;
+  // the roster cache says they cannot, so the link stays hidden.
+  const { container } = renderBlock(receiptStep, true, [{ id: 'agent-someone-else' }]);
+  fireEvent.click(container.querySelector('.run-step-toggle') as HTMLButtonElement);
+  expect(container.querySelector('a[href^="/agents/agent-colleague"]')).toBeNull();
+});
+
+it('links an unfinished delegation too: the child session exists (X1-r3 ruling 1)', () => {
+  const { container } = renderBlock({ ...receiptStep, title: 'Delegation unfinished' }, true);
+  fireEvent.click(container.querySelector('.run-step-toggle') as HTMLButtonElement);
+  const link = container.querySelector(`a[href="/agents/agent-colleague/sessions/session-colleague"]`);
+  expect(link).toBeTruthy();
 });
 
 it('a started delegation keeps the outgoing title', () => {

@@ -170,15 +170,23 @@ function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
 }
 
 /** The colleague's conversation link renders only inside the viewer's own
- * private session — the delegated child's owner is the requester, so the
- * existing session read rules already admit this viewer (X1-r2 ruling 6).
- * The member's thread-item projection strips every id; the link reads the
- * raw replayed event's to_agent, which was always present. */
+ * private session — the delegated child's owner is the requester — and only
+ * when the colleague already sits in the member's own authority-filtered
+ * roster cache (X1-r3 ruling 1): owning the session does not prove the
+ * member can open this colleague. Without a cached roster there is nothing
+ * to gate on, so no link; no new request is made. The link reads the raw
+ * replayed event's to_agent, which was always present. */
 function ColleagueConversationLink({ metadata }: { metadata: Record<string, unknown> }) {
   const { t } = useTranslation();
   const agentId = typeof metadata.to_agent === 'string' ? metadata.to_agent : '';
   const sessionId = typeof metadata.child_session_id === 'string' ? metadata.child_session_id : '';
-  if (!agentId || !sessionId) return null;
+  // Render hosts without a provider (static projections) have no known cache.
+  const queryClient = React.useContext(QueryClientContext) as ReturnType<typeof useQueryClient> | null;
+  const tenantId = localStorage.getItem('current_tenant_id')
+    || useAuthStore.getState().user?.tenant_id
+    || '';
+  const listed = queryClient?.getQueryData<Array<{ id: string }>>(['agents', tenantId]) || [];
+  if (!agentId || !sessionId || !listed.some((agent) => agent.id === agentId)) return null;
   return (
     <p className="run-colleague-link">
       <Link to={`/agents/${agentId}/sessions/${sessionId}`}>{t('agent.chat.disclosure.openColleagueConversation', 'Open this colleague\'s conversation')}</Link>
@@ -267,7 +275,11 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
   }
   const detailText = typeof step.details === 'string' ? step.details : '';
   if (detailText.includes('[REDACTED_SECRET]')) return <pre className="run-detail-pre"><PastedCredentialText content={detailText} /></pre>;
-  const colleagueLink = step.title === 'Delegation result' && step.systemEvent && viewerOwnsSession
+  // The child session exists for an unfinished delegation too (failed,
+  // cancelled, contract mismatch), so both titles may carry the link
+  // (X1-r3 ruling 1); the roster gate above still decides reachability.
+  const colleagueLink = ['Delegation result', 'Delegation unfinished'].includes(step.title)
+    && step.systemEvent && viewerOwnsSession
     ? <ColleagueConversationLink metadata={step.systemEvent.metadata} /> : null;
   if (detailText) return <>{<MarkdownRenderer content={detailText} />}{colleagueLink}</>;
   return colleagueLink;

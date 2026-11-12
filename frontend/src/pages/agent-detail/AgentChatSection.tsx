@@ -1420,6 +1420,8 @@ function AgentChatSection({
               presentationKey={activeSessionId && (cell.runId || cell.timeline.startedAt)
                 ? `${activeSessionId}:${cell.runId || cell.timeline.startedAt}`
                 : null}
+              viewerOwnsSession={!operatorView && activeSession?.audience_kind !== 'group'
+                && Boolean(currentUser?.id) && String(activeSession?.user_id ?? '') === String(currentUser.id)}
             />
             {cell.sourceMessages.filter(entry => !boundaryMessageIndexes.has(entry.index)).map((entry) => (
               entry.message.role === 'event'

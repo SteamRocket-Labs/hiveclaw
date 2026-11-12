@@ -178,7 +178,12 @@ async def _input_row(db, model, source_id, *, populate_existing=True):
             state = await db.scalar(select(model.state).where(model.id == source_id, model.tenant_id == row.tenant_id))
             return SimpleNamespace(**{**vars(row), "state": state})
         return row
-    row = await db.get(model, source_id, populate_existing=populate_existing)
+    options = {}
+    if scope is not None and scope.source_catalog and model.__name__ == "InvocationSpan":
+        options["options"] = [load_only(model.id, model.tenant_id, model.agent_id, model.user_id,
+            model.runtime_task_id, model.session_id, model.trace_id, model.span_id, model.span_type,
+            model.name, model.status, model.input_hash, model.metadata_json)]
+    row = await db.get(model, source_id, populate_existing=populate_existing, **options)
     if rows is not None and not (scope.source_catalog and (
         (model is ContentInputReceipt and row is not None and row.carrier_kind != "workspace_artifact")
         or (model.__name__ == "InvocationSpan" and (row is None or row.span_type == "workspace_output"))

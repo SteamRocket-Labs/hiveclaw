@@ -563,9 +563,14 @@ async def test_sources_are_validated_once_and_authority_checks_stay_live(native_
         return await live_access(db, user, agent, tenant_active)
 
     async def observe_facts_access(db, user, facts):
-        # Preserve the session-source scope of the original hook. Base's
-        # workspace ACL uses a separate imported check_agent_access entry.
-        if isinstance(facts[5], ChatSession):
+        # Base counted calls through permissions.check_agent_access; its
+        # workspace ACL uses a separate imported entry, so manifest facts stay
+        # excluded. This graph's moved calls are session actor/tool checks.
+        # Also excluded are skill (five columns), agent-context (revision),
+        # directory/memory-reference (User), and explicit-memory (receipt/User)
+        # facts: those source kinds are absent from this fixture. Adding them
+        # requires extending this probe to preserve base's counting scope.
+        if len(facts) > 5 and isinstance(facts[5], ChatSession):
             count_access(user, facts[0].id)
         return await facts_access(db, user, facts)
 

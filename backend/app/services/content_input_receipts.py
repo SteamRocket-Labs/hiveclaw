@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -147,6 +148,24 @@ class ContentInputReceiptError(ValueError):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+        self.dependency = None
+
+
+def log_source_refusal(exc: ContentInputReceiptError, *, operation: str) -> None:
+    from loguru import logger
+
+    dependency = exc.dependency or {}
+    # Composite source IDs can contain file names. Retain UUID components only.
+    identities = []
+    for part in dependency.get("source_id", "").split("\n"):
+        try:
+            identities.append(str(uuid.UUID(part)))
+        except ValueError:
+            pass
+    kind = dependency.get("source_kind", "unknown")
+    kind = kind if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", kind) else "unknown"
+    logger.warning("Source refusal operation={} code={} message={} source_kind={} source_id={}",
+        operation, exc.code, str(exc).replace("\n", "\\n"), kind, ":".join(identities) or "unknown")
 
 
 def _preflight_inputs(db, *, authority=False):
@@ -521,49 +540,54 @@ async def _validate_input_dependencies(
     ):
         return await _validate_input_dependency_batch(db, tenant_id, dependencies, **context)
     for dependency in dependencies:
-        source_key = (dependency["source_kind"], dependency["source_id"], dependency["source_version"])
-        transaction = db.get_transaction()
-        reader_key = (
-            transaction,
-            tenant_id,
-            id(user),
-            id(runtime_request),
-            _SOURCE_READER.get() is not None,
-            recipient,
-            source_key,
-        )
-        if reader_key in scope.visiting:
-            # Re-enter a gray source once so its own active-chain check can classify
-            # the cycle; a second re-entry means no kind check fires on this cycle.
-            if reader_key in scope.revisiting:
-                raise ContentInputReceiptError(
-                    "content_source_unavailable", "The source dependency chain is cyclic.", 503
-                )
-            scope.revisiting.add(reader_key)
-            try:
-                await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
-            finally:
-                scope.revisiting.discard(reader_key)
-            continue
-        # Nested children of a top-level source are cached for the same reader
-        # within one round; every top-level model source is walked live.
-        # Nested group membership reflects its first walk, as on A2a's tool path.
-        if (
-            not scope.active
-            or transaction is None
-            or reader_key not in scope.verified
-            or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())
-        ):
-            scope.visiting.add(reader_key)
-            try:
-                await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
-            finally:
-                # The scope may have closed (and cleared visiting) while this
-                # validation awaited; a closed scope never caches the result.
-                scope.visiting.discard(reader_key)
-            if scope.active and transaction is not None:
-                # A cyclic walk cannot complete and enter this preflight's cache.
-                scope.verified[reader_key] = (user, runtime_request)
+        try:
+            source_key = (dependency["source_kind"], dependency["source_id"], dependency["source_version"])
+            transaction = db.get_transaction()
+            reader_key = (
+                transaction,
+                tenant_id,
+                id(user),
+                id(runtime_request),
+                _SOURCE_READER.get() is not None,
+                recipient,
+                source_key,
+            )
+            if reader_key in scope.visiting:
+                # Re-enter a gray source once so its own active-chain check can classify
+                # the cycle; a second re-entry means no kind check fires on this cycle.
+                if reader_key in scope.revisiting:
+                    raise ContentInputReceiptError(
+                        "content_source_unavailable", "The source dependency chain is cyclic.", 503
+                    )
+                scope.revisiting.add(reader_key)
+                try:
+                    await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+                finally:
+                    scope.revisiting.discard(reader_key)
+                continue
+            # Nested children of a top-level source are cached for the same reader
+            # within one round; every top-level model source is walked live.
+            # Nested group membership reflects its first walk, as on A2a's tool path.
+            if (
+                not scope.active
+                or transaction is None
+                or reader_key not in scope.verified
+                or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())
+            ):
+                scope.visiting.add(reader_key)
+                try:
+                    await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+                finally:
+                    # The scope may have closed (and cleared visiting) while this
+                    # validation awaited; a closed scope never caches the result.
+                    scope.visiting.discard(reader_key)
+                if scope.active and transaction is not None:
+                    # A cyclic walk cannot complete and enter this preflight's cache.
+                    scope.verified[reader_key] = (user, runtime_request)
+        except ContentInputReceiptError as exc:
+            if exc.dependency is None:
+                exc.dependency = dependency
+            raise
 
 
 async def _validate_input_dependency_batch(

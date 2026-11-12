@@ -390,7 +390,7 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                     "retryable": True,
                 }
             )
-        from app.services.content_input_receipts import ContentInputReceiptError
+        from app.services.content_input_receipts import ContentInputReceiptError, log_source_refusal
         from app.services.runtime_result_sources import runtime_result_publication_bound
 
         try:
@@ -398,6 +398,7 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                 db, result=result_object, agent_id=context.agent_id, session_id=session_id, user_id=context.user_id
             )
         except ContentInputReceiptError as exc:
+            log_source_refusal(exc, operation="read_runtime_result")
             return _json(
                 {
                     "schema": schema,
@@ -457,13 +458,14 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                         db, result=result_object, agent_id=context.agent_id, user_id=context.user_id
                     )
             except ContentInputReceiptError as exc:
+                log_source_refusal(exc, operation="read_runtime_result")
                 return _json(
                     {
                         "schema": schema,
                         "status": "source_access_denied" if exc.status_code == 403 else "source_unavailable",
                         "reason_code": exc.code,
                         "result_ref": result_ref,
-                        "retryable": False,
+                        "retryable": exc.status_code == 503,
                         "recovery_action": "reconcile_result_sources",
                     }
                 )

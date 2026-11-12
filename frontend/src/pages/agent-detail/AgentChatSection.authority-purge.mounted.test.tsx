@@ -30,7 +30,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: string | Record<string, unknown>, values?: Record<string, unknown>) => {
       if (_key === 'agent.chat.pastedCredentialNotice' || _key === 'agent.chat.hiddenCredential'
-        || _key.startsWith('agent.runtimeStatus.')) {
+        || _key.startsWith('agent.runtimeStatus.') || _key.startsWith('sessionWorkbench.threadItem.failure.')) {
         const catalog = noticeLocale.language === 'zh' ? zh : en;
         return _key.split('.').reduce<any>((value, key) => value?.[key], catalog) ?? _key;
       }
@@ -462,6 +462,36 @@ beforeEach(() => {
 });
 
 afterEach(cleanup);
+
+it.each(['live', 'history'] as const)('shows the safe result refusal sentence without retry on %s cards', source => {
+  noticeLocale.language = 'zh';
+  const event: SessionEventV2 = {
+    schema: 'hive.session_event', schema_version: 2, event_id: 'refused-result', sequence: 1,
+    tenant_id: 'company', item_id: 'refused-result', item_kind: 'runtime_failure',
+    kind: 'runtime_failure.recorded', lifecycle: 'recorded',
+    scope: { level: 'run', session_id: 'result-session', thread_id: 'result-session', turn_id: 'turn', run_id: 'run' },
+    payload_schema: 'hive.session.payload.runtime_failure.recorded.v2', actor: { type: 'runtime' },
+    visibility: { audience: 'direct_user' },
+    payload: { terminal_reason: 'loop_guard', failure_code: 'identical_refused_result_read',
+      retryable: false, retry_safe: false, content: '', message: '' },
+    occurred_at: '2026-11-12T00:00:00Z', persisted_at: '2026-11-12T00:00:00Z',
+  };
+  const transcript = [event] as unknown as ChatTranscriptEventPayload[];
+  const store = consumeSessionEnvelope(transcript[0], createSessionEventStore(), 0).store!;
+  const cards = source === 'live' ? projectSessionEventStoreToMessages(store)
+    : hydrateSessionTranscriptEvents(transcript).messages;
+  const base = props('', false, 'result-session');
+  render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'use' }}
+    currentUser={{ id: 'member', tenant_id: 'company' }}
+    activeSession={{ ...base.activeSession, user_id: 'member', read_only: false, is_current_user_session: true, operator_view: false }}
+    historyMsgs={[]} chatMessagesSessionId="result-session"
+    chatMessages={[{ id: 'request', role: 'user', content: 'Summarize the colleague result.' }, ...cards]}
+    onBranchMessage={vi.fn()} />);
+  // Approval, remote, subagent and creation results also use this code; name no
+  // colleague or summarization task in either live or historical cards.
+  expect(screen.getByText('这份结果这次没法安全读取，我没能继续。你可以让我重新安排这项工作。')).toBeTruthy();
+  expect(screen.queryByTestId('thread-item-retry-turn')).toBeNull();
+});
 
 it.each(['live', 'history'] as const)('renders delivery-safe retry actions and the transient timeout copy on %s cards', (source) => {
   const payloads = [

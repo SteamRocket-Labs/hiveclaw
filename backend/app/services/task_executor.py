@@ -30,10 +30,14 @@ from app.services.plan_authorization_lease import (
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.business_task_runtime import BusinessTaskExecutionPause, TaskExecutionOutcome, TaskExecutionStatus
-from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
+from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE, REFUSED_RESULT_READ_MESSAGE
 
 
 _BUSINESS_TASK_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
+_PLAIN_BUSINESS_STOPS = {
+    "repeated_empty_search": EMPTY_SEARCH_FINAL_MESSAGE,
+    "identical_refused_result_read": REFUSED_RESULT_READ_MESSAGE,
+}
 
 
 def _business_task_key(runtime_task_id: uuid.UUID | str) -> str:
@@ -799,12 +803,9 @@ async def execute_task(
         logger.info(f"[TaskExec] Task {task_id} persisted assistant evidence for atomic finalization")
 
     if terminal_reason_value != TerminalReason.TURN_STOP.value:
-        # R18a round 3 (ruling 3): the empty-search stop's outcome carries the
-        # plain member sentence and is not retryable — a retry would rerun the
-        # whole task, possibly including tools with effects, to relearn that
-        # nothing was found. Every other code (identical_terminal_task_read,
-        # tool_round_limit, provider errors) keeps its summary and retry.
-        empty_search_stop = str(failure_code or "") == "repeated_empty_search"
+        # These stops give the member a plain sentence without rerunning the
+        # whole task. Other failures retain their existing summary and retry.
+        plain = _PLAIN_BUSINESS_STOPS.get(str(failure_code or ""))
         return TaskExecutionOutcome(
             status=(
                 TaskExecutionStatus.CANCELLED
@@ -812,13 +813,13 @@ async def execute_task(
                 else TaskExecutionStatus.FAILED
             ),
             summary=(
-                EMPTY_SEARCH_FINAL_MESSAGE
-                if empty_search_stop
+                plain
+                if plain is not None
                 else f"Business task ended without a canonical completion ({terminal_reason_value or 'unknown'})."
             ),
             error_code=str(failure_code or terminal_reason_value or "terminal_abort"),
             retryable=(
-                terminal_reason_value != TerminalReason.USER_CANCEL.value and not empty_search_stop
+                terminal_reason_value != TerminalReason.USER_CANCEL.value and plain is None
             ),
             reflection_session_id=str(reflection_session_id),
             terminal_reason=terminal_reason_value or None,

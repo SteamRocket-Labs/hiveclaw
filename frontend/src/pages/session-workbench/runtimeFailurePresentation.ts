@@ -1,5 +1,5 @@
 export type RuntimeFailurePresentation = {
-  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error' | 'timeout' | 'empty_search';
+  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error' | 'timeout' | 'empty_search' | 'refused_result';
   fallback: string;
 };
 
@@ -22,6 +22,12 @@ export function runtimeFailurePresentation(
     return {
       kind: 'empty_search',
       fallback: 'Several searches found no matching material.',
+    };
+  }
+  if (failureCode === 'identical_refused_result_read') {
+    return {
+      kind: 'refused_result',
+      fallback: "This result couldn't be read safely this time, so I couldn't continue. You can ask me to arrange this work again.",
     };
   }
   if (failureCode === 'timeout' && deliveryState === 'unknown') {

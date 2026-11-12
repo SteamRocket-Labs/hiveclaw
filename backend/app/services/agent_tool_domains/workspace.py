@@ -1770,7 +1770,10 @@ def _grep_search(
 
 
 async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | None = None, *, authority_scope=None) -> str:
-    from app.services.agent_tools import available_deferred_tool_names_for_agent, discoverable_tool_names_for_query
+    from app.services.agent_tools import (
+        available_deferred_tool_names_for_agent,
+        discoverable_deferred_tools_for_query,
+    )
     from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES
     from app.services.tool_search_manifest import build_tool_search_manifest, render_tool_search_manifest_sections
 
@@ -1795,7 +1798,7 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
     # EXACTLY what the schema path loads. discoverable_tool_names_for_query covers
     # static packs + agent-reachable MCP and excludes CORE (already turn-1). Text
     # == schema (🦴#2). agent_id falls back to the workspace dir name.
-    deferred_names: list[str] = []
+    deferred_tools: list[tuple[str, str]] = []
     company_applications = None
     resolved_agent_id = agent_id if agent_id is not None else ws.name
     if resolved_agent_id:
@@ -1804,7 +1807,9 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         except ValueError:
             resolved_agent_id = None
     if resolved_agent_id:
-        deferred_names = await discoverable_tool_names_for_query(resolved_agent_id, query)
+        # One governed enumeration returns names with their connection labels
+        # (validated URL host) — no second MCP lookup for the suffix (G4b r2).
+        deferred_tools = await discoverable_deferred_tools_for_query(resolved_agent_id, query)
         if matching_skills:
             available = set(CORE_TOOL_NAMES) | set(await available_deferred_tool_names_for_agent(resolved_agent_id))
             matching_skills = [skill for skill in matching_skills if set(skill.metadata.declared_tools) <= available]
@@ -1819,6 +1824,7 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
                 company_applications = [{"name": name, "mcp_server_id": str(server_id), "auth_status": auth_status}
                     for server_id, name, auth_status in await db.execute(select(MCPServer.id, MCPServer.name, MCPServer.auth_status).where(
                         MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id.is_(None)).order_by(MCPServer.name, MCPServer.id))]
+    deferred_names = [name for name, _connection_label in deferred_tools]
     capture = getattr(authority_scope, "skill_inputs", None)
     if capture is not None:
         for skill in matching_skills:
@@ -1883,16 +1889,12 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
     else:
         lines.append("Company application registration is unknown; do not claim that an application is unconnected.")
     if deferred_names:
-        # G4b: show the admin-entered server display name next to MCP tool names
-        # so the member's words (e.g. "用 DeepWiki 查一下") match a listed tool.
-        server_names: dict[str, str] = {}
-        if any(name.startswith(("mcp_", "mcp__")) for name in deferred_names):
-            from app.services.agent_tools import mcp_server_display_names_for_agent
-
-            if resolved_agent_id:
-                server_names = await mcp_server_display_names_for_agent(resolved_agent_id)
+        # G4b: company MCP tools carry the validated connection host next to
+        # their names so the member's words (e.g. "用 DeepWiki 查一下") match a
+        # listed tool; the stored server name never reaches this suffix (r2).
         display_names = [
-            f"{name} ({server_names[name]})" if name in server_names else name for name in deferred_names
+            f"{name} ({connection_label})" if connection_label and connection_label != name else name
+            for name, connection_label in deferred_tools
         ]
         lines.append("")
         lines.append(

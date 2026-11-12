@@ -4492,6 +4492,8 @@
       "loading": "加载中...",
       "edit": "编辑",
       "approveFingerprint": "批准工具",
+      "mcpRevokeApproval": "撤销批准",
+      "mcpEditPurpose": "修改用途",
       "canonicalDescription": "审核后的工具用途",
       "deleteConnector": "删除连接器",
       "import": "导入",

@@ -598,6 +598,15 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
     visible) and routes MCP discovery through the DB-aware
     ``list_agent_mcp_deferred_tools``.
     """
+    return [name for name, _connection_label in await discoverable_deferred_tools_for_query(agent_id, query)]
+
+
+async def discoverable_deferred_tools_for_query(agent_id: uuid.UUID, query: str) -> list[tuple[str, str]]:
+    """``discoverable_tool_names_for_query`` with each tool's model-facing
+    connection label (``""`` for non-MCP tools; the validated MCP URL's host
+    for company MCP tools). One governed MCP enumeration serves both callers
+    (G4b r2): the schema path uses the names, the ``tool_search`` text shows
+    ``name (host)`` so a member's words match a company connection."""
     raw_query = query.strip()
     normalized = raw_query.lower()
     select_target = ""
@@ -629,11 +638,11 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
         return bool(normalized) and (tool_name.lower() == normalized or normalize_tool_query(tool_name) == compact)
 
     if not normalized:
-        requested: list[str] = sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES)
-        seen: set[str] = set(requested)
+        requested: list[tuple[str, str]] = [(tool_name, "") for tool_name in sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES)]
+        seen: set[str] = {tool_name for tool_name, _ in requested}
     elif any(_direct_tool_match(tool_name) for tool_name in AGENT_TEAM_DEFERRED_TOOL_NAMES):
         return [
-            next(tool_name for tool_name in sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES) if _direct_tool_match(tool_name))
+            (next(tool_name for tool_name in sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES) if _direct_tool_match(tool_name)), "")
         ]
     else:
         requested = []
@@ -645,7 +654,7 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
                 continue
             for tool_name in pack.tools:
                 if _direct_tool_match(tool_name) and tool_name not in CORE_TOOL_NAMES:
-                    return [tool_name]
+                    return [(tool_name, "")]
             if not capability_group_policy_available:
                 continue
     for pack in iter_runtime_l2_capabilities_for_query(query):
@@ -654,13 +663,13 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
         for tool_name in pack.tools:
             if tool_name in CORE_TOOL_NAMES or tool_name in seen:
                 continue
-            requested.append(tool_name)
+            requested.append((tool_name, ""))
             seen.add(tool_name)
     mcp_query = select_target or query
-    for mcp_name in await list_agent_mcp_deferred_tools(agent_id, mcp_query):
+    for mcp_name, connection_label in await enumerate_agent_mcp_deferred_tools(agent_id, mcp_query):
         if mcp_name in CORE_TOOL_NAMES or mcp_name in seen:
             continue
-        requested.append(mcp_name)
+        requested.append((mcp_name, connection_label))
         seen.add(mcp_name)
     return requested
 
@@ -731,23 +740,16 @@ async def available_deferred_tool_candidates_for_agent(
     names = await available_deferred_tool_names_for_agent(agent_id, limit=limit)
     builtin_names = AGENT_TEAM_DEFERRED_TOOL_NAMES | {
         name for capability in iter_runtime_l2_capabilities() for name in capability.tools}
-    # G4b: approved company MCP tools carry their admin-entered server display
-    # name in the catalog entry so the model can match a member's words.
-    server_names: dict[str, str] = {}
-    if any(name.startswith(("mcp_", "mcp__")) for name in names):
-        server_names = await mcp_server_display_names_for_agent(agent_id)
     candidates = []
     for name in names:
         if bound_only and name not in builtin_names:
             continue
-        server_name = server_names.get(name, "")
         candidate = make_deferred_tool_candidate(
             name,
             group=_deferred_tool_group_for_name(name),
             reason="available_in_turn_via_tool_search",
             schema_token_cost=0,
             risk=_deferred_tool_risk_for_name(name),
-            label=f"{name} ({server_name})" if server_name else None,
         )
         if candidate is not None:
             if source_unbound is not None and name not in builtin_names:
@@ -806,12 +808,15 @@ async def gather_deferred_tool_candidates_for_agent(
     return candidates
 
 
-async def _enumerate_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[tuple[str, str]]:
+async def enumerate_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[tuple[str, str]]:
     """Same governed enumeration as :func:`list_agent_mcp_deferred_tools`, but
-    yields ``(tool_name, server_display_name)`` so deferred-catalog surfaces can
-    show the admin-entered server name next to the tool name (G4b)."""
+    yields ``(tool_name, connection_label)`` where the label is the validated
+    MCP URL's host (``_safe_endpoint_host``) — trusted-only text, never the
+    stored ``mcp_server_name`` (G4b r2). One enumeration serves names, search
+    text and labels."""
 
     from app.models.tool import AgentTool, Tool
+    from app.services.mcp_metadata_trust import _safe_endpoint_host
 
     matched: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -858,7 +863,7 @@ async def _enumerate_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = 
                 if t.name in seen:
                     continue
                 seen.add(t.name)
-                matched.append((t.name, str(getattr(t, "mcp_server_name", "") or "")))
+                matched.append((t.name, _safe_endpoint_host(getattr(t, "mcp_server_url", None) or "")))
     except Exception as e:
         logger.warning(f"[Tools] list_agent_mcp_deferred_tools failed: {e}")
     return matched
@@ -880,18 +885,7 @@ async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") ->
     that, with the matching tightening in :func:`get_agent_tools_for_llm`, closes
     the discovery force-enable escalation (§J #1).
     """
-    return [name for name, _server_display_name in await _enumerate_agent_mcp_deferred_tools(agent_id, query)]
-
-
-async def mcp_server_display_names_for_agent(agent_id: uuid.UUID, query: str = "") -> dict[str, str]:
-    """Reachable MCP deferred tools mapped to their admin-entered server display
-    name (G4b). One source for the ``(tool name)`` suffix shown in the deferred
-    catalog and tool_search text; activation still uses the bare tool name."""
-    return {
-        name: server_display_name
-        for name, server_display_name in await _enumerate_agent_mcp_deferred_tools(agent_id, query)
-        if server_display_name and server_display_name != name
-    }
+    return [name for name, _connection_label in await enumerate_agent_mcp_deferred_tools(agent_id, query)]
 
 
 async def get_agent_tools_for_llm(

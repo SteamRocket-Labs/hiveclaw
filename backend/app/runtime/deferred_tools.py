@@ -14,9 +14,6 @@ class DeferredToolCandidate:
     selector: str
     schema_token_cost: int
     risk: str
-    # Display-only suffix surface (e.g. "mcp_x (DeepWiki)"); activation and
-    # identity keep using `name` so `select:<name>` resolution is unchanged.
-    label: str = ""
 
     def to_manifest(self) -> dict[str, Any]:
         return asdict(self)
@@ -30,7 +27,6 @@ def make_deferred_tool_candidate(
     selector: str | None = None,
     schema_token_cost: int = 0,
     risk: str = "governed_runtime",
-    label: str | None = None,
 ) -> DeferredToolCandidate | None:
     clean_name = str(name or "").strip()
     if not clean_name:
@@ -43,7 +39,6 @@ def make_deferred_tool_candidate(
         selector=clean_selector,
         schema_token_cost=max(int(schema_token_cost or 0), 0),
         risk=str(risk or "governed_runtime").strip() or "governed_runtime",
-        label=str(label or "").strip(),
     )
 
 
@@ -61,7 +56,6 @@ def coerce_deferred_tool_candidates(items: Iterable[Any] | None) -> list[Deferre
                 selector=str(item.get("selector") or ""),
                 schema_token_cost=int(item.get("schema_token_cost") or 0),
                 risk=str(item.get("risk") or "governed_runtime"),
-                label=str(item.get("label") or ""),
             )
         else:
             candidate = make_deferred_tool_candidate(str(item or ""))

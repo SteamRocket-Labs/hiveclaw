@@ -102,6 +102,10 @@ export function McpMetadataReviewPanel({
 }: McpMetadataReviewPanelProps) {
   const { t } = useTranslation();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // G4b r2: an approved tool can still be revoked (the existing reject
+  // decision) or have its purpose edited (the existing approve-with-edited-
+  // purpose path); both reuse the existing review endpoint.
+  const [editingToolId, setEditingToolId] = useState<string | null>(null);
 
   return (
     <section className="ws-mcp-review" aria-label={`${serverName} metadata review`}>
@@ -118,6 +122,7 @@ export function McpMetadataReviewPanel({
           {tools.map((tool) => {
             const draft = drafts[tool.tool_id] ?? tool.canonical_description;
             const busy = busyTool === tool.tool_id;
+            const editingApproved = tool.runtime_approved && editingToolId === tool.tool_id;
             return (
               <article key={tool.tool_id} className="ws-mcp-review-card">
                 <div className="ws-tools-row-between">
@@ -142,11 +147,10 @@ export function McpMetadataReviewPanel({
                     {tool.risk_flags.map((flag) => <span key={flag}>{t(`enterprise.tools.mcpRisk.${flag}`, flag)}</span>)}
                   </div>
                 ) : null}
-                {tool.runtime_approved ? (
-                  // G4b: once approved, the review pair gives way to the approved
-                  // state — the reviewed purpose is shown read-only; if the remote
-                  // metadata changes, the fingerprint no longer matches and the
-                  // review pair returns below.
+                {tool.runtime_approved && !editingApproved ? (
+                  // G4b r2: once approved, the purpose is shown read-only with the
+                  // revoke and edit actions; if the remote metadata drifts, the
+                  // fingerprint no longer matches and the review pair returns.
                   <div className="ws-mcp-canonical-field" data-testid="mcp-approved-purpose">
                     <span>{t('enterprise.tools.canonicalDescription', 'Canonical runtime description')}</span>
                     <p className="ws-mcp-approved-purpose-text">{tool.canonical_description}</p>
@@ -171,13 +175,34 @@ export function McpMetadataReviewPanel({
                   <pre>{tool.raw_description}</pre>
                   <pre>{JSON.stringify(tool.raw_schema, null, 2)}</pre>
                 </details>
-                {tool.runtime_approved ? null : (
+                {tool.runtime_approved && !editingApproved ? (
+                  <div className="ws-mcp-review-actions">
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setEditingToolId(tool.tool_id)}
+                    >
+                      {t('enterprise.tools.mcpEditPurpose', 'Edit purpose')}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      disabled={busy}
+                      onClick={() => onReview(tool, 'reject', draft)}
+                    >
+                      {t('enterprise.tools.mcpRevokeApproval', 'Revoke approval')}
+                    </button>
+                  </div>
+                ) : (
                   <div className="ws-mcp-review-actions">
                     <button
                       type="button"
                       className="btn btn-primary btn-sm"
                       disabled={busy || !draft.trim()}
-                      onClick={() => onReview(tool, 'approve', draft)}
+                      onClick={() => {
+                        setEditingToolId(null);
+                        onReview(tool, 'approve', draft);
+                      }}
                     >
                       {busy ? t('common.saving', 'Saving...') : t('enterprise.tools.approveFingerprint', 'Approve fingerprint')}
                     </button>
@@ -185,7 +210,10 @@ export function McpMetadataReviewPanel({
                       type="button"
                       className="btn btn-secondary btn-sm"
                       disabled={busy}
-                      onClick={() => onReview(tool, 'reject', draft)}
+                      onClick={() => {
+                        setEditingToolId(null);
+                        onReview(tool, 'reject', draft);
+                      }}
                     >
                       {t('common.reject', 'Reject')}
                     </button>

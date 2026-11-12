@@ -4492,6 +4492,8 @@
       "loading": "Loading...",
       "edit": "Edit",
       "approveFingerprint": "Approve fingerprint",
+      "mcpRevokeApproval": "Revoke approval",
+      "mcpEditPurpose": "Edit purpose",
       "canonicalDescription": "Canonical runtime description",
       "deleteConnector": "Delete connector",
       "import": "Import",

@@ -55,7 +55,8 @@ shell commands, web requests, workspace files, memory, personal knowledge or oth
 This missing-connection answer completes the request; resourcefulness, retries and three-strike variations never override this stop. \
 Do not probe browser sessions, email or importable integrations to bypass a missing connection. For a registered app \
 that only needs the member's personal account, use the existing in-conversation account card. \
-Never name MCP, A2A, tool names or registries to the member. \
+Never name MCP, A2A, tool names or registries to the member, except when quoting the administrator \
+route labels verbatim. \
 Honor the requested answer length, including exactly one sentence when asked.
 
 Every response should either make concrete progress or deliver a final result, including the one-sentence missing-connection answer above. \

@@ -116,9 +116,12 @@ describe('McpMetadataReviewPanel approved state (G4b)', () => {
     expect(html).toContain('ask_wiki_question from the company connection');
     expect(html).toContain('&#x27;DeepWiki&#x27; (mcp.deepwiki.com).');
     expect(html).toContain('Provider-supplied description (unverified)');
-    // The review pair is gone; the reviewed purpose is plain text, not an editor.
+    // G4b r2: the approve pair gives way to the read-only purpose plus the
+    // revoke and edit actions (existing reject / approve-with-edit decisions).
     expect(html).not.toContain('Approve fingerprint');
     expect(html).not.toContain('Reject');
     expect(html).not.toContain('<textarea');
+    expect(html).toContain('Edit purpose');
+    expect(html).toContain('Revoke approval');
   });
 });

@@ -109,12 +109,38 @@ def _safe_endpoint_host(server_url: str) -> str:
     return host
 
 
-def _neutral_description(*, tool_name: str, server_name: str, server_url: str) -> str:
-    # G4b: the default reviewed purpose names the admin-entered server display
-    # name and the tool so the model can connect a member's words ("用 DeepWiki
-    # 查一下") to this tool; remote text stays omitted.
+def trusted_connection_label(server_name: Any, server_url: Any) -> str:
+    """The one model-facing connection label (G4b r2).
+
+    The admin-entered display name is used only when it is plainly a name —
+    no URL/query/userinfo markers, no injection-like or control characters,
+    at most 64 characters, and no risk-flag triggers. Anything else (a pasted
+    URL with credentials, a Smithery ``displayName``, a bot-supplied
+    ``server_id``) falls back to the validated URL's host. The suffix shown
+    next to tool names in tool search uses the host directly, never the name.
+    """
     host = _safe_endpoint_host(server_url)
-    display = str(server_name or "").strip() or host
+    name = str(server_name or "").strip()
+    if (
+        name
+        and len(name) <= 64
+        and "://" not in name
+        and "?" not in name
+        and "@" not in name
+        and not any(ord(char) < 32 or ord(char) == 127 for char in name)
+        and not _risk_flags(name, {})
+    ):
+        return name
+    return host
+
+
+def _neutral_description(*, tool_name: str, server_name: str, server_url: str) -> str:
+    # G4b: the default reviewed purpose names the connection and the tool so
+    # the model can connect a member's words ("用 DeepWiki 查一下") to this
+    # tool; the label is trusted-only (trusted_connection_label) and remote
+    # text stays omitted.
+    host = _safe_endpoint_host(server_url)
+    display = trusted_connection_label(server_name, server_url)
     return (
         f"{tool_name} from the company connection '{display}' ({host}). "
         "Remote metadata is untrusted and omitted. "
@@ -406,7 +432,11 @@ def apply_mcp_metadata_candidate(tool: Any, candidate: MCPMetadataCandidate) -> 
     tool.mcp_raw_description = candidate.raw_description
     tool.mcp_raw_schema = copy.deepcopy(candidate.raw_schema)
     tool.mcp_metadata_risk_flags = list(candidate.risk_flags)
-    tool.description = candidate.canonical_description
+    # G4b r2/r3: an unchanged, already-approved tool keeps the description the
+    # administrator approved — a re-import must not silently rewrite it. The
+    # platform default goes only to candidates that are not approved as-is.
+    if changed or current_status != "approved":
+        tool.description = candidate.canonical_description
     tool.parameters_schema = copy.deepcopy(candidate.canonical_schema)
     tool.config = _config_with_activation(tool, candidate.activation)
     tool.mcp_metadata_fingerprint = candidate.fingerprint

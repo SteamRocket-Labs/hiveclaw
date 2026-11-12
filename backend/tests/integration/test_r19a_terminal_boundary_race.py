@@ -74,4 +74,3 @@ async def test_two_real_delegation_ticks_deliver_one_ready_row(
         for task in ticks:
             task.cancel()
         await asyncio.gather(*ticks, return_exceptions=True)
-

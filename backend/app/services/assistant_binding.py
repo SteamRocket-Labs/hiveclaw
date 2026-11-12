@@ -313,7 +313,16 @@ async def _eligible(db: AsyncSession, user: User, agent: Agent) -> bool:
     if get_agent_lifecycle_block_reason(agent) is not None:
         return False
     try:
-        await check_agent_access(db, user, agent.id)
+        if user.role == "platform_admin":
+            await check_agent_access(db, user, agent.id)
+        else:
+            from app.core.permissions import agent_access_from_facts
+            from app.services.source_read_queries import source_reader_statement
+
+            # Each candidate keeps its own live ACL checkpoint. Join that
+            # checkpoint's facts instead of fetching each grant kind in turn.
+            facts = (await db.execute(source_reader_statement(user, agent.id))).first()
+            await agent_access_from_facts(db, user, facts)
     except HTTPException:
         return False
     return True

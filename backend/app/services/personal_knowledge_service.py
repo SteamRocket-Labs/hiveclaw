@@ -1270,42 +1270,29 @@ class PersonalKnowledgeService:
         session.add(document)
         await session.flush()
 
-        job_result = await session.execute(
-            select(KnowledgeIndexJob).where(
-                KnowledgeIndexJob.tenant_id == tenant_id,
-                KnowledgeIndexJob.document_id == document.id,
-                KnowledgeIndexJob.artifact_hash == artifact_hash,
-            )
-        )
-        job = job_result.scalar_one_or_none()
         job_metadata = {
-            **(getattr(job, "job_metadata_json", {}) or {}),
             **metadata,
             "sensitivity": canonical_sensitivity,
             "source_kind": clean_source_kind,
             "source_sha256": clean_source_sha256,
             "warnings": [],
         }
-        if job is None:
-            job = KnowledgeIndexJob(
-                id=uuid.uuid4(),
-                tenant_id=tenant_id,
-                document_id=document.id,
-                scope_type="person",
-                scope_id=owner_user_id,
-                artifact_hash=artifact_hash,
-                stage="queued",
-                status="queued",
-                error_message=None,
-                attempt_count=0,
-                job_metadata_json=job_metadata,
-            )
-            session.add(job)
-        else:
-            job.stage = "queued"
-            job.status = "queued"
-            job.error_message = None
-            job.job_metadata_json = job_metadata
+        # This document UUID was just created in this transaction; no job can
+        # already refer to it. Existing documents return through dedupe above.
+        job = KnowledgeIndexJob(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            document_id=document.id,
+            scope_type="person",
+            scope_id=owner_user_id,
+            artifact_hash=artifact_hash,
+            stage="queued",
+            status="queued",
+            error_message=None,
+            attempt_count=0,
+            job_metadata_json=job_metadata,
+        )
+        session.add(job)
         await session.flush()
 
         return PersonalKnowledgeIngestResult(

@@ -4,7 +4,8 @@ What each lane shows for a run stopped by the empty-search guard: the outcome
 is FAILED (never NEEDS_RECONCILIATION); for failure_code repeated_empty_search
 the member-facing summary is the plain sentence 「多次搜索都没有找到相关资料。」
 and the outcome is not retryable (the member projection therefore offers no
-retry); every other failure code — identical_terminal_task_read,
+retry); the running-task-read stop also has plain copy and no retry.
+Other failure codes — identical_terminal_task_read,
 tool_round_limit, provider errors — keeps its English summary and retry. A
 parent reading the business RuntimeTask through runtime_failure_observation
 still sees the generic sentence (error_code sits under metadata.outcome;
@@ -22,7 +23,9 @@ from tests.services.test_task_executor import _FakeSession, _fake_resolve_tenant
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_code", ["repeated_empty_search", "identical_terminal_task_read"])
+@pytest.mark.parametrize("failure_code", [
+    "repeated_empty_search", "identical_terminal_task_read", "identical_running_task_read",
+])
 async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, failure_code):
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
     from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
@@ -34,6 +37,9 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
     model_id = uuid4()
     creator_id = uuid4()
     plan_id = uuid4()
+    child_id = uuid4()
+    running_read = failure_code == "identical_running_task_read"
+    tool_name = "check_async_task" if running_read else "search_company_kb"
 
     task = SimpleNamespace(
         id=task_id, title="查公司知识库", description="找「白鹭计划」资料", type="todo", status="pending",
@@ -60,9 +66,8 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
                 _FakeSession([task])]
 
     async def fake_invoke_agent(request):
-        """Run the REAL kernel loop with a model that keeps rewording an empty
-        company-knowledge search; project the kernel result into the invoker
-        result shape the executor consumes."""
+        """Run the real kernel for repeated empty searches or running-task reads;
+        project its result into the invoker shape the executor consumes."""
         search_index = iter(range(1, 20))
 
         class RewordingClient:
@@ -76,8 +81,9 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
                 return LLMResponse(
                     content="",
                     tool_calls=[{"id": f"search-{index}", "type": "function", "function": {
-                        "name": "search_company_kb",
-                        "arguments": json.dumps({"query": f"白鹭计划 第{index}种说法"})}}],
+                        "name": tool_name,
+                        "arguments": json.dumps({"task_id": str(child_id)} if running_read
+                            else {"query": f"白鹭计划 第{index}种说法"})}}],
                     finish_reason="tool_calls",
                     usage={"prompt_tokens": 10, "completion_tokens": 5},
                     model="gpt-4.1",
@@ -90,10 +96,12 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
             resolve_memory_context=lambda *_a, **_k: "",
             get_tools=lambda *_a, **_k: [{
                 "type": "function", "function": {
-                    "name": "search_company_kb", "description": "", "parameters": {"type": "object"}}}],
+                    "name": tool_name, "description": "", "parameters": {"type": "object"}}}],
             maybe_compress_messages=lambda messages, **_k: messages,
             create_client=lambda _m: RewordingClient(),
-            execute_tool=lambda *_a, **_k: json.dumps({"status": "empty", "results": []}, ensure_ascii=False),
+            execute_tool=lambda *_a, **_k: json.dumps({"task_id": str(child_id), "task_type": "delegation",
+                "status": "running", "result": None} if running_read
+                else {"status": "empty", "results": []}, ensure_ascii=False),
             persist_memory=lambda **_k: None,
             record_token_usage=lambda *_a, **_k: None,
             get_max_tokens=lambda *_a, **_k: 2048,
@@ -105,6 +113,10 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
             agent_name=request.agent_name, role_description=request.role_description or "",
             agent_id=request.agent_id, user_id=request.user_id,
         ))
+        if running_read:
+            # This case reaches the running-read guard through the real kernel;
+            # the executor must not inherit the generic retryable failure copy.
+            assert result.failure_code == "identical_running_task_read"
         # The kernel stop for repeated_empty_search is real; the
         # identical_terminal_task_read result shape is pinned by its own
         # kernel tests — here only the executor's mapping of the code varies.
@@ -147,6 +159,9 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
         # not retryable — a retry would rerun the whole task.
         assert outcome.summary == EMPTY_SEARCH_FINAL_MESSAGE
         assert outcome.retryable is False
+    elif running_read:
+        assert outcome.summary == "同事还在处理，这次我先停下了。等同事完成后，你可以让我继续整理。"
+        assert outcome.retryable is False
     else:
         # Every other code keeps its English summary and retry (green on the
         # round-2 commit too).
@@ -180,5 +195,5 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
     projection = project_business_task(task=projected_task, runtime_task=runtime)
     assert projection["recovery_message"] == outcome.summary
     assert projection["actions"]["can_retry"] is outcome.retryable
-    if failure_code == "repeated_empty_search":
+    if failure_code in {"repeated_empty_search", "identical_running_task_read"}:
         assert projection["recovery_state"] != "retry_available"

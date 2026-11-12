@@ -621,8 +621,10 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
                 " This assistant cannot install company connections. If the company has not connected the requested app, "
                 "tell the member that this assistant cannot add the connection under current company settings. "
                 f"An administrator can follow {MCP_ADMIN_ROUTE}. "
-                "The extensions page opens on AI 资产; switch to MCP 与插件, test the public URL and import, then review each tool and enable it. "
+                "The 连接应用与审核工具 link opens directly on the MCP 与插件 tab; use 添加扩展 to test the public URL "
+                "and import, then review each tool and enable it. "
                 "Do not try browsers, CLIs, commands or other routes to reach it. "
+                "When telling the member, quote the route's clickable labels exactly and name no internal mechanisms. "
                 "For an already registered app, use its available tools and the existing personal-account connection card."
             )
         return _skill_control_error(authority_scope, tool_name, "skill_tools_unavailable",
@@ -1857,7 +1859,7 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         lines.extend(["Connection actions:", json.dumps({
             "not_connected": {
                 "when": "The requested service is absent from company_applications.",
-                "connect_action": {"location": "公司连接", "actor": "administrator"},
+                "connect_action": {"location": MCP_ADMIN_ROUTE, "actor": "administrator"},
             },
             "connect_if_account_needed": {"tool": "ask_user_question", "arguments": {
                 "questions": [{"question": "<Write a connection question in the member's language>", "options": []}],
@@ -1867,23 +1869,37 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         lines.append(
             "company_applications is the complete list of company-registered apps, not a list of personal accounts. "
             "If the requested app is absent, answer in one sentence in the member's language "
-            "that it is not connected and an administrator can add it in 公司连接 (company connections), then stop attempts to access that service. "
+            f"that it is not connected and an administrator can add it — the clickable route is {MCP_ADMIN_ROUTE} — "
+            "then stop attempts to access that service. "
             "Do not try browsers, CLIs, shell commands, web requests, workspace files, memory, personal knowledge or other routes to reach it. "
             "Do not probe browser sessions, email or importable integrations as workarounds. "
             "Do not install or create a company connection. "
             "Only for a row marked connect_if_account_needed, copy that call template, substituting configuration.mcp_server_id "
             "with the row's mcp_server_id and replacing the question text with the member's language to show the existing connection card. "
-            "Registration alone does not mean the member is connected. Never ask for credentials in chat or name internal mechanisms to the member."
+            "Registration alone does not mean the member is connected. Never ask for credentials in chat. "
+            "When you tell the member the route, quote its clickable labels exactly as given and do not mention "
+            "tool search, tool names, MCP management tools or any other internal mechanism."
         )
     else:
         lines.append("Company application registration is unknown; do not claim that an application is unconnected.")
     if deferred_names:
+        # G4b: show the admin-entered server display name next to MCP tool names
+        # so the member's words (e.g. "用 DeepWiki 查一下") match a listed tool.
+        server_names: dict[str, str] = {}
+        if any(name.startswith(("mcp_", "mcp__")) for name in deferred_names):
+            from app.services.agent_tools import mcp_server_display_names_for_agent
+
+            if resolved_agent_id:
+                server_names = await mcp_server_display_names_for_agent(resolved_agent_id)
+        display_names = [
+            f"{name} ({server_names[name]})" if name in server_names else name for name in deferred_names
+        ]
         lines.append("")
         lines.append(
             "Discovered deferred tools (matching schemas are loaded by this search; "
             "use `load_skill` only for method instructions):"
         )
-        lines.append(f"- {', '.join(deferred_names)}")
+        lines.append(f"- {', '.join(display_names)}")
     if matching_skills:
         lines.append("")
         lines.append("Matching skills:")

@@ -436,7 +436,11 @@ def _render_deferred_tool_index(deferred_candidates: list[Any], *, budget_chars:
         )
     for candidate, row in zip(deferred_candidates, metadata):
         details = "; ".join(f"{key}={value}" for key, value in row.items() if key not in shared)
-        line = f"- {candidate.name} — `{candidate.selector}`"
+        # G4b: MCP entries carry the admin-entered server display name
+        # (e.g. "mcp_ask_wiki_question (DeepWiki)") so a member's words can be
+        # matched to the tool; the selector still activates the bare name.
+        display = getattr(candidate, "label", "") or candidate.name
+        line = f"- {display} — `{candidate.selector}`"
         if details:
             line += f" ({details})"
         lines.append(line)

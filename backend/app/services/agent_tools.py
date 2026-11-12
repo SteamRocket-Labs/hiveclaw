@@ -731,16 +731,23 @@ async def available_deferred_tool_candidates_for_agent(
     names = await available_deferred_tool_names_for_agent(agent_id, limit=limit)
     builtin_names = AGENT_TEAM_DEFERRED_TOOL_NAMES | {
         name for capability in iter_runtime_l2_capabilities() for name in capability.tools}
+    # G4b: approved company MCP tools carry their admin-entered server display
+    # name in the catalog entry so the model can match a member's words.
+    server_names: dict[str, str] = {}
+    if any(name.startswith(("mcp_", "mcp__")) for name in names):
+        server_names = await mcp_server_display_names_for_agent(agent_id)
     candidates = []
     for name in names:
         if bound_only and name not in builtin_names:
             continue
+        server_name = server_names.get(name, "")
         candidate = make_deferred_tool_candidate(
             name,
             group=_deferred_tool_group_for_name(name),
             reason="available_in_turn_via_tool_search",
             schema_token_cost=0,
             risk=_deferred_tool_risk_for_name(name),
+            label=f"{name} ({server_name})" if server_name else None,
         )
         if candidate is not None:
             if source_unbound is not None and name not in builtin_names:
@@ -799,25 +806,14 @@ async def gather_deferred_tool_candidates_for_agent(
     return candidates
 
 
-async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:
-    """The single DB-aware enumerator of MCP tools an agent can DISCOVER via
-    tool_search (J / 🦴#2).
+async def _enumerate_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[tuple[str, str]]:
+    """Same governed enumeration as :func:`list_agent_mcp_deferred_tools`, but
+    yields ``(tool_name, server_display_name)`` so deferred-catalog surfaces can
+    show the admin-entered server name next to the tool name (G4b)."""
 
-    BOTH the text result (``workspace._tool_search``) and the schema injection
-    (``invoker._deferred_tool_names_for_query``) route through here, so "what the
-    model is told exists" == "what actually loads".
-
-    Governance listing gate: only REACHABLE MCP tools are listed — denied tools
-    and tools on disabled servers/packs never appear (CC parity: denied == not
-    reachable). For un-backfilled agents (no MCP assignment rows → ``mcp_gating``
-    is None) it falls back to the legacy ``is_default`` / ``AgentTool.enabled``
-    decision, so a NON-default MCP tool can never be surfaced — the choke point
-    that, with the matching tightening in :func:`get_agent_tools_for_llm`, closes
-    the discovery force-enable escalation (§J #1).
-    """
     from app.models.tool import AgentTool, Tool
 
-    matched: list[str] = []
+    matched: list[tuple[str, str]] = []
     seen: set[str] = set()
     try:
         # RLS 阶段1: `tools`/`agents` are policy-bearing — resolve the agent's
@@ -862,10 +858,40 @@ async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") ->
                 if t.name in seen:
                     continue
                 seen.add(t.name)
-                matched.append(t.name)
+                matched.append((t.name, str(getattr(t, "mcp_server_name", "") or "")))
     except Exception as e:
         logger.warning(f"[Tools] list_agent_mcp_deferred_tools failed: {e}")
     return matched
+
+
+async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:
+    """The single DB-aware enumerator of MCP tools an agent can DISCOVER via
+    tool_search (J / 🦴#2).
+
+    BOTH the text result (``workspace._tool_search``) and the schema injection
+    (``invoker._deferred_tool_names_for_query``) route through here, so "what the
+    model is told exists" == "what actually loads".
+
+    Governance listing gate: only REACHABLE MCP tools are listed — denied tools
+    and tools on disabled servers/packs never appear (CC parity: denied == not
+    reachable). For un-backfilled agents (no MCP assignment rows → ``mcp_gating``
+    is None) it falls back to the legacy ``is_default`` / ``AgentTool.enabled``
+    decision, so a NON-default MCP tool can never be surfaced — the choke point
+    that, with the matching tightening in :func:`get_agent_tools_for_llm`, closes
+    the discovery force-enable escalation (§J #1).
+    """
+    return [name for name, _server_display_name in await _enumerate_agent_mcp_deferred_tools(agent_id, query)]
+
+
+async def mcp_server_display_names_for_agent(agent_id: uuid.UUID, query: str = "") -> dict[str, str]:
+    """Reachable MCP deferred tools mapped to their admin-entered server display
+    name (G4b). One source for the ``(tool name)`` suffix shown in the deferred
+    catalog and tool_search text; activation still uses the bare tool name."""
+    return {
+        name: server_display_name
+        for name, server_display_name in await _enumerate_agent_mcp_deferred_tools(agent_id, query)
+        if server_display_name and server_display_name != name
+    }
 
 
 async def get_agent_tools_for_llm(

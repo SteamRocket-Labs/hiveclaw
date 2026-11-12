@@ -109,10 +109,15 @@ def _safe_endpoint_host(server_url: str) -> str:
     return host
 
 
-def _neutral_description(*, tool_name: str, server_url: str) -> str:
+def _neutral_description(*, tool_name: str, server_name: str, server_url: str) -> str:
+    # G4b: the default reviewed purpose names the admin-entered server display
+    # name and the tool so the model can connect a member's words ("用 DeepWiki
+    # 查一下") to this tool; remote text stays omitted.
+    host = _safe_endpoint_host(server_url)
+    display = str(server_name or "").strip() or host
     return (
-        f"External MCP operation '{tool_name}' provided by endpoint host "
-        f"'{_safe_endpoint_host(server_url)}'. Remote metadata is untrusted and omitted. "
+        f"{tool_name} from the company connection '{display}' ({host}). "
+        "Remote metadata is untrusted and omitted. "
         "Use only with reviewed arguments and normal Hive governance."
     )
 
@@ -296,7 +301,9 @@ def prepare_mcp_metadata_candidate(
     return MCPMetadataCandidate(
         raw_description=description,
         raw_schema=copy.deepcopy(schema),
-        canonical_description=_neutral_description(tool_name=normalized_tool_name, server_url=server_url),
+        canonical_description=_neutral_description(
+            tool_name=normalized_tool_name, server_name=server_name, server_url=server_url
+        ),
         canonical_schema=canonical_schema,
         fingerprint=_fingerprint_for(payload),
         risk_flags=_risk_flags(description, schema),
@@ -355,7 +362,9 @@ def quarantine_invalid_mcp_metadata(
     tool.mcp_raw_schema = stored_schema
     tool.mcp_metadata_fingerprint = fingerprint
     tool.mcp_metadata_risk_flags = list(dict.fromkeys(flags))
-    tool.description = _neutral_description(tool_name=str(tool_name or "unknown"), server_url=server_url)
+    tool.description = _neutral_description(
+        tool_name=str(tool_name or "unknown"), server_name=server_name, server_url=server_url
+    )
     tool.parameters_schema = {"type": "object", "properties": {}}
     tool.mcp_trust_status = "invalid_metadata"
     tool.mcp_trust_tier = "external_invalid"

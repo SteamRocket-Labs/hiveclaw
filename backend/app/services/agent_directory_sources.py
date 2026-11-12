@@ -25,7 +25,7 @@ def _error(code="content_source_access_denied"):
 
 
 async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, external_principal_id=None):
-    from app.core.permissions import check_agent_access
+    from app.core.permissions import agent_access_from_facts, check_agent_access
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.runtime_task import RuntimeTask
@@ -49,6 +49,10 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
             raise _error()
         return actor, agent
     from app.services.content_input_receipts import _batch_browser_point
+    from app.database import get_current_tenant_id
+
+    if str(get_current_tenant_id()) != str(tenant_id):
+        raise _error()
 
     facts = None
     if _batch_browser_point(db):
@@ -62,7 +66,10 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
             .outerjoin(RuntimeTask, (RuntimeTask.id == run_id) & (RuntimeTask.tenant_id == tenant_id))
             .options(*reader_columns(User, ChatSession, RuntimeTask)))).first()
         agent, user, session, task = (facts[0], facts[5], facts[6], facts[7]) if facts is not None else (None,) * 4
-        if user is not None and (not user.is_active or user.tenant_id != tenant_id):
+        if user is None or user.role == "platform_admin":
+            user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
+            facts = None
+        elif not user.is_active or user.tenant_id != tenant_id:
             user = None
     else:
         user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
@@ -100,9 +107,7 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
         if facts is None:
             await check_agent_access(db, user, agent_id)
         else:
-            from app.services.source_read_queries import source_reader_access
-
-            await source_reader_access(db, user, facts)
+            await agent_access_from_facts(db, user, facts)
     except HTTPException as exc:
         raise _error() from exc
     return user, agent

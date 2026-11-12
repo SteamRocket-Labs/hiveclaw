@@ -247,61 +247,6 @@ def serialize_agent_for_a2a(agent: Agent, *, relation: str) -> dict[str, Any]:
     }
 
 
-async def list_same_owner_agents(db: AsyncSession, source_agent: Agent) -> list[Agent]:
-    owner_id = resolve_agent_owner_id(source_agent)
-    if owner_id is None:
-        return []
-
-    result = await db.execute(
-        select(Agent)
-        .where(
-            Agent.id != source_agent.id,
-            Agent.tenant_id == source_agent.tenant_id,
-            Agent.deleted_at.is_(None),
-            Agent.deactivated_at.is_(None),
-            Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
-            _a2a_agent_sql_filter(),
-            or_(Agent.owner_user_id == owner_id, and_(Agent.owner_user_id.is_(None), Agent.creator_id == owner_id)),
-        )
-        .order_by(Agent.name.asc())
-        .execution_options(populate_existing=True)
-    )
-    return list(result.scalars().all())
-
-
-async def list_public_agents(db: AsyncSession, source_agent: Agent) -> list[Agent]:
-    """List same-tenant public agents that are not already covered by same-owner."""
-
-    owner_id = resolve_agent_owner_id(source_agent)
-    same_owner_filter = False
-    if owner_id is not None:
-        same_owner_filter = or_(
-            Agent.owner_user_id == owner_id,
-            and_(Agent.owner_user_id.is_(None), Agent.creator_id == owner_id),
-        )
-
-    public_filters = [
-        Agent.id != source_agent.id,
-        Agent.tenant_id == source_agent.tenant_id,
-        Agent.deleted_at.is_(None),
-        Agent.deactivated_at.is_(None),
-        Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
-        _a2a_agent_sql_filter(),
-        exists(
-            select(1).where(
-                AgentPermission.agent_id == Agent.id,
-                AgentPermission.scope_type == "company",
-                or_(AgentPermission.tenant_id == source_agent.tenant_id, AgentPermission.tenant_id.is_(None)),
-            )
-        ),
-    ]
-    if same_owner_filter is not False:
-        public_filters.append(~same_owner_filter)
-
-    result = await db.execute(select(Agent).where(*public_filters).order_by(Agent.name.asc()).execution_options(populate_existing=True))
-    return list(result.scalars().all())
-
-
 async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_agent: Agent) -> list[SimpleNamespace]:
     source_memberships = await db.execute(
         select(AgentCollaborationGroup, AgentCollaborationGroupMember)
@@ -369,7 +314,6 @@ async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UU
     group, member, source_member = AgentCollaborationGroup, aliased(AgentCollaborationGroupMember), aliased(AgentCollaborationGroupMember)
     source_participating = ~and_(source.agent_class == HR_AGENT_CLASS, source.name == HR_AGENT_NAME)
     owner = func.coalesce(source.owner_user_id, source.creator_id)
-    peer_owner = func.coalesce(peer.owner_user_id, peer.creator_id)
     participating = ~and_(peer.agent_class == HR_AGENT_CLASS, peer.name == HR_AGENT_NAME)
     active = [peer.id != source.id, peer.deleted_at.is_(None), peer.deactivated_at.is_(None),
         peer.status.in_(list(ACTIVE_AGENT_STATUSES)), participating]
@@ -381,8 +325,10 @@ async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UU
         return select(func.jsonb_agg(aggregate_order_by(peer_json, peer.name.asc()))).where(
             *active, source_participating, peer.tenant_id == source.tenant_id, *conditions).correlate(source).scalar_subquery()
 
-    same_owner = peers(owner.is_not(None), peer_owner == owner)
-    public = peers(peer_owner != owner, exists(select(1).where(AgentPermission.agent_id == peer.id,
+    owner_matches = or_(peer.owner_user_id == owner,
+        and_(peer.owner_user_id.is_(None), peer.creator_id == owner))
+    same_owner = peers(owner.is_not(None), owner_matches)
+    public = peers(or_(owner.is_(None), ~owner_matches), exists(select(1).where(AgentPermission.agent_id == peer.id,
         AgentPermission.scope_type == "company",
         or_(AgentPermission.tenant_id == source.tenant_id, AgentPermission.tenant_id.is_(None))).correlate(peer, source)))
     member_json = func.jsonb_build_object("agent_id", peer.id, "id", peer.id, "name", peer.name,

@@ -344,19 +344,7 @@ async def test_system_hr_source_read_model_is_empty(monkeypatch):
             assert statement.get_execution_options()["populate_existing"] is True
             return SimpleNamespace(first=lambda: (source, None, None, None))
 
-    async def fake_same_owner(*_args, **_kwargs):
-        raise AssertionError("system HR source must not load same-owner A2A candidates")
-
-    async def fake_public(*_args, **_kwargs):
-        raise AssertionError("system HR source must not load public A2A candidates")
-
-    async def fake_groups(*_args, **_kwargs):
-        raise AssertionError("system HR source must not load A2A groups")
-
-    monkeypatch.setattr(mod, "list_same_owner_agents", fake_same_owner)
-    monkeypatch.setattr(mod, "list_public_agents", fake_public)
-    monkeypatch.setattr(mod, "list_active_collaboration_groups_for_agent", fake_groups)
-
+    # PostgreSQL review regressions exercise HR filtering in the SQL itself.
     assert await mod.build_a2a_collaboration_read_model(FakeDb(), source.id) == {
         "same_owner_agents": [],
         "public_agents": [],

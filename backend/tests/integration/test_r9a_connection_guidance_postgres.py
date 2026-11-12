@@ -161,7 +161,23 @@ async def test_discovery_returns_connection_steps_and_preserves_connected_execut
     result = str(await service.execute("tool_search", {"query": "GitHub" if connection == "absent" else "Company documents"}, **context))
     assert "Connection actions:\n" in result, result
     actions = json.loads(result.split("Connection actions:\n", 1)[1].split("\n", 1)[0])
-    assert actions["not_connected"]["connect_action"] == {"location": "公司连接", "actor": "administrator"}
+    # G4b: the location carries the whole clickable route (设置 → … → 批准工具),
+    # not the one-level 公司连接 hint, so the member relays labels an admin can
+    # actually click in order.
+    from app.runtime.prompts.mcp import MCP_ADMIN_ROUTE
+
+    assert actions["not_connected"]["connect_action"] == {"location": MCP_ADMIN_ROUTE, "actor": "administrator"}
+    # G4b r2/final: the system prompt must allow exactly this route quotation.
+    # The internal-name ban carries the route-label exception as ONE sentence —
+    # pinned as a single literal so no other exception can hide between the
+    # clauses.
+    from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
+
+    system_prompt = build_executing_actions_section("conversation")
+    assert (
+        "Never name MCP, A2A, tool names or registries to the member, "
+        "except when quoting the administrator route labels verbatim."
+    ) in system_prompt
     assert "not connected" in result
     assert "Do not probe browser sessions, email or importable integrations as workarounds" in result
     if connection == "absent":
@@ -172,7 +188,10 @@ async def test_discovery_returns_connection_steps_and_preserves_connected_execut
             "questions": [{"question": "<Write a connection question in the member's language>", "options": []}],
             "configuration": {"mcp_server_id": str(calendar_id)}}}
         assert "GitHub personal" not in result
-        assert "MCP" not in result
+        # G4b: the only "MCP" text in the result is inside the admin route's real
+        # clickable tab labels (「MCP 与插件」「MCP 服务器」); no other MCP
+        # mechanism vocabulary leaks into the member-facing discovery result.
+        assert "MCP" not in result.replace(MCP_ADMIN_ROUTE, "")
         assert "import_mcp_server" not in result
         return
 

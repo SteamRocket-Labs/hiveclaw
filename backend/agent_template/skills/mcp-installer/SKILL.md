@@ -106,8 +106,8 @@ import_mcp_server(
 
 Newly discovered tools remain unavailable until an administrator reviews their
 metadata. Report a pending import as pending, never as ready. The administrator
-follows 公司连接 → 连接应用与审核工具 → MCP 与插件 → 扩展与增值能力 → 添加扩展 → 测试连接 → 全部导入 → MCP 服务器 → 审查元数据 → 批准工具.
-The extensions page opens on AI 资产; switch to MCP 与插件. Test the public URL
+follows 设置 → 公司后台 → 公司连接 → 连接应用与审核工具 → MCP 与插件 → 扩展与增值能力 → 添加扩展 → 测试连接 → 全部导入 → MCP 服务器 → 审查元数据 → 批准工具.
+The 连接应用与审核工具 link opens directly on the MCP 与插件 tab. Test the public URL
 and import, then review each tool's description and permissions and enable it.
 Preserve company and employee policy denials.
 Only after that review should you verify and call the imported tools.

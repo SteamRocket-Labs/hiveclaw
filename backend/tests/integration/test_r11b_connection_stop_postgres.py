@@ -54,7 +54,10 @@ async def test_absent_company_service_stop_guidance_reaches_provider_wire(app_wo
     assert "If one approach fails, try another within verified connections" in system
     assert "then stop attempts to access that service" in system
     assert "then stop attempts to access that service" in discovery
-    assert actions["not_connected"]["connect_action"] == {"location": "公司连接", "actor": "administrator"}
+    from app.runtime.prompts.mcp import MCP_ADMIN_ROUTE
+
+    # G4b: the whole clickable route replaces the one-level 公司连接 location.
+    assert actions["not_connected"]["connect_action"] == {"location": MCP_ADMIN_ROUTE, "actor": "administrator"}
 
 
 async def test_browser_not_configured_keeps_absent_service_stop_guidance_on_provider_wire(

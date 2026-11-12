@@ -2,6 +2,9 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
+import en from '../../i18n/en.json';
+import zh from '../../i18n/zh.json';
+
 import {
   ToolConfigSecretListField,
   getWorkspaceToolGovernanceState,
@@ -16,8 +19,14 @@ import {
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallbackOrOptions?: string | Record<string, unknown>, options?: Record<string, unknown>) => {
-      if (typeof fallbackOrOptions === 'string') {
-        return fallbackOrOptions.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, name) => String(options?.[name] ?? ''));
+      const template = typeof fallbackOrOptions === 'string'
+        ? fallbackOrOptions
+        : typeof fallbackOrOptions === 'object' && fallbackOrOptions !== null && 'defaultValue' in fallbackOrOptions
+          ? String(fallbackOrOptions.defaultValue)
+          : null;
+      const values = typeof fallbackOrOptions === 'object' && fallbackOrOptions !== null ? fallbackOrOptions : options;
+      if (template !== null) {
+        return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, name) => String(values?.[name] ?? ''));
       }
       return key.split('.').pop() ?? key;
     },
@@ -162,5 +171,21 @@ describe('WorkspaceToolsSection AnySearch key pool helpers', () => {
       description: 'Requires a configured provider key before agents can use it.',
       label: 'Key required',
     });
+  });
+});
+
+describe('G4b admin extension labels stay plain Chinese', () => {
+  it('pins the extension list and review labels the admin actually reads', () => {
+    // G4b item 3: 「Default」/「可选 key」 class labels and the URL field read plainly.
+    expect(zh.enterprise.tools.defaultTag).toBe('默认');
+    expect(zh.enterprise.tools.providerAuthOptionalKey).toBe('可选密钥');
+    expect(zh.enterprise.tools.providerAuthNoKeyDefault).toBe('默认免密钥');
+    expect(zh.enterprise.tools.providerAuthKeyRequired).toBe('需要密钥');
+    expect(zh.enterprise.tools.jsonConfig).toBe('服务地址');
+    expect(zh.enterprise.tools.rawRemoteEvidence).toBe('服务方提供的说明（未核实）');
+    expect(en.enterprise.tools.jsonConfig).toBe('Server URL');
+    // The install route the member's assistant relays matches these zh labels.
+    expect(zh.nav.settings).toBe('设置');
+    expect(zh.nav.enterprise).toBe('公司后台');
   });
 });

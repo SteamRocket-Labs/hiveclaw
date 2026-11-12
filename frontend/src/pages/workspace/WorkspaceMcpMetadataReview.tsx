@@ -91,7 +91,7 @@ interface McpMetadataReviewPanelProps {
     tool: EnterpriseMcpMetadataTool,
     decision: 'approve' | 'reject',
     canonicalDescription: string,
-  ) => void;
+  ) => Promise<boolean> | boolean | void;
 }
 
 export function McpMetadataReviewPanel({
@@ -102,6 +102,18 @@ export function McpMetadataReviewPanel({
 }: McpMetadataReviewPanelProps) {
   const { t } = useTranslation();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // G4b r2/final: an approved tool can still be revoked (the existing reject
+  // decision) or have its purpose edited (the existing approve-with-edited-
+  // purpose path); both reuse the existing review endpoint. Edit mode is left
+  // only after the review request SUCCEEDS — on an error the editor and the
+  // draft stay — and 取消 leaves without sending anything.
+  const [editingToolId, setEditingToolId] = useState<string | null>(null);
+  const submitReview = (tool: EnterpriseMcpMetadataTool, decision: 'approve' | 'reject', draft: string) => {
+    void (async () => {
+      const ok = await onReview(tool, decision, draft);
+      if (ok !== false) setEditingToolId(null);
+    })();
+  };
 
   return (
     <section className="ws-mcp-review" aria-label={`${serverName} metadata review`}>
@@ -118,6 +130,7 @@ export function McpMetadataReviewPanel({
           {tools.map((tool) => {
             const draft = drafts[tool.tool_id] ?? tool.canonical_description;
             const busy = busyTool === tool.tool_id;
+            const editingApproved = tool.runtime_approved && editingToolId === tool.tool_id;
             return (
               <article key={tool.tool_id} className="ws-mcp-review-card">
                 <div className="ws-tools-row-between">
@@ -142,42 +155,82 @@ export function McpMetadataReviewPanel({
                     {tool.risk_flags.map((flag) => <span key={flag}>{t(`enterprise.tools.mcpRisk.${flag}`, flag)}</span>)}
                   </div>
                 ) : null}
-                <label className="ws-mcp-canonical-field">
-                  <span>{t('enterprise.tools.canonicalDescription', 'Canonical runtime description')}</span>
-                  <textarea
-                    rows={3}
-                    maxLength={500}
-                    value={draft}
-                    placeholder={t('enterprise.tools.mcpDescriptionPlaceholder', 'Describe what employees may use this tool for.')}
-                    onChange={(event) => setDrafts((current) => ({
-                      ...current,
-                      [tool.tool_id]: event.target.value,
-                    }))}
-                  />
-                </label>
+                {tool.runtime_approved && !editingApproved ? (
+                  // G4b r2: once approved, the purpose is shown read-only with the
+                  // revoke and edit actions; if the remote metadata drifts, the
+                  // fingerprint no longer matches and the review pair returns.
+                  <div className="ws-mcp-canonical-field" data-testid="mcp-approved-purpose">
+                    <span>{t('enterprise.tools.canonicalDescription', 'Canonical runtime description')}</span>
+                    <p className="ws-mcp-approved-purpose-text">{tool.canonical_description}</p>
+                  </div>
+                ) : (
+                  <label className="ws-mcp-canonical-field">
+                    <span>{t('enterprise.tools.canonicalDescription', 'Canonical runtime description')}</span>
+                    <textarea
+                      rows={3}
+                      maxLength={500}
+                      value={draft}
+                      placeholder={t('enterprise.tools.mcpDescriptionPlaceholder', 'Describe what employees may use this tool for.')}
+                      onChange={(event) => setDrafts((current) => ({
+                        ...current,
+                        [tool.tool_id]: event.target.value,
+                      }))}
+                    />
+                  </label>
+                )}
                 <details className="ws-mcp-raw-evidence">
-                  <summary>{t('enterprise.tools.rawRemoteEvidence', 'Raw remote evidence')}</summary>
+                  <summary>{t('enterprise.tools.rawRemoteEvidence', 'Provider-supplied description (unverified)')}</summary>
                   <pre>{tool.raw_description}</pre>
                   <pre>{JSON.stringify(tool.raw_schema, null, 2)}</pre>
                 </details>
-                <div className="ws-mcp-review-actions">
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    disabled={busy || !draft.trim()}
-                    onClick={() => onReview(tool, 'approve', draft)}
-                  >
-                    {busy ? t('common.saving', 'Saving...') : t('enterprise.tools.approveFingerprint', 'Approve fingerprint')}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    disabled={busy}
-                    onClick={() => onReview(tool, 'reject', draft)}
-                  >
-                    {t('common.reject', 'Reject')}
-                  </button>
-                </div>
+                {tool.runtime_approved && !editingApproved ? (
+                  <div className="ws-mcp-review-actions">
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setEditingToolId(tool.tool_id)}
+                    >
+                      {t('enterprise.tools.mcpEditPurpose', 'Edit purpose')}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      disabled={busy}
+                      onClick={() => onReview(tool, 'reject', draft)}
+                    >
+                      {t('enterprise.tools.mcpRevokeApproval', 'Revoke approval')}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="ws-mcp-review-actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      disabled={busy || !draft.trim()}
+                      onClick={() => submitReview(tool, 'approve', draft)}
+                    >
+                      {busy ? t('common.saving', 'Saving...') : t('enterprise.tools.approveFingerprint', 'Approve fingerprint')}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      disabled={busy}
+                      onClick={() => submitReview(tool, 'reject', draft)}
+                    >
+                      {t('common.reject', 'Reject')}
+                    </button>
+                    {editingApproved ? (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={busy}
+                        onClick={() => setEditingToolId(null)}
+                      >
+                        {t('common.cancel', 'Cancel')}
+                      </button>
+                    ) : null}
+                  </div>
+                )}
               </article>
             );
           })}

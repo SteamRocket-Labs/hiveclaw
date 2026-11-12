@@ -12,6 +12,7 @@ import copy
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -109,10 +110,44 @@ def _safe_endpoint_host(server_url: str) -> str:
     return host
 
 
-def _neutral_description(*, tool_name: str, server_url: str) -> str:
+def trusted_connection_label(server_name: Any, server_url: Any) -> str:
+    """The one model-facing connection label (G4b r2; final round: Unicode).
+
+    The display name is used only when it is plainly a name — NFKC-normalized
+    first (full-width ``：／？`` fold back to ASCII markers and are rejected),
+    then required to be fully printable (rejects categories C* and Z* except
+    U+0020: zero-width, bidi, BOM, Unicode line/paragraph separators, NBSP),
+    with no URL/query/userinfo markers, at most 64 characters, and no
+    risk-flag triggers. Anything else (a pasted URL with credentials, a
+    Smithery ``displayName``, a bot-supplied ``server_id``) falls back to the
+    validated URL's host. The suffix shown next to tool names in tool search
+    uses the host directly, never the name.
+    """
+    host = _safe_endpoint_host(server_url)
+    normalized = unicodedata.normalize("NFKC", str(server_name or "").strip())
+    if (
+        normalized
+        and len(normalized) <= 64
+        and "://" not in normalized
+        and "?" not in normalized
+        and "@" not in normalized
+        and normalized.isprintable()
+        and not _risk_flags(normalized, {})
+    ):
+        return normalized
+    return host
+
+
+def _neutral_description(*, tool_name: str, server_name: str, server_url: str) -> str:
+    # G4b: the default reviewed purpose names the connection and the tool so
+    # the model can connect a member's words ("用 DeepWiki 查一下") to this
+    # tool; the label is trusted-only (trusted_connection_label) and remote
+    # text stays omitted.
+    host = _safe_endpoint_host(server_url)
+    display = trusted_connection_label(server_name, server_url)
     return (
-        f"External MCP operation '{tool_name}' provided by endpoint host "
-        f"'{_safe_endpoint_host(server_url)}'. Remote metadata is untrusted and omitted. "
+        f"{tool_name} from the company connection '{display}' ({host}). "
+        "Remote metadata is untrusted and omitted. "
         "Use only with reviewed arguments and normal Hive governance."
     )
 
@@ -296,7 +331,9 @@ def prepare_mcp_metadata_candidate(
     return MCPMetadataCandidate(
         raw_description=description,
         raw_schema=copy.deepcopy(schema),
-        canonical_description=_neutral_description(tool_name=normalized_tool_name, server_url=server_url),
+        canonical_description=_neutral_description(
+            tool_name=normalized_tool_name, server_name=server_name, server_url=server_url
+        ),
         canonical_schema=canonical_schema,
         fingerprint=_fingerprint_for(payload),
         risk_flags=_risk_flags(description, schema),
@@ -355,7 +392,9 @@ def quarantine_invalid_mcp_metadata(
     tool.mcp_raw_schema = stored_schema
     tool.mcp_metadata_fingerprint = fingerprint
     tool.mcp_metadata_risk_flags = list(dict.fromkeys(flags))
-    tool.description = _neutral_description(tool_name=str(tool_name or "unknown"), server_url=server_url)
+    tool.description = _neutral_description(
+        tool_name=str(tool_name or "unknown"), server_name=server_name, server_url=server_url
+    )
     tool.parameters_schema = {"type": "object", "properties": {}}
     tool.mcp_trust_status = "invalid_metadata"
     tool.mcp_trust_tier = "external_invalid"
@@ -397,7 +436,11 @@ def apply_mcp_metadata_candidate(tool: Any, candidate: MCPMetadataCandidate) -> 
     tool.mcp_raw_description = candidate.raw_description
     tool.mcp_raw_schema = copy.deepcopy(candidate.raw_schema)
     tool.mcp_metadata_risk_flags = list(candidate.risk_flags)
-    tool.description = candidate.canonical_description
+    # G4b r2/r3: an unchanged, already-approved tool keeps the description the
+    # administrator approved — a re-import must not silently rewrite it. The
+    # platform default goes only to candidates that are not approved as-is.
+    if changed or current_status != "approved":
+        tool.description = candidate.canonical_description
     tool.parameters_schema = copy.deepcopy(candidate.canonical_schema)
     tool.config = _config_with_activation(tool, candidate.activation)
     tool.mcp_metadata_fingerprint = candidate.fingerprint

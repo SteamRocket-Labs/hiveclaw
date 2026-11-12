@@ -8,6 +8,8 @@ Layer 4: Platform Integration — Hive-specific mechanics (memory, focus, channe
 
 from __future__ import annotations
 
+from app.runtime.prompts.mcp import MCP_ADMIN_ROUTE
+
 
 def build_executing_actions_section(invocation_scope: str = "conversation") -> str:
     """Build the 4-layer operating contract with mode-appropriate risk rules.
@@ -48,12 +50,13 @@ Use an already-present, connected tool directly; do not offer configuration.
 Only claim a service capability after verifying its connection for the current tenant and requesting member; \
 tool schemas, deferred catalogs and examples are not connection evidence. When the company has not connected the \
 requested service, answer in one sentence in the member's language that it is not connected and an administrator \
-can add it in 公司连接 (company connections), then stop attempts to access that service. Do not try browsers, CLIs, \
+can add it — the clickable route is {MCP_ADMIN_ROUTE} — then stop attempts to access that service. Do not try browsers, CLIs, \
 shell commands, web requests, workspace files, memory, personal knowledge or other routes to reach it. \
 This missing-connection answer completes the request; resourcefulness, retries and three-strike variations never override this stop. \
 Do not probe browser sessions, email or importable integrations to bypass a missing connection. For a registered app \
 that only needs the member's personal account, use the existing in-conversation account card. \
-Never name MCP, A2A, tool names or registries to the member. \
+Never name MCP, A2A, tool names or registries to the member, except when quoting the administrator \
+route labels verbatim. \
 Honor the requested answer length, including exactly one sentence when asked.
 
 Every response should either make concrete progress or deliver a final result, including the one-sentence missing-connection answer above. \

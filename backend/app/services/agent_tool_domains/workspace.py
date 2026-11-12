@@ -621,8 +621,10 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
                 " This assistant cannot install company connections. If the company has not connected the requested app, "
                 "tell the member that this assistant cannot add the connection under current company settings. "
                 f"An administrator can follow {MCP_ADMIN_ROUTE}. "
-                "The extensions page opens on AI 资产; switch to MCP 与插件, test the public URL and import, then review each tool and enable it. "
+                "The 连接应用与审核工具 link opens directly on the MCP 与插件 tab; use 添加扩展 to test the public URL "
+                "and import, then review each tool and enable it. "
                 "Do not try browsers, CLIs, commands or other routes to reach it. "
+                "When telling the member, quote the route's clickable labels exactly and name no internal mechanisms. "
                 "For an already registered app, use its available tools and the existing personal-account connection card."
             )
         return _skill_control_error(authority_scope, tool_name, "skill_tools_unavailable",
@@ -1768,7 +1770,10 @@ def _grep_search(
 
 
 async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | None = None, *, authority_scope=None) -> str:
-    from app.services.agent_tools import available_deferred_tool_names_for_agent, discoverable_tool_names_for_query
+    from app.services.agent_tools import (
+        available_deferred_tool_names_for_agent,
+        discoverable_deferred_tools_for_query,
+    )
     from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES
     from app.services.tool_search_manifest import build_tool_search_manifest, render_tool_search_manifest_sections
 
@@ -1793,7 +1798,7 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
     # EXACTLY what the schema path loads. discoverable_tool_names_for_query covers
     # static packs + agent-reachable MCP and excludes CORE (already turn-1). Text
     # == schema (🦴#2). agent_id falls back to the workspace dir name.
-    deferred_names: list[str] = []
+    deferred_tools: list[tuple[str, str]] = []
     company_applications = None
     resolved_agent_id = agent_id if agent_id is not None else ws.name
     if resolved_agent_id:
@@ -1802,7 +1807,9 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         except ValueError:
             resolved_agent_id = None
     if resolved_agent_id:
-        deferred_names = await discoverable_tool_names_for_query(resolved_agent_id, query)
+        # One governed enumeration returns names with their connection labels
+        # (validated URL host) — no second MCP lookup for the suffix (G4b r2).
+        deferred_tools = await discoverable_deferred_tools_for_query(resolved_agent_id, query)
         if matching_skills:
             available = set(CORE_TOOL_NAMES) | set(await available_deferred_tool_names_for_agent(resolved_agent_id))
             matching_skills = [skill for skill in matching_skills if set(skill.metadata.declared_tools) <= available]
@@ -1814,9 +1821,17 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         tenant_id = await resolve_tenant_for_agent(resolved_agent_id)
         if tenant_id is not None:
             async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
-                company_applications = [{"name": name, "mcp_server_id": str(server_id), "auth_status": auth_status}
-                    for server_id, name, auth_status in await db.execute(select(MCPServer.id, MCPServer.name, MCPServer.auth_status).where(
+                # G4b final: the name the model reads is the same trusted
+                # connection label used elsewhere (a pasted URL with ?key= or a
+                # registry/bot display name falls back to the validated host).
+                # Pending servers stay listed and auth_status is unchanged.
+                from app.services.mcp_metadata_trust import trusted_connection_label
+
+                company_applications = [{"name": trusted_connection_label(name, server_url),
+                    "mcp_server_id": str(server_id), "auth_status": auth_status}
+                    for server_id, name, auth_status, server_url in await db.execute(select(MCPServer.id, MCPServer.name, MCPServer.auth_status, MCPServer.server_url).where(
                         MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id.is_(None)).order_by(MCPServer.name, MCPServer.id))]
+    deferred_names = [name for name, _connection_label in deferred_tools]
     capture = getattr(authority_scope, "skill_inputs", None)
     if capture is not None:
         for skill in matching_skills:
@@ -1857,7 +1872,7 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         lines.extend(["Connection actions:", json.dumps({
             "not_connected": {
                 "when": "The requested service is absent from company_applications.",
-                "connect_action": {"location": "公司连接", "actor": "administrator"},
+                "connect_action": {"location": MCP_ADMIN_ROUTE, "actor": "administrator"},
             },
             "connect_if_account_needed": {"tool": "ask_user_question", "arguments": {
                 "questions": [{"question": "<Write a connection question in the member's language>", "options": []}],
@@ -1867,23 +1882,36 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         lines.append(
             "company_applications is the complete list of company-registered apps, not a list of personal accounts. "
             "If the requested app is absent, answer in one sentence in the member's language "
-            "that it is not connected and an administrator can add it in 公司连接 (company connections), then stop attempts to access that service. "
+            f"that it is not connected and an administrator can add it — the clickable route is {MCP_ADMIN_ROUTE} — "
+            "then stop attempts to access that service. "
             "Do not try browsers, CLIs, shell commands, web requests, workspace files, memory, personal knowledge or other routes to reach it. "
             "Do not probe browser sessions, email or importable integrations as workarounds. "
             "Do not install or create a company connection. "
             "Only for a row marked connect_if_account_needed, copy that call template, substituting configuration.mcp_server_id "
             "with the row's mcp_server_id and replacing the question text with the member's language to show the existing connection card. "
-            "Registration alone does not mean the member is connected. Never ask for credentials in chat or name internal mechanisms to the member."
+            "Registration alone does not mean the member is connected. Never ask for credentials in chat. "
+            "When you tell the member the route, quote its clickable labels exactly as given and do not mention "
+            "tool search, tool names, management tools or any other internal mechanism."
         )
     else:
         lines.append("Company application registration is unknown; do not claim that an application is unconnected.")
     if deferred_names:
+        # G4b: company MCP tools carry the validated connection host next to
+        # their names so the member's words (e.g. "用 DeepWiki 查一下") match a
+        # listed tool; the stored server name never reaches this suffix (r2).
+        # A host-less tool (no stored URL) gets no meaningless parenthetical.
+        display_names = [
+            f"{name} ({connection_label})"
+            if connection_label and connection_label != name and connection_label != "unidentified-endpoint"
+            else name
+            for name, connection_label in deferred_tools
+        ]
         lines.append("")
         lines.append(
             "Discovered deferred tools (matching schemas are loaded by this search; "
             "use `load_skill` only for method instructions):"
         )
-        lines.append(f"- {', '.join(deferred_names)}")
+        lines.append(f"- {', '.join(display_names)}")
     if matching_skills:
         lines.append("")
         lines.append("Matching skills:")

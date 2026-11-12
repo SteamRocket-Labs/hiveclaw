@@ -137,7 +137,9 @@ def test_admin_route_uses_clickable_chinese_catalog_labels():
     from pathlib import Path
     from app.runtime.prompts.mcp import MCP_ADMIN_ROUTE, IMPORT_MCP_SERVER_DESCRIPTION
 
-    keys = ["enterprise.nav.companyConnections", "enterprise.tools.openMcpConnections", "enterprise.extensions.tabs.mcp",
+    # G4b: the route starts at the visible entry (设置 → 公司后台) so the member's
+    # assistant relays labels the admin can actually click, in order.
+    keys = ["nav.settings", "nav.enterprise", "enterprise.nav.companyConnections", "enterprise.tools.openMcpConnections", "enterprise.extensions.tabs.mcp",
         "enterprise.tools.extensionsAddons", "enterprise.tools.addMcpServer", "enterprise.tools.testConnection",
         "enterprise.tools.importAll", "agent.extensions.mcpServers", "enterprise.tools.reviewMcpMetadata",
         "enterprise.tools.approveFingerprint"]
@@ -153,5 +155,6 @@ def test_admin_route_uses_clickable_chinese_catalog_labels():
     assert MCP_ADMIN_ROUTE in IMPORT_MCP_SERVER_DESCRIPTION
     skill = (repo / "backend/agent_template/skills/mcp-installer/SKILL.md").read_text()
     assert MCP_ADMIN_ROUTE in skill
-    assert "AI 资产; switch to MCP 与插件" in skill
+    # G4b: the 连接应用与审核工具 link now opens directly on the MCP 与插件 tab.
+    assert "opens directly on the MCP 与插件 tab" in skill
     assert "试试哪个" not in skill

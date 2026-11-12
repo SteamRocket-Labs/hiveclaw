@@ -71,7 +71,9 @@ class _SpyDB:
         self.committed = True
 
 
-def _server(name="GitHub", key="github", status="connected", auth="configured", transport="sse"):
+def _server(name="GitHub", key="github", status="connected", auth="configured", transport="sse", config_json=None):
+    # G4b: list_tenant_servers exposes the derived oauth_configured fact, so the
+    # fixture mirrors the model's config_json column.
     return SimpleNamespace(
         id=uuid4(),
         name=name,
@@ -79,6 +81,7 @@ def _server(name="GitHub", key="github", status="connected", auth="configured", 
         status=status,
         auth_status=auth,
         transport=transport,
+        config_json=config_json,
     )
 
 
@@ -124,25 +127,30 @@ _NO_PACK_KEYS = {"pack", "pack_name"}
 async def test_list_tenant_servers_dto_is_server_first_without_pack():
     tenant_id = uuid4()
     server = _server()
+    oauth_server = _server(name="Ledger", key="ledger", auth="none", config_json={"oauth": {"client_id": "c"}})
     agent_id = uuid4()
     db = _SpyDB(
         [
-            _Result(scalars=[server]),  # MCPServer rows
-            _Result(rows=[(server.id, 3)]),  # tool counts
+            _Result(scalars=[server, oauth_server]),  # MCPServer rows
+            _Result(rows=[(server.id, 3), (oauth_server.id, 1)]),  # tool counts
             _Result(rows=[(server.id, True, agent_id, "Engineer")]),  # assignment join Agent
         ]
     )
 
     result = await mcp_server_service.list_tenant_servers(db, tenant_id)
 
-    assert len(result) == 1
-    dto = result[0]
+    assert len(result) == 2
+    # G4b r2: the derived OAuth fact is true only for the configured server.
+    assert {row["oauth_configured"] for row in result} == {False, True}
+    assert next(row for row in result if row["name"] == "Ledger")["oauth_configured"] is True
+    dto = next(row for row in result if row["name"] == "GitHub")
     assert dto == {
         "id": str(server.id),
         "name": "GitHub",
         "server_key": "github",
         "status": "connected",
         "auth_status": "configured",
+        "oauth_configured": False,
         "transport": "sse",
         "tool_count": 3,
         "agent_count": 1,

@@ -121,7 +121,9 @@ async def test_member_absent_company_app_finishes_from_truthful_discovery(
     result = next(m["content"] for m in client.requests[-1]["messages"] if m["role"] == "tool")
     assert "No matching deferred tool schemas are available" in result
     assert "company_applications:\n- none" in result
-    assert "administrator" in result and "company connections" in result
+    # G4b: the guidance names the administrator and the full clickable route
+    # (设置 → … → 批准工具); the old "(company connections)" English gloss is gone.
+    assert "administrator" in result and "设置 → 公司后台 → 公司连接" in result
     assert "Tool search discovered deferred capabilities" not in result
     assert elapsed < 60, f"platform time {elapsed:.3f}s"
     print(f"R5E_ABSENT_APP calls={len(calls)} model_rounds={len(client.requests)} platform_seconds={elapsed:.3f}")

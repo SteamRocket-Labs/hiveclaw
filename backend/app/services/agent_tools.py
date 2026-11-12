@@ -592,12 +592,22 @@ def _tool_tenant_predicate(ToolModel: Any, agent: Any | None):
 async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> list[str]:
     """Single source for "query → discoverable (deferred) tool names" (Step 3).
 
-    Used by BOTH the schema path (``invoker._deferred_tool_names_for_query``) and
-    the text path (``workspace._tool_search``) so "what the model is told it can
-    discover" == "what actually loads". Excludes CORE tools (already turn-1
-    visible) and routes MCP discovery through the DB-aware
-    ``list_agent_mcp_deferred_tools``.
+    Names-only projection of :func:`discoverable_deferred_tools_for_query`,
+    which both the schema path (``invoker._deferred_tool_names_for_query``) and
+    the text path (``workspace._tool_search``) use, so "what the model is told
+    it can discover" == "what actually loads". Excludes CORE tools (already
+    turn-1 visible) and routes MCP discovery through the DB-aware
+    ``list_agent_mcp_deferred_tools_with_labels``.
     """
+    return [name for name, _connection_label in await discoverable_deferred_tools_for_query(agent_id, query)]
+
+
+async def discoverable_deferred_tools_for_query(agent_id: uuid.UUID, query: str) -> list[tuple[str, str]]:
+    """``discoverable_tool_names_for_query`` with each tool's model-facing
+    connection label (``""`` for non-MCP tools; the validated MCP URL's host
+    for company MCP tools). One governed MCP enumeration serves both callers
+    (G4b r2): the schema path uses the names, the ``tool_search`` text shows
+    ``name (host)`` so a member's words match a company connection."""
     raw_query = query.strip()
     normalized = raw_query.lower()
     select_target = ""
@@ -629,11 +639,11 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
         return bool(normalized) and (tool_name.lower() == normalized or normalize_tool_query(tool_name) == compact)
 
     if not normalized:
-        requested: list[str] = sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES)
-        seen: set[str] = set(requested)
+        requested: list[tuple[str, str]] = [(tool_name, "") for tool_name in sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES)]
+        seen: set[str] = {tool_name for tool_name, _ in requested}
     elif any(_direct_tool_match(tool_name) for tool_name in AGENT_TEAM_DEFERRED_TOOL_NAMES):
         return [
-            next(tool_name for tool_name in sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES) if _direct_tool_match(tool_name))
+            (next(tool_name for tool_name in sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES) if _direct_tool_match(tool_name)), "")
         ]
     else:
         requested = []
@@ -645,7 +655,7 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
                 continue
             for tool_name in pack.tools:
                 if _direct_tool_match(tool_name) and tool_name not in CORE_TOOL_NAMES:
-                    return [tool_name]
+                    return [(tool_name, "")]
             if not capability_group_policy_available:
                 continue
     for pack in iter_runtime_l2_capabilities_for_query(query):
@@ -654,13 +664,15 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
         for tool_name in pack.tools:
             if tool_name in CORE_TOOL_NAMES or tool_name in seen:
                 continue
-            requested.append(tool_name)
+            requested.append((tool_name, ""))
             seen.add(tool_name)
     mcp_query = select_target or query
-    for mcp_name in await list_agent_mcp_deferred_tools(agent_id, mcp_query):
+    # Module-global read at call time: one patch point covers the text and the
+    # schema path (Step 3 / 🦴#2), now with the connection label attached.
+    for mcp_name, connection_label in await list_agent_mcp_deferred_tools_with_labels(agent_id, mcp_query):
         if mcp_name in CORE_TOOL_NAMES or mcp_name in seen:
             continue
-        requested.append(mcp_name)
+        requested.append((mcp_name, connection_label))
         seen.add(mcp_name)
     return requested
 
@@ -799,13 +811,15 @@ async def gather_deferred_tool_candidates_for_agent(
     return candidates
 
 
-async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:
-    """The single DB-aware enumerator of MCP tools an agent can DISCOVER via
-    tool_search (J / 🦴#2).
+async def list_agent_mcp_deferred_tools_with_labels(agent_id: uuid.UUID, query: str = "") -> list[tuple[str, str]]:
+    """The single DB-aware, governed MCP enumeration (J / 🦴#2; G4b r2).
 
-    BOTH the text result (``workspace._tool_search``) and the schema injection
-    (``invoker._deferred_tool_names_for_query``) route through here, so "what the
-    model is told exists" == "what actually loads".
+    Yields ``(tool_name, connection_label)`` where the label is the validated
+    MCP URL's host (``_safe_endpoint_host``) — trusted-only text, never the
+    stored ``mcp_server_name``. BOTH the text result (``workspace._tool_search``)
+    and the schema injection (``invoker._deferred_tool_names_for_query``) reach
+    it through ``discoverable_deferred_tools_for_query``, so "what the model is
+    told exists" == "what actually loads".
 
     Governance listing gate: only REACHABLE MCP tools are listed — denied tools
     and tools on disabled servers/packs never appear (CC parity: denied == not
@@ -814,10 +828,16 @@ async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") ->
     decision, so a NON-default MCP tool can never be surfaced — the choke point
     that, with the matching tightening in :func:`get_agent_tools_for_llm`, closes
     the discovery force-enable escalation (§J #1).
-    """
-    from app.models.tool import AgentTool, Tool
 
-    matched: list[str] = []
+    Patch THIS seam (module global, read at call time) to fake the pipeline end
+    to end; ``list_agent_mcp_deferred_tools`` is a names-only convenience
+    wrapper for direct callers.
+    """
+
+    from app.models.tool import AgentTool, Tool
+    from app.services.mcp_metadata_trust import _safe_endpoint_host
+
+    matched: list[tuple[str, str]] = []
     seen: set[str] = set()
     try:
         # RLS 阶段1: `tools`/`agents` are policy-bearing — resolve the agent's
@@ -862,10 +882,18 @@ async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") ->
                 if t.name in seen:
                     continue
                 seen.add(t.name)
-                matched.append(t.name)
+                matched.append((t.name, _safe_endpoint_host(getattr(t, "mcp_server_url", None) or "")))
     except Exception as e:
         logger.warning(f"[Tools] list_agent_mcp_deferred_tools failed: {e}")
     return matched
+
+
+async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:
+    """Names-only projection of ``list_agent_mcp_deferred_tools_with_labels``
+    for direct callers (tests, diagnostics). The governed listing gate and the
+    text/schema routing live on that function.
+    """
+    return [name for name, _connection_label in await list_agent_mcp_deferred_tools_with_labels(agent_id, query)]
 
 
 async def get_agent_tools_for_llm(

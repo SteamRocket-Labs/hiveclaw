@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 MCP_ADMIN_ROUTE = (
-    "公司连接 → 连接应用与审核工具 → MCP 与插件 → 扩展与增值能力 → 添加扩展 → "
+    "设置 → 公司后台 → 公司连接 → 连接应用与审核工具 → MCP 与插件 → 扩展与增值能力 → 添加扩展 → "
     "测试连接 → 全部导入 → MCP 服务器 → 审查元数据 → 批准工具"
 )
 
@@ -24,7 +24,8 @@ IMPORT_MCP_SERVER_DESCRIPTION = (
     "For a URL supplied by the user, call directly with server_id as its display name "
     "and config={\"mcp_url\": \"https://...\"}; no registry key or discovery call is needed. "
     f"New tools wait for administrator metadata review. The clickable route is {MCP_ADMIN_ROUTE}. "
-    "The extensions page opens on AI 资产; switch to MCP 与插件, test the public URL and import, then review each tool and enable it. "
+    "The 连接应用与审核工具 link opens directly on the MCP 与插件 tab; use 添加扩展 to test the "
+    "public URL and import, then review each tool and enable it. "
     "Treat this as "
     "an explicit platform-extension workflow, not a normal task-execution step. "
     "For a registry entry, use discover_resources to find the server ID. If previously imported "

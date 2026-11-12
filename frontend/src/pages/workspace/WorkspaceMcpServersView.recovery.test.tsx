@@ -152,7 +152,88 @@ describe('MCP metadata review recovery', () => {
       expected_fingerprint: reloadedDigest,
       canonical_description: 'Search the reviewed ledger.',
     });
-    expect(screen.getByRole('button', { name: '拒绝' })).toBeTruthy();
+    // G4b r2: the approved tool shows its reviewed purpose read-only with the
+    // revoke/edit actions; the 批准工具 / 拒绝 pair no longer renders.
+    expect(screen.getByText('Search issues by query.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '批准工具' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '拒绝' })).toBeNull();
+    expect(screen.getByRole('button', { name: '修改用途' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '撤销批准' })).toBeTruthy();
+  });
+
+  it('keeps revoke and edit on an approved tool through the existing review decisions', async () => {
+    mocks.listEnterpriseMcpServers.mockResolvedValue([{ id: 'server-1', name: 'DeepWiki', server_key: 'deepwiki',
+      status: 'connected', auth_status: 'none', oauth_configured: false, transport: 'streamable_http',
+      tool_count: 1, agent_count: 0, agents: [] }]);
+    mocks.listEnterpriseMcpServerTools.mockResolvedValue([candidate(firstDigest, ['wiki:read'], true)]);
+    mocks.reviewEnterpriseMcpServerToolMetadata.mockReset().mockResolvedValue({ runtime_approved: true });
+    render(<WorkspaceMcpServersView selectedTenantId="tenant-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '审查元数据' }));
+    await screen.findByText('可使用');
+    // Edit: 修改用途 reveals the editor prefilled with the approved purpose.
+    fireEvent.click(screen.getByRole('button', { name: '修改用途' }));
+    const editor = screen.getByLabelText('审核后的工具用途') as HTMLTextAreaElement;
+    expect(editor.value).toBe('Search issues by query.');
+    fireEvent.change(editor, { target: { value: '只读查询 wiki，回答成员问题。' } });
+    fireEvent.click(screen.getByRole('button', { name: '批准工具' }));
+    await waitFor(() => expect(mocks.reviewEnterpriseMcpServerToolMetadata).toHaveBeenCalledWith(
+      'server-1', 'issue_search',
+      { decision: 'approve', expected_fingerprint: firstDigest, canonical_description: '只读查询 wiki，回答成员问题。' }));
+    // Revoke: 撤销批准 submits the existing reject decision.
+    fireEvent.click(await screen.findByRole('button', { name: '撤销批准' }));
+    await waitFor(() => expect(mocks.reviewEnterpriseMcpServerToolMetadata).toHaveBeenLastCalledWith(
+      'server-1', 'issue_search', { decision: 'reject', expected_fingerprint: firstDigest }));
+  });
+
+  it('keeps the purpose editor open with the draft when the review request fails, and 取消 leaves silently', async () => {
+    mocks.listEnterpriseMcpServers.mockResolvedValue([{ id: 'server-1', name: 'DeepWiki', server_key: 'deepwiki',
+      status: 'connected', auth_status: 'none', oauth_configured: false, transport: 'streamable_http',
+      tool_count: 1, agent_count: 0, agents: [] }]);
+    mocks.listEnterpriseMcpServerTools.mockResolvedValue([candidate(firstDigest, ['wiki:read'], true)]);
+    mocks.reviewEnterpriseMcpServerToolMetadata.mockReset()
+      .mockRejectedValueOnce(new Error('MCP metadata description must be 1-500 characters'))
+      .mockResolvedValue({ runtime_approved: true });
+    render(<WorkspaceMcpServersView selectedTenantId="tenant-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '审查元数据' }));
+    await screen.findByText('可使用');
+    fireEvent.click(screen.getByRole('button', { name: '修改用途' }));
+    const editor = screen.getByLabelText('审核后的工具用途') as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: '这句超长的用途会被后端拒绝' } });
+    // The failing request keeps the editor and the draft (G4b final, fix 7).
+    fireEvent.click(screen.getByRole('button', { name: '批准工具' }));
+    await screen.findByRole('alert');
+    const kept = screen.getByLabelText('审核后的工具用途') as HTMLTextAreaElement;
+    expect(kept.value).toBe('这句超长的用途会被后端拒绝');
+    // 取消 leaves edit mode without sending anything.
+    const callsBefore = mocks.reviewEnterpriseMcpServerToolMetadata.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByTestId('mcp-approved-purpose')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '修改用途' })).toBeTruthy();
+    expect(mocks.reviewEnterpriseMcpServerToolMetadata.mock.calls.length).toBe(callsBefore);
+    // A successful submit still closes the editor.
+    fireEvent.click(screen.getByRole('button', { name: '修改用途' }));
+    fireEvent.change(screen.getByLabelText('审核后的工具用途'), { target: { value: '只读查询 wiki。' } });
+    fireEvent.click(screen.getByRole('button', { name: '批准工具' }));
+    await waitFor(() => expect(screen.getByTestId('mcp-approved-purpose')).toBeTruthy());
+  });
+
+  it('omits the OAuth action for a no-auth server, pending or connected, but keeps it when authorization is involved', async () => {
+    // G4b r2: a public no-auth connection never shows OAuth 授权 — the ruling
+    // covers pending_review (right after import) as well as connected.
+    mocks.listEnterpriseMcpServers.mockResolvedValue([
+      { id: 'public-1', name: 'DeepWiki', server_key: 'deepwiki', status: 'connected',
+        auth_status: 'none', oauth_configured: false, transport: 'streamable_http', tool_count: 3, agent_count: 0, agents: [] },
+      { id: 'pending-1', name: 'Fresh docs', server_key: 'fresh', status: 'pending_review',
+        auth_status: 'none', oauth_configured: false, transport: 'sse', tool_count: 1, agent_count: 0, agents: [] },
+      { id: 'oauth-1', name: 'Ledger', server_key: 'ledger', status: 'connected',
+        auth_status: 'none', oauth_configured: true, transport: 'sse', tool_count: 1, agent_count: 0, agents: [] },
+      { id: 'needs-1', name: 'Docs', server_key: 'docs', status: 'needs_auth',
+        auth_status: 'none', transport: 'sse', tool_count: 1, agent_count: 0, agents: [] },
+    ]);
+    render(<WorkspaceMcpServersView selectedTenantId="tenant-1" />);
+    await screen.findByText('DeepWiki');
+    // Exactly two OAuth actions remain: the configured and the needs_auth servers.
+    expect(screen.queryAllByRole('button', { name: 'OAuth 授权' })).toHaveLength(2);
   });
 });
 

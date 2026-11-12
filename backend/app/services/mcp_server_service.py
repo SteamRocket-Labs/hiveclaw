@@ -154,6 +154,9 @@ async def list_tenant_servers(db: AsyncSession, tenant_id: uuid.UUID) -> list[di
             "server_key": server.server_key,
             "status": server.status,
             "auth_status": server.auth_status,
+            # G4b: derived read-time fact (the same decision resolve_mcp_oauth_bearer
+            # uses) so the admin list can omit OAuth actions for no-auth servers.
+            "oauth_configured": bool((server.config_json or {}).get("oauth")),
             "transport": server.transport,
             "tool_count": tool_counts.get(server.id, 0),
             "agent_count": enabled_counts.get(server.id, 0),

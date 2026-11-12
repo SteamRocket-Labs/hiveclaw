@@ -109,6 +109,7 @@ export interface McpServerRecord {
   server_key: string;
   status: string;
   auth_status: string;
+  oauth_configured?: boolean;
   transport: string;
   tool_count: number;
   agent_count: number;

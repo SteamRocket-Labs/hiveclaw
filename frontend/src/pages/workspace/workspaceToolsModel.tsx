@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+
 import type { CapabilityDefinition, CapabilityPolicy } from '../../api/domains/enterprise';
 
 export interface WorkspaceToolsViewProps {
@@ -192,14 +194,15 @@ export function workspaceToolEffectiveStatusLabel(
   status: WorkspaceToolEffectiveStatus,
   t: (key: string, fallback: string) => string,
 ): string {
-  const labels: Record<WorkspaceToolEffectiveStatus, [string, string]> = {
-    disabled: ['enterprise.tools.effectiveDisabled', 'Disabled'],
-    approval_required: ['enterprise.tools.effectiveApprovalRequired', 'Requires company approval'],
-    legacy_denied: ['enterprise.tools.effectiveLegacyDenied', 'Legacy deny policy'],
-    unmanaged: ['enterprise.tools.effectiveUnmanaged', 'Connector policy'],
-    auto_allowed: ['enterprise.tools.effectiveAutoAllowed', 'Auto allowed'],
+  // Literal calls per status keep every key statically auditable (i18n audit).
+  const labels: Record<WorkspaceToolEffectiveStatus, string> = {
+    disabled: t('enterprise.tools.effectiveDisabled', 'Disabled'),
+    approval_required: t('enterprise.tools.effectiveApprovalRequired', 'Requires company approval'),
+    legacy_denied: t('enterprise.tools.effectiveLegacyDenied', 'Legacy deny policy'),
+    unmanaged: t('enterprise.tools.effectiveUnmanaged', 'Connector policy'),
+    auto_allowed: t('enterprise.tools.effectiveAutoAllowed', 'Auto allowed'),
   };
-  return t(...labels[status]);
+  return labels[status];
 }
 
 export function ToolConfigSecretListField({
@@ -211,6 +214,7 @@ export function ToolConfigSecretListField({
   value: unknown;
   onChange: (nextValue: string) => void;
 }) {
+  const { t } = useTranslation();
   const rows = normalizeToolConfigListValue(value, { preserveEmpty: true });
   const visibleRows = rows.length > 0 ? rows : [''];
   const count = countToolConfigListValues(visibleRows);
@@ -221,7 +225,7 @@ export function ToolConfigSecretListField({
     <div>
       <div className="ws-tools-field-head">
         <label className="ws-tools-secret-label">{label}</label>
-        <span className="ws-tools-count-pill">{count} {count === 1 ? 'key' : 'keys'} configured</span>
+        <span className="ws-tools-count-pill">{t('enterprise.tools.keysConfigured', { count, defaultValue: '{{count}} keys configured' })}</span>
       </div>
       <div className="ws-tools-col-8">
         {visibleRows.map((row, index) => (

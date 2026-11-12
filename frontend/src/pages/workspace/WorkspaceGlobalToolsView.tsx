@@ -221,7 +221,9 @@ export default function WorkspaceGlobalToolsView({
                           <div key={index} className="ws-tools-test-row">
                             <div>
                               <span className="ws-tools-name">{tool.name}</span>
-                              <div className="ws-tools-note">{tool.description?.slice(0, 80)}</div>
+                              <div className="ws-tools-note">
+                                {t('enterprise.tools.rawRemoteEvidence', 'Provider-supplied description (unverified)')} · {tool.description?.slice(0, 80)}
+                              </div>
                             </div>
                             <button
                               className="btn btn-secondary"
@@ -355,9 +357,9 @@ export default function WorkspaceGlobalToolsView({
                                   setEditingConfig({ ...firstToolWithConfig.config });
                                 }
                               }}
-                              title={`Configure ${category}`}
+                              title={t('enterprise.tools.configure', 'Configure')}
                             >
-                              Configure
+                              {t('enterprise.tools.configure', 'Configure')}
                             </button>
                           ) : null}
                         </div>
@@ -414,7 +416,7 @@ export default function WorkspaceGlobalToolsView({
                                           </span>
                                         ) : null}
                                         {tool.is_default ? (
-                                          <span className="ws-tools-tag ws-tools-tag-default">Default</span>
+                                          <span className="ws-tools-tag ws-tools-tag-default">{t('enterprise.tools.defaultTag', 'Default')}</span>
                                         ) : null}
                                         {providerAuth ? (
                                           <span

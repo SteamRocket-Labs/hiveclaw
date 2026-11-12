@@ -38,11 +38,8 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
     try {
       const data = await extensionsApi.listEnterpriseMcpServers();
       if (version === requestVersion.current) setServers(data);
-    } catch {
-      if (version === requestVersion.current) setServers([]);
-    } finally {
-      if (version === requestVersion.current) setLoaded(true);
-    }
+    } catch { if (version === requestVersion.current) setServers([]);
+    } finally { if (version === requestVersion.current) setLoaded(true); }
   }, [selectedTenantId]);
 
   useEffect(() => {
@@ -145,9 +142,12 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
                 </div>
               ) : null}
               <div className="ws-mcp-server-actions">
-                <button type="button" className="btn btn-secondary btn-sm" aria-expanded={oauthServerId === server.id} onClick={() => setOauthServerId(oauthServerId === server.id ? null : server.id)}>
-                  {oauthServerId === server.id ? t('agent.mcpOAuth.close') : t('agent.mcpOAuth.title')}
-                </button>
+                {/* G4b: a connected no-auth server never needs the OAuth action. */}
+                {!(server.status === 'connected' && server.auth_status === 'none' && !server.oauth_configured) ? (
+                  <button type="button" className="btn btn-secondary btn-sm" aria-expanded={oauthServerId === server.id} onClick={() => setOauthServerId(oauthServerId === server.id ? null : server.id)}>
+                    {oauthServerId === server.id ? t('agent.mcpOAuth.close') : t('agent.mcpOAuth.title')}
+                  </button>
+                ) : null}
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => void toggleMetadata(server.id)}>
                   {openServerId === server.id
                     ? t('common.close', 'Close')

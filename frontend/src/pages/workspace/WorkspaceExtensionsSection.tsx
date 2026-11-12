@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useSearchParams } from 'react-router-dom';
 
 import WorkspaceAIAssetsSection from './WorkspaceAIAssetsSection';
 import WorkspaceCapabilityFactorsSection from './WorkspaceCapabilityFactorsSection';
@@ -28,9 +29,17 @@ const WORKSPACE_EXTENSION_SUBVIEWS: Array<{
   { id: 'factors', labelKey: 'enterprise.extensions.tabs.factors', fallback: 'Factor Intake' },
 ];
 
+const VALID_SUBVIEWS = new Set<string>(WORKSPACE_EXTENSION_SUBVIEWS.map((subview) => subview.id));
+
 export default function WorkspaceExtensionsSection({ selectedTenantId }: WorkspaceExtensionsSectionProps) {
   const { t } = useTranslation();
-  const [activeSubview, setActiveSubview] = useState<WorkspaceExtensionSubview>('assets');
+  const [searchParams] = useSearchParams();
+  // G4b: 连接应用与审核工具 links straight to the MCP 与插件 tab
+  // (/enterprise/extensions?view=mcp); a bare URL still opens on AI 资产.
+  const initialSubview = searchParams.get('view') ?? 'assets';
+  const [activeSubview, setActiveSubview] = useState<WorkspaceExtensionSubview>(
+    VALID_SUBVIEWS.has(initialSubview) ? (initialSubview as WorkspaceExtensionSubview) : 'assets',
+  );
 
   return (
     <section className="workspace-extensions-section" data-testid="workspace-extensions-section">

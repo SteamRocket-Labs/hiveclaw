@@ -142,42 +142,55 @@ export function McpMetadataReviewPanel({
                     {tool.risk_flags.map((flag) => <span key={flag}>{t(`enterprise.tools.mcpRisk.${flag}`, flag)}</span>)}
                   </div>
                 ) : null}
-                <label className="ws-mcp-canonical-field">
-                  <span>{t('enterprise.tools.canonicalDescription', 'Canonical runtime description')}</span>
-                  <textarea
-                    rows={3}
-                    maxLength={500}
-                    value={draft}
-                    placeholder={t('enterprise.tools.mcpDescriptionPlaceholder', 'Describe what employees may use this tool for.')}
-                    onChange={(event) => setDrafts((current) => ({
-                      ...current,
-                      [tool.tool_id]: event.target.value,
-                    }))}
-                  />
-                </label>
+                {tool.runtime_approved ? (
+                  // G4b: once approved, the review pair gives way to the approved
+                  // state — the reviewed purpose is shown read-only; if the remote
+                  // metadata changes, the fingerprint no longer matches and the
+                  // review pair returns below.
+                  <div className="ws-mcp-canonical-field" data-testid="mcp-approved-purpose">
+                    <span>{t('enterprise.tools.canonicalDescription', 'Canonical runtime description')}</span>
+                    <p className="ws-mcp-approved-purpose-text">{tool.canonical_description}</p>
+                  </div>
+                ) : (
+                  <label className="ws-mcp-canonical-field">
+                    <span>{t('enterprise.tools.canonicalDescription', 'Canonical runtime description')}</span>
+                    <textarea
+                      rows={3}
+                      maxLength={500}
+                      value={draft}
+                      placeholder={t('enterprise.tools.mcpDescriptionPlaceholder', 'Describe what employees may use this tool for.')}
+                      onChange={(event) => setDrafts((current) => ({
+                        ...current,
+                        [tool.tool_id]: event.target.value,
+                      }))}
+                    />
+                  </label>
+                )}
                 <details className="ws-mcp-raw-evidence">
-                  <summary>{t('enterprise.tools.rawRemoteEvidence', 'Raw remote evidence')}</summary>
+                  <summary>{t('enterprise.tools.rawRemoteEvidence', 'Provider-supplied description (unverified)')}</summary>
                   <pre>{tool.raw_description}</pre>
                   <pre>{JSON.stringify(tool.raw_schema, null, 2)}</pre>
                 </details>
-                <div className="ws-mcp-review-actions">
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    disabled={busy || !draft.trim()}
-                    onClick={() => onReview(tool, 'approve', draft)}
-                  >
-                    {busy ? t('common.saving', 'Saving...') : t('enterprise.tools.approveFingerprint', 'Approve fingerprint')}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    disabled={busy}
-                    onClick={() => onReview(tool, 'reject', draft)}
-                  >
-                    {t('common.reject', 'Reject')}
-                  </button>
-                </div>
+                {tool.runtime_approved ? null : (
+                  <div className="ws-mcp-review-actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      disabled={busy || !draft.trim()}
+                      onClick={() => onReview(tool, 'approve', draft)}
+                    >
+                      {busy ? t('common.saving', 'Saving...') : t('enterprise.tools.approveFingerprint', 'Approve fingerprint')}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      disabled={busy}
+                      onClick={() => onReview(tool, 'reject', draft)}
+                    >
+                      {t('common.reject', 'Reject')}
+                    </button>
+                  </div>
+                )}
               </article>
             );
           })}

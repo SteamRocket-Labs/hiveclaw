@@ -152,7 +152,27 @@ describe('MCP metadata review recovery', () => {
       expected_fingerprint: reloadedDigest,
       canonical_description: 'Search the reviewed ledger.',
     });
-    expect(screen.getByRole('button', { name: '拒绝' })).toBeTruthy();
+    // G4b: the approved tool shows its reviewed purpose read-only; the
+    // 批准工具 / 拒绝 pair no longer renders after approval.
+    expect(screen.getByText('Search issues by query.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '批准工具' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '拒绝' })).toBeNull();
+  });
+
+  it('omits the OAuth action for a connected no-auth server but keeps it when authorization is involved', async () => {
+    // G4b: a public no-auth connection (e.g. DeepWiki) never shows OAuth 授权.
+    mocks.listEnterpriseMcpServers.mockResolvedValue([
+      { id: 'public-1', name: 'DeepWiki', server_key: 'deepwiki', status: 'connected',
+        auth_status: 'none', oauth_configured: false, transport: 'streamable_http', tool_count: 3, agent_count: 0, agents: [] },
+      { id: 'oauth-1', name: 'Ledger', server_key: 'ledger', status: 'connected',
+        auth_status: 'none', oauth_configured: true, transport: 'sse', tool_count: 1, agent_count: 0, agents: [] },
+      { id: 'needs-1', name: 'Docs', server_key: 'docs', status: 'needs_auth',
+        auth_status: 'none', transport: 'sse', tool_count: 1, agent_count: 0, agents: [] },
+    ]);
+    render(<WorkspaceMcpServersView selectedTenantId="tenant-1" />);
+    await screen.findByText('DeepWiki');
+    // Exactly two OAuth actions remain: the configured and the needs_auth servers.
+    expect(screen.queryAllByRole('button', { name: 'OAuth 授权' })).toHaveLength(2);
   });
 });
 

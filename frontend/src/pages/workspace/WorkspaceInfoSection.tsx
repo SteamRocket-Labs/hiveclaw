@@ -50,7 +50,7 @@ export default function WorkspaceInfoSection({
 
       <div className="card ws-info-card">
         <h3 className="ws-info-heading">{t('enterprise.tools.companyMcpConnections', 'Application connections')}</h3>
-        <Link className="btn btn-secondary" to="/enterprise/extensions">
+        <Link className="btn btn-secondary" to="/enterprise/extensions?view=mcp">
           {t('enterprise.tools.openMcpConnections', 'Connect applications and review tools')}
         </Link>
       </div>

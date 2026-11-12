@@ -14,6 +14,7 @@ it('links company connections to the existing company knowledge upload and impor
   expect(markup).toContain('href="/enterprise/knowledge"');
   expect(markup).toContain('Company knowledge');
   expect(markup).toContain('Upload and import');
-  expect(markup).toContain('href="/enterprise/extensions"');
+  // G4b: the link lands directly on the MCP 与插件 tab, not the AI 资产 tab.
+  expect(markup).toContain('href="/enterprise/extensions?view=mcp"');
   expect(markup).toContain('Connect applications and review tools');
 });

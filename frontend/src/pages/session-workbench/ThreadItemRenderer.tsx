@@ -19,8 +19,9 @@ import './ThreadItemWorkbench.css';
 type Detail = { label: string; value: React.ReactNode };
 
 /** Tools whose plain summary rows come from the live arguments. Each entry
- * maps the argument keys the member must see; UNTRUNCATED keeps the full
- * text on the card (the fold always shows the complete arguments). */
+ * maps the argument keys the member must see; the keys are the tool's real
+ * input_schema names (X1-r3 ruling 4); UNTRUNCATED keeps the full text on
+ * the card (the fold always shows the complete arguments). */
 const APPROVAL_ARGUMENT_SUMMARIES: Record<string, Array<[string, string]>> = {
   run_command: [['command', 'command'], ['cwd', 'workspace-dir']],
   create_employee_from_request: [['name', 'name'], ['first_task', 'first_task']],
@@ -29,12 +30,12 @@ const APPROVAL_ARGUMENT_SUMMARIES: Record<string, Array<[string, string]>> = {
   plaza_create_post: [['content', 'content']],
   plaza_add_comment: [['content', 'content']],
   execute_code: [['code', 'code']],
-  run_skill_tool: [['code', 'code']],
+  run_skill_tool: [['name', 'skill'], ['path', 'script'], ['arguments', 'args']],
   delegate_to_agent: [['agent', 'agent_name'], ['message', 'message']],
   send_message_to_agent: [['agent', 'agent_name'], ['message', 'message']],
-  send_channel_message: [['channel', 'channel'], ['message', 'message']],
+  send_channel_message: [['message', 'message']],
   send_feishu_message: [['recipient', 'member_name'], ['message', 'message']],
-  send_web_message: [['recipient', 'recipient'], ['channel', 'channel'], ['message', 'message']],
+  send_web_message: [['recipient', 'username'], ['message', 'message']],
   write_file: [['path', 'path']],
   fs_write: [['path', 'path']],
   edit_file: [['path', 'path']],
@@ -137,7 +138,7 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
         : data.tool_name === 'run_command'
           || ALWAYS_CAUTION_TOOLS.has(data.tool_name || '')
           || !(PROCEEDS_WHEN_COVERED.has(data.tool_name || '') && coversArguments)
-          ? t('sessionWorkbench.threadItem.value.approvalUncertain', 'This step may read sensitive information or affect areas outside the workspace; review exactly what will run before approving.')
+          ? t('sessionWorkbench.threadItem.value.approvalUncertain', 'This step may change content, read sensitive information or affect areas outside the workspace; review exactly what will run before approving.')
           : t('sessionWorkbench.threadItem.value.approvalProceeds', 'It runs only after you approve; the outcome returns to this conversation.');
     const impact = caution;
     // The action already leads the member sentence; a repeated 工具 row adds

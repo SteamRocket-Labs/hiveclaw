@@ -43,11 +43,61 @@ it('a plaza post approval says what is sent and where, without raw JSON or 工�
   // Plaza is fully shown and internally scoped, so the calm sentence stays
   // and the fold carries the complete arguments behind a plain label.
   expect(details.textContent).toContain('批准后这次操作才会执行，完成后结果会回到这里。');
+  // Restored (X1-r3 ruling 4): the caution names effects a fully covered
+  // plaza post does not have, so the card shows exactly one of the two.
+  expect(details.textContent).not.toContain('影响工作区以外');
   expect(container.querySelector('pre')).toBeNull();
   expect(screen.queryByRole('button', { name: '完整参数' })).toBeNull();
   const fold = screen.getByRole('button', { name: '查看将要执行的完整内容' });
   fireEvent.click(fold);
   expect(container.querySelector('pre')?.textContent).toContain('[E2E] 第十五轮测试帖，请忽略');
+});
+
+it('maps every approval summary row from the tool\'s real schema keys (X1-r3 ruling 4)', () => {
+  // The argument names below are exactly each tool's input_schema properties,
+  // read from tool_spec_v1(...) in the backend handlers:
+  // backend/app/tools/handlers/filesystem.py (run_command, write_file,
+  // fs_write, edit_file, delete_file, execute_code), skills.py
+  // (run_skill_tool), communication.py (send_web_message,
+  // send_channel_message, send_feishu_message, send_message_to_agent,
+  // delegate_to_agent), email.py (send_email, reply_email), hr.py
+  // (create_employee_from_request), plaza.py (plaza_create_post,
+  // plaza_add_comment). reply_email's recipient row stays unmapped by
+  // controller instruction (report-only).
+  const cases: Array<[string, Record<string, unknown>, Array<[string, string]>]> = [
+    ['run_command', { command: 'git status' }, [['命令', 'git status']]],
+    ['create_employee_from_request',
+      { name: '周报助手', role_description: '整理周报', core_outputs: ['周报'], boundaries: '仅整理', first_task: '写周报' },
+      [['名称', '周报助手'], ['第一项任务', '写周报']]],
+    ['send_email',
+      { to: 'boss@example.com', subject: 'Q3 复盘', body: '请查收。', cc: 'a@example.test', attachments: ['q3.xlsx'] },
+      [['收件人', 'boss@example.com'], ['主题', 'Q3 复盘'], ['正文', '请查收。'], ['抄送', 'a@example.test'], ['附件', 'q3.xlsx']]],
+    ['reply_email', { message_id: 'm-1', body: '请查收。' }, [['正文', '请查收。']]],
+    ['plaza_create_post', { content: '[E2E] 测试帖，请忽略' }, [['内容', '[E2E] 测试帖，请忽略']]],
+    ['plaza_add_comment', { post_id: 'post-1', content: '评论一句' }, [['内容', '评论一句']]],
+    ['execute_code', { language: 'bash', code: 'env | grep -i key', timeout: 60 }, [['代码', 'env | grep -i key']]],
+    ['run_skill_tool', { skill: 'report', script: 'scripts/build.py', args: ['--all'], timeout: 60 },
+      [['名称', 'report'], ['路径', 'scripts/build.py'], ['参数', '--all']]],
+    ['delegate_to_agent', { agent_name: '周报助手', message: '写周报', timeout_seconds: 600 },
+      [['数字员工', '周报助手'], ['消息', '写周报']]],
+    ['send_message_to_agent', { agent_name: '周报助手', message: '写周报', msg_type: 'consult' },
+      [['数字员工', '周报助手'], ['消息', '写周报']]],
+    ['send_channel_message', { message: '合同价 12 万' }, [['消息', '合同价 12 万']]],
+    ['send_feishu_message', { member_name: '覃彤', user_id: 'ou_x', message: '合同价 12 万' },
+      [['收件人', '覃彤'], ['消息', '合同价 12 万']]],
+    ['send_web_message', { username: '覃彤', message: '合同价 12 万' },
+      [['收件人', '覃彤'], ['消息', '合同价 12 万']]],
+    ['write_file', { path: 'workspace/report.md', content: '# 报告' }, [['路径', 'workspace/report.md']]],
+    ['fs_write', { mode: 'overwrite', path: 'workspace/report.md', content: '# 报告' }, [['路径', 'workspace/report.md']]],
+    ['edit_file', { path: 'workspace/report.md', old_text: '旧', new_text: '新' }, [['路径', 'workspace/report.md']]],
+    ['delete_file', { path: 'workspace/notes.md' }, [['路径', 'workspace/notes.md']]],
+  ];
+  for (const [tool, args, rows] of cases) {
+    const { container } = render(<ThreadItemRenderer item={approvalItem(tool, args)} approvalArguments={args} />);
+    const pairs = Array.from(container.querySelectorAll('.thread-item-details dt'))
+      .map((dt) => [dt.textContent, dt.nextElementSibling?.textContent] as [string, string]);
+    for (const row of rows) expect(pairs, tool).toContainEqual(row);
+  }
 });
 
 it('a replayed upload keeps its file size for the card', () => {

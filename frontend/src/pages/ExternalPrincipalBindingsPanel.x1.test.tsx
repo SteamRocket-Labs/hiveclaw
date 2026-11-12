@@ -32,7 +32,7 @@ it('the zh admin storage and originals copy carries no internal vocabulary', () 
   expect(zh.enterprise.storage.scope).not.toContain('待对账');
   expect(zh.enterprise.storage.scope).not.toContain('孤立');
   expect(zh.enterprise.storage.effective).not.toContain('孤立');
-  expect(zh.enterprise.storage.emptyBody).not.toContain('隔离区');
+  expect(zh.enterprise.legacyCompanyFiles.emptyBody).not.toContain('隔离区');
   expect(zh.enterprise.originals.open).toBe('管理原始文件');
   expect(zh.enterprise.originals.uploading).not.toContain('待对账');
   expect(zh.enterprise.originals.deleting).not.toContain('待对账');

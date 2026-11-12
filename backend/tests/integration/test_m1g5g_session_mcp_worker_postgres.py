@@ -29,7 +29,7 @@ from tests.integration.test_web_chat_worker_restart_end_to_end_recovery import (
     _patch_environment_seams,
 )
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = pytest.mark.usefixtures("migrated_pg_url", "public_mcp_dns")
 
 
 @pytest.mark.parametrize("account_scope", ["company", "personal"])

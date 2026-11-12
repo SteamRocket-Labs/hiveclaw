@@ -21,7 +21,7 @@ from app.tools.runtime import ToolExecutionContext
 from tests.integration.test_m1g5g_session_mcp_configuration_postgres import _seed_mcp
 from tests.services.test_session_input_control_v2 import _seed_session
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = pytest.mark.usefixtures("migrated_pg_url", "public_mcp_dns")
 
 
 def _context(tenant, user, agent, session=None, *, origin="web_chat", carried=False):

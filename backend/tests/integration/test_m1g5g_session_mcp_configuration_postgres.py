@@ -17,7 +17,7 @@ from app.services.mcp_metadata_trust import current_mcp_fingerprint, review_mcp_
 from tests.integration.test_m1g4_question_answers_postgres import _ask
 from tests.services.test_session_input_control_v2 import _seed_session
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = pytest.mark.usefixtures("migrated_pg_url", "public_mcp_dns")
 
 
 async def _seed_mcp(db, tenant, server_id, tool_id, requester):

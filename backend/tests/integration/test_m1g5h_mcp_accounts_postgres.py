@@ -13,7 +13,7 @@ from app.models.user import User
 from tests.integration.test_m1g5g_session_mcp_configuration_postgres import _seed_mcp
 from tests.services.test_session_input_control_v2 import _seed_session
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = pytest.mark.usefixtures("migrated_pg_url", "public_mcp_dns")
 
 
 async def test_personal_account_creation_does_not_grant_employee_capability(
@@ -182,9 +182,15 @@ async def test_personal_account_is_owner_only_and_reconnect_ignores_old_work_bin
         actor[0] = owner
         escaped = await http.post(
             f"/api/mcp-accounts/{account_id}/oauth/start",
-            json={**registration, "token_endpoint": "http://169.254.169.254/latest/credentials"},
+            json={**registration, "token_endpoint": "https://other-auth.example.test/token"},
         )
         assert escaped.status_code == 409
+        private = await http.post(
+            f"/api/mcp-accounts/{account_id}/oauth/start",
+            json={**registration, "token_endpoint": "http://169.254.169.254/latest/credentials"},
+        )
+        assert private.status_code == 422
+        assert private.json()["detail"]["code"] == "oauth_endpoint_invalid"
 
         async def login(code):
             started = await http.post(f"/api/mcp-accounts/{account_id}/oauth/start", json=registration)

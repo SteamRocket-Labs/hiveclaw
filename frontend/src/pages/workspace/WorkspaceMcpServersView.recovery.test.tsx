@@ -70,9 +70,24 @@ function candidate(fingerprint: string, permissions: string[], runtimeApproved =
 describe('MCP metadata review recovery', () => {
   afterEach(() => cleanup());
 
+  it('submits no authored description when the platform default is unchanged', async () => {
+    mocks.listEnterpriseMcpServers.mockReset().mockResolvedValue([{ id: 'server-1', name: '账本', server_key: 'ledger',
+      status: 'pending_review', auth_status: 'none', transport: 'sse', tool_count: 1, agent_count: 0, agents: [] }]);
+    const pending = { ...candidate(firstDigest, ['ledger:read']), trust_status: 'pending_review',
+      trust_tier: 'external_unreviewed', reviewed_fingerprint: null };
+    mocks.listEnterpriseMcpServerTools.mockReset().mockResolvedValue([pending]);
+    mocks.reviewEnterpriseMcpServerToolMetadata.mockReset().mockResolvedValue({ runtime_approved: true });
+    render(<WorkspaceMcpServersView selectedTenantId="company-default" />);
+    fireEvent.click(await screen.findByRole('button', { name: '审查元数据' }));
+    expect((await screen.findByLabelText('审核后的工具用途') as HTMLTextAreaElement).value).toBe(pending.canonical_description);
+    fireEvent.click(screen.getByRole('button', { name: '批准工具' }));
+    await waitFor(() => expect(mocks.reviewEnterpriseMcpServerToolMetadata).toHaveBeenCalledExactlyOnceWith(
+      'server-1', 'issue_search', { decision: 'approve', expected_fingerprint: firstDigest }));
+  });
+
   it('reloads the API candidate after a stale rejection and approves that digest', async () => {
     expect(en.enterprise.tools.mcpActivationEndpoint).toBe('Endpoint');
-    expect(zh.enterprise.tools.mcpActivationEndpoint).toBe('端点');
+    expect(zh.enterprise.tools.mcpActivationEndpoint).toBe('连接地址');
     expect(zh.enterprise.tools.mcpPreviouslyApproved).toBe('先前已批准');
     mocks.listEnterpriseMcpServers.mockResolvedValue([
       {
@@ -107,16 +122,16 @@ describe('MCP metadata review recovery', () => {
     expect(screen.getByText('ledger:read')).toBeTruthy();
     expect(screen.getByText('已设置')).toBeTruthy();
     expect(screen.getByText('先前已批准')).toBeTruthy();
-    expect(screen.getByText('运行时已阻断')).toBeTruthy();
+    expect(screen.getByText('暂不可使用')).toBeTruthy();
     expect(screen.getByText(/<script>/)).toBeTruthy();
     expect(document.body.innerHTML).not.toContain('<script>window.pwned=true</script>');
     expect(document.body.innerHTML).not.toContain('synthetic-header-secret');
 
-    fireEvent.click(screen.getByRole('button', { name: '批准指纹' }));
+    fireEvent.click(screen.getByRole('button', { name: '批准工具' }));
     expect((await screen.findByRole('alert')).textContent).toContain(
       'MCP metadata fingerprint changed; reload before reviewing',
     );
-    expect(screen.getByText('运行时已阻断')).toBeTruthy();
+    expect(screen.getByText('暂不可使用')).toBeTruthy();
     expect(mocks.reviewEnterpriseMcpServerToolMetadata).toHaveBeenCalledWith('server-1', 'issue_search', {
       decision: 'approve',
       expected_fingerprint: firstDigest,
@@ -126,11 +141,11 @@ describe('MCP metadata review recovery', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭' }));
     fireEvent.click(screen.getByRole('button', { name: '审查元数据' }));
     expect(await screen.findByText('ledger:admin')).toBeTruthy();
-    const description = screen.getByLabelText('运行时权威描述') as HTMLTextAreaElement;
+    const description = screen.getByLabelText('审核后的工具用途') as HTMLTextAreaElement;
     fireEvent.change(description, { target: { value: 'Search the reviewed ledger.' } });
-    fireEvent.click(screen.getByRole('button', { name: '批准指纹' }));
+    fireEvent.click(screen.getByRole('button', { name: '批准工具' }));
 
-    await waitFor(() => expect(screen.getByText('运行时已批准')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('可使用')).toBeTruthy());
     expect(screen.queryByText('先前已批准')).toBeNull();
     expect(mocks.reviewEnterpriseMcpServerToolMetadata).toHaveBeenLastCalledWith('server-1', 'issue_search', {
       decision: 'approve',

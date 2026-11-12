@@ -10,7 +10,7 @@ from sqlalchemy import delete, select, text
 from app.database import pin_rls_tenant_context, tenant_scoped_session
 from tests.integration.test_m1g6_role_configuration_postgres import _app
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = pytest.mark.usefixtures("migrated_pg_url", "public_mcp_dns")
 
 
 @pytest.mark.parametrize("mode", ["absent", "private_only", "platform_only", "platform_and_private"])
@@ -49,8 +49,8 @@ async def test_registry_transport_and_key_writeback_use_platform_rows(
         monkeypatch.setattr(discovery, "async_session", app_user_sessionmaker)
         monkeypatch.setattr(discovery, "tenant_scoped_session", scoped)
         monkeypatch.setattr(discovery, "resolve_tenant_for_agent", resolve)
-        monkeypatch.setattr(discovery, "SMITHERY_API_BASE", "http://127.0.0.1:55101")
-        monkeypatch.setattr(discovery, "MODELSCOPE_API_BASE", "http://127.0.0.1:55102")
+        monkeypatch.setattr(discovery, "SMITHERY_API_BASE", "http://registry.synthetic.test:55101")
+        monkeypatch.setattr(discovery, "MODELSCOPE_API_BASE", "http://modelscope.synthetic.test:55102")
         discovery.clear_provider_config_cache()
         requests = []
 
@@ -67,7 +67,7 @@ async def test_registry_transport_and_key_writeback_use_platform_rows(
 
         original_client = httpx.AsyncClient
         monkeypatch.setattr(discovery.httpx, "AsyncClient", lambda **kwargs: original_client(
-            transport=httpx.MockTransport(respond), **kwargs))
+            **{**kwargs, "transport": httpx.MockTransport(respond)}))
         result = await discovery.search_registries("synthetic lookup")
         selected = await discovery._get_smithery_api_key(agent_id)
         async with app_user_sessionmaker() as db:

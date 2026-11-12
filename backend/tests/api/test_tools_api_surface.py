@@ -738,6 +738,15 @@ async def test_create_tool_assigns_new_tool_to_current_tenant_agents(monkeypatch
     current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     agent_one = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
     agent_two = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
+    async def public_dns(_host, _port):
+        return ("93.184.216.34",)
+
+    async def register(db_session, company_id, name, url):
+        assert db_session is db and company_id == tenant_id
+        assert name == "Demo MCP" and url == "https://example.com/sse"
+
+    monkeypatch.setattr("app.services.governed_egress.resolve_public_addresses", public_dns)
+    monkeypatch.setattr("app.services.mcp_server_service.register_imported_server", register)
     async def load_actor(_db, user_id):
         assert user_id == current_user.id
         return current_user
@@ -779,6 +788,7 @@ async def test_create_tool_assigns_new_tool_to_current_tenant_agents(monkeypatch
     assert len(db.added) == 3
     agent_tool_rows = [item for item in db.added if getattr(item, "agent_id", None)]
     assert len(agent_tool_rows) == 2
+    assert all(not row.enabled and row.mcp_trust_requested_enabled for row in agent_tool_rows)
     assert {row.agent_id for row in agent_tool_rows} == {agent_one.id, agent_two.id}
     assert db.committed is True
 

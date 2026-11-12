@@ -13,6 +13,7 @@ from app.services.mcp_authz import (
     assert_mcp_cloud_transport_allowed,
     assert_no_mcp_token_passthrough,
     split_mcp_server_url_and_api_key,
+    validate_mcp_public_url,
 )
 
 _SENSITIVE_CONFIG_KEYS = {"api_key", "apikey"}
@@ -36,6 +37,12 @@ async def stage_external_mcp_server_review(
     raw_config = dict(config or {})
     assert_no_mcp_token_passthrough(raw_config)
     assert_mcp_cloud_transport_allowed(sanitized_url, raw_config.get("transport"))
+    for url in (sanitized_url, raw_config.get("mcp_url")):
+        if url is not None:
+            if not isinstance(url, str):
+                await validate_mcp_public_url("")
+            clean_url, _ = split_mcp_server_url_and_api_key(url)
+            await validate_mcp_public_url(clean_url)
     sanitized_config, has_config_secret = _sanitize_config(raw_config)
 
     name = _server_name(server_name=server_name, server_id=server_id, mcp_url=sanitized_url)

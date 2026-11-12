@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 
+MCP_ADMIN_ROUTE = (
+    "公司连接 → 连接应用与审核工具 → MCP 与插件 → 扩展与增值能力 → 添加扩展 → "
+    "测试连接 → 全部导入 → MCP 服务器 → 审查元数据 → 批准工具"
+)
+
+
 LIST_MCP_TOOLS_DESCRIPTION = (
     "List imported MCP tools currently available to this agent. This lists tool "
     "schemas, not protocol resources; use mcp_list_resources for resources/list."
@@ -14,9 +20,14 @@ INSPECT_MCP_TOOL_DESCRIPTION = (
 )
 
 IMPORT_MCP_SERVER_DESCRIPTION = (
-    "Import an MCP server from Smithery registry into the platform. Treat this as "
+    "Connect a public MCP HTTP/SSE URL or import a server from the Smithery registry. "
+    "For a URL supplied by the user, call directly with server_id as its display name "
+    "and config={\"mcp_url\": \"https://...\"}; no registry key or discovery call is needed. "
+    f"New tools wait for administrator metadata review. The clickable route is {MCP_ADMIN_ROUTE}. "
+    "The extensions page opens on AI 资产; switch to MCP 与插件, test the public URL and import, then review each tool and enable it. "
+    "Treat this as "
     "an explicit platform-extension workflow, not a normal task-execution step. "
-    "Use discover_resources first to find the server ID. If previously imported "
+    "For a registry entry, use discover_resources to find the server ID. If previously imported "
     "tools stopped working, set reauthorize=true to re-run authorization."
 )
 

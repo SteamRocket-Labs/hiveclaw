@@ -344,16 +344,6 @@ async def _provider_available_tools(agent_id: uuid.UUID | None = None) -> set[st
     if xcrawl_key:
         available.add("xcrawl_scrape")
 
-    try:
-        from app.services.resource_discovery import _get_modelscope_api_token, _get_smithery_api_key
-
-        smithery_key = await _get_smithery_api_key(agent_id)
-        modelscope_token = await _get_modelscope_api_token()
-        if smithery_key or modelscope_token:
-            available |= {"discover_resources", "import_mcp_server"}
-    except Exception:
-        logger.debug("[Tools] Provider availability lookup failed", exc_info=True)
-
     return available
 
 
@@ -393,8 +383,6 @@ async def _filter_unavailable_tools(agent_id: uuid.UUID, tools: list[dict]) -> l
         "firecrawl_search",
         "firecrawl_fetch",
         "xcrawl_scrape",
-        "discover_resources",
-        "import_mcp_server",
     }
     available = await _provider_available_tools(agent_id)
     return [
@@ -906,6 +894,7 @@ async def get_agent_tools_for_llm(
     if requested_set:
         requested_set |= CORE_TOOL_NAMES
 
+    capability_group_policies = None
     try:
         from app.models.tool import Tool, AgentTool
         from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
@@ -1032,6 +1021,11 @@ async def get_agent_tools_for_llm(
     # Fallback to the collected tool surface when DB is unavailable.
     # Route through ToolRegistry to ensure schemas are sanitized (Gemini compatibility).
     fallback = get_combined_openai_tools()
+    # Provider credentials do not authorize MCP installation. Preserve the
+    # existing L2 decision when the database-backed schema load falls back.
+    fallback = [tool for tool in fallback if tool["function"]["name"] not in {"discover_resources", "import_mcp_server"}
+        or (capability_group_policies is not None
+            and is_capability_group_enabled(capability_group_policies, "mcp_admin_pack"))]
     allowed_feishu_names = {
         tool["function"]["name"]
         for tool in _filter_feishu_tools_for_access(

@@ -24,7 +24,8 @@ import {
 
 export default function WorkspaceGlobalToolsView({
   selectedTenantId,
-}: WorkspaceToolsViewProps) {
+  onMcpImported,
+}: WorkspaceToolsViewProps & { onMcpImported?: () => void }) {
   const { t } = useTranslation();
   const categoryLabels = workspaceToolCategoryLabels(t);
 
@@ -157,13 +158,13 @@ export default function WorkspaceGlobalToolsView({
                         setMcpForm((current) => ({ ...current, server_url: value }));
                       }
                     }}
-                    placeholder={"{\n  \"mcpServers\": {\n    \"server-name\": {\n      \"type\": \"sse\",\n      \"url\": \"https://mcp.example.com/sse\"\n    }\n  }\n}\n\nor paste a URL directly"}
+                    placeholder={t('enterprise.tools.mcpConfigPlaceholder', 'Paste a public MCP URL or configuration JSON')}
                   />
                 </div>
                 {mcpForm.server_name ? (
                   <div className="ws-tools-parsed">
-                    <span>Name: <strong>{mcpForm.server_name}</strong></span>
-                    <span>URL: <strong>{mcpForm.server_url}</strong></span>
+                    <span>{t('enterprise.tools.mcpServerName', 'Extension Name')}: <strong>{mcpForm.server_name}</strong></span>
+                    <span>{t('enterprise.tools.mcpServerUrl', 'Extension URL')}: <strong>{mcpForm.server_url}</strong></span>
                   </div>
                 ) : null}
                 {!mcpForm.server_name ? (
@@ -175,7 +176,7 @@ export default function WorkspaceGlobalToolsView({
                       className="form-input"
                       value={mcpForm.server_name}
                       onChange={(event) => setMcpForm((current) => ({ ...current, server_name: event.target.value }))}
-                      placeholder="My MCP Server"
+                      placeholder={t('enterprise.tools.mcpNamePlaceholder', 'Name this connection')}
                     />
                   </div>
                 ) : null}
@@ -237,9 +238,11 @@ export default function WorkspaceGlobalToolsView({
                                     mcp_server_name: mcpForm.server_name || mcpForm.server_url,
                                     mcp_tool_name: tool.name,
                                     parameters_schema: tool.inputSchema || {},
+                                    config: { permissions: tool.permissions ?? tool.annotations?.permissions ?? tool.annotations?.scopes ?? [] },
                                     is_default: false,
                                   });
                                   loadAllTools();
+                                  onMcpImported?.();
                                 } catch (error: any) {
                                   showAppToast(`${t('enterprise.tools.importFailed', 'Import failed')}: ${error.message}`, 'error');
                                 }
@@ -269,6 +272,7 @@ export default function WorkspaceGlobalToolsView({
                                     mcp_server_name: mcpForm.server_name || mcpForm.server_url,
                                     mcp_tool_name: tool.name,
                                     parameters_schema: tool.inputSchema || {},
+                                    config: { permissions: tool.permissions ?? tool.annotations?.permissions ?? tool.annotations?.scopes ?? [] },
                                     is_default: false,
                                   });
                                   successCount++;
@@ -282,10 +286,17 @@ export default function WorkspaceGlobalToolsView({
                               setMcpForm({ server_url: '', server_name: '' });
                               setMcpRawInput('');
                               if (errors.length > 0) {
-                                showAppToast(`Imported ${successCount}/${tools.length} tools. Failed: ${errors.join('; ')}`, 'error');
+                                const failed = t('enterprise.tools.mcpImportPartial', {
+                                  count: successCount, total: tools.length, errors: errors.join('; '),
+                                  defaultValue: 'Imported {{count}}/{{total}} tools. Failed: {{errors}}',
+                                });
+                                const review = successCount > 0
+                                  ? t('enterprise.tools.mcpImportReviewHint', 'Review each imported tool in MCP Servers before use.') : '';
+                                showAppToast([failed, review].filter(Boolean).join(' '), 'error');
                               } else {
-                                showAppToast(`Imported ${successCount}/${tools.length} tools`, 'success');
+                                showAppToast(t('enterprise.tools.mcpImportPending', { count: successCount, defaultValue: '{{count}} tools imported for administrator review.' }), 'success');
                               }
+                              if (successCount > 0) onMcpImported?.();
                             }}
                           >
                             {t('enterprise.tools.importAll', 'Import All')}

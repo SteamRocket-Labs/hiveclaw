@@ -8,6 +8,7 @@ from sqlalchemy import or_
 from app.models.mcp_server import MCPServerTool as ConnectionTool
 
 from app.config import get_settings
+from app.services.mcp_authz import MCPAuthzError
 from app.runtime.prompts.mcp import (
     CALL_MCP_TOOL_DESCRIPTION,
     IMPORT_MCP_SERVER_DESCRIPTION,
@@ -32,8 +33,13 @@ def _available_mcp_tools(tenant_id):
 
 
 def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
-    from app.services.mcp_authz import MCPOriginMismatchError, MCPStoredCredentialRequired
+    from app.services.mcp_authz import MCP_ADMIN_CONNECTION_HINT, MCPOriginMismatchError, MCPPublicAddressError, MCPStoredCredentialRequired
 
+    if isinstance(exc, MCPPublicAddressError):
+        importing = tool_name == "import_mcp_server"
+        message = str(exc) if importing else "已批准的应用连接地址当前不是可公开访问的地址，请管理员检查应用连接地址。"
+        return render_tool_error(tool_name=tool_name, error_class="bad_arguments" if importing else "configuration_required", message=message,
+            provider="mcp", retryable=False, actionable_hint="请提供可公开访问的 HTTP 或 HTTPS 连接地址。" if importing else MCP_ADMIN_CONNECTION_HINT)
     if isinstance(exc, MCPStoredCredentialRequired):
         return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
             provider="mcp", retryable=False,
@@ -279,11 +285,11 @@ async def inspect_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
             "properties": {
                 "server_id": {
                     "type": "string",
-                    "description": "Smithery server ID, e.g. '@anthropic/brave-search' or '@anthropic/fetch'",
+                    "description": "Display name for a direct public URL import, or Smithery server ID",
                 },
                 "config": {
                     "type": "object",
-                    "description": "Optional server configuration (e.g. API keys required by the server)",
+                    "description": "For a direct public URL, pass mcp_url. No registry credentials are required for a no-auth endpoint. Use the secure connection card for credentials.",
                 },
                 "reauthorize": {
                     "type": "boolean",
@@ -457,8 +463,9 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
                 message=str(exc.detail), provider="mcp", retryable=False,
                 actionable_hint="The member can connect their account through the card in this conversation.")
         if auth_error:
+            from app.services.mcp_authz import MCP_ADMIN_CONNECTION_HINT, MCP_OAUTH_REFRESH_FAILURE
             return render_tool_error(tool_name="call_mcp_tool", error_class="auth_required", message=auth_error,
-                provider="mcp", retryable=False, actionable_hint="Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
+                provider="mcp", retryable=False, actionable_hint=MCP_ADMIN_CONNECTION_HINT if auth_error == MCP_OAUTH_REFRESH_FAILURE else "Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
         try:
             api_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid,
                 agent_config=agent_config, oauth_bearer=bearer)
@@ -639,8 +646,9 @@ async def _resolve_agent_mcp_server(
                 message=str(exc.detail), provider="mcp", retryable=False,
                 actionable_hint="The member can connect their account through the card in this conversation.")
         if auth_error:
+            from app.services.mcp_authz import MCP_ADMIN_CONNECTION_HINT, MCP_OAUTH_REFRESH_FAILURE
             return render_tool_error(tool_name=tool_name, error_class="auth_required", message=auth_error,
-                provider="mcp", retryable=False, actionable_hint="Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
+                provider="mcp", retryable=False, actionable_hint=MCP_ADMIN_CONNECTION_HINT if auth_error == MCP_OAUTH_REFRESH_FAILURE else "Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
         try:
             api_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid,
                 agent_config=agent_config, oauth_bearer=bearer)
@@ -682,6 +690,8 @@ async def mcp_list_resources(agent_id: uuid.UUID, arguments: dict, *, execution_
     server_url, api_key = resolved[:2]
     try:
         resources = await MCPClient(server_url, api_key=api_key).list_resources()
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error("mcp_list_resources", exc)
     except Exception as exc:
         return render_tool_error(
             tool_name="mcp_list_resources",
@@ -745,6 +755,8 @@ async def mcp_read_resource(agent_id: uuid.UUID, arguments: dict, *, execution_c
     server_url, api_key = resolved[:2]
     try:
         return await MCPClient(server_url, api_key=api_key).read_resource(uri)
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error("mcp_read_resource", exc)
     except Exception as exc:
         return render_tool_error(
             tool_name="mcp_read_resource",
@@ -788,6 +800,8 @@ async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict, *, execution_co
     server_url, api_key = resolved[:2]
     try:
         prompts = await MCPClient(server_url, api_key=api_key).list_prompts()
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error("mcp_list_prompts", exc)
     except Exception as exc:
         return render_tool_error(
             tool_name="mcp_list_prompts",
@@ -920,6 +934,8 @@ async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict, *, execution_cont
                 ]
             )
         return render_mcp_prompt_context(server_name=server_name, prompt_name=prompt_name, prompt_text=prompt_text)
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error("mcp_get_prompt", exc)
     except Exception as exc:
         return render_tool_error(
             tool_name="mcp_get_prompt",

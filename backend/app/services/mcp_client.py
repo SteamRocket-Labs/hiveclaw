@@ -9,14 +9,33 @@ Reference: https://modelcontextprotocol.io/docs
 """
 
 import json
+from collections.abc import Awaitable, Callable
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from loguru import logger
 
 from app.services.http_origin import http_origin
-from app.services.mcp_authz import MCPAuthzError, MCPOriginMismatchError, assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key
+from app.services.mcp_authz import MCPAuthzError, MCPOriginMismatchError, assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key, validate_mcp_public_url
+from app.services.governed_egress import PinnedPublicNetworkBackend, _PinnedAsyncHTTPTransport
 from app.tools.result_envelope import render_tool_error
+
+
+def public_mcp_http_client(
+    timeout: float, *, follow_redirects: bool,
+    request_hook: Callable[[httpx.Request], Awaitable[None]] | None = None,
+) -> httpx.AsyncClient:
+    """Pin every MCP, registry and OAuth HTTP hop before sending it."""
+    backend = PinnedPublicNetworkBackend()
+
+    async def validate_request(request: httpx.Request) -> None:
+        target = await validate_mcp_public_url(str(request.url))
+        backend.register(target.hostname, target.port, target.resolved_ips)
+        if request_hook is not None:
+            await request_hook(request)
+
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=follow_redirects, trust_env=False,
+        transport=_PinnedAsyncHTTPTransport(backend), event_hooks={"request": [validate_request]})
 
 
 class MCPClient:
@@ -49,6 +68,9 @@ class MCPClient:
     async def _scope_authorization(self, request: httpx.Request) -> None:
         if http_origin(request.url) != http_origin(self.server_url):
             request.headers.pop("Authorization", None)
+
+    def _http_client(self, timeout: float) -> httpx.AsyncClient:
+        return public_mcp_http_client(timeout, follow_redirects=True, request_hook=self._scope_authorization)
 
     def _parse_response(self, resp: httpx.Response) -> dict:
         """Parse response — handles both JSON and SSE (text/event-stream) formats."""
@@ -106,13 +128,14 @@ class MCPClient:
                 json={"jsonrpc": "2.0", "method": "notifications/initialized"},
                 headers=self._headers(),
             )
+        except MCPAuthzError:
+            raise
         except Exception:
             pass  # initialization failure is non-fatal — server may be stateless
 
     async def _streamable_request(self, method: str, params: dict | None = None) -> dict:
         """Send a JSON-RPC request via Streamable HTTP transport."""
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True,
-                event_hooks={"request": [self._scope_authorization]}) as client:
+        async with self._http_client(30) as client:
             if not self._session_id:
                 await self._streamable_initialize(client)
 
@@ -151,8 +174,7 @@ class MCPClient:
         messages_url = None
         event_type = ""
 
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True,
-                event_hooks={"request": [self._scope_authorization]}) as client:
+        async with self._http_client(15) as client:
             async with client.stream("GET", sse_url, headers=headers) as resp:
                 if resp.status_code != 200:
                     raise Exception(f"SSE connect failed: HTTP {resp.status_code}")
@@ -196,8 +218,7 @@ class MCPClient:
 
         timeout = 60 if method == "tools/call" else 30
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True,
-                event_hooks={"request": [self._scope_authorization]}) as client:
+        async with self._http_client(timeout) as client:
             # Open the SSE stream
             async with client.stream("GET", sse_url, headers=headers_sse) as sse_resp:
                 if sse_resp.status_code != 200:
@@ -291,6 +312,8 @@ class MCPClient:
             result = await self._streamable_request(method, params)
             self._transport = "streamable"
             return result
+        except MCPAuthzError:
+            raise
         except Exception as exc:
             streamable_err = exc
             logger.info(f"[MCPClient] Streamable HTTP failed ({streamable_err}), trying SSE transport...")

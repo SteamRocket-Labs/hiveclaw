@@ -132,14 +132,14 @@ export function McpMetadataReviewPanel({
                   </span>
                 </div>
                 <div className="ws-mcp-review-meta">
-                  <span>{tool.trust_status}</span>
-                  <span>{tool.trust_tier}</span>
+                  <span>{t(`enterprise.tools.mcpTrustStatus.${tool.trust_status}`, tool.trust_status)}</span>
+                  <span>{t(`enterprise.tools.mcpTrustTier.${tool.trust_tier}`, tool.trust_tier)}</span>
                   <code title={tool.metadata_fingerprint}>{tool.metadata_fingerprint.slice(0, 12)}</code>
                 </div>
                 <ActivationFacts tool={tool} />
                 {tool.risk_flags.length > 0 ? (
                   <div className="ws-mcp-risk-flags">
-                    {tool.risk_flags.map((flag) => <span key={flag}>{flag}</span>)}
+                    {tool.risk_flags.map((flag) => <span key={flag}>{t(`enterprise.tools.mcpRisk.${flag}`, flag)}</span>)}
                   </div>
                 ) : null}
                 <label className="ws-mcp-canonical-field">
@@ -148,6 +148,7 @@ export function McpMetadataReviewPanel({
                     rows={3}
                     maxLength={500}
                     value={draft}
+                    placeholder={t('enterprise.tools.mcpDescriptionPlaceholder', 'Describe what employees may use this tool for.')}
                     onChange={(event) => setDrafts((current) => ({
                       ...current,
                       [tool.tool_id]: event.target.value,

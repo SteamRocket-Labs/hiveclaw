@@ -48,6 +48,13 @@ export default function WorkspaceInfoSection({
 
       <div key={`tz-${selectedTenantId}`}>{companyTimezoneEditor}</div>
 
+      <div className="card ws-info-card">
+        <h3 className="ws-info-heading">{t('enterprise.tools.companyMcpConnections', 'Application connections')}</h3>
+        <Link className="btn btn-secondary" to="/enterprise/extensions">
+          {t('enterprise.tools.openMcpConnections', 'Connect applications and review tools')}
+        </Link>
+      </div>
+
       {canManageCompanyContent ? (
         <>
           <div className="card ws-info-card">

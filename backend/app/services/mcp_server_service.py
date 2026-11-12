@@ -15,7 +15,6 @@ import time
 import uuid
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import urlsplit
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1336,11 +1335,13 @@ async def start_mcp_oauth(
 ) -> dict:
     for endpoint in (authorization_endpoint, token_endpoint):
         try:
-            parsed = urlsplit(endpoint)
-            if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
-                raise ValueError
+            from app.services.mcp_authz import validate_mcp_public_url
+
+            await validate_mcp_public_url(endpoint)
         except ValueError as exc:
-            raise mcp_oauth.OAuthFlowError("oauth_endpoint_invalid", "unavailable", 422) from exc
+            error = mcp_oauth.OAuthFlowError("oauth_endpoint_invalid", "unavailable", 422)
+            error.detail["message"] = "请检查网址是否正确，并使用可公开访问的 HTTP 或 HTTPS 授权与令牌地址。"
+            raise error from exc
     server = await _locked_oauth_server(db, tenant_id, server_id)
     if server.owner_user_id is not None:
         from app.services.mcp_accounts import REGISTRATION_FIELDS, _active_in_tenant
@@ -1603,6 +1604,7 @@ async def resolve_mcp_oauth_bearer(
     server_id = server.id
     await db.commit()
     refreshed_blob = None
+    address_refused = False
     try:
         refreshed = await mcp_oauth.refresh_access_token(
             token_endpoint=oauth["token_endpoint"],
@@ -1614,6 +1616,11 @@ async def resolve_mcp_oauth_bearer(
         outcome = "configured"
     except mcp_oauth.OAuthError as exc:
         outcome = "failed" if exc.outcome == "failed" else "unknown"
+        from app.services.mcp_authz import MCPAuthzError
+        cause = exc.__cause__
+        while cause is not None and not isinstance(cause, MCPAuthzError):
+            cause = cause.__cause__
+        address_refused = cause is not None
     server = await _locked_oauth_server(db, tenant_id, server_id)
     current = dict((server.config_json or {}).get("oauth") or {})
     if (current.get("refresh") or {}).get("id") != claim or current.get("token") != oauth.get("token"):
@@ -1625,5 +1632,6 @@ async def resolve_mcp_oauth_bearer(
     _store_oauth(server, current)
     await db.commit()
     if not refreshed_blob:
-        return None, "MCP OAuth refresh failed or its outcome is unknown; re-authorize the server."
+        from app.services.mcp_authz import MCP_OAUTH_REFRESH_FAILURE
+        return None, MCP_OAUTH_REFRESH_FAILURE if address_refused else "MCP OAuth refresh failed or its outcome is unknown; re-authorize the server."
     return await resolved(refreshed, recheck_authority=True)

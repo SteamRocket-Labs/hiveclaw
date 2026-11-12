@@ -5,6 +5,8 @@ from uuid import uuid4
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("public_mcp_dns")
+
 from app.services.external_capabilities.mcp_source_adapter import stage_external_mcp_server_review
 
 

@@ -14,7 +14,7 @@ from tests.integration.test_m1g_originated_creation_postgres import (  # noqa: F
     _arguments, _client, direct_origin, origin,
 )
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = pytest.mark.usefixtures("migrated_pg_url", "public_mcp_dns")
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ async def test_hr_installs_and_reuses_reviewable_mcp_for_only_requested_employee
     monkeypatch.setattr("app.tools.handlers.hr._resolve_employee_refinement_model", no_model)
     monkeypatch.setattr("app.tools.handlers.hr._refine_soul_inputs", refinement)
     monkeypatch.setattr(agent_tools, "_agent_has_feishu_cli_access", no_external_office_probe)
-    endpoint = "http://127.0.0.1:55114/mcp/" + context.agent_id.hex
+    endpoint = "http://public-mcp.example:55114/mcp/" + context.agent_id.hex
     requests = []
 
     def respond(request):
@@ -107,8 +107,8 @@ async def test_hr_installs_and_reuses_reviewable_mcp_for_only_requested_employee
         return {"namespace": "synthetic", "connection_id": "hr-ledger"}
 
     monkeypatch.setattr(discovery.httpx, "AsyncClient", lambda **kwargs: original_client(
-        transport=httpx.MockTransport(respond), **kwargs))
-    monkeypatch.setattr(discovery, "SMITHERY_API_BASE", "http://127.0.0.1:55115")
+        **{**kwargs, "transport": httpx.MockTransport(respond)}))
+    monkeypatch.setattr(discovery, "SMITHERY_API_BASE", "http://registry.synthetic.test:55115")
     monkeypatch.setattr(discovery, "_ensure_smithery_connection", existing_connection)
     app = FastAPI()
     app.include_router(router, prefix="/api")

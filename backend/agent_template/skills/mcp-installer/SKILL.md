@@ -63,6 +63,11 @@ specific MCP resources.
 
 ### 1. Search first
 
+If the user supplied a public MCP HTTP/SSE URL, skip registry discovery and
+import that URL directly using the direct-URL example below. A no-credential
+endpoint needs no Smithery or ModelScope key. Registry discovery is only needed
+when choosing a server from a catalog.
+
 ```python
 discover_resources(query="<what the user wants>", max_results=5)
 ```
@@ -98,6 +103,14 @@ import_mcp_server(
 ```
 
 ### 4. Verify after import
+
+Newly discovered tools remain unavailable until an administrator reviews their
+metadata. Report a pending import as pending, never as ready. The administrator
+follows 公司连接 → 连接应用与审核工具 → MCP 与插件 → 扩展与增值能力 → 添加扩展 → 测试连接 → 全部导入 → MCP 服务器 → 审查元数据 → 批准工具.
+The extensions page opens on AI 资产; switch to MCP 与插件. Test the public URL
+and import, then review each tool's description and permissions and enable it.
+Preserve company and employee policy denials.
+Only after that review should you verify and call the imported tools.
 
 ```python
 list_mcp_tools()
@@ -161,11 +174,12 @@ Correct flow:
 ```
 import_mcp_server(server_id="my-custom-tools",
                   config={"mcp_url": "https://my-tools.example.com/sse"})
-  → success, tools visible
+  → submitted for administrator metadata review; listed names are not callable yet
+# Only after the administrator approves and enables the tools:
 list_mcp_tools()
   → shows the actual tool surface
 ```
-Output: `已接入 https://my-tools.example.com/sse。新工具有：<list>。试试哪个？`
+Output: `已提交 https://my-tools.example.com/sse 的工具，等待管理员在「MCP 服务器」逐项审核并启用。审核前，列出的工具名不能调用。`
 
 ### Example C — Refuse a local-only server
 

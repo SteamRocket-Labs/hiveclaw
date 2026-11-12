@@ -24,6 +24,7 @@ type WorkspaceToolsView = 'global' | 'mcp-servers' | 'custom-api' | 'agent-insta
 export default function WorkspaceToolsSection({ selectedTenantId }: { selectedTenantId: string }) {
   const { t } = useTranslation();
   const [activeView, setActiveView] = useState<WorkspaceToolsView>('global');
+  const [mcpImportVersion, setMcpImportVersion] = useState(0);
   const tabs: Array<[WorkspaceToolsView, string]> = [
     ['global', t('enterprise.tools.extensionsAddons', 'Extensions & Add-ons')],
     ['mcp-servers', t('agent.extensions.mcpServers', 'MCP Servers')],
@@ -41,8 +42,11 @@ export default function WorkspaceToolsSection({ selectedTenantId }: { selectedTe
         ))}
       </div>
       <Suspense fallback={<div className="ws-tools-empty" role="status">{t('common.loading', 'Loading...')}</div>}>
-        {activeView === 'global' ? <WorkspaceGlobalToolsView selectedTenantId={selectedTenantId} /> : null}
-        {activeView === 'mcp-servers' ? <WorkspaceMcpServersView selectedTenantId={selectedTenantId} /> : null}
+        {activeView === 'global' ? <WorkspaceGlobalToolsView selectedTenantId={selectedTenantId} onMcpImported={() => {
+          setMcpImportVersion((version) => version + 1);
+          setActiveView('mcp-servers');
+        }} /> : null}
+        {activeView === 'mcp-servers' ? <WorkspaceMcpServersView key={mcpImportVersion} selectedTenantId={selectedTenantId} /> : null}
         {activeView === 'custom-api' ? <WorkspaceCustomApiView selectedTenantId={selectedTenantId} /> : null}
         {activeView === 'agent-installed' ? <WorkspaceAgentInstalledToolsView selectedTenantId={selectedTenantId} /> : null}
       </Suspense>

@@ -13,7 +13,7 @@ from app.database import pin_rls_tenant_context
 from tests.integration.test_m1g6_role_configuration_postgres import _app
 from tests.integration.test_m1g7_routine_settings_postgres import scoped_runtime_factories  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = pytest.mark.usefixtures("migrated_pg_url", "public_mcp_dns")
 
 
 @pytest.mark.parametrize("entry", ["native", "generic", "resources"])
@@ -70,7 +70,7 @@ async def test_direct_import_ignores_stale_bot_keys_and_requires_explicit_compan
         return False
 
     monkeypatch.setattr(agent_tools, "_agent_has_feishu_cli_access", no_external_office_probe)
-    endpoint = "http://127.0.0.1:55124/mcp/" + agent.hex
+    endpoint = "http://public-mcp.example:55124/mcp/" + agent.hex
     remote = {"tools": [{"name": "lookup", "description": "Read a public ledger entry.",
         "inputSchema": {"type": "object", "properties": {}}, "permissions": ["ledger:read"]}]}
     observed = []
@@ -96,8 +96,7 @@ async def test_direct_import_ignores_stale_bot_keys_and_requires_explicit_compan
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
 
     original_client = httpx.AsyncClient
-    monkeypatch.setattr(discovery.httpx, "AsyncClient", lambda **kwargs: original_client(
-        transport=httpx.MockTransport(respond), **kwargs))
+    monkeypatch.setattr(discovery.httpx, "AsyncClient", lambda **kwargs: original_client(**{**kwargs, "transport": httpx.MockTransport(respond)}))
 
     async def install(employee, api_key=None):
         url = endpoint

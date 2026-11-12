@@ -127,6 +127,14 @@ class TestToneStyleSection:
         from app.runtime.prompt_sections import build_scenario_section
         assert "file paths" not in build_scenario_section(None)
 
+    def test_member_replies_name_things_never_ids_or_status_codes(self) -> None:
+        section = build_tone_style_section()
+        assert (
+            "Refer to people, employees, posts, files and conversations by their name or a plain description"
+            in section
+        )
+        assert "never by an internal id (UUID or numeric) or a status code" in section
+
 
 class TestExecutingActionsContract:
     def test_owns_mistakes_without_self_abasement(self) -> None:

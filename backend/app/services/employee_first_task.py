@@ -499,20 +499,55 @@ async def dispatch_first_task(db, draft, *, execution_context=None, arguments=No
     return receipt["status"] == "dispatched"
 
 
-async def creation_receipt_notification(db, draft, task):
-    """Render the native creation observation without publishing or changing it."""
+_FIRST_TASK_SENTENCES = {
+    "dispatched": "Its first task was handed to it and is running.",
+    "blocked": "Its first task could not be handed over yet.",
+    "unknown": "Its first-task hand-over did not finish; the outcome is unknown.",
+}
+
+
+async def creation_receipt_notification(db, draft, task, *, legacy_summary: bool = False):
+    """Render the native creation observation without publishing or changing it.
+
+    ``legacy_summary`` reproduces the pre-plain-name bytes so provenance
+    re-verification still matches results stored before the member-facing
+    rewrite; it is never used to publish new notifications.
+    """
     from app.services.runtime_notification_outbox import CompletionNotification
 
     evidence = direct_creation_authorization(draft)
     if evidence is None:
         return
     first = (draft.provisioning_json or {}).get("first_task") or {}
-    summary = (f"Employee creation: {draft.status}; employee_id={draft.created_agent_id or 'none'}; "
-               f"first_task={first.get('status', 'not_requested')}; first_task_error={first.get('error', 'none')}; "
-               f"creation_error={draft.failure_code or 'none'}; draft_id={draft.id}. "
-               "Creation readiness is not evidence of task completion. Continue this original work from these facts.")
+    first_status = first.get("status", "not_requested")
+    target = await db.get(Agent, draft.created_agent_id) if draft.created_agent_id else None
+    if legacy_summary:
+        summary = (f"Employee creation: {draft.status}; employee_id={draft.created_agent_id or 'none'}; "
+                   f"first_task={first_status}; first_task_error={first.get('error', 'none')}; "
+                   f"creation_error={draft.failure_code or 'none'}; draft_id={draft.id}. "
+                   "Creation readiness is not evidence of task completion. Continue this original work from these facts.")
+    else:
+        employee_name = target.name if target else None
+        route = f"/agents/{draft.created_agent_id}" if draft.created_agent_id else None
+        if employee_name and route:
+            head = (f'Employee creation: {draft.status}. The new employee "{employee_name}" is ready; '
+                    f"the member opens it at {route}. ")
+        elif draft.created_agent_id:
+            head = f"Employee creation: {draft.status}. The new employee was created. "
+        else:
+            head = f"Employee creation: {draft.status}. No employee was created. "
+        tail = _FIRST_TASK_SENTENCES.get(first_status, "No first task was requested.")
+        internal = [f"employee_id={draft.created_agent_id or 'none'}", f"draft_id={draft.id}",
+                    f"first_task={first_status}"]
+        if draft.failure_code:
+            internal.append(f"creation_error={draft.failure_code}")
+        if first.get("error"):
+            internal.append(f"first_task_error={first['error']}")
+        summary = (head + tail
+                   + " Creation readiness is not evidence of task completion. Continue this original work from these facts. "
+                     "In member replies, name the employee; never quote internal ids. "
+                   + "Internal: " + "; ".join(internal) + ".")
     if draft.created_agent_id and first.get("status") in {"blocked", "unknown"}:
-        target = await db.get(Agent, draft.created_agent_id)
         summary += "\nRecorded first-task recovery request: " + json.dumps({
             "tool_name": "delegate_to_agent", "arguments": {
                 "first_task_draft_id": str(draft.id), "agent_name": target.name if target else None,

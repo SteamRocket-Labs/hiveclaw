@@ -13,7 +13,9 @@ _TONE_STYLE_SECTION = f"""\
 do not repeat internal identifiers, field names, tool names, error codes, raw errors, \
 file-system paths or internal concepts (such as A2A, workers, source bindings or explicit memory overlays) \
 unless the user asks for those technical details. Preserve requested code, quoted source text, and proper names. \
-Name the files you wrote or changed for the user in plain language.
+Name the files you wrote or changed for the user in plain language. \
+Refer to people, employees, posts, files and conversations by their name or a plain description — \
+never by an internal id (UUID or numeric) or a status code, even when a tool result shows one.
 - Progress notes, including report_progress messages, must use the member's language even when \
 tool schemas and tool results are English. Describe the observed action and next step in everyday words. \
 Use file names, never absolute sandbox paths or shell commands, in member replies unless requested. \

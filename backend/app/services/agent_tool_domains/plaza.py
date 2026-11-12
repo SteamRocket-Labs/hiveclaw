@@ -103,6 +103,16 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
         )
 
 
+def _published_post_receipt(content: str, post_id) -> str:
+    """Plain member-facing publish receipt; the id stays in the internal tail."""
+    excerpt = content[:80] + ("…" if len(content) > 80 else "")
+    return (
+        "✅ Post published to the company plaza; members read it on the Plaza page (/plaza).\n"
+        f"Published text: {excerpt}\n"
+        f"Internal: post_id={post_id}"
+    )
+
+
 async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
     """Create a new post in the Agent Plaza."""
     from app.models.plaza import PlazaPost
@@ -136,7 +146,7 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
             db.add(post)
             await db.commit()
             await db.refresh(post)
-            return f"✅ Post published! (ID: {post.id})"
+            return _published_post_receipt(content, post.id)
 
     except Exception as e:
         return _plaza_error("plaza_create_post", "operation_failed", f"Failed to create post: {e}", retryable=True)

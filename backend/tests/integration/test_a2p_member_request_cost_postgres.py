@@ -19,9 +19,6 @@ from app.models.agent import AgentPermission
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.models.user_assistant_binding import UserAssistantBinding
-from tests.integration.conftest import (  # noqa: F401
-    app_user_engine, app_user_sessionmaker, owner_engine, owner_sessionmaker, migrated_pg_url,
-)
 from tests.integration.test_m1f_assistant_binding_postgres import _agent, _model
 from tests.services.test_session_permission_runtime import _seed_waiting_batch
 
@@ -89,7 +86,7 @@ class _ResponseClock:
 
 
 @pytest.fixture
-async def member_request(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, request):  # noqa: F811
+async def member_request(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, request):
     from app.api import assistant, chat_sessions, upload
     from app.config import get_settings
     from app.core.tenant_middleware import TenantMiddleware
@@ -171,8 +168,24 @@ async def member_request(owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 
 
 @pytest.mark.parametrize("endpoint", CEILINGS)
-async def test_member_request_statement_ceiling(member_request, endpoint):
+async def test_member_request_statement_ceiling(member_request, endpoint, monkeypatch, tmp_path):
     seed, client, sample, factory = member_request
+    if endpoint == "upload":
+        from app.services.document_conversion import DocumentConversionService
+
+        # This measures steady state. The first conversion in a process imports
+        # markitdown and its lazily loaded modules. Local cold uploads measured
+        # 0.58-2.11 s under varying load; no cold-upload bound below 1 s is claimed.
+        DocumentConversionService().convert_bytes(data=b"warm,up\n1,2\n",
+            filename="warmup.csv", workspace_root=tmp_path / "warmup")
+        converted = []
+        original = DocumentConversionService._convert_with_markitdown
+
+        def convert(self, *args, **kwargs):
+            converted.append(True)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(DocumentConversionService, "_convert_with_markitdown", convert)
     with _profile(sample) as totals:
         if endpoint == "create_run":
             response = await client.post(f"/api/agents/{seed.agent_id}/sessions/runs",
@@ -223,6 +236,10 @@ async def test_member_request_statement_ceiling(member_request, endpoint):
     elif endpoint == "upload":
         assert body["size"] == 725 and body["original_attachment"]
         assert body["conversion"]["status"] == "converted", body
+        # Preserve the canonical converter contract after removing the profiler.
+        assert body["conversion"]["engine"] == "local_markitdown"
+        # The timed upload must convert once, rather than reuse cached content.
+        assert len(converted) == 1
         assert body["personal_kb_candidate"]["status"] == "queued", body
     else:
         assert body["run"]["run_id"]
@@ -231,7 +248,7 @@ async def test_member_request_statement_ceiling(member_request, endpoint):
 
 
 async def test_later_candidate_observes_revocation_within_the_same_request(
-    member_request, owner_sessionmaker, monkeypatch,  # noqa: F811
+    member_request, owner_sessionmaker, monkeypatch,
 ):
     from sqlalchemy import delete, select
     from app.models.agent import Agent
@@ -265,7 +282,7 @@ async def test_later_candidate_observes_revocation_within_the_same_request(
 
 
 async def test_candidate_sql_structure_is_built_once_without_reusing_rows(member_request, monkeypatch):
-    from app.services import assistant_binding
+    from app.services import assistant_binding, source_read_queries
 
     _seed, client, _sample, _factory = member_request
     original, built = assistant_binding.source_reader_statement, []
@@ -274,7 +291,9 @@ async def test_candidate_sql_structure_is_built_once_without_reusing_rows(member
         built.append(True)
         return original(*args, **kwargs)
 
+    # Count both the imported alias and builds through the source module.
     monkeypatch.setattr(assistant_binding, "source_reader_statement", statement)
+    monkeypatch.setattr(source_read_queries, "source_reader_statement", statement)
     response = await client.get("/api/assistant")
     assert response.status_code == 200
     assert len(response.json()["candidates"]) == 16

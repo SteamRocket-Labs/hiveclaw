@@ -23,8 +23,9 @@ PRIVATE_ENDPOINTS = ["http://169.254.169.254/latest/meta-data/", "http://127.0.0
 
 
 @pytest.mark.parametrize("field", ["authorization_endpoint", "token_endpoint"])
-@pytest.mark.parametrize("endpoint", PRIVATE_ENDPOINTS)
-async def test_oauth_start_rejects_private_endpoints_without_storing(
+@pytest.mark.parametrize("endpoint", PRIVATE_ENDPOINTS + ["ftp://public.example/token", "https:///token",
+    "https://u@public.example/token", "https://u:p@public.example/token", "javascript:alert(1)"])
+async def test_oauth_start_rejects_invalid_endpoints_without_storing(
     app_user_sessionmaker, owner_sessionmaker, oauth_server, field, endpoint,  # noqa: F811
 ):
     async with owner_sessionmaker() as db:
@@ -98,11 +99,12 @@ def _error(result):
     return json.loads(result.split("<tool_error>", 1)[1].split("</tool_error>", 1)[0])
 
 
-@pytest.mark.parametrize("entry", ["generic", "native"])
+@pytest.mark.parametrize("entry", ["generic", "native", "mcp_list_resources", "mcp_read_resource",
+    "mcp_list_prompts", "mcp_get_prompt"])
 async def test_approved_company_tool_rebinding_names_administrator_not_member_url(
     app_user_sessionmaker, owner_sessionmaker, oauth_server, monkeypatch, wire, scoped_runtime_factories, entry,  # noqa: F811
 ):
-    from app.tools.handlers.mcp import call_mcp_tool
+    from app.tools.handlers import mcp
     from app.services.agent_tool_domains.web_mcp import _execute_mcp_tool
 
     agent_id = await _approved_tool(owner_sessionmaker, oauth_server)
@@ -110,12 +112,19 @@ async def test_approved_company_tool_rebinding_names_administrator_not_member_ur
     async def private_dns(_host, _port): return ("10.0.0.1",)
     monkeypatch.setattr("app.services.governed_egress.resolve_public_addresses", private_dns)
     requests = wire(lambda _request: httpx.Response(200, json={"result": {"content": []}}))
-    result = (await call_mcp_tool(agent_id, {"tool_name": "mcp__r2__read", "arguments": {}}) if entry == "generic"
-        else await _execute_mcp_tool("mcp__r2__read", {}, agent_id=agent_id))
+    if entry == "generic":
+        result = await mcp.call_mcp_tool(agent_id, {"tool_name": "mcp__r2__read", "arguments": {}})
+    elif entry == "native":
+        result = await _execute_mcp_tool("mcp__r2__read", {}, agent_id=agent_id)
+    else:
+        result = await getattr(mcp, entry)(agent_id, {"server": str(oauth_server.server_id),
+            "uri": "mcp://documents/readme", "prompt_name": "readme", "arguments": {}})
     error = _error(result)
     assert error["error_class"] == "configuration_required", result
     assert error["diagnostic_hint"] == "请管理员检查应用连接地址。"
+    assert error["diagnostic_message"] == "已批准的应用连接地址当前不是可公开访问的地址，请管理员检查应用连接地址。"
     assert "请提供" not in result
+    assert "请检查网址" not in result
     assert requests == []
 
 
@@ -145,3 +154,46 @@ async def test_call_refused_refresh_keeps_existing_oauth_failure_path_and_names_
         server = await db.get(MCPServer, oauth_server.server_id)
         assert server.auth_status == mcp_oauth.AUTH_EXPIRED
         assert server.config_json["oauth"]["refresh"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("failure", ["invalid_grant", "timeout"])
+async def test_personal_refresh_failure_keeps_reauthorization_card_hint(
+    app_user_sessionmaker, owner_sessionmaker, oauth_server, monkeypatch, wire, scoped_runtime_factories, tmp_path, failure,  # noqa: F811
+):
+    from app.models.agent import Agent
+    from app.models.user import User
+    from app.services.mcp_accounts import create_personal_account
+    from app.tools.handlers.mcp import call_mcp_tool
+    from app.tools.runtime import ToolExecutionContext
+
+    agent_id = await _approved_tool(owner_sessionmaker, oauth_server)
+    account_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        user = await db.get(User, oauth_server.id)
+        user.role = "member"
+        (await db.get(Agent, agent_id)).owner_user_id = user.id
+        await create_personal_account(db, user=user, tenant_id=oauth_server.tenant_id,
+            server_id=oauth_server.server_id, account_id=account_id, name="Personal documents")
+        account = await db.get(MCPServer, account_id)
+        account.auth_status = mcp_oauth.AUTH_CONFIGURED
+        account.config_json = {"oauth": {"token_endpoint": "https://auth.example.test/token", "client_id": "synthetic",
+            "token": mcp_oauth.encrypt_token_set(mcp_oauth.OAuthTokenSet("synthetic-old",
+                refresh_token="synthetic-refresh", expires_at=time.time()-100))}}
+        await db.commit()
+    _runtime_factories(monkeypatch, app_user_sessionmaker, scoped_runtime_factories)
+    def respond(request):
+        if failure == "timeout":
+            raise httpx.ReadTimeout("Synthetic timeout", request=request)
+        return httpx.Response(400, json={"error": "invalid_grant"})
+    requests = wire(respond)
+    context = ToolExecutionContext(agent_id=agent_id, user_id=oauth_server.id,
+        tenant_id=str(oauth_server.tenant_id), workspace=tmp_path)
+    result = await call_mcp_tool(agent_id, {"tool_name": "mcp__r2__read", "arguments": {}}, execution_context=context)
+    error = _error(result)
+    assert error["error_class"] == "auth_required", result
+    assert error["diagnostic_message"] == "MCP OAuth refresh failed or its outcome is unknown; re-authorize the server."
+    assert "ask_user_question" in error["diagnostic_hint"]
+    assert "configuration.mcp_server_id" in error["diagnostic_hint"]
+    assert "请管理员" not in result
+    assert len(requests) == 1
+    assert requests[0].url == "https://auth.example.test/token"

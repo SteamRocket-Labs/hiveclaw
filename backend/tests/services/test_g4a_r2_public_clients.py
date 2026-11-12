@@ -149,6 +149,7 @@ def test_admin_route_uses_clickable_chinese_catalog_labels():
         for segment in key.split("."): value = value[segment]
         expected.append(value)
     assert MCP_ADMIN_ROUTE.split(" → ") == expected
+    assert catalog["enterprise"]["extensions"]["tabs"]["assets"] == "AI 资产"
     assert MCP_ADMIN_ROUTE in IMPORT_MCP_SERVER_DESCRIPTION
     skill = (repo / "backend/agent_template/skills/mcp-installer/SKILL.md").read_text()
     assert MCP_ADMIN_ROUTE in skill

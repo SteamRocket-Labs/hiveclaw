@@ -8,6 +8,7 @@ from sqlalchemy import or_
 from app.models.mcp_server import MCPServerTool as ConnectionTool
 
 from app.config import get_settings
+from app.services.mcp_authz import MCPAuthzError
 from app.runtime.prompts.mcp import (
     CALL_MCP_TOOL_DESCRIPTION,
     IMPORT_MCP_SERVER_DESCRIPTION,
@@ -36,7 +37,8 @@ def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
 
     if isinstance(exc, MCPPublicAddressError):
         importing = tool_name == "import_mcp_server"
-        return render_tool_error(tool_name=tool_name, error_class="bad_arguments" if importing else "configuration_required", message=str(exc),
+        message = str(exc) if importing else "已批准的应用连接地址当前不是可公开访问的地址，请管理员检查应用连接地址。"
+        return render_tool_error(tool_name=tool_name, error_class="bad_arguments" if importing else "configuration_required", message=message,
             provider="mcp", retryable=False, actionable_hint="请提供可公开访问的 HTTP 或 HTTPS 连接地址。" if importing else MCP_ADMIN_CONNECTION_HINT)
     if isinstance(exc, MCPStoredCredentialRequired):
         return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
@@ -688,6 +690,8 @@ async def mcp_list_resources(agent_id: uuid.UUID, arguments: dict, *, execution_
     server_url, api_key = resolved[:2]
     try:
         resources = await MCPClient(server_url, api_key=api_key).list_resources()
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error("mcp_list_resources", exc)
     except Exception as exc:
         return render_tool_error(
             tool_name="mcp_list_resources",
@@ -751,6 +755,8 @@ async def mcp_read_resource(agent_id: uuid.UUID, arguments: dict, *, execution_c
     server_url, api_key = resolved[:2]
     try:
         return await MCPClient(server_url, api_key=api_key).read_resource(uri)
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error("mcp_read_resource", exc)
     except Exception as exc:
         return render_tool_error(
             tool_name="mcp_read_resource",
@@ -794,6 +800,8 @@ async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict, *, execution_co
     server_url, api_key = resolved[:2]
     try:
         prompts = await MCPClient(server_url, api_key=api_key).list_prompts()
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error("mcp_list_prompts", exc)
     except Exception as exc:
         return render_tool_error(
             tool_name="mcp_list_prompts",
@@ -926,6 +934,8 @@ async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict, *, execution_cont
                 ]
             )
         return render_mcp_prompt_context(server_name=server_name, prompt_name=prompt_name, prompt_text=prompt_text)
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error("mcp_get_prompt", exc)
     except Exception as exc:
         return render_tool_error(
             tool_name="mcp_get_prompt",

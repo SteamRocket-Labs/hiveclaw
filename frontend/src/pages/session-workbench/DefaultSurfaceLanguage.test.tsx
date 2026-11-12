@@ -321,20 +321,22 @@ describe('default screen language (B2)', () => {
     } as unknown as ThreadItem;
     const markup = renderToStaticMarkup(<ThreadItemRenderer item={item} approvalArguments={{ command }}
       approvalActions={<button>允许本次</button>} />);
-    expect(markup).toContain('这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。');
+    expect(markup).toContain('这一步可能修改内容、读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。');
     expect(markup).not.toMatch(/可逆或只读|可撤销或只读操作/);
     expect(markup).toContain('允许本次');
   });
 
+  // X1-r3 ruling 5: the caution now names 修改内容 as well, so it stays
+  // true for write/edit-style tools whose real effect is changing content.
   it.each<[string, Record<string, unknown>, boolean, string]>([
-    ['execute_code', { language: 'bash', code: "env | grep -iE key; find / -name '*.pem'" }, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
-    ['run_skill_tool', {}, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
-    ['send_email', {}, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
-    ['write_file', { path: 'report.md' }, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
-    ['unknown_tool', {}, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
+    ['execute_code', { language: 'bash', code: "env | grep -iE key; find / -name '*.pem'" }, false, '这一步可能修改内容、读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
+    ['run_skill_tool', {}, false, '这一步可能修改内容、读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
+    ['send_email', {}, false, '这一步可能修改内容、读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
+    ['write_file', { path: 'report.md' }, false, '这一步可能修改内容、读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
+    ['unknown_tool', {}, false, '这一步可能修改内容、读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
     ...['ls', 'ls -la', 'wc -l report.csv', 'grep foo workspace/x.md', 'cat report.md']
       .map((command): [string, Record<string, unknown>, boolean, string] => ['run_command', { command }, false, '可逆或只读']),
-    ['run_command', {}, false, '这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
+    ['run_command', {}, false, '这一步可能修改内容、读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。'],
     ['delete_file', { path: 'report.md' }, true, '不可撤销的操作'],
     ['create_employee_from_request', {}, true, '不可撤销的操作'],
   ])('localizes the impact of %s with %j', (toolName, toolArguments, destructive, expected) => {
@@ -504,7 +506,7 @@ describe('default screen language (B2)', () => {
       approvalArguments={{ language: 'bash', code: "env | grep -iE key; find / -name '*.pem'" }} />);
     expect(markup).toContain('代码');
     expect(markup).toContain('env | grep -iE key; find / -name');
-    expect(markup).toContain('这一步可能读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。');
+    expect(markup).toContain('这一步可能修改内容、读取敏感信息或影响工作区以外，批准前请看清楚将要执行的内容。');
     expect(markup).not.toContain('批准后这次操作才会执行，完成后结果会回到这里。');
   });
 

@@ -102,8 +102,9 @@ describe('ThreadItemRenderer', () => {
   // The screenshot exposes this prefix through `env | grep -iE`; the pattern
   // and find arguments are reconstructed because the input covers the tail.
   const step4Command = 'ls -la uploads | head; echo "=== hidden ==="; ls -la .[a-z]* 2>/dev/null | head; echo "=== env ==="; env | grep -iE "workspace|sandbox"; find / -name "*.md" 2>/dev/null | head';
-  // X1-r2 ruling 1: restored caution wording (en approvalUncertain).
-  const uncertainImpact = 'This step may read sensitive information or affect areas outside the workspace; review exactly what will run before approving.';
+  // X1-r3 ruling 5: the caution now also names 修改内容 / change content —
+  // the real effect of write/edit-style tools the old sentence omitted.
+  const uncertainImpact = 'This step may change content, read sensitive information or affect areas outside the workspace; review exactly what will run before approving.';
 
   function commandApproval(command: unknown, impact?: string): ThreadItem {
     return {

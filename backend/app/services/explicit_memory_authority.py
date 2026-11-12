@@ -448,15 +448,16 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
         active_workspace_receipts=active_receipts | {receipt.id})
     latest = None
     if joined:
+        from sqlalchemy import outerjoin
         from sqlalchemy.orm import aliased, load_only
 
         current = aliased(ContentInputReceipt)
         latest_id = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
             ContentInputReceipt.carrier_kind == "explicit_memory", ContentInputReceipt.carrier_ref == receipt.carrier_ref
             ).order_by(ContentInputReceipt.revision.desc()).limit(1).scalar_subquery()
-        facts = (await db.execute(source_reader_statement(user, ChatSession.agent_id, source=ChatSession)
-            .add_columns(User, ChatSession, current).outerjoin(User, User.id == user.id)
-            .where(ChatSession.id == session.id)
+        source = outerjoin(User, ChatSession, ChatSession.id == session.id)
+        facts = (await db.execute(source_reader_statement(user, ChatSession.agent_id, source=source)
+            .add_columns(User, ChatSession, current).where(User.id == user.id)
             .outerjoin(current, current.id == latest_id).options(*reader_columns(User, ChatSession),
                 load_only(current.id, current.authority_json)))).first()
         requester, current_session, latest = (facts[5], facts[6], facts[7]) if facts is not None else (None,) * 3

@@ -122,8 +122,9 @@ async def test_roster_matches_base_null_owner_and_group_filters(
     assert sum(row["statements"] for row in profile.values()) == 1
 
 
+@pytest.mark.parametrize("source", ["directory", "reference"])
 async def test_org_admin_downloads_platform_observer_from_another_home_tenant(
-    graph, owner_sessionmaker, app_user_sessionmaker,  # noqa: F811
+    graph, owner_sessionmaker, app_user_sessionmaker, source,  # noqa: F811
 ):
     n = graph
     home = uuid.uuid4()
@@ -133,7 +134,7 @@ async def test_org_admin_downloads_platform_observer_from_another_home_tenant(
         observer = await db.get(User, n.user)
         observer.role = "org_admin"
         await db.commit()
-    url, body = await _deliver(n, n.common.directory, owner_sessionmaker, app_user_sessionmaker)
+    url, body = await _deliver(n, getattr(n.common, source), owner_sessionmaker, app_user_sessionmaker)
     from app.core.security import get_current_user
 
     authenticated_reader = None
@@ -161,6 +162,51 @@ async def test_org_admin_downloads_platform_observer_from_another_home_tenant(
     assert authenticated_reader is not None
     assert response.status_code == 200, response.text
     assert response.content == body
+
+
+async def test_group_memory_preserves_missing_session_error_after_recursion(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch,  # noqa: F811
+):
+    from inspect import signature
+    from app.services import explicit_memory_authority as memory
+    from app.services.content_input_receipts import ContentInputReceiptError, group_source_read
+
+    n = native_workspace
+    _, source_session, dependency = await _private_memory(n, owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        (await db.get(User, n.user)).role = "org_admin"
+        session = await db.get(ChatSession, source_session)
+        session.audience_kind, session.user_id = "group", None
+        session.source_channel = "feishu"
+        session.group_installation_ref, session.group_subject_id = "review-installation", "review-group"
+        receipt = await db.get(ContentInputReceipt, uuid.UUID(dependency["source_id"]))
+        # Seed a retained group source for the administrator's real business
+        # inspection path; its bytes and empty upstream graph stay identical.
+        receipt.authority_json = {**receipt.authority_json, **memory.audience_for_session(session)}
+        await db.commit()
+    validate, reached_memory_recursion = memory._validate_input_dependencies, False
+
+    async def delete_between_memory_checkpoints(db, tenant_id, dependencies, **context):
+        nonlocal reached_memory_recursion
+        if uuid.UUID(dependency["source_id"]) in context.get("active_workspace_receipts", ()) and not reached_memory_recursion:
+            async with owner_sessionmaker() as writer:
+                await writer.delete(await writer.get(ChatSession, source_session))
+                await writer.commit()
+            reached_memory_recursion = True
+        return await validate(db, tenant_id, dependencies, **context)
+
+    monkeypatch.setattr(memory, "_validate_input_dependencies", delete_between_memory_checkpoints)
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        user = await db.get(User, n.user)
+        # 42184913 predates source_catalog and already reads these sources live.
+        catalog = {"source_catalog": True} if "source_catalog" in signature(group_source_read).parameters else {}
+        with group_source_read(batch_inputs=True, cache_authority=False, **catalog) as scope:
+            scope.browser_reader = user
+            with pytest.raises(ContentInputReceiptError) as denied:
+                await memory.validate_browser_memory_dependency(db, n.tenant, dependency, user=user)
+    assert reached_memory_recursion
+    assert denied.value.status_code == 403
+    assert denied.value.code == "explicit_memory_group_source_changed"
 
 
 async def test_directory_scope_recovers_platform_observer_and_checks_selected_tenant(

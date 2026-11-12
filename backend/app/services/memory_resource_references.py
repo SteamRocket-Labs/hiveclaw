@@ -165,11 +165,19 @@ async def validate_reference(db, tenant_id, dependency, *, user=None, runtime_re
                 ChatSession.tenant_id == tenant_id, ChatSession.agent_id == scope["agent_id"],
                 ChatSession.user_id == user.id)).outerjoin(User, User.id == user.id).options(*reader_columns(User)))).first()
         requester = facts[5] if facts is not None else None
-        if (requester is None or not requester.is_active or requester.tenant_id != tenant_id
-            or requester.id != scope["user_id"]):
+        if requester is None or requester.role == "platform_admin":
+            requester = await load_scoped_runtime_user(db, user.id, tenant_id=tenant_id)
+            facts = None
+        elif not requester.is_active or requester.tenant_id != tenant_id:
+            requester = None
+        if requester is None or requester.id != scope["user_id"]:
             raise ContentInputReceiptError("content_source_access_denied", "The original memory requester is unavailable.", 403)
-        await agent_access_from_facts(db, requester, facts)
-        sessions = [SimpleNamespace(id=uuid.UUID(row["id"]), audience_kind=row["audience_kind"]) for row in facts[6] or []]
+        sessions = None
+        if facts is None:
+            await check_agent_access(db, requester, scope["agent_id"])
+        else:
+            await agent_access_from_facts(db, requester, facts)
+            sessions = [SimpleNamespace(id=uuid.UUID(row["id"]), audience_kind=row["audience_kind"]) for row in facts[6] or []]
         await _private_sessions(db, tenant_id=tenant_id, agent_id=scope["agent_id"], user_id=requester.id,
             session_ids=session_ids, sessions=sessions)
         return

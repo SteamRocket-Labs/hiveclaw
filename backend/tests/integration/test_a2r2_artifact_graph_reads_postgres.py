@@ -452,3 +452,37 @@ async def test_skill_access_and_package_each_use_one_fresh_read_for_a_granted_re
                     await validate_skill_file_dependency(db, n.tenant, missing, user=user, runtime_request=None)
             assert unavailable.value.code == "content_source_access_denied"
             assert sum(row["statements"] for row in absent.values()) == 1, dict(absent)
+
+
+async def test_workspace_output_bookkeeping_stays_live_after_invocation_settlement(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker,  # noqa: F811
+):
+    from app.models.invocation_span import InvocationSpan
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.content_input_receipts import group_source_read, _input_row, _preload_execution_sources
+    from app.services.session_model_inputs import tool_result_source_hash
+    from app.services.session_semantic_history import _event_payload
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    n = native_workspace
+    _raw, invocation = await memory_call(n, app_user_sessionmaker, "write_file",
+        {"path": "workspace/settled-output.md", "content": "Retained governed output.\n"})
+    span_id = uuid.uuid5(invocation.id, "workspace-output-evidence")
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        invocation = await db.get(SessionToolInvocation, invocation.id, populate_existing=True)
+        assert invocation.result_event_id is not None
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        dependency = {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
+            "source_version": tool_result_source_hash(_event_payload(event))}
+        with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True):
+            await _preload_execution_sources(db, n.tenant, [dependency])
+            first = await _input_row(db, InvocationSpan, span_id)
+            assert first.metadata_json["native_content_receipts"]["status"] == "captured"
+            async with owner_sessionmaker() as writer:
+                row = await writer.get(InvocationSpan, span_id)
+                # The approved-execution writer can replace this bookkeeping
+                # after settle; the retained execution proof is unchanged.
+                row.metadata_json = {**row.metadata_json, "native_content_receipts": {"status": "unavailable"}}
+                await writer.commit()
+            second = await _input_row(db, InvocationSpan, span_id)
+            assert second.metadata_json["native_content_receipts"] == {"status": "unavailable"}

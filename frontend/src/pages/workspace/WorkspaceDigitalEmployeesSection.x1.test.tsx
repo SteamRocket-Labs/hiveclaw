@@ -32,7 +32,7 @@ function renderSection() {
 it('shows the localized default assistant name and role in the zh admin employee list', async () => {
   await i18n.changeLanguage('zh');
   useAuthStore.setState({ user: { id: 'admin-1', role: 'org_admin', tenant_id: 'tenant' } as never });
-  vi.mocked(agentApi.getHrAgent).mockResolvedValue(null);
+  vi.mocked(agentApi.getHrAgent).mockResolvedValue(null as never);
   vi.mocked(agentApi.list).mockResolvedValue([
     { id: 'assistant-1', name: 'My Assistant', role_description: "The user's assistant", owner_user_id: 'admin-1' },
     { id: 'weekly-1', name: '周报助手', role_description: '写周报', owner_user_id: 'admin-1' },

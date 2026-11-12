@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { runtimeStatusLabel } from './runtimeStatus';
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -20,6 +22,7 @@ import { assistantReplyForDisplay } from './CanonicalCardAssistantSupplement';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { toolOutputForDisplay } from './toolFailurePresentation';
+import { useAuthStore } from '../../stores';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import { isKeptResultStep, presentSystemStep } from './systemStepPresentation';
 import type {
@@ -166,6 +169,25 @@ function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
   return <IconTool size={size} stroke={2.1} />;
 }
 
+/** Open the colleague's conversation only when the member's own, already
+ * authority-filtered employee list contains it (no new permission logic). */
+function ColleagueConversationLink({ metadata }: { metadata: Record<string, unknown> }) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const agentId = typeof metadata.target_agent_id === 'string' ? metadata.target_agent_id : '';
+  const sessionId = typeof metadata.child_session_id === 'string' ? metadata.child_session_id : '';
+  const tenantId = localStorage.getItem('current_tenant_id')
+    || useAuthStore.getState().user?.tenant_id
+    || '';
+  const listed = queryClient.getQueryData<Array<{ id: string }>>(['agents', tenantId]) || [];
+  if (!agentId || !sessionId || !listed.some((agent) => agent.id === agentId)) return null;
+  return (
+    <p className="run-colleague-link">
+      <Link to={`/agents/${agentId}/sessions/${sessionId}`}>{t('agent.chat.disclosure.openColleagueConversation', 'Open this colleague\'s conversation')}</Link>
+    </p>
+  );
+}
+
 /** One plain line for raw provider text; never a wall of markdown. */
 function compactStepText(text: string, limit: number): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
@@ -257,7 +279,10 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   }
   const detailText = typeof step.details === 'string' ? step.details : '';
   if (detailText.includes('[REDACTED_SECRET]')) return <pre className="run-detail-pre"><PastedCredentialText content={detailText} /></pre>;
-  return detailText ? <MarkdownRenderer content={detailText} /> : null;
+  const colleagueLink = step.title === 'Delegation result' && step.systemEvent
+    ? <ColleagueConversationLink metadata={step.systemEvent.metadata} /> : null;
+  if (detailText) return <>{<MarkdownRenderer content={detailText} />}{colleagueLink}</>;
+  return colleagueLink;
 }
 
 function RunStepRow({ step, resultPreview }: { step: RunStepSnapshot; resultPreview: boolean }) {

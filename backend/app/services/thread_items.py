@@ -217,6 +217,7 @@ class CollaborationItemData(_ThreadModel):
     runtime_task_id: str | None = None
     child_session_id: str | None = None
     parent_session_id: str | None = None
+    target_agent_id: str | None = None
     target_agent_name: str | None = None
     team_id: str | None = None
     team_member_id: str | None = None
@@ -649,7 +650,10 @@ def _item_data(item_type: str, *, event_type: str, data: dict[str, Any]) -> dict
             "runtime_task_id": _text(data.get("runtime_task_id") or data.get("task_id")),
             "child_session_id": _text(data.get("child_session_id")),
             "parent_session_id": _text(data.get("parent_session_id")),
-            "target_agent_name": _text(data.get("target_agent_name") or data.get("child_agent_name")),
+            # The colleague's conversation link uses the id the event already
+            # carries (to_agent/child_agent_id); no new authority is granted.
+            "target_agent_id": _text(data.get("to_agent") or data.get("target_agent_id") or data.get("child_agent_id")),
+            "target_agent_name": _text(data.get("target_agent_name") or data.get("to_agent_name") or data.get("child_agent_name")),
             "team_id": _text(data.get("team_id")),
             "team_member_id": _text(data.get("team_member_id") or data.get("member_id")),
             "member_name": _text(data.get("member_name")),

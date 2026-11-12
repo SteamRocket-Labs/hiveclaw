@@ -2732,7 +2732,8 @@
           "scheduleStep": "定时任务",
           "planStep": "计划",
           "permissionRequest": "权限请求",
-          "runtimeEvent": "运行状态"
+          "runtimeEvent": "运行状态",
+          "delegationResult": "同事交回的结果"
         },
         "aggregate": {
           "files": "读取 {{count}} 个文件",
@@ -2749,7 +2750,8 @@
         "elapsedMinutes": "{{minutes}} 分钟",
         "elapsedMinutesSeconds": "{{minutes}} 分 {{seconds}} 秒",
         "memoryUnavailable": "暂时无法读取这部分历史对话，请稍后重试。",
-        "memoryPartial": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"
+        "memoryPartial": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。",
+        "openColleagueConversation": "查看这位同事的对话"
       },
       "artifacts": {
         "viewSource": "查看源码",

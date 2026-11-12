@@ -2732,7 +2732,8 @@
           "scheduleStep": "Scheduled task",
           "planStep": "Plan",
           "permissionRequest": "Permission request",
-          "runtimeEvent": "Activity"
+          "runtimeEvent": "Activity",
+          "delegationResult": "Result returned from a colleague"
         },
         "aggregate": {
           "files": "Read {{count}} files",
@@ -2749,7 +2750,8 @@
         "elapsedMinutes": "{{minutes}}m",
         "elapsedMinutesSeconds": "{{minutes}}m {{seconds}}s",
         "memoryUnavailable": "This part of the conversation history is temporarily unavailable. Please try again later.",
-        "memoryPartial": "Only some memories are available. Unavailable memories cannot support conclusions; please try again later."
+        "memoryPartial": "Only some memories are available. Unavailable memories cannot support conclusions; please try again later.",
+        "openColleagueConversation": "Open this colleague's conversation"
       },
       "artifacts": {
         "viewSource": "View source",

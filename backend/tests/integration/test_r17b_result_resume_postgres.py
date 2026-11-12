@@ -20,13 +20,20 @@ from tests.integration import test_web_chat_worker_restart_kernel_recovery as re
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-@pytest.mark.parametrize("entry", ["notification", "admission", "projection", "remote_reply"])
+@pytest.mark.parametrize(("entry", "published_before_read"), [
+    pytest.param("notification", False, id="notification"),
+    pytest.param("notification", True, id="notification_already_read"),
+    pytest.param("admission", True, id="admission"),
+    pytest.param("projection", False, id="projection"),
+    pytest.param("remote_reply", True, id="remote_reply"),
+])
 async def test_finished_result_round_and_completion_admission_do_not_deadlock(
     owner_sessionmaker,
     app_user_sessionmaker,
     monkeypatch,
     tmp_path,
     entry,
+    published_before_read,
 ):
     from app.services import chat_transcript, session_model_round, session_v2_persistence
     from app.agents import orchestrator
@@ -173,7 +180,7 @@ async def test_finished_result_round_and_completion_admission_do_not_deadlock(
             assert len(pages) == 1
             return pages
 
-        if entry != "projection":
+        if published_before_read:
             drained = await drain_projection()
             assert drained["delivered"] == 1, drained
             pages = await integration_pages()
@@ -192,7 +199,7 @@ async def test_finished_result_round_and_completion_admission_do_not_deadlock(
                 )
             )
             result = await db.get(ChatTranscriptEvent, invocation.result_event_id)
-            if entry == "projection":
+            if not published_before_read:
                 # The child has finished, but this concurrent projection is
                 # what publishes its result for the parent's later read.
                 assert (
@@ -201,6 +208,11 @@ async def test_finished_result_round_and_completion_admission_do_not_deadlock(
                 )
             else:
                 assert lifecycle.RESULT in result.metadata_json["v2_payload"]["content"]
+
+        if entry == "notification" and not published_before_read:
+            drained = await drain_projection()
+            assert drained["delivered"] == 1, drained
+            pages = await integration_pages()
 
         async def admit_completion():
             from app.models.agent import Agent
@@ -331,7 +343,21 @@ async def test_finished_result_round_and_completion_admission_do_not_deadlock(
                     )
                 )
             )
-            assert len(inputs) == (1 if entry in {"notification", "admission"} else 0)
+            # R19a: retain the notification/admission race for an unread result.
+            # A separately tested complete read only projects its notification;
+            # it must not queue a duplicate turn. Explicit admission still queues.
+            expected_inputs = int(entry == "admission" or (entry == "notification" and not published_before_read))
+            assert len(inputs) == expected_inputs
+            if entry == "notification" and published_before_read:
+                notices = list(await db.scalars(select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.session_id == seed["session_id"],
+                    ChatTranscriptEvent.event_type == "agent_task_notification")))
+                assert len(notices) == 1
+                assert notices[0].metadata_json["consumer"] == "session_projection"
+                resumed = list(await db.scalars(select(RuntimeTask).where(
+                    RuntimeTask.parent_agent_id == seed["agent_id"],
+                    RuntimeTask.metadata_json["integration_page_id"].astext == str(pages[0].id))))
+                assert resumed == []
             accepted = list(
                 await db.scalars(
                     select(ChatTranscriptEvent).where(
@@ -347,7 +373,8 @@ async def test_finished_result_round_and_completion_admission_do_not_deadlock(
                     accepted[0].metadata_json["v2_payload"]["runtime_metadata"]["source"]
                     == "runtime_result_integration"
                 )
-        print(f"R17B_CONCURRENT_RESULT_RESUME entry={entry}; completed; failures=0; completion_inputs={len(inputs)}")
+        print(f"R17B_CONCURRENT_RESULT_RESUME entry={entry}; published_before_read={published_before_read}; "
+            f"completed; failures=0; completion_inputs={len(inputs)}")
     finally:
         parent.release.set()
         child_client.release.set()

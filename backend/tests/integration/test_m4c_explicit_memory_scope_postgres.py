@@ -174,6 +174,9 @@ async def test_another_members_work_cannot_consume_private_explicit_memory(share
             current_user_id=n.foreign, query="release")
         assert "ORCHID_PRIVATE_MARKER" not in result, result
         return
+    # Every on-demand surface (search, load, raw file) must still withhold the
+    # other member's private memory body — A2m made these the only body routes.
+    assert "ORCHID_PRIVATE_MARKER" not in result, result
 
 
 @pytest.mark.parametrize("tool_name", ["update_memory", "retire_memory"])

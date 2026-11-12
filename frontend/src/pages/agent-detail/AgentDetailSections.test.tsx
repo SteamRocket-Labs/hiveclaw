@@ -4297,7 +4297,7 @@ describe('AgentDetail extracted sections', () => {
             allow_session_allowed: false,
           },
         },
-      ],
+      ] as never[],
       chatMessagesSessionId: 'session-1',
       runtimeSummary: null,
       agentPermissions: { scope_type: 'company', scope_ids: [], access_level: 'manage' },

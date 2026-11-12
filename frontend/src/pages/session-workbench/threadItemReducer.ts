@@ -215,7 +215,6 @@ function legacyItemData(itemType: ThreadItemType, eventType: string, data: Recor
         runtime_task_id: text(data.runtime_task_id || data.task_id),
         child_session_id: text(data.child_session_id),
         parent_session_id: text(data.parent_session_id),
-        target_agent_id: text(data.to_agent || data.target_agent_id || data.child_agent_id),
         target_agent_name: text(data.target_agent_name || data.to_agent_name || data.child_agent_name),
         team_id: text(data.team_id),
         team_member_id: text(data.team_member_id || data.member_id),

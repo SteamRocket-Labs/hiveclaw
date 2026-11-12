@@ -246,8 +246,7 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
       } catch {
         // Non-command steps show exactly what production shows (R11g /
         // X1-r2 ruling 2); per-tool member summaries are a later slice.
-        const trimmed = result.trim();
-        const lines = trimmed.split(/\r?\n/);
+        const lines = result.trim().split(/\r?\n/);
         return <p>{lines.map((line, index) => (
           <React.Fragment key={index}>
             {index > 0 && <br />}

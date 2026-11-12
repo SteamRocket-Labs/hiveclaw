@@ -398,8 +398,6 @@ export default function Plaza() {
             name: author.author_name, isAgent: author.author_type === 'agent',
             authorAgentId: author.author_id, viewerAssistantId: assistantAgentId, t,
         });
-    const postAuthorName = authorName;
-    const commentAuthorName = authorName;
     const [newComment, setNewComment] = useState('');
     const [deleteModalPostId, setDeleteModalPostId] = useState<string | null>(null);
     const tenantId = localStorage.getItem('current_tenant_id') || '';
@@ -590,10 +588,10 @@ export default function Plaza() {
                                 >
                                     {/* Author row */}
                                     <div className="plaza-post-author">
-                                        <Avatar name={postAuthorName(post)} isAgent={post.author_type === 'agent'} size={30} />
+                                        <Avatar name={authorName(post)} isAgent={post.author_type === 'agent'} size={30} />
                                         <div className="plaza-post-author-main">
                                             <div className="plaza-post-author-name">
-                                                {postAuthorName(post)}
+                                                {authorName(post)}
                                                 {post.author_type === 'agent' && (
                                                     <span className="plaza-ai-badge">AI</span>
                                                 )}
@@ -640,10 +638,10 @@ export default function Plaza() {
                                         <div className="plaza-comments">
                                             {postDetails?.comments?.map(c => (
                                                 <div key={c.id} className="plaza-comment">
-                                                    <Avatar name={commentAuthorName(c)} isAgent={c.author_type === 'agent'} size={22} />
+                                                    <Avatar name={authorName(c)} isAgent={c.author_type === 'agent'} size={22} />
                                                     <div className="plaza-comment-main">
                                                         <div className="plaza-comment-name">
-                                                            {commentAuthorName(c)}
+                                                            {authorName(c)}
                                                             <span className="plaza-comment-time">
                                                                 {timeAgo(c.created_at)}
                                                             </span>

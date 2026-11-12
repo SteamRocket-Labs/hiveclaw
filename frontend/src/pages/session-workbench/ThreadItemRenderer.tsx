@@ -43,12 +43,6 @@ const APPROVAL_ARGUMENT_SUMMARIES: Record<string, Array<[string, string]>> = {
 };
 /** Argument keys whose text is never cut on the card (X1-r2 ruling 1). */
 const UNTRUNCATED_APPROVAL_FIELDS = new Set(['body', 'content']);
-/** The member must see the caution regardless of what the rows show. */
-const ALWAYS_CAUTION_TOOLS = new Set(['execute_code', 'run_skill_tool']);
-/** Tools that may trade the caution for the calm sentence once every
- * argument is shown on the card. Sends and writes stay cautious — an
- * outward or mutating effect is exactly what the caution names. */
-const PROCEEDS_WHEN_COVERED = new Set(['plaza_create_post']);
 
 // Argument keys that carry a member label (sessionWorkbench.threadItem.field.*).
 // Rows outside this set are internal machinery and stay off the member card;
@@ -108,13 +102,11 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
       ? approvalArguments as Record<string, unknown> : null;
     const summaryMap = APPROVAL_ARGUMENT_SUMMARIES[data.tool_name || ''];
     const proposalDetails: Detail[] = [];
-    const shownKeys = new Set<string>();
     if (args && summaryMap) {
       for (const [label, argKey] of summaryMap) {
         const raw = argKey === 'workspace-dir' ? 'workspace/' : args[argKey];
         const text = Array.isArray(raw) ? raw.map(String).join(', ') : raw;
         if (typeof text !== 'string' || !text) continue;
-        shownKeys.add(argKey);
         proposalDetails.push({
           label,
           value: !UNTRUNCATED_APPROVAL_FIELDS.has(label) && text.length > 240
@@ -123,31 +115,26 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
         });
       }
     }
-    // Every argument the request carries must appear on the card before the
-    // calm sentence may replace the caution (X1-r2 ruling 1).
-    const coversArguments = Boolean(summaryMap) && Boolean(args)
-      && Object.entries(args as Record<string, unknown>).every(([key, value]) =>
-        value === undefined || value === null || value === '' || shownKeys.has(key));
+    // The calm sentence only replaces the caution for an internally scoped
+    // plaza post whose every non-empty argument is on the card; sends,
+    // writes, deletes and creation stay cautious — their effect is outward
+    // or mutating, exactly what the caution names (X1-r3 ruling 9).
     const caution = data.destructive
       ? t('sessionWorkbench.threadItem.value.destructive', 'Irreversible action')
       : data.tool_name === 'run_command' && isSimpleWorkspaceRead((args || data.arguments)?.command)
         ? t('sessionWorkbench.threadItem.value.reversible', 'Reversible or read-only')
-        // Commands stay cautious unless they are simple reads (base rule);
-        // the calm sentence only replaces the caution where every argument
-        // is on the card and the action is internally scoped (X1-r2 ruling 1).
-        : data.tool_name === 'run_command'
-          || ALWAYS_CAUTION_TOOLS.has(data.tool_name || '')
-          || !(PROCEEDS_WHEN_COVERED.has(data.tool_name || '') && coversArguments)
-          ? t('sessionWorkbench.threadItem.value.approvalUncertain', 'This step may change content, read sensitive information or affect areas outside the workspace; review exactly what will run before approving.')
-          : t('sessionWorkbench.threadItem.value.approvalProceeds', 'It runs only after you approve; the outcome returns to this conversation.');
-    const impact = caution;
+        : data.tool_name === 'plaza_create_post' && Boolean(args)
+          && Object.entries(args as Record<string, unknown>)
+            .every(([key, value]) => key === 'content' || value === undefined || value === null || value === '')
+          ? t('sessionWorkbench.threadItem.value.approvalProceeds', 'It runs only after you approve; the outcome returns to this conversation.')
+          : t('sessionWorkbench.threadItem.value.approvalUncertain', 'This step may change content, read sensitive information or affect areas outside the workspace; review exactly what will run before approving.');
     // The action already leads the member sentence; a repeated 工具 row adds
     // internal vocabulary without new information (X1 run 14/15).
     return [
       { label: 'expires', value: expires ? new Date(expires).toLocaleString(language) : null },
       { label: 'impact', value: data.tool_name === 'create_employee_from_request'
-        ? `${impact} · ${t('sessionWorkbench.threadItem.value.employeePermanent', 'The employee can be deactivated, but cannot be deleted.')}`
-        : impact },
+        ? `${caution} · ${t('sessionWorkbench.threadItem.value.employeePermanent', 'The employee can be deactivated, but cannot be deleted.')}`
+        : caution },
       ...proposalDetails,
       ...memberDetails(userAction?.details || []).filter(
         (detail) => !proposalDetails.some((proposal) => proposal.label === detail.label),

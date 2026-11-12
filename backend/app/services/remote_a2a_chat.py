@@ -503,11 +503,12 @@ def reply_text(packet):
 async def project_reply(db, *, task, state, operation, outbox_id):
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
-    from app.services.chat_transcript import append_session_event
+    from app.services.chat_transcript import append_session_event, lock_transcript_session
     from app.services.session_human_input import mark_bound_inputs_applied
 
     if operation["phase"] != "received" or state.get("error_code"):
         return
+    await lock_transcript_session(db, session_id=uuid.UUID(task.parent_session_id))
     outbox = await db.get(RuntimeNotificationOutbox, outbox_id)
     dependency = {
         "source_kind": "remote_a2a_result",

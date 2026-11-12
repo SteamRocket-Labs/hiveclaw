@@ -1,10 +1,14 @@
-"""LLM provider error classification and user-facing policy."""
+"""Provider error classification and runtime persistence failure boundaries."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
 
+from asyncpg import PostgresError
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.database import PostgresTextContractError
 from app.services.runtime_display_status import RUNTIME_LIMIT_MESSAGES
 
 
@@ -27,6 +31,11 @@ class LLMErrorClassification:
     user_message: str
     requires_user_decision: bool = False
     retryable: bool = False
+
+
+def is_runtime_persistence_error(exc: Exception) -> bool:
+    """Keep database failures out of provider classification and fallback."""
+    return isinstance(exc, (SQLAlchemyError, PostgresError, PostgresTextContractError))
 
 
 def classify_llm_error(exc: Exception) -> LLMErrorClassification:

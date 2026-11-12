@@ -61,7 +61,7 @@ class _FakeDB:
 
     async def execute(self, *_args, **_kwargs):
         from types import SimpleNamespace
-        return SimpleNamespace(scalars=lambda: [])
+        return SimpleNamespace(scalars=lambda: [], all=lambda: [])
 
     def add(self, row):
         self.added.append(row)

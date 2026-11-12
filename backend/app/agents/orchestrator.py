@@ -2820,6 +2820,9 @@ async def _project_delegation_completion_to_parent(
                 from app.models.chat_transcript_event import ChatTranscriptEvent
 
                 if isinstance(db, AsyncSession):
+                    from app.services.chat_transcript import lock_transcript_session
+
+                    await lock_transcript_session(db, session_id=parent_session_uuid)
                     parent_session = await db.scalar(
                         select(ChatSession.id)
                         .where(

@@ -1233,6 +1233,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     build_tool_call_event = support.build_tool_call_event
     clear_execution_identity = support.clear_execution_identity
     classify_llm_error = support.classify_llm_error
+    is_runtime_persistence_error = support.is_runtime_persistence_error
     get_execution_identity = support.get_execution_identity
     hashlib = support.hashlib
     json = support.json
@@ -2753,6 +2754,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             _build_error_result, user_msg, accumulated_tokens, error_classification, delivery_state
                         )
                     except Exception as exc:
+                        if is_runtime_persistence_error(exc):
+                            raise
                         logger.error(
                             "[Kernel] Unexpected error provider=%s model=%s round=%s: %s: %s",
                             getattr(active_model, "provider", "?"),

@@ -9,9 +9,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
 
-from app.database import PostgresTextContractError
 from app.kernel.contracts import (
     ExecutionAuthorityUnavailable,
     ExecutionIdentityRef,
@@ -24,6 +23,7 @@ from app.runtime.invoker import AgentInvocationRequest
 from app.models.runtime_task import RuntimeTask
 from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase
 from app.services.llm_client import LLMError
+from app.services.llm_error_policy import is_runtime_persistence_error
 from app.services.runtime_budget_failover import runtime_budget_model_notice, runtime_budget_payload
 from app.services.session_semantic_history import SessionSemanticHistoryUnavailable
 
@@ -41,7 +41,7 @@ def _runtime_exception_failure(exc: Exception) -> RuntimeExceptionFailure:
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
     if isinstance(exc, ToolLifecyclePersistenceError):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
-    if isinstance(exc, (SQLAlchemyError, PostgresTextContractError)):
+    if is_runtime_persistence_error(exc):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
     if isinstance(exc, LLMError):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PROVIDER_ERROR.value)

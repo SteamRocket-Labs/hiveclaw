@@ -135,7 +135,7 @@ async def test_parent_memory_is_attested_only_for_exact_same_member_instruction(
                 return ChatSession(audience_kind="private")
 
         async def execute(self, query):
-            return NS(scalars=lambda: [])
+            return NS(scalars=lambda: [], all=lambda: [])
 
         def add(self, row):
             self.added.append(row)

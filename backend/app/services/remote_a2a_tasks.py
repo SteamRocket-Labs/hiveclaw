@@ -594,6 +594,10 @@ async def _record(db, task, state):
     """Preserve the full remote observation and original-work return atomically."""
     from app.services import remote_a2a_observation
 
+    if state.get("dispatch_kind") == "session":
+        from app.services.chat_transcript import lock_transcript_session
+
+        await lock_transcript_session(db, session_id=uuid.UUID(task.parent_session_id))
     operation = state["operations"][-1]
     task.metadata_json = {**task.metadata_json, "remote_a2a": deepcopy(state)}
     if task.status in TERMINAL or task.status == "needs_reconciliation":

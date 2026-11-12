@@ -47,7 +47,11 @@ from app.services.chat_message_parts import (
     build_tool_group_activation_event,
 )
 from app.services.chat_artifact_delivery import tool_session_write_paths
-from app.services.llm_error_policy import classify_llm_error, should_surface_without_model_fallback
+from app.services.llm_error_policy import (
+    classify_llm_error,
+    is_runtime_persistence_error,
+    should_surface_without_model_fallback,
+)
 from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
 from app.services.runtime_display_status import RUNTIME_LIMIT_MESSAGES
 from app.services.llm_client import LLMError, LLMMessage, LLMResponse, STREAM_RETRY_TOMBSTONE

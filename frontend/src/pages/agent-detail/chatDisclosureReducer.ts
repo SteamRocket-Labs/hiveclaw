@@ -46,6 +46,10 @@ export type RunStepStatus =
 export type RunStepPresentation = 'process' | 'tool_history' | 'surface' | 'external';
 
 export interface RunStepSnapshot {
+  /** This step's text is byte-identical to the final answer below the block;
+   * renderers skip the repeat while step counts keep the record. */
+  repeatsAnswer?: boolean;
+
   id: string;
   toolCallId?: string | null;
   kind: RunStepKind;
@@ -353,7 +357,21 @@ function eventTitle(message: AgentChatMessage): string {
     return 'Runtime event';
   }
   if (message.eventType === 'child_session' && String(message.eventReason || '').startsWith('delegation_')) {
-    return 'Delegation update';
+    // The direction matters: a completed/blocked/failed receipt came BACK
+    // from the colleague; only started/progress updates go the other way.
+    // The event's terminal status decides (X1-r3 ruling 6): delegation_terminal
+    // covers every non-completed terminal reason (failed/killed; skipped
+    // projects to blocked) and a contract mismatch projects to blocked —
+    // confirmed against direct_invocation_terminal_boundary_processor.py and
+    // orchestrator.py, which never emit a completed status for these. The
+    // reason literals stay as a fallback for events that carry no status.
+    const terminalStatus = String(message.eventStatus || '').toLowerCase();
+    return terminalStatus === 'completed'
+      ? 'Delegation result'
+      : ['blocked', 'failed', 'cancelled', 'canceled', 'killed'].includes(terminalStatus)
+        || ['delegation_blocked', 'delegation_failed'].includes(String(message.eventReason))
+        ? 'Delegation unfinished'
+        : 'Delegation update';
   }
   return message.eventTitle || 'Runtime event';
 }

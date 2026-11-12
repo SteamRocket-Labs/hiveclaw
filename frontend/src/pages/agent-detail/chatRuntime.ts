@@ -1613,7 +1613,15 @@ function normalizeArtifactPart(part: any): ChatArtifactPart | null {
   const path = typeof part.path === 'string' ? part.path.trim() : '';
   if (!path) return null;
   const fallbackName = path.split('/').filter(Boolean).pop() || path;
-  const size = typeof part.size === 'number' && Number.isFinite(part.size) ? part.size : undefined;
+  // Uploads replayed from thread items may carry the size as a string or as
+  // size_bytes; the card shows 「csv · 956 B」 at send and must keep it after a
+  // reload (X1 run 14).
+  const rawSize = part.size ?? part.size_bytes ?? part.file_size;
+  const size = typeof rawSize === 'number' && Number.isFinite(rawSize)
+    ? rawSize
+    : typeof rawSize === 'string' && rawSize.trim() !== '' && Number.isFinite(Number(rawSize))
+      ? Number(rawSize)
+      : undefined;
   return {
     id: typeof part.id === 'string' ? part.id : (typeof part.artifact_id === 'string' ? part.artifact_id : undefined),
     name: typeof part.name === 'string' && part.name.trim() ? part.name.trim() : fallbackName,

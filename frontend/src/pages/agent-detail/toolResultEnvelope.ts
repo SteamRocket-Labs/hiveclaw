@@ -1,3 +1,5 @@
+import i18n from 'i18next';
+
 export interface CreateEmployeeToolResult {
   agentId: string;
   agentName: string | null;
@@ -301,12 +303,14 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
 function buildPreviewDisplayResult(preview: HrPreviewToolResult): string {
   if (preview.message) return preview.message;
   if (preview.authorizationMode === 'policy_direct') {
-    return preview.name ? `Employee creation requested for ${preview.name}.` : 'Employee creation requested.';
+    return preview.name
+      ? i18n.t('agent.chat.toolResults.previewRequestedFor', { defaultValue: 'Employee creation requested for {{name}}.', name: preview.name })
+      : i18n.t('agent.chat.toolResults.previewRequested', { defaultValue: 'Employee creation requested.' });
   }
   if (preview.name) {
-    return `Blueprint preview ready for ${preview.name}.`;
+    return i18n.t('agent.chat.toolResults.blueprintReadyFor', { defaultValue: 'Blueprint preview ready for {{name}}.', name: preview.name });
   }
-  return 'Agent blueprint preview ready.';
+  return i18n.t('agent.chat.toolResults.blueprintReady', { defaultValue: 'Agent blueprint preview ready.' });
 }
 
 function parsePlanProposalResult(rawResult: unknown): PlanProposalToolMeta | null {
@@ -338,9 +342,9 @@ function parsePlanProposalResult(rawResult: unknown): PlanProposalToolMeta | nul
 
 function buildPlanProposalDisplayResult(meta: PlanProposalToolMeta): string {
   if (meta.status === 'planning_failed') {
-    return meta.summary || 'Plan failed validation and needs revision.';
+    return meta.summary || i18n.t('agent.chat.toolResults.planFailedFallback', { defaultValue: 'Plan failed validation and needs revision.' });
   }
-  return meta.summary || 'Plan created — confirm before this autonomous work can begin.';
+  return meta.summary || i18n.t('agent.chat.toolResults.planCreatedFallback', { defaultValue: 'Plan created — confirm before this autonomous work can begin.' });
 }
 
 function normalizeNumber(value: unknown): number | null {
@@ -398,8 +402,8 @@ function parseDynamicWorkflowProposalResult(rawResult: unknown): DynamicWorkflow
 
 function buildDynamicWorkflowProposalDisplayResult(meta: DynamicWorkflowProposalToolMeta): string {
   return meta.goal
-    ? `Dynamic Workflow proposal ready: ${meta.goal}`
-    : 'Dynamic Workflow proposal ready.';
+    ? i18n.t('agent.chat.toolResults.workflowProposalReadyGoal', { defaultValue: 'Dynamic Workflow proposal ready: {{goal}}', goal: meta.goal })
+    : i18n.t('agent.chat.toolResults.workflowProposalReady', { defaultValue: 'Dynamic Workflow proposal ready.' });
 }
 
 function parseWorkflowPreviewResult(rawResult: unknown): WorkflowPreviewToolMeta | null {
@@ -535,7 +539,7 @@ export function normalizeToolCallResult(toolName: string | undefined, rawResult:
   if (toolName === 'delegate_to_agent') {
     const result = parseStructuredToolPayload(rawResult);
     if (result?.ok === true && typeof result.first_task_draft_id === 'string' && typeof result.runtime_task_id === 'string') {
-      return { displayResult: 'Recorded first task dispatched.', createdAgentId: null, raw,
+      return { displayResult: i18n.t('agent.chat.toolResults.firstTaskDispatched', { defaultValue: 'Recorded first task dispatched.' }), createdAgentId: null, raw,
         toolMeta: { kind: 'employee_first_task', blueprintId: result.first_task_draft_id, runtimeTaskId: result.runtime_task_id } };
     }
   }
@@ -568,8 +572,8 @@ export function normalizeToolCallResult(toolName: string | undefined, rawResult:
   if (workflowPreview) {
     return {
       displayResult: workflowPreview.confirmationRequired
-        ? 'Workflow preview ready — review and confirm this exact run.'
-        : 'Workflow preview ready.',
+        ? i18n.t('agent.chat.toolResults.workflowPreviewConfirm', { defaultValue: 'Workflow preview ready — review and confirm this exact run.' })
+        : i18n.t('agent.chat.toolResults.workflowPreviewReady', { defaultValue: 'Workflow preview ready.' }),
       createdAgentId: null,
       raw,
       toolMeta: workflowPreview,

@@ -7,6 +7,8 @@ const TOOL_TITLE_KEY: Record<string, string> = {
   Working: 'agent.chat.disclosure.working',
   'Waiting for input': 'agent.chat.disclosure.waiting',
   'Delegation update': 'agent.chat.disclosure.toolTitle.delegationStep',
+  'Delegation result': 'agent.chat.disclosure.toolTitle.delegationResult',
+  'Delegation unfinished': 'agent.chat.disclosure.toolTitle.delegationUnfinished',
   'Loading tools': 'agent.chat.disclosure.toolTitle.loadingTools',
   'Read file': 'agent.chat.disclosure.toolTitle.readFile',
   'Write file': 'agent.chat.disclosure.toolTitle.writeFile',

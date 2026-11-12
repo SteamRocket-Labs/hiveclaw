@@ -241,7 +241,12 @@
         "target": "Target",
         "query": "Query",
         "url": "URL",
-        "title": "Title"
+        "title": "Title",
+        "content": "Content",
+        "code": "Code",
+        "message": "Message",
+        "cc": "Cc",
+        "attachments": "Attachments"
       },
       "value": {
         "success": "success",
@@ -250,8 +255,9 @@
         "oneAction": "one action",
         "destructive": "destructive",
         "reversible": "reversible or read-only",
-        "approvalUncertain": "May modify content, read sensitive information, or affect areas outside the workspace",
-        "employeePermanent": "The employee can be deactivated, but cannot be deleted."
+        "approvalUncertain": "This step may change content, read sensitive information or affect areas outside the workspace; review exactly what will run before approving.",
+        "employeePermanent": "The employee can be deactivated, but cannot be deleted.",
+        "approvalProceeds": "It runs only after you approve; the outcome returns to this conversation."
       },
       "inspectTechnicalDetails": "Inspect technical details",
       "operatorOnly": "Technical details are available only in Operator View.",
@@ -496,7 +502,7 @@
       "sendMessage": "Send a message",
       "sendFile": "Send a file",
       "browser": "Operate a web page",
-      "plazaPost": "Publish a post",
+      "plazaPost": "Publish a post to the company plaza",
       "plazaComment": "Comment on a post",
       "feishuDoc": "Use Feishu documents",
       "feishuSheet": "Use Feishu spreadsheets",
@@ -566,6 +572,7 @@
     "actionFailed": "Could not complete this action. Please try again.",
     "title": "My Assistant",
     "role": "The user's assistant",
+    "memberRole": "A member's personal assistant",
     "loading": "Loading your assistant",
     "setupByAdmin": "Ask your company admin to set up an assistant.",
     "connectionFailed": "Could not reach your assistant. Please try again.",
@@ -599,7 +606,9 @@
     "identity": "Employee",
     "workspaceMissing": "The employee workspace is not ready",
     "historyKept": "Earlier conversations are kept",
-    "legacyUnresolved": "No previous assistant binding could be confirmed"
+    "legacyUnresolved": "No previous assistant binding could be confirmed",
+    "ownerLabel": "{{owner}}'s assistant",
+    "neutralLabel": "Assistant"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -2607,7 +2616,7 @@
         "waitingForRequester": "Waiting for the original requester to decide.",
         "applying": "Applying decision…",
         "reconcileRequired": "The tool outcome needs review before this work can continue.",
-        "fullArguments": "Full parameters"
+        "fullArguments": "See exactly what will run"
       },
       "actions": {
         "like": "Like",
@@ -2735,7 +2744,9 @@
           "scheduleStep": "Scheduled task",
           "planStep": "Plan",
           "permissionRequest": "Permission request",
-          "runtimeEvent": "Activity"
+          "runtimeEvent": "Activity",
+          "delegationResult": "Result returned from a colleague",
+          "delegationUnfinished": "The colleague did not finish this"
         },
         "aggregate": {
           "files": "Read {{count}} files",
@@ -2752,7 +2763,8 @@
         "elapsedMinutes": "{{minutes}}m",
         "elapsedMinutesSeconds": "{{minutes}}m {{seconds}}s",
         "memoryUnavailable": "This part of the conversation history is temporarily unavailable. Please try again later.",
-        "memoryPartial": "Only some memories are available. Unavailable memories cannot support conclusions; please try again later."
+        "memoryPartial": "Only some memories are available. Unavailable memories cannot support conclusions; please try again later.",
+        "openColleagueConversation": "Open this colleague's conversation"
       },
       "artifacts": {
         "viewSource": "View source",
@@ -2899,7 +2911,17 @@
         "provisioningProgress": "Provisioning progress",
         "retryingProvisioning": "Retrying…",
         "retryProvisioning": "Retry provisioning",
-        "selectAndPreview": "Select and preview"
+        "selectAndPreview": "Select and preview",
+        "previewRequestedFor": "Employee creation requested for {{name}}.",
+        "previewRequested": "Employee creation requested.",
+        "blueprintReadyFor": "Blueprint preview ready for {{name}}.",
+        "blueprintReady": "Agent blueprint preview ready.",
+        "planFailedFallback": "Plan failed validation and needs revision.",
+        "planCreatedFallback": "Plan created — confirm before this autonomous work can begin.",
+        "workflowProposalReadyGoal": "Dynamic Workflow proposal ready: {{goal}}",
+        "workflowProposalReady": "Dynamic Workflow proposal ready.",
+        "workflowPreviewConfirm": "Workflow preview ready — review and confirm this exact run.",
+        "workflowPreviewReady": "Workflow preview ready."
       },
       "workLedger": {
         "title": "Work in progress",
@@ -4941,7 +4963,13 @@
     "handoverKnowledge": "Uploaded knowledge",
     "handoverWork": "Unfinished work",
     "handoverSchedules": "Schedules to review before resuming",
-    "handoverCredentials": "Personal connections and tool keys are revoked and are not passed to the receiving member."
+    "handoverCredentials": "Personal connections and tool keys are revoked and are not passed to the receiving member.",
+    "providerWechatPersonal": "WeChat",
+    "providerFeishu": "Feishu",
+    "providerTelegram": "Telegram",
+    "providerDingtalk": "DingTalk",
+    "providerSlack": "Slack",
+    "providerWecom": "WeCom"
   },
   "account": {
     "title": "Account Settings",

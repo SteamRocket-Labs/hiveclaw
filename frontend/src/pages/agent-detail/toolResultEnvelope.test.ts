@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+// The envelope resolves localized fallbacks through the shared instance.
+import '../../i18n';
+
 import {
   normalizeToolCallResult,
   parseCreateEmployeeToolResult,

@@ -848,7 +848,8 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps.map((step) => [step.kind, step.title])).toEqual([
       ['a2a', 'Delegation step'],
       ['subagent', 'Subagent step'],
-      ['a2a', 'Delegation update'],
+      // X1: a completed delegation receipt reads as coming back, not going out.
+      ['a2a', 'Delegation result'],
     ]);
   });
 
@@ -1034,5 +1035,35 @@ describe('one approved action, one row (B2 r3)', () => {
     // An abort with no successor (nothing re-issued) keeps its row.
     const orphan = buildRunTimelineFromMessages([messages[0]], { turnStartedAt: '2026-11-04T12:00:01Z' });
     expect(orphan.steps).toHaveLength(1);
+  });
+});
+
+describe('chatDisclosureReducer delegation terminal titles (X1-r3 ruling 6)', () => {
+  it.each([
+    // delegation_terminal arrives for every non-completed terminal reason
+    // (failed/killed; skipped projects to blocked); a contract mismatch
+    // projects to blocked. Their statuses decide, not new reason literals.
+    ['delegation_terminal', 'failed'],
+    ['delegation_terminal', 'killed'],
+    ['delegation_artifact_contract_mismatch', 'blocked'],
+  ])('%s with status %s reads as the colleague not finishing', (reason, status) => {
+    const timeline = buildRunTimelineFromMessages([
+      { role: 'event', content: '同事没有完成这项工作。', eventType: 'child_session',
+        eventStatus: status, eventReason: reason } as AgentChatMessage,
+    ]);
+    expect(timeline.steps[0].title).toBe('Delegation unfinished');
+  });
+
+  it('a completed delegation and a started delegation keep their titles', () => {
+    const completed = buildRunTimelineFromMessages([
+      { role: 'event', content: 'done', eventType: 'child_session',
+        eventStatus: 'completed', eventReason: 'delegation_completed' } as AgentChatMessage,
+    ]);
+    const started = buildRunTimelineFromMessages([
+      { role: 'event', content: 'started', eventType: 'child_session',
+        eventStatus: 'running', eventReason: 'delegation_started' } as AgentChatMessage,
+    ]);
+    expect(completed.steps[0].title).toBe('Delegation result');
+    expect(started.steps[0].title).toBe('Delegation update');
   });
 });

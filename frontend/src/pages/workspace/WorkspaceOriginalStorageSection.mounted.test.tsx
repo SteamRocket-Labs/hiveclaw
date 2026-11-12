@@ -54,7 +54,8 @@ async function mount(locale = 'en') {
   await i18n.init({ lng: locale, resources: { en: { translation: en }, zh: { translation: zh } }, interpolation: { escapeValue: false } });
   const view = (tenant: string) => <I18nextProvider i18n={i18n}><WorkspaceStorageSection selectedTenantId={tenant} /></I18nextProvider>;
   const mounted = render(view('company-a'));
-  fireEvent.click(await screen.findByRole('button', { name: locale === 'en' ? 'Manage original attachments' : '管理原件' }));
+  // X1: the button label dropped the internal word 原件.
+  fireEvent.click(await screen.findByRole('button', { name: locale === 'en' ? 'Manage original attachments' : '管理原始文件' }));
   return { ...mounted, view };
 }
 beforeEach(() => {

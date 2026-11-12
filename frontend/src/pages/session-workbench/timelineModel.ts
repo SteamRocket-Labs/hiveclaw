@@ -6,8 +6,10 @@ import {
   buildRunTimelineFromMessages,
   isAssistantAnswer as isRenderableAssistantAnswer,
   isDisclosureStepMessage,
+  type RunStepSnapshot,
   type RunTimelineSnapshot,
 } from '../agent-detail/chatDisclosureReducer';
+import { assistantReplyForDisplay } from '../agent-detail/CanonicalCardAssistantSupplement';
 import {
   agentChatMessageRunId as messageRunId,
   isSameSessionRunId,
@@ -1638,15 +1640,47 @@ function buildRunCell(
   );
   const runId = messageRunId(answer?.message)
     ?? visibleSourceMessages.map((entry) => messageRunId(entry.message)).find((value): value is string => Boolean(value));
+  // The final answer renders as its own message right below the block; an
+  // in-run prose copy with the same bytes is marked so the renderer skips the
+  // repeat while the step still counts toward the block's own records.
+  const markedSteps = answer
+    ? markStepsRepeatingAnswer(timeline.steps, answer.message)
+    : timeline.steps;
   return {
     kind: 'active_run',
     id: `run-${runIndex}-${sourceMessages[0]?.index ?? answer?.index ?? 0}`,
     ...(runId ? { runId } : {}),
     timeline: answer
-      ? { ...timeline, answerMessageId: messageId(answer.message, `assistant-${answer.index}`) }
+      ? {
+          ...timeline,
+          steps: markedSteps,
+          answerMessageId: messageId(answer.message, `assistant-${answer.index}`),
+        }
       : timeline,
     sourceMessages: visibleSourceMessages,
   };
+}
+
+/** Mark only the run's last assistant_text prose step whose display text is
+ * byte-identical to the final answer. Commentary, report_progress notes and
+ * anything carrying a toolCallId stay visible even if the text matches
+ * (X1-r2 ruling 3). When a later identical assistant_text arrives, the
+ * earlier copy's flag is cleared so only the final copy hides
+ * (X1-r3 ruling 10 note 2). */
+function markStepsRepeatingAnswer(steps: RunStepSnapshot[], answer: AgentChatMessage): RunStepSnapshot[] {
+  const answerText = assistantReplyForDisplay(answer.content || '').trim();
+  if (!answerText) return steps;
+  let lastIndex = -1;
+  steps.forEach((step, index) => {
+    if (step.kind === 'prose' && !step.toolCallId) lastIndex = index;
+  });
+  if (lastIndex < 0) return steps;
+  const last = steps[lastIndex];
+  const lastText = assistantReplyForDisplay(typeof last.details === 'string' ? last.details : '').trim();
+  if (lastText !== answerText) return steps;
+  return steps.map((step, index) => (index === lastIndex
+    ? { ...step, repeatsAnswer: true }
+    : step.repeatsAnswer ? { ...step, repeatsAnswer: false } : step));
 }
 
 function hasOpenRunCell(cells: ThreadTimelineCell[]): boolean {
@@ -1856,6 +1890,17 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
     if (!runCell) return false;
     runCell.sourceMessages.push({ message, index });
     runCell.timeline.steps.push(...buildRunTimelineFromMessages([message]).steps);
+    if (runCell.timeline.answerMessageId) {
+      const answered = messages
+        .map((source, index) => ({ message: source, index }))
+        .find(({ message, index }) => (
+          isRenderableAssistantAnswer(message)
+          && messageId(message, `assistant-${index}`) === runCell.timeline.answerMessageId
+        ));
+      if (answered) {
+        runCell.timeline.steps = markStepsRepeatingAnswer(runCell.timeline.steps, answered.message);
+      }
+    }
     runCell.timeline.summary = buildRunAggregateSummary(runCell.timeline.steps);
     return true;
   };

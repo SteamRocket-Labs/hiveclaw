@@ -4,6 +4,17 @@ import { useTranslation } from 'react-i18next';
 import type { ExternalPrincipal } from '../api/domains/externalPrincipals';
 import './ExternalPrincipalBindingsPanel.css';
 
+// Plain channel names for members/admins; the raw provider code stays in the
+// title/data-provider attributes for support work.
+const PROVIDER_LABEL_KEYS: Record<string, string> = {
+  wechat_personal: 'userManagement.providerWechatPersonal',
+  feishu: 'userManagement.providerFeishu',
+  telegram: 'userManagement.providerTelegram',
+  dingtalk: 'userManagement.providerDingtalk',
+  slack: 'userManagement.providerSlack',
+  wecom: 'userManagement.providerWecom',
+};
+
 export interface BindableUser {
   id: string;
   username: string;
@@ -61,7 +72,13 @@ export default function ExternalPrincipalBindingsPanel({
             return (
               <div className="external-principal-row" key={principal.id}>
                 <div className="external-principal-identity">
-                  <span className="external-principal-provider">{principal.provider}</span>
+                  <span
+                    className="external-principal-provider"
+                    data-provider={principal.provider}
+                    title={principal.provider}
+                  >{PROVIDER_LABEL_KEYS[principal.provider.trim().toLowerCase()]
+                    ? t(PROVIDER_LABEL_KEYS[principal.provider.trim().toLowerCase()])
+                    : principal.provider}</span>
                   <strong>{principal.display_name}</strong>
                   <span className="external-principal-subject">{principal.subject_id}</span>
                 </div>

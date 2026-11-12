@@ -1645,7 +1645,9 @@ async def _claim_canonical_hr_blueprint(
             "Use approved company model and private native defaults; no extra installs, sharing, credentials or routines. "
             "Model owns interpretation: ordinary task requests use existing employees or temporary helpers instead. "
             "Only include first_task when the user explicitly requested that work; it is dispatched once after readiness. "
-            "Missing authority/defaults returns a recoverable blocker. In the member-facing reply, use the employee's name and plain-language readiness; do not repeat internal identifiers, status codes, or A2A terminology, but retain them for subsequent tool calls."
+            "Missing authority/defaults returns a recoverable blocker. In the member-facing reply, use the employee's name and plain-language readiness; do not repeat internal identifiers, status codes, or A2A terminology, but retain them for subsequent tool calls. "
+            "The blueprint fields (name, role_description, core_outputs, boundaries, first_task) are shown to the member on the creation card: "
+            "write them in the member's language in plain words (for example the employee's file space is 「工作区」, never \"workspace\"), without internal identifiers or tool names."
         ),
         parameters={
             "type": "object",

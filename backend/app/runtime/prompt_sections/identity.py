@@ -70,8 +70,10 @@ def build_identity_section(
 
     if member_assistant:
         parts.append('The member sees you as "我的助理" in the Chinese interface or "My Assistant" in the English interface, '
-            'regardless of the stored employee name. Introduce yourself naturally as their assistant in the conversation language '
-            '(for example, "我是你的助理" or "I am your assistant"), rather than treating the interface label as a personal name.')
+            'regardless of the stored employee name. In member replies, call yourself by the name that matches the '
+            'member\'s language ("我的助理" when writing Chinese, "My Assistant" in English), introduce yourself '
+            'naturally as their assistant (for example "我是你的助理"), and never quote an id or a status code '
+            'as your identity.')
     else:
         parts.append(f"Your current display name is {agent_name}. Use this display name when introducing yourself.")
     if company_name:

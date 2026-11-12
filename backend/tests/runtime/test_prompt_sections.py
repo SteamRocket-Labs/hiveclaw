@@ -127,6 +127,24 @@ class TestToneStyleSection:
         from app.runtime.prompt_sections import build_scenario_section
         assert "file paths" not in build_scenario_section(None)
 
+    def test_member_replies_name_things_never_ids_or_status_codes(self) -> None:
+        section = build_tone_style_section()
+        assert (
+            "Refer to people, employees, posts, files and conversations by their name or a plain description"
+            in section
+        )
+        assert "never by an internal id (UUID or numeric) or a status code" in section
+
+    def test_member_replies_describe_capabilities_not_tool_names(self) -> None:
+        section = build_tone_style_section()
+        assert "Describe what you did with a capability in plain words" in section
+        assert 'never by its tool name (such as read_wiki_structure or web_search)' in section
+
+    def test_member_replies_write_names_as_plain_names(self) -> None:
+        section = build_tone_style_section()
+        assert "Write names exactly as stored" in section
+        assert "never add brackets or decorative quotes that are not part of the name" in section
+
 
 class TestExecutingActionsContract:
     def test_owns_mistakes_without_self_abasement(self) -> None:

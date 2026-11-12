@@ -136,9 +136,9 @@ function ThemeColorPicker() {
                     placeholder="#hex"
                     onKeyDown={e => e.key === 'Enter' && handleCustom()}
                 />
-                <button className="btn btn-secondary" onClick={handleCustom}>Apply</button>
+                <button className="btn btn-secondary" onClick={handleCustom}>{t('common.apply', 'Apply')}</button>
                 {currentColor && (
-                    <button className="btn btn-ghost enterprise-settings-btn-muted" onClick={handleReset}>Reset</button>
+                    <button className="btn btn-ghost enterprise-settings-btn-muted" onClick={handleReset}>{t('common.reset', 'Reset')}</button>
                 )}
                 {currentColor && (
                     <div className="enterprise-settings-swatch-preview" style={{ background: currentColor }} />

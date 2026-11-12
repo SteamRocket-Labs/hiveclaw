@@ -50,7 +50,7 @@ function chat(overrides: Record<string, unknown> = {}) {
   return render(<QueryClientProvider client={new QueryClient()}><AgentChatSection {...props} /></QueryClientProvider>);
 }
 
-it('makes opened employee-creation approval details readable and keeps raw arguments folded', () => {
+it('makes opened employee-creation approval details readable with the full-arguments fold (X1-r2)', () => {
   const expires = '2026-11-06T14:13:43.874659+00:00';
   const args = { name: '周报助手', first_task: '整理本周工作，写一份周报草稿。', core_outputs: ['周报模板'] };
   const request = { tool_name: 'create_employee_from_request', arguments: args, expires_at: expires,
@@ -64,7 +64,8 @@ it('makes opened employee-creation approval details readable and keeps raw argum
     approvalActions={<SessionPermissionActions permissionRequest={request as never} showArgumentDetails={false} t={t} />} />);
   fireEvent.click(screen.getByText('详情'));
   const details = container.querySelector('.thread-item-disclosure')!;
-  expect.soft(details.textContent).toContain('创建数字员工');
+  // X1: the 工具 row left the card; the action leads the sentence above it.
+  expect.soft(details.textContent).not.toContain('工具');
   expect.soft(details.textContent).toContain(args.name);
   expect.soft(details.textContent).toContain(args.first_task);
   expect.soft(details.textContent).toContain('可停用，但不能删除');
@@ -75,8 +76,11 @@ it('makes opened employee-creation approval details readable and keeps raw argum
   expect.soft(container.querySelector('pre')).toBeNull();
   expect.soft(container.textContent).not.toContain('删除类操作');
   expect.soft(container.textContent).toContain('此操作只能本次允许');
-  fireEvent.click(screen.getByRole('button', { name: '完整参数' }));
-  expect(container.querySelector('pre')?.textContent).toBe(JSON.stringify(args, null, 2));
+  // X1-r2 ruling 1: the fold returns under a plain label, collapsed by default.
+  expect(screen.queryByRole('button', { name: '完整参数' })).toBeNull();
+  expect(container.querySelector('pre')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '查看将要执行的完整内容' }));
+  expect(container.querySelector('pre')?.textContent).toContain('周报助手');
 });
 
 it('summarizes the command and working directory after one expand with a local action name', () => {
@@ -94,10 +98,9 @@ it('summarizes the command and working directory after one expand with a local a
   expect.soft(container.textContent).toContain('运行命令');
   expect.soft(container.textContent).not.toContain('对外操作');
   expect.soft(container.querySelector('pre')).toBeNull();
-  const toggle = screen.getByRole('button', { name: '完整参数' });
-  expect.soft(toggle.querySelector('svg')).toBeTruthy();
-  fireEvent.click(toggle);
-  expect(container.querySelector('pre')?.textContent).toBe(JSON.stringify(args, null, 2));
+  // X1: raw JSON arguments left the member view.
+  expect.soft(screen.queryByRole('button', { name: '完整参数' })).toBeNull();
+  expect.soft(container.querySelector('pre')).toBeNull();
 });
 
 it('uses only the risk class for delete-only approval wording', () => {

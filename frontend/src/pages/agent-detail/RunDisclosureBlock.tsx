@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom';
+import { QueryClientContext, useQueryClient } from '@tanstack/react-query';
 import { runtimeStatusLabel } from './runtimeStatus';
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -20,6 +22,7 @@ import { assistantReplyForDisplay } from './CanonicalCardAssistantSupplement';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { toolOutputForDisplay } from './toolFailurePresentation';
+import { useAuthStore } from '../../stores';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import { isKeptResultStep, presentSystemStep } from './systemStepPresentation';
 import type {
@@ -166,6 +169,31 @@ function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
   return <IconTool size={size} stroke={2.1} />;
 }
 
+/** The colleague's conversation link renders only inside the viewer's own
+ * private session — the delegated child's owner is the requester — and only
+ * when the colleague already sits in the member's own authority-filtered
+ * roster cache (X1-r3 ruling 1): owning the session does not prove the
+ * member can open this colleague. Without a cached roster there is nothing
+ * to gate on, so no link; no new request is made. The link reads the raw
+ * replayed event's to_agent, which was always present. */
+function ColleagueConversationLink({ metadata }: { metadata: Record<string, unknown> }) {
+  const { t } = useTranslation();
+  const agentId = typeof metadata.to_agent === 'string' ? metadata.to_agent : '';
+  const sessionId = typeof metadata.child_session_id === 'string' ? metadata.child_session_id : '';
+  // Render hosts without a provider (static projections) have no known cache.
+  const queryClient = React.useContext(QueryClientContext) as ReturnType<typeof useQueryClient> | null;
+  const tenantId = localStorage.getItem('current_tenant_id')
+    || useAuthStore.getState().user?.tenant_id
+    || '';
+  const listed = queryClient?.getQueryData<Array<{ id: string }>>(['agents', tenantId]) || [];
+  if (!agentId || !sessionId || !listed.some((agent) => agent.id === agentId)) return null;
+  return (
+    <p className="run-colleague-link">
+      <Link to={`/agents/${agentId}/sessions/${sessionId}`}>{t('agent.chat.disclosure.openColleagueConversation', 'Open this colleague\'s conversation')}</Link>
+    </p>
+  );
+}
+
 function commandOutcome(details: unknown): 'done' | 'failed' | 'unknown' | null {
   const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
   const execution = record.executionResult as { exit_code?: unknown; timed_out?: unknown } | undefined;
@@ -187,7 +215,7 @@ function commandOutcome(details: unknown): 'done' | 'failed' | 'unknown' | null 
   return exitCodes.includes(0) ? 'done' : null;
 }
 
-function RunStepDetails({ step }: { step: RunStepSnapshot }) {
+function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; viewerOwnsSession?: boolean }) {
   const { t } = useTranslation();
   if (toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)) {
     const toolName = toolNameOf(step);
@@ -216,7 +244,8 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
       try {
         JSON.parse(result);
       } catch {
-        // Native breaks retain line layout while DOM text reads as a sentence.
+        // Non-command steps show exactly what production shows (R11g /
+        // X1-r2 ruling 2); per-tool member summaries are a later slice.
         const lines = result.trim().split(/\r?\n/);
         return <p>{lines.map((line, index) => (
           <React.Fragment key={index}>
@@ -245,10 +274,17 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   }
   const detailText = typeof step.details === 'string' ? step.details : '';
   if (detailText.includes('[REDACTED_SECRET]')) return <pre className="run-detail-pre"><PastedCredentialText content={detailText} /></pre>;
-  return detailText ? <MarkdownRenderer content={detailText} /> : null;
+  // The child session exists for an unfinished delegation too (failed,
+  // cancelled, contract mismatch), so both titles may carry the link
+  // (X1-r3 ruling 1); the roster gate above still decides reachability.
+  const colleagueLink = ['Delegation result', 'Delegation unfinished'].includes(step.title)
+    && step.systemEvent && viewerOwnsSession
+    ? <ColleagueConversationLink metadata={step.systemEvent.metadata} /> : null;
+  if (detailText) return <>{<MarkdownRenderer content={detailText} />}{colleagueLink}</>;
+  return colleagueLink;
 }
 
-function RunStepRow({ step, resultPreview }: { step: RunStepSnapshot; resultPreview: boolean }) {
+function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepSnapshot; resultPreview: boolean; viewerOwnsSession?: boolean }) {
   const { t } = useTranslation();
   const running = step.status === 'running';
   // Commands, arguments and output wait behind this toggle: the default layer
@@ -281,12 +317,12 @@ function RunStepRow({ step, resultPreview }: { step: RunStepSnapshot; resultPrev
           )}
           <span className="run-step-title">{localizedToolTitle(step, t)}</span>
           {preview && !(expanded && step.status === 'failed') && <span className="run-step-summary">{
-            resultPreview && !preview.includes('[REDACTED_SECRET]')
-              ? <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown>
-              : <PastedCredentialText content={preview} />
+            preview.includes('[REDACTED_SECRET]')
+              ? <PastedCredentialText content={preview} />
+              : <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown>
           }</span>}
         </button>
-        {expanded && <RunStepDetails step={step} />}
+        {expanded && <RunStepDetails step={step} viewerOwnsSession={viewerOwnsSession} />}
       </div>
     </div>
   );
@@ -298,6 +334,9 @@ function proseText(step: RunStepSnapshot): string {
 }
 
 function RunProse({ step }: { step: RunStepSnapshot }) {
+  // The answer renders as its own message below the block; its in-run copy
+  // with the same bytes is not shown twice (X1 run 15).
+  if (step.repeatsAnswer) return null;
   const content = assistantReplyForDisplay(proseText(step));
   if (!content) return null;
   return (
@@ -470,19 +509,21 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
   );
 }
 
-function RunTimelineItem({ item, resultPreview }: { item: RunRenderItem; resultPreview: boolean }) {
+function RunTimelineItem({ item, resultPreview, viewerOwnsSession }: { item: RunRenderItem; resultPreview: boolean; viewerOwnsSession?: boolean }) {
   if (item.kind === 'tool_group') return <ToolActivityGroup steps={item.steps} />;
   if (item.step.kind === 'commentary' || item.step.kind === 'prose') return <RunProse step={item.step} />;
   if (item.step.kind === 'compaction') return <RunCompactionBoundary step={item.step} />;
-  return <RunStepRow step={item.step} resultPreview={resultPreview} />;
+  return <RunStepRow step={item.step} resultPreview={resultPreview} viewerOwnsSession={viewerOwnsSession} />;
 }
 
 export default function RunDisclosureBlock({
   timeline,
   presentationKey = null,
+  viewerOwnsSession = false,
 }: {
   timeline: RunTimelineSnapshot;
   presentationKey?: string | null;
+  viewerOwnsSession?: boolean;
 }) {
   const { t } = useTranslation();
   const running = timeline.status === 'running';
@@ -572,7 +613,7 @@ export default function RunDisclosureBlock({
         </button>
         {expanded && (
           <div className="run-disclosure-steps">
-            {renderItems.map((item) => <RunTimelineItem key={item.id} item={item} resultPreview={resultsKept} />)}
+            {renderItems.map((item) => <RunTimelineItem key={item.id} item={item} resultPreview={resultsKept} viewerOwnsSession={viewerOwnsSession} />)}
           </div>
         )}
       </div>

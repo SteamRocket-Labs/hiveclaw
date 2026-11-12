@@ -516,6 +516,16 @@ async def _load_creation_result_sources(db, result):
         encoded = encode_runtime_result_payload(
             summary=values["summary"], artifacts=values["artifacts"], metadata=values["metadata"]
         )
+        if encoded.payload_bytes != bytes(result.payload_bytes):
+            # Results stored before the member-facing summary rewrite keep the
+            # legacy bytes; they verify against the same re-derivation.
+            legacy = await creation_receipt_notification(db, draft, task, legacy_summary=True)
+            if legacy is None:
+                return False
+            legacy_values = _normalized_base_values(legacy)
+            encoded = encode_runtime_result_payload(
+                summary=legacy_values["summary"], artifacts=legacy_values["artifacts"], metadata=legacy_values["metadata"]
+            )
         row = await db.get(RuntimeNotificationOutbox, values["id"], populate_existing=True)
         if (
             row is None

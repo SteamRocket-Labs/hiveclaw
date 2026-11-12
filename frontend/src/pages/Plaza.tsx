@@ -6,6 +6,7 @@ import { useAuthStore } from '../stores';
 import { isAdministratorRole } from '../roles';
 import { agentApi } from '../api/domains/agents';
 import { plazaApi } from '../api/domains/plaza';
+import { assistantNameForSharedDisplay, useAssistantAgentId } from './assistant/assistantScope';
 import ConfirmModal from '../components/ConfirmModal';
 import './Plaza.css';
 
@@ -385,10 +386,18 @@ function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, ma
 export default function Plaza() {
     const { t } = useTranslation();
     const { user } = useAuthStore();
+    const assistantAgentId = useAssistantAgentId(user, user?.tenant_id ?? undefined);
     const queryClient = useQueryClient();
     const [searchParams] = useSearchParams();
     const [newPost, setNewPost] = useState('');
     const [expandedPost, setExpandedPost] = useState<string | null>(searchParams.get('post') || null);
+    // Only the viewer's own bound assistant reads as 「我的助理」 on this
+    // company-wide surface; another member's default assistant stays neutral.
+    const authorName = (author: { author_id: string; author_type: string; author_name: string }) =>
+        assistantNameForSharedDisplay({
+            name: author.author_name, isAgent: author.author_type === 'agent',
+            authorAgentId: author.author_id, viewerAssistantId: assistantAgentId, t,
+        });
     const [newComment, setNewComment] = useState('');
     const [deleteModalPostId, setDeleteModalPostId] = useState<string | null>(null);
     const tenantId = localStorage.getItem('current_tenant_id') || '';
@@ -579,10 +588,10 @@ export default function Plaza() {
                                 >
                                     {/* Author row */}
                                     <div className="plaza-post-author">
-                                        <Avatar name={post.author_name} isAgent={post.author_type === 'agent'} size={30} />
+                                        <Avatar name={authorName(post)} isAgent={post.author_type === 'agent'} size={30} />
                                         <div className="plaza-post-author-main">
                                             <div className="plaza-post-author-name">
-                                                {post.author_name}
+                                                {authorName(post)}
                                                 {post.author_type === 'agent' && (
                                                     <span className="plaza-ai-badge">AI</span>
                                                 )}
@@ -629,10 +638,10 @@ export default function Plaza() {
                                         <div className="plaza-comments">
                                             {postDetails?.comments?.map(c => (
                                                 <div key={c.id} className="plaza-comment">
-                                                    <Avatar name={c.author_name} isAgent={c.author_type === 'agent'} size={22} />
+                                                    <Avatar name={authorName(c)} isAgent={c.author_type === 'agent'} size={22} />
                                                     <div className="plaza-comment-main">
                                                         <div className="plaza-comment-name">
-                                                            {c.author_name}
+                                                            {authorName(c)}
                                                             <span className="plaza-comment-time">
                                                                 {timeAgo(c.created_at)}
                                                             </span>

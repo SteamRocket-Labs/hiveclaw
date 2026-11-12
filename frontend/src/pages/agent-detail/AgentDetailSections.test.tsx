@@ -4248,87 +4248,91 @@ describe('AgentDetail extracted sections', () => {
   });
 
   it('does not render session-wide approval for destructive permission gates', () => {
-    const markup = renderToStaticMarkup(
-      <AgentChatSection
-        agent={{ id: 'agent-1', name: 'Release Bot' }}
-        currentUser={{ id: 'user-1' }}
-        isAdmin={false}
-        onLoadAllSessions={vi.fn()}
-        onCreateNewSession={vi.fn()}
-        sessionsLoading={false}
-        sessions={[]}
-        activeSession={{
-          id: 'session-1',
-          user_id: 'user-1',
-          title: 'Permission request',
-          created_at: '2026-06-25T09:00:00Z',
-        }}
-        wsConnected
-        allSessions={[]}
-        allSessionsLoading={false}
-        allUserFilter=""
-        onSetAllUserFilter={vi.fn()}
-        onSelectSession={vi.fn()}
-        onDeleteSession={vi.fn()}
-        historyContainerRef={React.createRef<HTMLDivElement>()}
-        onHistoryScroll={vi.fn()}
-        historyMsgs={[]}
-        historyMessagesSessionId={null}
-        showHistoryScrollBtn={false}
-        onScrollHistoryToBottom={vi.fn()}
-        chatContainerRef={React.createRef<HTMLDivElement>()}
-        onChatScroll={vi.fn()}
-        chatMessages={[
-          {
-            role: 'event',
-            content: "Tool 'run_command' requires session permission",
-            eventType: 'permission',
-            eventTitle: 'Permission Gate',
-            eventStatus: 'session_permission_required',
-            eventToolName: 'run_command',
-            eventCapability: 'workspace.command.destructive_delete',
-            sessionPermissionRequest: {
-              permission_request_id: '11111111-1111-4111-8111-111111111111',
-              session_id: 'session-1',
-              tool_name: 'run_command',
-              arguments: { command: 'rm workspace/report.md' },
-              permission_mode: 'bypassPermissions',
-              risk_class: 'destructive_delete',
-              confirmation_kind: 'destructive_once',
-              allow_session_allowed: false,
-            },
+    const gateProps = {
+      agent: { id: 'agent-1', name: 'Release Bot' },
+      currentUser: { id: 'user-1' },
+      isAdmin: false,
+      onLoadAllSessions: vi.fn(),
+      onCreateNewSession: vi.fn(),
+      sessionsLoading: false,
+      sessions: [] as never[],
+      activeSession: {
+        id: 'session-1',
+        user_id: 'user-1',
+        title: 'Permission request',
+        created_at: '2026-06-25T09:00:00Z',
+      },
+      wsConnected: true,
+      allSessions: [] as never[],
+      allSessionsLoading: false,
+      allUserFilter: '',
+      onSetAllUserFilter: vi.fn(),
+      onSelectSession: vi.fn(),
+      onDeleteSession: vi.fn(),
+      historyContainerRef: React.createRef<HTMLDivElement>(),
+      onHistoryScroll: vi.fn(),
+      historyMsgs: [] as never[],
+      historyMessagesSessionId: null,
+      showHistoryScrollBtn: false,
+      onScrollHistoryToBottom: vi.fn(),
+      chatContainerRef: React.createRef<HTMLDivElement>(),
+      onChatScroll: vi.fn(),
+      chatMessages: [
+        {
+          role: 'event',
+          content: "Tool 'run_command' requires session permission",
+          eventType: 'permission',
+          eventTitle: 'Permission Gate',
+          eventStatus: 'session_permission_required',
+          eventToolName: 'run_command',
+          eventCapability: 'workspace.command.destructive_delete',
+          sessionPermissionRequest: {
+            permission_request_id: '11111111-1111-4111-8111-111111111111',
+            session_id: 'session-1',
+            tool_name: 'run_command',
+            arguments: { command: 'rm workspace/report.md' },
+            permission_mode: 'bypassPermissions',
+            risk_class: 'destructive_delete',
+            confirmation_kind: 'destructive_once',
+            allow_session_allowed: false,
           },
-        ]}
-        chatMessagesSessionId="session-1"
-        runtimeSummary={null}
-        agentPermissions={{ scope_type: 'company', scope_ids: [], access_level: 'manage' }}
-        transportNotice={null}
-        isWaiting={false}
-        activeRunStatus={null}
-        chatEndRef={React.createRef<HTMLDivElement>()}
-        showScrollBtn={false}
-        onScrollToBottom={vi.fn()}
-        agentExpired={false}
-        attachedFiles={[]}
-        onRemoveAttachedFile={vi.fn()}
-        fileInputRef={React.createRef<HTMLInputElement>()}
-        onHandleChatFile={vi.fn()}
-        uploading={false}
-        uploadProgress={-1}
-        uploadAbortRef={{ current: null }}
-        chatInputRef={React.createRef<HTMLTextAreaElement>()}
-        chatInput=""
-        onSetChatInput={vi.fn()}
-        onHandlePaste={vi.fn()}
-        onSendChatMsg={vi.fn()}
-        onResolveSessionPermission={vi.fn()}
-        isStreaming={false}
-        onAbortGeneration={vi.fn()}
-      />,
-    );
+        },
+      ] as never[],
+      chatMessagesSessionId: 'session-1',
+      runtimeSummary: null,
+      agentPermissions: { scope_type: 'company', scope_ids: [], access_level: 'manage' },
+      transportNotice: null,
+      isWaiting: false,
+      activeRunStatus: null,
+      chatEndRef: React.createRef<HTMLDivElement>(),
+      showScrollBtn: false,
+      onScrollToBottom: vi.fn(),
+      agentExpired: false,
+      attachedFiles: [] as never[],
+      onRemoveAttachedFile: vi.fn(),
+      fileInputRef: React.createRef<HTMLInputElement>(),
+      onHandleChatFile: vi.fn(),
+      uploading: false,
+      uploadProgress: -1,
+      uploadAbortRef: { current: null },
+      chatInputRef: React.createRef<HTMLTextAreaElement>(),
+      chatInput: '',
+      onSetChatInput: vi.fn(),
+      onHandlePaste: vi.fn(),
+      onSendChatMsg: vi.fn(),
+      onResolveSessionPermission: vi.fn(),
+      isStreaming: false,
+      onAbortGeneration: vi.fn(),
+    };
+    const markup = renderToStaticMarkup(<AgentChatSection {...gateProps} />);
 
     expect(markup).toContain('Approval required');
-    expect(markup).toContain('Full parameters');
+    // X1-r3 ruling 4: the exact arguments wait behind the plain-label fold
+    // (the baseline intent of the old 'Full parameters' assertion, which had
+    // become always-true inverted). The interactive open-the-fold check —
+    // the full JSON inside — lives in AgentChatSection.x1c.test.tsx, because
+    // this file stays in the node environment for its source-reading tests.
+    expect(markup).toContain('See exactly what will run');
     expect(markup).not.toContain('run_command');
     expect(markup).toContain('rm workspace/report.md');
     expect(markup).toContain('Allow once');

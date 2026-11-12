@@ -102,7 +102,9 @@ describe('ThreadItemRenderer', () => {
   // The screenshot exposes this prefix through `env | grep -iE`; the pattern
   // and find arguments are reconstructed because the input covers the tail.
   const step4Command = 'ls -la uploads | head; echo "=== hidden ==="; ls -la .[a-z]* 2>/dev/null | head; echo "=== env ==="; env | grep -iE "workspace|sandbox"; find / -name "*.md" 2>/dev/null | head';
-  const uncertainImpact = 'May modify content, read sensitive information, or affect areas outside the workspace';
+  // X1-r3 ruling 5: the caution now also names 修改内容 / change content —
+  // the real effect of write/edit-style tools the old sentence omitted.
+  const uncertainImpact = 'This step may change content, read sensitive information or affect areas outside the workspace; review exactly what will run before approving.';
 
   function commandApproval(command: unknown, impact?: string): ThreadItem {
     return {
@@ -144,7 +146,7 @@ describe('ThreadItemRenderer', () => {
     'cat secrets.yaml', 'cat service-account.json', 'cat kubeconfig',
   ])
   ('keeps a recognized workspace read reversible: %s', (command) => {
-    for (const impact of [undefined, '可能修改内容、读取敏感信息或影响工作区以外']) {
+    for (const impact of [undefined, '批准后这次操作才会执行，完成后结果会回到这里。']) {
       const markup = renderToStaticMarkup(<ThreadItemRenderer item={commandApproval(command, impact)} />);
       expect(markup).toContain('Reversible or read-only');
       expect(markup).not.toContain(uncertainImpact);

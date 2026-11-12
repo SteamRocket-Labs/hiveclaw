@@ -204,6 +204,37 @@ async def test_partial_search_keeps_receipted_fact_when_one_owned_source_is_revo
         assert complete
 
 
+async def test_partial_load_names_the_withheld_entry_and_keeps_the_valid_one(
+    shared_memory, app_user_sessionmaker, owner_sessionmaker,
+):
+    from app.database import tenant_scoped_session
+    from app.models.chat_session import ChatSession
+    from app.models.organization_identity import ContentInputReceipt
+    from uuid import uuid5
+
+    n = shared_memory.n
+    original_session = n.session
+    session, run = await new_owner_work(n, owner_sessionmaker)
+    _saved, invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
+        {"category": "project", "content": "ORCHID independent available fact"},
+        session=session, run=run)
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        independent_id = (await db.get(ContentInputReceipt,
+            uuid5(invocation.id, "explicit-memory-source"))).authority_json["entry_id"]
+    async with owner_sessionmaker() as db:
+        (await db.get(ChatSession, original_session)).user_id = n.foreign
+        await db.commit()
+    session, run = await new_owner_work(n, owner_sessionmaker)
+    content, _invocation = await memory_call(n, app_user_sessionmaker, "load_memory",
+        {"ids": [shared_memory.entry_id, independent_id]}, session=session, run=run)
+    assert "ORCHID independent available fact" in content, content
+    assert "ORCHID_PRIVATE_MARKER" not in content, content
+    availability = json.loads(content.split("## 可用情况\n", 1)[1])
+    assert availability["status"] == "partial"
+    assert availability["issues"] == [{"memory_id": shared_memory.entry_id, "status": "denied",
+        "code": "content_source_access_denied"}]
+
+
 async def test_six_rounds_keep_native_provider_failure_feedback(
     shared_memory, app_user_sessionmaker, owner_sessionmaker, monkeypatch,
 ):

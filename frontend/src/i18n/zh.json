@@ -2896,7 +2896,17 @@
         "provisioningProgress": "创建进度",
         "retryingProvisioning": "正在重试…",
         "retryProvisioning": "重试创建",
-        "selectAndPreview": "选择并预览"
+        "selectAndPreview": "选择并预览",
+        "previewRequestedFor": "已收到创建数字员工的请求：{{name}}。",
+        "previewRequested": "已收到创建数字员工的请求。",
+        "blueprintReadyFor": "「{{name}}」的创建方案已就绪。",
+        "blueprintReady": "数字员工创建方案已就绪。",
+        "planFailedFallback": "计划未通过校验，需要修改。",
+        "planCreatedFallback": "计划已生成，确认后才会开始执行。",
+        "workflowProposalReadyGoal": "自动化流程方案已就绪：{{goal}}",
+        "workflowProposalReady": "自动化流程方案已就绪。",
+        "workflowPreviewConfirm": "执行预览已就绪，请确认后再执行。",
+        "workflowPreviewReady": "执行预览已就绪。"
       },
       "workLedger": {
         "title": "在办的事",

@@ -2896,7 +2896,17 @@
         "provisioningProgress": "Provisioning progress",
         "retryingProvisioning": "Retrying…",
         "retryProvisioning": "Retry provisioning",
-        "selectAndPreview": "Select and preview"
+        "selectAndPreview": "Select and preview",
+        "previewRequestedFor": "Employee creation requested for {{name}}.",
+        "previewRequested": "Employee creation requested.",
+        "blueprintReadyFor": "Blueprint preview ready for {{name}}.",
+        "blueprintReady": "Agent blueprint preview ready.",
+        "planFailedFallback": "Plan failed validation and needs revision.",
+        "planCreatedFallback": "Plan created — confirm before this autonomous work can begin.",
+        "workflowProposalReadyGoal": "Dynamic Workflow proposal ready: {{goal}}",
+        "workflowProposalReady": "Dynamic Workflow proposal ready.",
+        "workflowPreviewConfirm": "Workflow preview ready — review and confirm this exact run.",
+        "workflowPreviewReady": "Workflow preview ready."
       },
       "workLedger": {
         "title": "Work in progress",

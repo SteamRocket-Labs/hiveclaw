@@ -135,6 +135,11 @@ class TestToneStyleSection:
         )
         assert "never by an internal id (UUID or numeric) or a status code" in section
 
+    def test_member_replies_describe_capabilities_not_tool_names(self) -> None:
+        section = build_tone_style_section()
+        assert "Describe what you did with a capability in plain words" in section
+        assert 'never by its tool name (such as read_wiki_structure or web_search)' in section
+
 
 class TestExecutingActionsContract:
     def test_owns_mistakes_without_self_abasement(self) -> None:

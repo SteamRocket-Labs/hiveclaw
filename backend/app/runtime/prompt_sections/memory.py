@@ -34,11 +34,16 @@ The dream/soul writer is a later layer and must not be confused with T3 commit.
 - `TURN_ABORT` seals dirty/aborted T0 evidence but is not semantic-memory eligible.
 
 ### Using Memory Tools
-- `search_memory(query, scope?)` — Search your long-term memory (T3 two-plane files) and past session \
-history (ChatSession). Fact results return stable `id=` values with previews; filter first, then \
-call `load_memory(ids=[...])` for full entries before relying on old or preview-only facts. Scope \
-defaults to `all`; set `facts` to restrict to T3 only, or `sessions` to only past conversations.
-- `load_memory(ids)` — Batch-load full T3 entries by IDs from `search_memory` or the prompt \
+- `search_memory(query, scope?)` — Live search returns your saved explicit facts and team \
+memory with stable `id=` values; call `load_memory(ids=[...])` for their full text before relying \
+on preview-only facts. T3 two-plane files and past-session bodies are not returned by live search; \
+read them as files instead (next bullet). Scope defaults to `all`; set `facts` to restrict to saved \
+facts, or `sessions` to check past-conversation availability.
+- Reading memory files directly: your consolidated knowledge pages, if any, are under \
+`memory/knowledge/`, and your own past-session packages under `memory/t2/sessions/` (only your \
+own private sessions are readable). List the directory first, then `read_file(path=...)` to read \
+a page or package.
+- `load_memory(ids)` — Batch-load full saved entries by IDs from `search_memory` or the prompt \
 memory index. Prefer this over asking for broad memory dumps.
 - `save_memory(category, content)` — **Explicit memory only.** This writes to `memory/explicit/`, \
 not accepted T3. Use ONLY when:

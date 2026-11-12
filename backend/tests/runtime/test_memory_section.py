@@ -28,6 +28,16 @@ class TestMemorySectionProperties:
         assert "load_memory" in out
         assert "id=" in out
 
+    def test_static_section_names_the_file_route_for_knowledge_and_own_t2(self) -> None:
+        """A2m: live search withholds T3-plane and session bodies; the static
+        section must name the file route unconditionally (it cannot depend on
+        explicit-memory index ownership)."""
+        out = build_memory_section()
+        assert "memory/knowledge/" in out and "memory/t2/sessions/" in out
+        assert "read_file" in out
+        # The search bullet must state what live search actually returns now.
+        assert "not returned by live search" in out
+
     def test_save_memory_is_explicit_overlay_not_accepted_t3(self) -> None:
         """Prompt must explain save_memory writes overlay, not accepted T3."""
         out = build_memory_section()

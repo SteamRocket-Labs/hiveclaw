@@ -190,6 +190,14 @@ async def test_hello_turn_makes_exactly_one_model_call(
     assert client.calls[0]["kind"] == "stream"
     assert "hello" in json.dumps(client.calls[0]["messages"])
     assert "memory_semantic_selection" not in usage_sources, usage_sources
+    # The knowledge/T2 route sentence rides the static memory section, so it
+    # reaches the live model input regardless of explicit-memory ownership
+    # (this agent has no explicit entry at all).
+    live_input = json.dumps(client.calls[0]["messages"])
+    # The route sentence itself, not just the directory names the Layers
+    # section has always listed: list first, then read_file.
+    assert "List the directory first, then `read_file(path=...)`" in live_input, live_input
+    assert "under `memory/knowledge/`" in live_input and "under `memory/t2/sessions/`" in live_input, live_input
 
 
 async def test_saved_memory_reaches_index_search_and_load_for_its_requester_only(
@@ -236,7 +244,7 @@ async def test_saved_memory_reaches_index_search_and_load_for_its_requester_only
     # and the on-demand load hint; the build path itself made no model call.
     result = await memory_service.build_memory_context(n.agent, n.tenant,
         session_id=str(n.session), runtime_task_id=str(n.run),
-        current_user_id=n.user, query="what is the release codename", return_result=True)
+        current_user_id=n.user, return_result=True)
     assert result.status == "ready", result
     assert "Explicit Memory Index (active)" in result.content
     assert entry_id in result.content and f'load_memory(ids=["{entry_id}"])' in result.content
@@ -257,7 +265,7 @@ async def test_saved_memory_reaches_index_search_and_load_for_its_requester_only
         emit_runtime_hooks=False)
     foreign_result = await memory_service.build_memory_context(n.agent, n.tenant,
         session_id=str(foreign_session), current_user_id=n.foreign,
-        query="what is the release codename", return_result=True)
+        return_result=True)
     assert marker not in foreign_result.content
     assert entry_id not in foreign_result.content
     foreign_search = await search_memory(n.agent, {"query": marker, "scope": "facts"},
@@ -284,7 +292,7 @@ async def test_context_status_ready_normally_and_degraded_on_explicit_authority_
     async def resolve():
         return await memory_service.build_memory_context(seed["agent_id"], seed["tenant_id"],
             session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]),
-            current_user_id=seed["user_id"], query="hello", return_result=True)
+            current_user_id=seed["user_id"], return_result=True)
 
     normal = await resolve()
     assert normal.status == "ready", normal
@@ -305,17 +313,17 @@ async def test_context_status_ready_normally_and_degraded_on_explicit_authority_
     assert degraded.content.rsplit("\n\n", 1)[-1] == "有部分记忆暂时无法核实，已略过，可继续使用其余内容。"
 
 
-async def test_knowledge_pages_and_own_t2_reachable_by_read_file_via_index_hint(
-    native_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch,  # noqa: F811
+async def test_knowledge_pages_and_own_t2_reachable_by_read_file(
+    native_workspace, owner_sessionmaker, monkeypatch,  # noqa: F811
 ):
-    """Knowledge pages and the requester's own T2 ride list + read_file, named by the index.
+    """Knowledge pages and the requester's own T2 ride list + read_file.
 
     search_memory deliberately withholds legacy-plane and session-recall bodies on
-    the live path; the resident index names memory/knowledge/ and
+    the live path; the static memory section names memory/knowledge/ and
     memory/t2/sessions/ as the file route, and read_file keeps its authority.
+    No explicit entry is seeded: the route must not depend on index ownership.
     """
     from app.models.capability_policy import CapabilityPolicy
-    from app.services import memory_service
     from tests.integration.test_m1g38_session_recall_actor_postgres import _sources
     from tests.memory.test_retrieval_pipeline import _write_t2_package
 
@@ -330,28 +338,9 @@ async def test_knowledge_pages_and_own_t2_reachable_by_read_file_via_index_hint(
         encoding="utf-8",
     )
     async with owner_sessionmaker() as db:
-        from app.models.agent import AgentPermission
-
-        db.add(AgentPermission(tenant_id=n.tenant, agent_id=n.agent, scope_type="company", access_level="use"))
-        db.add(CapabilityPolicy(tenant_id=n.tenant, capability="agent.memory.write",
-            allowed=True, requires_approval=False))
-        db.add(CapabilityPolicy(tenant_id=n.tenant, capability="agent.memory.read",
-            allowed=True, requires_approval=False))
         db.add(CapabilityPolicy(tenant_id=n.tenant, capability="workspace.file.read",
             allowed=True, requires_approval=False))
         await db.commit()
-
-    from app.memory.write_gate import MemoryWriteDecision
-    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
-
-    async def reference_review(content, *, category, **_kwargs):
-        return MemoryWriteDecision(original_content=content, content=content, category=category,
-            sensitivity="PL1_public", metadata={"threat_gate_method": "controlled_reference_reviewer"})
-
-    monkeypatch.setattr("app.memory.explicit_overlay.prepare_memory_write_with_llm", reference_review)
-    saved, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
-        {"category": "project", "content": "Knowledge route marker fact for the index."})
-    assert "Saved memory [project]" in saved, saved
 
     async def _read(path: str) -> str:
         return str(await n.service.execute("read_file", {"path": path}, agent_id=n.agent, user_id=n.user,
@@ -365,9 +354,3 @@ async def test_knowledge_pages_and_own_t2_reachable_by_read_file_via_index_hint(
         (n.root / f"memory/t2/sessions/{foreign}").rglob("summary.md")).relative_to(n.root).as_posix())
     assert "OTHER_REQUESTER_T2_BODY" not in denied and "auth_or_permission" in denied, denied
 
-    # The index header carries the same route on every path that renders it.
-    result = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(n.session),
-        runtime_task_id=str(n.run), current_user_id=n.user, query="l2 rollup", return_result=True)
-    assert result.status == "ready", result
-    assert "memory/knowledge/" in result.content and "memory/t2/sessions/" in result.content, result.content
-    assert "read_file" in result.content

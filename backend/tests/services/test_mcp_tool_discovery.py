@@ -436,7 +436,7 @@ async def test_select_syntax_directly_discovers_one_deferred_tool(monkeypatch):
     async def no_mcp(_agent_id, _query):
         return []
 
-    monkeypatch.setattr(module, "list_agent_mcp_deferred_tools", no_mcp)
+    monkeypatch.setattr(module, "list_agent_mcp_deferred_tools_with_labels", no_mcp)
 
     names = await module.discoverable_tool_names_for_query(uuid4(), "select:firecrawl_fetch")
 

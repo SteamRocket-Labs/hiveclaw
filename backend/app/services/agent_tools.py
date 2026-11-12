@@ -592,11 +592,12 @@ def _tool_tenant_predicate(ToolModel: Any, agent: Any | None):
 async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> list[str]:
     """Single source for "query → discoverable (deferred) tool names" (Step 3).
 
-    Used by BOTH the schema path (``invoker._deferred_tool_names_for_query``) and
-    the text path (``workspace._tool_search``) so "what the model is told it can
-    discover" == "what actually loads". Excludes CORE tools (already turn-1
-    visible) and routes MCP discovery through the DB-aware
-    ``list_agent_mcp_deferred_tools``.
+    Names-only projection of :func:`discoverable_deferred_tools_for_query`,
+    which both the schema path (``invoker._deferred_tool_names_for_query``) and
+    the text path (``workspace._tool_search``) use, so "what the model is told
+    it can discover" == "what actually loads". Excludes CORE tools (already
+    turn-1 visible) and routes MCP discovery through the DB-aware
+    ``list_agent_mcp_deferred_tools_with_labels``.
     """
     return [name for name, _connection_label in await discoverable_deferred_tools_for_query(agent_id, query)]
 
@@ -811,11 +812,27 @@ async def gather_deferred_tool_candidates_for_agent(
 
 
 async def list_agent_mcp_deferred_tools_with_labels(agent_id: uuid.UUID, query: str = "") -> list[tuple[str, str]]:
-    """The single governed MCP enumeration (G4b r2): yields
-    ``(tool_name, connection_label)`` where the label is the validated MCP
-    URL's host (``_safe_endpoint_host``) — trusted-only text, never the stored
-    ``mcp_server_name``. One enumeration serves names, schema loading and the
-    tool_search suffix; patch THIS seam to fake the pipeline end to end."""
+    """The single DB-aware, governed MCP enumeration (J / 🦴#2; G4b r2).
+
+    Yields ``(tool_name, connection_label)`` where the label is the validated
+    MCP URL's host (``_safe_endpoint_host``) — trusted-only text, never the
+    stored ``mcp_server_name``. BOTH the text result (``workspace._tool_search``)
+    and the schema injection (``invoker._deferred_tool_names_for_query``) reach
+    it through ``discoverable_deferred_tools_for_query``, so "what the model is
+    told exists" == "what actually loads".
+
+    Governance listing gate: only REACHABLE MCP tools are listed — denied tools
+    and tools on disabled servers/packs never appear (CC parity: denied == not
+    reachable). For un-backfilled agents (no MCP assignment rows → ``mcp_gating``
+    is None) it falls back to the legacy ``is_default`` / ``AgentTool.enabled``
+    decision, so a NON-default MCP tool can never be surfaced — the choke point
+    that, with the matching tightening in :func:`get_agent_tools_for_llm`, closes
+    the discovery force-enable escalation (§J #1).
+
+    Patch THIS seam (module global, read at call time) to fake the pipeline end
+    to end; ``list_agent_mcp_deferred_tools`` is a names-only convenience
+    wrapper for direct callers.
+    """
 
     from app.models.tool import AgentTool, Tool
     from app.services.mcp_metadata_trust import _safe_endpoint_host
@@ -872,20 +889,9 @@ async def list_agent_mcp_deferred_tools_with_labels(agent_id: uuid.UUID, query: 
 
 
 async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:
-    """The single DB-aware enumerator of MCP tools an agent can DISCOVER via
-    tool_search (J / 🦴#2).
-
-    BOTH the text result (``workspace._tool_search``) and the schema injection
-    (``invoker._deferred_tool_names_for_query``) route through here, so "what the
-    model is told exists" == "what actually loads".
-
-    Governance listing gate: only REACHABLE MCP tools are listed — denied tools
-    and tools on disabled servers/packs never appear (CC parity: denied == not
-    reachable). For un-backfilled agents (no MCP assignment rows → ``mcp_gating``
-    is None) it falls back to the legacy ``is_default`` / ``AgentTool.enabled``
-    decision, so a NON-default MCP tool can never be surfaced — the choke point
-    that, with the matching tightening in :func:`get_agent_tools_for_llm`, closes
-    the discovery force-enable escalation (§J #1).
+    """Names-only projection of ``list_agent_mcp_deferred_tools_with_labels``
+    for direct callers (tests, diagnostics). The governed listing gate and the
+    text/schema routing live on that function.
     """
     return [name for name, _connection_label in await list_agent_mcp_deferred_tools_with_labels(agent_id, query)]
 

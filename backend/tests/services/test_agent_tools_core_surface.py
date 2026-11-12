@@ -369,7 +369,7 @@ async def test_explicit_agent_team_discovers_team_create_without_command_pack(mo
     monkeypatch.setattr(agent_tools, "resolve_tenant_for_agent", fake_resolve_tenant)
     monkeypatch.setattr(agent_tools, "tenant_scoped_session", lambda _tenant_id: _TenantSession())
     monkeypatch.setattr(agent_tools, "get_agent_capability_group_policies", fake_get_agent_capability_group_policies)
-    monkeypatch.setattr(agent_tools, "list_agent_mcp_deferred_tools", fake_mcp)
+    monkeypatch.setattr(agent_tools, "list_agent_mcp_deferred_tools_with_labels", fake_mcp)
 
     assert "team_create" in await agent_tools.available_deferred_tool_names_for_agent(uuid4())
     assert await agent_tools.discoverable_tool_names_for_query(uuid4(), "select:team_create") == ["team_create"]
@@ -441,6 +441,6 @@ async def test_discoverable_l2_tools_fail_closed_when_pack_policy_unavailable(mo
         return []
 
     monkeypatch.setattr(agent_tools, "resolve_tenant_for_agent", fail_resolve)
-    monkeypatch.setattr(agent_tools, "list_agent_mcp_deferred_tools", no_mcp)
+    monkeypatch.setattr(agent_tools, "list_agent_mcp_deferred_tools_with_labels", no_mcp)
 
     assert await agent_tools.discoverable_tool_names_for_query(uuid4(), "exa") == []

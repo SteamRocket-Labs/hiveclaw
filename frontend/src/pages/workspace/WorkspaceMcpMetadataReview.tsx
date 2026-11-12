@@ -91,7 +91,7 @@ interface McpMetadataReviewPanelProps {
     tool: EnterpriseMcpMetadataTool,
     decision: 'approve' | 'reject',
     canonicalDescription: string,
-  ) => void;
+  ) => Promise<boolean> | boolean | void;
 }
 
 export function McpMetadataReviewPanel({
@@ -102,10 +102,18 @@ export function McpMetadataReviewPanel({
 }: McpMetadataReviewPanelProps) {
   const { t } = useTranslation();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  // G4b r2: an approved tool can still be revoked (the existing reject
+  // G4b r2/final: an approved tool can still be revoked (the existing reject
   // decision) or have its purpose edited (the existing approve-with-edited-
-  // purpose path); both reuse the existing review endpoint.
+  // purpose path); both reuse the existing review endpoint. Edit mode is left
+  // only after the review request SUCCEEDS — on an error the editor and the
+  // draft stay — and 取消 leaves without sending anything.
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
+  const submitReview = (tool: EnterpriseMcpMetadataTool, decision: 'approve' | 'reject', draft: string) => {
+    void (async () => {
+      const ok = await onReview(tool, decision, draft);
+      if (ok !== false) setEditingToolId(null);
+    })();
+  };
 
   return (
     <section className="ws-mcp-review" aria-label={`${serverName} metadata review`}>
@@ -199,10 +207,7 @@ export function McpMetadataReviewPanel({
                       type="button"
                       className="btn btn-primary btn-sm"
                       disabled={busy || !draft.trim()}
-                      onClick={() => {
-                        setEditingToolId(null);
-                        onReview(tool, 'approve', draft);
-                      }}
+                      onClick={() => submitReview(tool, 'approve', draft)}
                     >
                       {busy ? t('common.saving', 'Saving...') : t('enterprise.tools.approveFingerprint', 'Approve fingerprint')}
                     </button>
@@ -210,13 +215,20 @@ export function McpMetadataReviewPanel({
                       type="button"
                       className="btn btn-secondary btn-sm"
                       disabled={busy}
-                      onClick={() => {
-                        setEditingToolId(null);
-                        onReview(tool, 'reject', draft);
-                      }}
+                      onClick={() => submitReview(tool, 'reject', draft)}
                     >
                       {t('common.reject', 'Reject')}
                     </button>
+                    {editingApproved ? (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={busy}
+                        onClick={() => setEditingToolId(null)}
+                      >
+                        {t('common.cancel', 'Cancel')}
+                      </button>
+                    ) : null}
                   </div>
                 )}
               </article>

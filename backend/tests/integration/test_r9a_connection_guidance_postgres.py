@@ -167,14 +167,17 @@ async def test_discovery_returns_connection_steps_and_preserves_connected_execut
     from app.runtime.prompts.mcp import MCP_ADMIN_ROUTE
 
     assert actions["not_connected"]["connect_action"] == {"location": MCP_ADMIN_ROUTE, "actor": "administrator"}
-    # G4b r2: the system prompt must allow exactly this route quotation — the
-    # internal-name ban carries the route-label exception (ruling 6), so the
-    # rule is pinned, not just relaxed for one string.
+    # G4b r2/final: the system prompt must allow exactly this route quotation.
+    # The internal-name ban carries the route-label exception as ONE sentence —
+    # pinned as a single literal so no other exception can hide between the
+    # clauses.
     from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
 
     system_prompt = build_executing_actions_section("conversation")
-    assert "Never name MCP, A2A, tool names or registries to the member" in system_prompt
-    assert "except when quoting the administrator route labels verbatim" in system_prompt
+    assert (
+        "Never name MCP, A2A, tool names or registries to the member, "
+        "except when quoting the administrator route labels verbatim."
+    ) in system_prompt
     assert "not connected" in result
     assert "Do not probe browser sessions, email or importable integrations as workarounds" in result
     if connection == "absent":

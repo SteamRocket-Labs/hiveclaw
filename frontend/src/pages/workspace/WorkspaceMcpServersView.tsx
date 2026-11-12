@@ -82,8 +82,8 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
     tool: EnterpriseMcpMetadataTool,
     decision: 'approve' | 'reject',
     canonicalDescription: string,
-  ) => {
-    if (!openServerId) return;
+  ): Promise<boolean> => {
+    if (!openServerId) return false;
     setBusyTool(tool.tool_id);
     setMetadataError(null);
     try {
@@ -92,10 +92,9 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
         expected_fingerprint: tool.metadata_fingerprint,
         ...(decision === 'approve' && (canonicalDescription.trim() !== tool.canonical_description.trim() || tool.trust_tier === 'admin_approved') ? { canonical_description: canonicalDescription.trim() } : {}),
       });
-      setMetadataTools(await extensionsApi.listEnterpriseMcpServerTools(openServerId));
-      await load();
+      setMetadataTools(await extensionsApi.listEnterpriseMcpServerTools(openServerId)); await load(); return true;
     } catch (error) {
-      setMetadataError(error instanceof Error ? error.message : 'Failed to review MCP metadata.');
+      setMetadataError(error instanceof Error ? error.message : 'Failed to review MCP metadata.'); return false;
     } finally {
       setBusyTool(null);
     }
@@ -165,7 +164,7 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
                       serverName={server.name}
                       tools={metadataTools}
                       busyTool={busyTool}
-                      onReview={(tool, decision, canonical) => void reviewMetadata(tool, decision, canonical)}
+                      onReview={(tool, decision, canonical) => reviewMetadata(tool, decision, canonical)}
                     />
                   </>
                 )

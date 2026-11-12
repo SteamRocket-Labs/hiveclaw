@@ -12,6 +12,7 @@ import copy
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -110,27 +111,30 @@ def _safe_endpoint_host(server_url: str) -> str:
 
 
 def trusted_connection_label(server_name: Any, server_url: Any) -> str:
-    """The one model-facing connection label (G4b r2).
+    """The one model-facing connection label (G4b r2; final round: Unicode).
 
-    The admin-entered display name is used only when it is plainly a name —
-    no URL/query/userinfo markers, no injection-like or control characters,
-    at most 64 characters, and no risk-flag triggers. Anything else (a pasted
-    URL with credentials, a Smithery ``displayName``, a bot-supplied
-    ``server_id``) falls back to the validated URL's host. The suffix shown
-    next to tool names in tool search uses the host directly, never the name.
+    The display name is used only when it is plainly a name — NFKC-normalized
+    first (full-width ``：／？`` fold back to ASCII markers and are rejected),
+    then required to be fully printable (rejects categories C* and Z* except
+    U+0020: zero-width, bidi, BOM, Unicode line/paragraph separators, NBSP),
+    with no URL/query/userinfo markers, at most 64 characters, and no
+    risk-flag triggers. Anything else (a pasted URL with credentials, a
+    Smithery ``displayName``, a bot-supplied ``server_id``) falls back to the
+    validated URL's host. The suffix shown next to tool names in tool search
+    uses the host directly, never the name.
     """
     host = _safe_endpoint_host(server_url)
-    name = str(server_name or "").strip()
+    normalized = unicodedata.normalize("NFKC", str(server_name or "").strip())
     if (
-        name
-        and len(name) <= 64
-        and "://" not in name
-        and "?" not in name
-        and "@" not in name
-        and not any(ord(char) < 32 or ord(char) == 127 for char in name)
-        and not _risk_flags(name, {})
+        normalized
+        and len(normalized) <= 64
+        and "://" not in normalized
+        and "?" not in normalized
+        and "@" not in normalized
+        and normalized.isprintable()
+        and not _risk_flags(normalized, {})
     ):
-        return name
+        return normalized
     return host
 
 

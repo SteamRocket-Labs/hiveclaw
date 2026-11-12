@@ -1821,8 +1821,15 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         tenant_id = await resolve_tenant_for_agent(resolved_agent_id)
         if tenant_id is not None:
             async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
-                company_applications = [{"name": name, "mcp_server_id": str(server_id), "auth_status": auth_status}
-                    for server_id, name, auth_status in await db.execute(select(MCPServer.id, MCPServer.name, MCPServer.auth_status).where(
+                # G4b final: the name the model reads is the same trusted
+                # connection label used elsewhere (a pasted URL with ?key= or a
+                # registry/bot display name falls back to the validated host).
+                # Pending servers stay listed and auth_status is unchanged.
+                from app.services.mcp_metadata_trust import trusted_connection_label
+
+                company_applications = [{"name": trusted_connection_label(name, server_url),
+                    "mcp_server_id": str(server_id), "auth_status": auth_status}
+                    for server_id, name, auth_status, server_url in await db.execute(select(MCPServer.id, MCPServer.name, MCPServer.auth_status, MCPServer.server_url).where(
                         MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id.is_(None)).order_by(MCPServer.name, MCPServer.id))]
     deferred_names = [name for name, _connection_label in deferred_tools]
     capture = getattr(authority_scope, "skill_inputs", None)
@@ -1892,8 +1899,11 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         # G4b: company MCP tools carry the validated connection host next to
         # their names so the member's words (e.g. "用 DeepWiki 查一下") match a
         # listed tool; the stored server name never reaches this suffix (r2).
+        # A host-less tool (no stored URL) gets no meaningless parenthetical.
         display_names = [
-            f"{name} ({connection_label})" if connection_label and connection_label != name else name
+            f"{name} ({connection_label})"
+            if connection_label and connection_label != name and connection_label != "unidentified-endpoint"
+            else name
             for name, connection_label in deferred_tools
         ]
         lines.append("")

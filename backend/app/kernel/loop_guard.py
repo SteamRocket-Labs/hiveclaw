@@ -6,7 +6,9 @@ available only when a tool explicitly reports retry exhaustion, the operation
 is side-effect-free, and the same progress token proves that state did not
 advance. Native task-status reads may also stop at the existing identical-call
 threshold when the same task's fixed terminal reason is unchanged across readers,
-or when a delegated colleague is still running. A side-effect-free search tool
+or when a delegated colleague is still running. Repeated fixed non-retryable
+result refusals use that same read threshold regardless of paging arguments.
+A side-effect-free search tool
 that keeps returning typed empty results across reworded arguments may also be
 stopped after a fixed count: no external effect exists and the member's
 question has a truthful answer ("nothing found") that more searching cannot
@@ -27,7 +29,7 @@ from uuid import UUID
 from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
 from app.services.runtime_display_status import (
     DELEGATED_TASK_RUNNING_MESSAGE, EMPTY_SEARCH_FINAL_MESSAGE, IDENTICAL_TERMINAL_READ_MESSAGE,
-    TERMINAL_TASK_READ_PREFIX,
+    REFUSED_RESULT_READ_MESSAGE, TERMINAL_TASK_READ_PREFIX,
     is_delegation_failure_result_page, is_runtime_failure_observation,
 )
 
@@ -356,6 +358,16 @@ class LoopGuard:
         for observation in observations:
             if not isinstance(observation, dict):
                 continue
+            refused = (
+                tool_name == "read_runtime_result"
+                and observation.get("schema") == "hive.runtime_result_page.v1"
+                and observation.get("status") in {
+                    "source_access_denied", "source_unavailable", "authority_denied", "integrity_error",
+                }
+                and observation.get("retryable") is False
+                and isinstance(observation.get("result_ref"), str)
+                and observation["result_ref"] == (args or {}).get("result_ref")
+            )
             running = observation.get("status") in {"pending", "running"} and observation.get("task_type") == "delegation"
             # R16b: every reader answers a finished delegation with the plain
             # no-body page; the coded observation survives only in already-stored
@@ -364,9 +376,9 @@ class LoopGuard:
             plain_result_page = is_delegation_failure_result_page(observation)
             # A failed entry in a listing that still shows an active task is not
             # counted, whichever fixed projection carries it.
-            if not running and (active_listing or not (plain_result_page or is_runtime_failure_observation(observation))):
+            if not (running or refused) and (active_listing or not (plain_result_page or is_runtime_failure_observation(observation))):
                 continue
-            identity = observation.get("task_id") or observation.get("result_ref")
+            identity = observation.get("result_ref") if refused else observation.get("task_id") or observation.get("result_ref")
             if not isinstance(identity, str) or not identity:
                 continue
             try:
@@ -375,7 +387,12 @@ class LoopGuard:
                 pass  # An opaque result_ref is already a stable native identity.
             if identity.replace("-", "") == self._runtime_task_id:
                 continue
-            if running:
+            if refused:
+                # Compare the complete fixed refusal page, independently of
+                # paging arguments. This successful tool response certifies
+                # that rereading this result cannot recover its bytes.
+                outcome_key, message = _canonical_args(observation), REFUSED_RESULT_READ_MESSAGE
+            elif running:
                 outcome_key, message = "running", DELEGATED_TASK_RUNNING_MESSAGE
             else:
                 sentence = observation["result"] if plain_result_page else observation["reason"]
@@ -394,7 +411,9 @@ class LoopGuard:
             if self._terminal_read_counts[key] >= self.identical_tool_threshold:
                 # warn_key is inert on this path (the abort decision bypasses
                 # _escalate's once-per-pattern set); _PatternCheck requires one.
-                check = _PatternCheck(reason="identical_running_task_read" if running else "identical_terminal_task_read", detail=message,
+                reason = ("identical_refused_result_read" if refused else
+                    "identical_running_task_read" if running else "identical_terminal_task_read")
+                check = _PatternCheck(reason=reason, detail=message,
                     warn_key=f"terminal:{identity}", count=self._terminal_read_counts[key],
                     warn_threshold=self.identical_tool_threshold)
                 return self._decision(check, severity="abort", tool_name=tool_name,

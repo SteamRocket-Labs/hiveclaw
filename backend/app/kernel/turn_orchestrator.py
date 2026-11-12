@@ -3635,7 +3635,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             final_tools=tools_for_llm, parts=collected_parts + build_done_event(message)["parts"],
                             terminal_reason=TerminalReason.TURN_STOP)
                     if _loop_guard_terminal_decision.reason in {
-                        "repeated_empty_search", "identical_terminal_task_read",
+                        "repeated_empty_search", "identical_terminal_task_read", "identical_refused_result_read",
                     }:
                         # R18a round 2 (reviewer blocker 2): end through the same
                         # failure shape as identical_terminal_task_read so every

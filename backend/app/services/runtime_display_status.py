@@ -16,6 +16,7 @@ EMPTY_SEARCH_FINAL_MESSAGE = "多次搜索都没有找到相关资料。"
 DELEGATION_TIMEOUT_MESSAGE = "没在时限内完成这项任务。"
 TASK_FAILED_MESSAGE = "这次执行失败，没有完成。"
 IDENTICAL_TERMINAL_READ_MESSAGE = "任务结果未变化，已停止本次处理。"
+REFUSED_RESULT_READ_MESSAGE = "同事的结果这次没法安全读取，我没能完成整理。你可以让我重新安排这项工作。"
 
 _FAILURE_MESSAGES = {
     **RUNTIME_LIMIT_MESSAGES,
@@ -29,6 +30,7 @@ _FAILURE_MESSAGES = {
 }
 _TERMINAL_READ_MESSAGES = frozenset(TERMINAL_TASK_READ_PREFIX + reason for reason in _FAILURE_MESSAGES.values())
 _FAILURE_MESSAGES["identical_terminal_task_read"] = IDENTICAL_TERMINAL_READ_MESSAGE
+_FAILURE_MESSAGES["identical_refused_result_read"] = REFUSED_RESULT_READ_MESSAGE
 # R18a round 2/3: readers of a run stopped by the empty-search guard map this
 # failure code to the plain sentence — the web member card via the frontend
 # failure-code mapping, the parent of a delegated colleague through

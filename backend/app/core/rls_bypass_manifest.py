@@ -953,7 +953,15 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # in session_model_round, and their module sources; prepare_model_request reuses that
 # advisory for its prepared event); R17a changes the module source of web_chat_runtime.
 # R17c touches no bypass-reachable function. Still 122 callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "547c16fa31ad578c3d2011ea6ce9750de6441489522ab236e43f31558bd00f13"
+# Land23 (A2m, A2r-2, G4a) versus land22: still 794 entries, 21 changed hashes. A2r-2
+# batches source-graph reads (content_input_receipts, agent_directory_sources, permissions
+# with the new agent_access_from_facts, policy, resource_authority,
+# workspace_resource_authority, a2a_collaboration_policy, whose two unused roster
+# functions and list_active_collaboration_groups_for_agent leave the reachable set);
+# A2m removes memory preselection (module source of remote_a2a_chat); G4a moves registry
+# discovery onto the public MCP client (resource_discovery). Still 122 callsites, no new
+# bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "e1cb34cfa325432332492176fc13b0dac65ae8a2ac1d7d480a05ff9ecae5d66a"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

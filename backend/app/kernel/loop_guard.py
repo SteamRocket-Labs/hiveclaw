@@ -372,9 +372,8 @@ class LoopGuard:
             )
             requested_ref = (args or {}).get("result_ref")
             if (tool_name == "read_runtime_result" and not refused
-                and observation.get("schema") == "hive.runtime_result_page.v1"
                 and isinstance(requested_ref, str)
-                and (observation.get("result_ref") is None or observation.get("result_ref") == requested_ref)):
+                and observation.get("result_ref") == requested_ref):
                 for key in list(self._refused_result_read_counts):
                     if key[0] == requested_ref:
                         del self._refused_result_read_counts[key]

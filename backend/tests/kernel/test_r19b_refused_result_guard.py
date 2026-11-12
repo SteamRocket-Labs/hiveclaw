@@ -78,8 +78,12 @@ def test_refusal_identity_and_page_must_match_and_other_tools_do_not_reset_the_c
         assert guard.observe_tool_result("read_file", {"path": "workspace/notes.md"}, "unchanged",
             side_effect_free=True) is None
     # A different refusal and a page for the wrong reference are not this proof.
+    # Give each probe its own round so the once-per-round latch cannot hide
+    # an incorrectly shared refusal key or a mismatched result reference.
+    guard.observe_tool_call("read_runtime_result", {"result_ref": REF})
     assert guard.observe_tool_result("read_runtime_result", {"result_ref": REF},
         json.dumps(_page(reason="content_source_access_denied")), side_effect_free=True) is None
+    guard.observe_tool_call("read_runtime_result", {"result_ref": REF})
     assert guard.observe_tool_result("read_runtime_result", {"result_ref": REF},
         json.dumps(_page(result_ref=other_ref)), side_effect_free=True) is None
     guard.observe_tool_call("read_runtime_result", {"result_ref": REF, "offset": 9999})
@@ -171,6 +175,40 @@ async def test_non_refused_page_resets_that_result_count_in_real_kernel(recovery
     assert result.terminal_reason is not TerminalReason.LOOP_GUARD
     assert result.content == "The read made progress."
     assert len(client.calls) == 7
+
+
+async def test_invalid_arguments_without_result_ref_does_not_reset_refusals_in_real_kernel(tmp_path):
+    from app.tools.handlers import context_resources
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    context = ToolExecutionContext(agent_id=uuid4(), user_id=uuid4(), tenant_id=str(uuid4()),
+        session_id=str(uuid4()), workspace=tmp_path)
+    pages = []
+
+    async def execute(_name, args, *_args, **_kwargs):
+        if args["limit"] == 50000:
+            page = await context_resources.read_runtime_result(ToolExecutionRequest(
+                tool_name="read_runtime_result", arguments=args, context=context))
+        else:
+            page = json.dumps(_page())
+        pages.append(json.loads(page))
+        return page
+
+    threshold = LoopGuard().identical_tool_threshold
+    invalid_call = _call(threshold - 1)
+    invalid_call["function"]["arguments"] = json.dumps({"result_ref": REF, "limit": 50000})
+    client = _FakeClient([*[_round([_call(i)]) for i in range(threshold - 1)],
+        _round([invalid_call]), _round([_call(threshold)]), _answer("The invalid request hid the refusal.")])
+    result = await _kernel(client, execute, tools=("read_runtime_result",)).handle(_request())
+    assert pages[threshold - 1]["status"] == "invalid_arguments"
+    assert "result_ref" not in pages[threshold - 1]
+    # An invalid request did not read this result, so it cannot erase the four
+    # refusals. The fifth refusal must still stop at the existing threshold.
+    assert len(pages) == len(client.calls) == threshold + 1
+    assert result.terminal_reason is TerminalReason.LOOP_GUARD
+    assert result.failure_code == "identical_refused_result_read"
+    assert result.failure_retryable is False
+    assert result.content == MESSAGE
 
 
 @pytest.mark.parametrize("later_rounds", [0, 4])

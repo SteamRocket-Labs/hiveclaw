@@ -1734,13 +1734,19 @@ async def fail_model_request(
         error_class = "cancelled"
         retry_safe = False
     cancelled = error_class == "cancelled" and not provider_effect
-    result.state = "failed" if retry_safe or cancelled else "needs_reconciliation"
+    # R18a: an unknown delivery only needs operator reconciliation when the
+    # wire request itself could have executed a provider-side effect
+    # (mcp_servers or non-function tools). A function-tools-only completion
+    # has no effect whatever the provider did with it, so it ends as a plain
+    # failure and the run fails through the normal provider-failure path.
+    ambiguous_send = not retry_safe and not cancelled and provider_effect
+    result.state = "needs_reconciliation" if ambiguous_send else "failed"
     result.seal_json = {
         "delivery_state": str(delivery_state),
         "error_class": str(error_class),
         "retry_safe": bool(retry_safe),
     }
-    result.reconciliation_owner = None if retry_safe or cancelled else "session_model_round:ambiguous_failure"
+    result.reconciliation_owner = "session_model_round:ambiguous_failure" if ambiguous_send else None
     result.version = int(result.version) + 1
     failure = {
         "reason": "user_cancel" if cancelled else "ambiguous_provider_send",
@@ -1757,7 +1763,7 @@ async def fail_model_request(
             result.state = "needs_reconciliation" if provider_effect else "failed"
             result.reconciliation_owner = "session_model_round:ambiguous_failure" if provider_effect else None
             return result.state
-        if run_task is not None:
+        if run_task is not None and (cancelled or provider_effect):
             assert_runtime_task_fence(run_task)
             metadata = dict(run_task.metadata_json or {})
             if cancelled:
@@ -1769,6 +1775,8 @@ async def fail_model_request(
             run_task.metadata_json = metadata
             run_task.completed_at = datetime.now(timezone.utc)
             run_task.claim_version = int(run_task.claim_version or 0) + 1
+        else:
+            run_task = None
     else:
         run_task = None
     if not retry_safe and not cancelled:

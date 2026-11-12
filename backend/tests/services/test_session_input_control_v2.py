@@ -5107,6 +5107,9 @@ async def test_ambiguous_provider_failure_fences_result_run_and_event_chain(owne
             provider="openai",
             model="gpt-4.1",
             attempt_owner="worker-a:claim-1",
+            # R18a: only a wire that could execute a provider-side effect is
+            # fenced for reconciliation; this test pins that fence path.
+            wire_request={"messages": [], "tools": [{"type": "web_search_2025"}]},
         )
         await db.commit()
 
@@ -5287,6 +5290,9 @@ async def test_provider_reconciliation_handler_settles_once_after_canonical_fail
                 provider="openai",
                 model="gpt-4.1",
                 attempt_owner="worker-a:1:1",
+                # R18a: only a wire that could execute a provider-side effect
+                # is fenced; this test pins the fenced-settlement path.
+                wire_request={"messages": [], "tools": [{"type": "web_search_2025"}]},
             )
             await db.commit()
 

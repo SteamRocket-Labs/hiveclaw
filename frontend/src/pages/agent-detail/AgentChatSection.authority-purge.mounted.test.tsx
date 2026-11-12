@@ -492,12 +492,23 @@ it.each(['live', 'history'] as const)('renders delivery-safe retry actions with 
     activeSession={{ ...base.activeSession, user_id: 'member', read_only: false, is_current_user_session: true, operator_view: false }}
     historyMsgs={[]} chatMessages={messages}
     chatMessagesSessionId="retry-session" onBranchMessage={branch} />);
-  const [rejected, unknown, legacy] = cards.map(card => screen.getByText(card.content)
-    .closest('.session-tui-render-cell') as HTMLElement);
+  // R18a: an unknown-delivery timeout that ends as a visible failure is a
+  // plain provider failure, so the timeout card carries the same unavailable
+  // copy as the rejected card; the cards are located by render order instead
+  // of by their previously distinct sentences.
+  const unavailableCells = screen.getAllByText('The model service could not finish this task. Ask an administrator to check the model configuration.')
+    .map(node => node.closest('.session-tui-render-cell') as HTMLElement);
+  expect(unavailableCells).toHaveLength(2);
+  const [rejected, unknown, legacy] = [
+    unavailableCells[0], unavailableCells[1],
+    screen.getByText('The model service is temporarily unavailable. This task can be retried safely.')
+      .closest('.session-tui-render-cell') as HTMLElement,
+  ];
   expect(within(rejected).queryByTestId('thread-item-retry-turn')).not.toBeNull();
   expect(rejected.textContent).toContain('The model service could not finish this task. Ask an administrator to check the model configuration.');
   expect(rejected.textContent).not.toContain('can be retried safely');
   expect(within(unknown).queryByTestId('thread-item-retry-turn')).toBeNull();
+  expect(unknown.textContent).not.toContain('can be retried safely');
   expect(within(legacy).queryByTestId('thread-item-retry-turn')).not.toBeNull();
   expect(legacy.textContent).toContain('can be retried safely');
   fireEvent.click(within(rejected).getByTestId('thread-item-retry-turn'));

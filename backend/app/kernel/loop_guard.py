@@ -6,7 +6,11 @@ available only when a tool explicitly reports retry exhaustion, the operation
 is side-effect-free, and the same progress token proves that state did not
 advance. Native task-status reads may also stop at the existing identical-call
 threshold when the same task's fixed terminal reason is unchanged across readers,
-or when a delegated colleague is still running.
+or when a delegated colleague is still running. A side-effect-free search tool
+that keeps returning typed empty results across reworded arguments may also be
+stopped after a fixed count: no external effect exists and the member's
+question has a truthful answer ("nothing found") that more searching cannot
+change.
 """
 
 from __future__ import annotations
@@ -20,7 +24,8 @@ from uuid import UUID
 
 from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
 from app.services.runtime_display_status import (
-    DELEGATED_TASK_RUNNING_MESSAGE, IDENTICAL_TERMINAL_READ_MESSAGE, TERMINAL_TASK_READ_PREFIX,
+    DELEGATED_TASK_RUNNING_MESSAGE, EMPTY_SEARCH_FINAL_MESSAGE, IDENTICAL_TERMINAL_READ_MESSAGE,
+    TERMINAL_TASK_READ_PREFIX,
     is_delegation_failure_result_page, is_runtime_failure_observation,
 )
 
@@ -97,6 +102,7 @@ class LoopGuard:
         repeated_failure_threshold: int = 4,
         repeated_text_threshold: int = 3,
         cost_pressure_threshold: int = 3,
+        empty_search_warn_threshold: int = 3,
         high_prompt_output_ratio: int = 200,
         high_tool_schema_tokens: int = 100_000,
         low_cache_hit_rate: float = 0.05,
@@ -108,6 +114,7 @@ class LoopGuard:
         self.repeated_failure_threshold = repeated_failure_threshold
         self.repeated_text_threshold = repeated_text_threshold
         self.cost_pressure_threshold = cost_pressure_threshold
+        self.empty_search_warn_threshold = empty_search_warn_threshold
         self.high_prompt_output_ratio = high_prompt_output_ratio
         self.high_tool_schema_tokens = high_tool_schema_tokens
         self.low_cache_hit_rate = low_cache_hit_rate
@@ -117,6 +124,7 @@ class LoopGuard:
         self._tool_arg_counts: dict[tuple[str, str], int] = {}
         self._failure_counts: dict[tuple[str, str, str], int] = {}
         self._terminal_read_counts: dict[tuple[str, str], int] = {}
+        self._empty_search_counts: dict[str, int] = {}
         self._assistant_text_counts: dict[str, int] = {}
         self._warned: set[str] = set()
 
@@ -163,6 +171,9 @@ class LoopGuard:
             terminal = self._observe_terminal_task_read(tool_name, args, result)
             if terminal is not None:
                 return terminal
+            empty = self._observe_empty_search(tool_name, result)
+            if empty is not None:
+                return empty
         # Failure counting is a mechanical outcome and therefore comes only
         # from the typed tool-execution receipt. Natural-language tool output
         # may legitimately discuss timeouts, failures, or exceptions.
@@ -226,6 +237,55 @@ class LoopGuard:
                 extra_trace={"proof": proof},
             )
         return None
+
+    def _observe_empty_search(self, tool_name: str, result: str) -> LoopGuardDecision | None:
+        """Repeated empty results from one side-effect-free search tool.
+
+        The arguments are deliberately not compared: a model that rewords the
+        query forever is the loop this catches (E2E run 15: 40 empty
+        search_company_kb calls, 118 s of tool time, then no answer). The tool
+        result's typed ``status: "empty"`` is the mechanical fact; only search
+        tools are counted so polling readers stay under their own rule.
+        """
+        if not tool_name.startswith("search_"):
+            return None
+        try:
+            body = json.loads(result)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(body, dict) or body.get("status") != "empty":
+            return None
+        count = self._empty_search_counts.get(tool_name, 0) + 1
+        self._empty_search_counts[tool_name] = count
+        check = _PatternCheck(
+            reason="repeated_empty_search",
+            detail=(
+                f"{tool_name} returned empty results {count} times in this turn with different "
+                "arguments; the material is not there. Stop searching and tell the member "
+                "nothing was found."
+            ),
+            warn_key=f"empty_search:{tool_name}",
+            count=count,
+            warn_threshold=self.empty_search_warn_threshold,
+        )
+        if count >= _abort_threshold(self.empty_search_warn_threshold):
+            # The stop sentence is the member-facing detail, exactly like the
+            # delegated-running read: the orchestrator ends the turn with it.
+            stop_check = _PatternCheck(
+                reason="repeated_empty_search",
+                detail=EMPTY_SEARCH_FINAL_MESSAGE,
+                warn_key=f"empty_search:{tool_name}",
+                count=count,
+                warn_threshold=self.empty_search_warn_threshold,
+            )
+            return self._decision(
+                stop_check,
+                severity="abort",
+                tool_name=tool_name,
+                args_digest=None,
+                extra_trace={"empty_search_count": count},
+            )
+        return self._escalate(check, tool_name=tool_name)
 
     def _observe_terminal_task_read(self, tool_name, args, result) -> LoopGuardDecision | None:
         if tool_name not in {"check_async_task", "task_output", "read_runtime_result", "list_async_tasks"}:

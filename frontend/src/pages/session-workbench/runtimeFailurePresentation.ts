@@ -15,6 +15,17 @@ export function runtimeFailurePresentation(
       fallback: 'This task did not finish. Please try again later.',
     };
   }
+  if (failureCode === 'timeout' && deliveryState === 'unknown') {
+    // R18a: a timed-out provider stream that still ends as a visible failure is
+    // a plain provider failure — the runtime only fails an unknown delivery
+    // when the request held no provider-side effect (genuinely ambiguous sends
+    // are fenced as needs_reconciliation and never render this card). It gets
+    // the same administrator-directed sentence as other provider failures.
+    return {
+      kind: 'unavailable',
+      fallback: 'The model service could not finish this task. Ask an administrator to check the model configuration.',
+    };
+  }
   if (deliveryState === 'unknown') {
     // Unknown delivery with retryable=false must not promise a retry: keep
     // only the "not confirmed finished" meaning in plain words.

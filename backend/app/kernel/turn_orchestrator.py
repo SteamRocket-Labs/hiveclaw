@@ -2355,8 +2355,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         # delivery state, never natural-language text.
                         delivery_state = str(getattr(exc, "delivery_state", "unknown") or "unknown")
                         retry_safe = delivery_state == "rejected"
+                        model_fail_state: str | None = None
                         if request.model_request_fail is not None and provider_request_id is not None:
-                            await _maybe_await(
+                            model_fail_state = await _maybe_await(
                                 request.model_request_fail(
                                     round_index=logical_round_index,
                                     provider_request_id=provider_request_id,
@@ -2396,7 +2397,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             provider_request_id,
                             failure_detail,
                         )
-                        if provider_request_id is not None and not retry_safe:
+                        if provider_request_id is not None and not retry_safe and model_fail_state != "failed":
+                            # R18a: the round ledger may settle an unknown
+                            # delivery as a plain "failed" when the wire request
+                            # held no provider-side effect; only a decision the
+                            # ledger could not make (or could not reach) fences
+                            # the run for operator reconciliation.
                             raise ProviderRequestNeedsReconciliation(
                                 provider_request_id=provider_request_id,
                                 error_class=error_classification.kind,
@@ -3596,6 +3602,16 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
                 if _loop_guard_terminal_decision is not None:
                     if _loop_guard_terminal_decision.reason == "identical_running_task_read":
+                        message = _loop_guard_terminal_decision.message
+                        await _record_new_token_usage()
+                        await self._persist_before_exit(request, runtime_config, message, api_messages)
+                        return InvocationResult(content=message, tokens_used=accumulated_tokens,
+                            final_tools=tools_for_llm, parts=collected_parts + build_done_event(message)["parts"],
+                            terminal_reason=TerminalReason.TURN_STOP)
+                    if _loop_guard_terminal_decision.reason == "repeated_empty_search":
+                        # R18a: the searches were side-effect-free and every one
+                        # came back typed empty; the truthful answer to the member
+                        # is the plain stop sentence, not another model round.
                         message = _loop_guard_terminal_decision.message
                         await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, message, api_messages)

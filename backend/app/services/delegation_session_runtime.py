@@ -297,7 +297,10 @@ class DelegationSessionRuntime:
 
     async def fail(self, **payload):
         async with self.transaction() as db:
-            await rounds.fail_model_request(db, **self.scope, **payload)
+            # R18a: the round ledger's settlement decision ("failed" for an
+            # effect-free unknown delivery) flows back to the kernel's
+            # ambiguous-send raise unchanged.
+            return await rounds.fail_model_request(db, **self.scope, **payload)
 
     async def tool_call(self, data):
         from app.services.web_chat_runtime import _persist_tool_call

@@ -8,6 +8,9 @@ RUNTIME_LIMIT_MESSAGES = {
 }
 TERMINAL_TASK_READ_PREFIX = "任务结果未变化，已停止本次处理："
 DELEGATED_TASK_RUNNING_MESSAGE = "同事正在处理，结果回来后会在这里继续。"
+# R18a: the loop guard's empty-search stop. True for the only input that
+# produces it — several searches in one turn all returned nothing.
+EMPTY_SEARCH_FINAL_MESSAGE = "多次搜索都没有找到相关资料。"
 # Frozen sentences: stored result summaries and stored failure pages are compared
 # against these exact bytes, so a wording change desynchronizes old records.
 DELEGATION_TIMEOUT_MESSAGE = "没在时限内完成这项任务。"

@@ -1482,6 +1482,9 @@ async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -
             provider_request_id=str(payload["provider_request_id"]),
             error_class=str(payload.get("error_class") or "provider_error"),
         )
+    # R18a: surface the round ledger's settlement decision so the kernel's
+    # ambiguous-send raise respects an effect-free "failed" classification.
+    return result_state
 
 
 def _execution_identity_type(state: _WebChatRunState) -> str:

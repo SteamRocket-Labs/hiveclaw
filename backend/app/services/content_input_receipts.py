@@ -6,11 +6,15 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
+from types import SimpleNamespace
 
-from sqlalchemy import String, or_, select, text
+from sqlalchemy.orm import load_only
+
+from sqlalchemy import String, case, or_, select, text
 
 from app.models.organization_identity import ContentInputReceipt
 from app.services.team_memory import _safe_component, _slugify
+from app.services.source_read_queries import source_reader_access as _source_reader_access
 
 _ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
 _DISCLOSURE_SOURCE_VALIDATIONS = ContextVar("disclosure_source_validations", default=None)
@@ -101,7 +105,7 @@ def observe_native_directory_read(tool_name, content, *, outcome):
 
 
 class _DisclosureSourceValidations:
-    def __init__(self, *, batch_inputs=False, cache_authority=True):
+    def __init__(self, *, batch_inputs=False, cache_authority=True, source_catalog=False):
         self.active = True
         self.batch_inputs = batch_inputs
         self.cache_authority = cache_authority
@@ -110,12 +114,17 @@ class _DisclosureSourceValidations:
         self.revisiting = set()
         self.actors = {}
         self.inputs = {}
+        self.browser_reader = None
+        self.source_catalog = source_catalog
+        self.model_digests = {}
+        self.model_inputs = {}
+        self.statements = {}
 
 
 @contextmanager
-def group_source_read(*, batch_inputs=False, cache_authority=True):
+def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalog=False):
     """Reuse successful exact source checks only inside one reader disclosure."""
-    scope = _DisclosureSourceValidations(batch_inputs=batch_inputs, cache_authority=cache_authority)
+    scope = _DisclosureSourceValidations(batch_inputs=batch_inputs, cache_authority=cache_authority, source_catalog=source_catalog)
     token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
         yield scope
@@ -126,6 +135,10 @@ def group_source_read(*, batch_inputs=False, cache_authority=True):
         scope.revisiting.clear()
         scope.actors.clear()
         scope.inputs.clear()
+        scope.browser_reader = None
+        scope.model_digests.clear()
+        scope.model_inputs.clear()
+        scope.statements.clear()
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
 
 
@@ -144,15 +157,66 @@ def _preflight_inputs(db, *, authority=False):
     return None
 
 
+def _batch_browser_point(db, user=None):
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    reader = user if user is not None else getattr(scope, "browser_reader", None)
+    # Global identities use the existing audited RLS-bypass lookup. Replacing
+    # it with a tenant-visible owner join would lose owner deactivation.
+    return (_preflight_inputs(db) is not None and scope.source_catalog and reader is not None
+        and getattr(reader, "id", None) is not None and reader.role != "platform_admin")
+
+
 async def _input_row(db, model, source_id, *, populate_existing=True):
     rows = _preflight_inputs(db)
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if scope is not None and scope.source_catalog and model.__name__ in {"ChatSession", "RuntimeTask", "User"}:
+        rows = None
     key = (model, source_id)
     if rows is not None and key in rows:
-        return rows[key]
+        row = rows[key]
+        if model.__name__ == "SessionModelResult" and row is not None and scope.source_catalog:
+            state = await db.scalar(select(model.state).where(model.id == source_id, model.tenant_id == row.tenant_id))
+            return SimpleNamespace(**{**vars(row), "state": state})
+        return row
     row = await db.get(model, source_id, populate_existing=populate_existing)
-    if rows is not None:
+    if rows is not None and not (model is ContentInputReceipt and row is not None
+        and row.carrier_kind != "workspace_artifact" and scope.source_catalog):
         rows[key] = row
     return row
+
+
+async def _input_model_request(db, source_id):
+    from app.models.session_v2 import SessionModelResult
+
+    rows = _preflight_inputs(db)
+    if rows is not None and (SessionModelResult, source_id) in rows:
+        return rows[SessionModelResult, source_id]
+    return await db.get(SessionModelResult, source_id, populate_existing=False, options=[load_only(
+        SessionModelResult.id, SessionModelResult.model_request_hash, SessionModelResult.model_request_snapshot_json)])
+
+
+def _immutable_model_digest(model_result):
+    from app.services.session_model_inputs import _hash
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    snapshot = model_result.model_request_snapshot_json
+    key = ("immutable_model_digest", id(snapshot))
+    if scope is None or not scope.active or key not in scope.model_digests:
+        return None
+    retained, digest = scope.model_digests[key]
+    if retained is not snapshot:
+        return None
+    if digest is None:
+        digest = _hash(snapshot)
+        scope.model_digests[key] = (snapshot, digest)
+    return digest
+
+
+def _model_request_digest(db, model_result):
+    from app.services.session_tool_runtime import _sha256
+
+    digest = _immutable_model_digest(model_result)
+    return digest if digest is not None else _sha256(model_result.model_request_snapshot_json)
 
 
 async def _input_agent_access(db, user, agent_id):
@@ -177,6 +241,10 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
     from app.models.workspace_resource import WorkspaceResourceManifest
 
     rows = _preflight_inputs(db)
+    immutable_only = _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog
+    # A private recursive transit row expands each immutable model's bindings
+    # once, even when many invocations share its request. It is neither stored
+    # nor returned as a source; ordered validation still walks the original refs.
     selected = await db.execute(text("""
         WITH RECURSIVE sources(kind, id) AS (
             SELECT value->>'source_kind', value->>'source_id'
@@ -191,7 +259,7 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                 AND t.id = CASE WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
                     THEN s.id::uuid END AND t.tenant_id = :tenant_id
             LEFT JOIN session_model_results m ON m.tenant_id = :tenant_id AND (
-                (s.kind = 'session_model_result' AND m.id = CASE
+                (s.kind IN ('session_model_result', '__model_request_inputs') AND m.id = CASE
                     WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END)
                 OR (m.session_id = t.session_id AND m.run_id = t.run_id
                     AND m.provider_request_id = t.provider_request_id))
@@ -202,7 +270,11 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                     p.metadata_json #>> '{memory_result,invocation_id}') = t.id::text
             CROSS JOIN LATERAL jsonb_array_elements(
                 CASE WHEN jsonb_typeof(r.dependencies_json) = 'array' THEN r.dependencies_json ELSE '[]'::jsonb END
-                || CASE WHEN jsonb_typeof(m.model_request_snapshot_json #> '{input_bindings,dependencies}') = 'array'
+                || CASE WHEN s.kind IN ('session_tool_invocation', 'session_model_result') AND m.id IS NOT NULL
+                    THEN jsonb_build_array(jsonb_build_object('source_kind', '__model_request_inputs', 'source_id', m.id::text))
+                    ELSE '[]'::jsonb END
+                || CASE WHEN s.kind = '__model_request_inputs'
+                    AND jsonb_typeof(m.model_request_snapshot_json #> '{input_bindings,dependencies}') = 'array'
                     THEN m.model_request_snapshot_json #> '{input_bindings,dependencies}' ELSE '[]'::jsonb END
                 || CASE WHEN jsonb_typeof(p.metadata_json #> '{workspace_execution_evidence,execution_inputs,sources}') = 'array'
                     THEN p.metadata_json #> '{workspace_execution_evidence,execution_inputs,sources}' ELSE '[]'::jsonb END
@@ -214,7 +286,7 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                         'source_id', p.metadata_json #>> '{workspace_input_evidence,content_input_receipt_id}'))
                     ELSE '[]'::jsonb END
             ) child
-        ) SELECT kind, id FROM sources
+        ) SELECT kind, id FROM sources WHERE kind != '__model_request_inputs'
     """), {"dependencies": json.dumps(dependencies), "tenant_id": tenant_id})
     ids = {}
     for kind, raw_id in selected:
@@ -223,42 +295,82 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
         except (ValueError, TypeError, AttributeError):
             pass  # The ordered source validator owns malformed-source errors.
 
-    async def load(model, source_ids):
+    async def _load_source_rows(model, source_ids, *, columns=None):
         source_ids = set(source_ids)
         missing = [source_id for source_id in source_ids if (model, source_id) not in rows]
-        loaded = list(await db.scalars(select(model).where(model.tenant_id == tenant_id, model.id.in_(missing))
-            .execution_options(populate_existing=True))) if missing else []
+        statement = select(model).where(model.tenant_id == tenant_id, model.id.in_(missing))
+        if columns is not None:
+            statement = statement.options(load_only(*columns))
+        if immutable_only and model is SessionToolInvocation:
+            statement = statement.where(SessionToolInvocation.result_event_id.is_not(None))
+        loaded = list(await db.scalars(statement.execution_options(populate_existing=True))) if missing else []
         rows.update({(model, source_id): None for source_id in missing})
         rows.update({(model, row.id): row for row in loaded})
         return [rows[(model, source_id)] for source_id in source_ids if rows[(model, source_id)] is not None]
 
-    tools = await load(SessionToolInvocation, ids.get("session_tool_invocation", ()))
-    receipts = await load(ContentInputReceipt, ids.get("workspace_artifact", set()) | ids.get("explicit_memory", set()))
+    tools = await _load_source_rows(SessionToolInvocation, ids.get("session_tool_invocation", ()))
+    receipts = await _load_source_rows(ContentInputReceipt, ids.get("workspace_artifact", set())
+        | (set() if immutable_only else ids.get("explicit_memory", set())))
     for ref, receipt_id in (latest_receipts or {}).items():
         receipt = rows.get((ContentInputReceipt, receipt_id))
         if receipt is not None and receipt.carrier_kind == "workspace_artifact" and receipt.carrier_ref == ref:
             rows[("latest", "workspace_artifact", ref)] = receipt
-    models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.tenant_id == tenant_id,
+    model_columns = [SessionModelResult.id, SessionModelResult.tenant_id, SessionModelResult.session_id,
+        SessionModelResult.run_id, SessionModelResult.round_id, SessionModelResult.turn_id,
+        SessionModelResult.provider_request_id, SessionModelResult.model_request_hash,
+        SessionModelResult.model_request_snapshot_json, SessionModelResult.state]
+    statement = select(SessionModelResult).where(SessionModelResult.tenant_id == tenant_id,
         or_(SessionModelResult.id.in_(ids.get("session_model_result", ())),
             SessionModelResult.id.in_(select(SessionModelResult.id).join(SessionToolInvocation,
                 (SessionModelResult.session_id == SessionToolInvocation.session_id)
                 & (SessionModelResult.run_id == SessionToolInvocation.run_id)
                 & (SessionModelResult.provider_request_id == SessionToolInvocation.provider_request_id))
                 .where(SessionToolInvocation.id.in_([row.id for row in tools])))))
-        .execution_options(populate_existing=True)))
+    if immutable_only:
+        statement = statement.with_only_columns(*model_columns, case((SessionModelResult.id.in_(
+            ids.get("session_model_result", ())), SessionModelResult.seal_json)).label("seal_json"))
+        models = [SimpleNamespace(**row._mapping) for row in await db.execute(statement)]
+    else:
+        models = list(await db.scalars(statement.execution_options(populate_existing=True)))
     rows.update({(SessionModelResult, source_id): None for source_id in ids.get("session_model_result", ())})
     rows.update({(SessionModelResult, row.id): row for row in models})
-    commands = await load(SessionCommand, ids.get("session_command", ()))
+    for model in models:
+        if immutable_only and model.state in {"sealed", "round_committed"}:
+            _DISCLOSURE_SOURCE_VALIDATIONS.get().model_digests["immutable_model_digest", id(model.model_request_snapshot_json)] = (
+                model.model_request_snapshot_json, None)
+    commands = await _load_source_rows(SessionCommand, ids.get("session_command", ()), columns=[
+        SessionCommand.id, SessionCommand.tenant_id, SessionCommand.session_id, SessionCommand.namespace,
+        SessionCommand.principal_type, SessionCommand.principal_id, SessionCommand.command_kind,
+        SessionCommand.request_json, SessionCommand.request_hash, SessionCommand.target_json, SessionCommand.target_hash]
+        if immutable_only else None)
     session_ids = {row.session_id for row in [*models, *tools, *commands]}
     for receipt in receipts:
         try:
             session_ids.add(uuid.UUID(receipt.authority_json["source_session_id"]))
         except (KeyError, TypeError, ValueError, AttributeError):
             pass
-    await load(ChatSession, session_ids)
-    events = await load(ChatTranscriptEvent, {row.result_event_id for row in tools if row.result_event_id})
+    await _load_source_rows(ChatSession, session_ids, columns=[ChatSession.id, ChatSession.tenant_id, ChatSession.agent_id]
+        if immutable_only else None)
+    event_ids = {row.result_event_id for row in tools if row.result_event_id}
+    if immutable_only:
+        # Bridge bookkeeping updates metadata_json, but never its v2_payload.
+        # Select only the settled payload and immutable binding/hash columns.
+        event_columns = [ChatTranscriptEvent.id, ChatTranscriptEvent.tenant_id, ChatTranscriptEvent.agent_id,
+            ChatTranscriptEvent.session_id, ChatTranscriptEvent.run_id, ChatTranscriptEvent.invocation_id,
+            ChatTranscriptEvent.result_id, ChatTranscriptEvent.content_hash]
+        events = []
+        for values in await db.execute(select(*event_columns,
+            ChatTranscriptEvent.metadata_json["v2_payload"].label("payload")).where(
+                ChatTranscriptEvent.id.in_(event_ids), ChatTranscriptEvent.tenant_id == tenant_id)):
+            fields = dict(values._mapping)
+            payload = fields.pop("payload")
+            if isinstance(payload, dict):
+                events.append(SimpleNamespace(**fields, metadata_json={"v2_payload": payload}))
+        rows.update({(ChatTranscriptEvent, row.id): row for row in events})
+    else:
+        events = await _load_source_rows(ChatTranscriptEvent, event_ids)
     inputs = list(await db.scalars(select(SessionTurnInput).where(SessionTurnInput.tenant_id == tenant_id,
-        SessionTurnInput.command_id.in_([row.id for row in commands])))) if commands else []
+        SessionTurnInput.command_id.in_([row.id for row in commands])))) if commands and not immutable_only else []
     by_command = {row.command_id: row for row in inputs}
     for source in [*commands, *tools]:
         session = rows.get((ChatSession, source.session_id))
@@ -282,7 +394,12 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                 span_ids.add(uuid.UUID(pointer["evidence_ref"].split(":", 1)[1]))
             except (KeyError, TypeError, ValueError, AttributeError):
                 pass
-    spans = await load(InvocationSpan, span_ids | ids.get("session_actor_identity", set()))
+    spans = await _load_source_rows(InvocationSpan, span_ids | ids.get("session_actor_identity", set())
+        | ids.get("agent_directory_observation", set()) | ids.get("memory_resource_reference", set()),
+        columns=[InvocationSpan.id, InvocationSpan.tenant_id, InvocationSpan.agent_id, InvocationSpan.user_id,
+            InvocationSpan.runtime_task_id, InvocationSpan.session_id, InvocationSpan.trace_id, InvocationSpan.span_id,
+            InvocationSpan.span_type, InvocationSpan.name, InvocationSpan.status, InvocationSpan.input_hash, InvocationSpan.metadata_json]
+        if immutable_only else None)
     actor_sessions, actor_tasks = set(), set()
     for span in spans:
         actor = (span.metadata_json or {}).get("session_actor_identity")
@@ -293,11 +410,13 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                 except (KeyError, TypeError, ValueError, AttributeError):
                     pass
     if actor_sessions:
-        await load(ChatSession, actor_sessions)
-    if actor_tasks:
+        await _load_source_rows(ChatSession, actor_sessions)
+    if actor_tasks and not immutable_only:
         from app.models.runtime_task import RuntimeTask
 
-        await load(RuntimeTask, actor_tasks)
+        await _load_source_rows(RuntimeTask, actor_tasks)
+    if immutable_only:
+        return
     refs = {row.carrier_ref for row in receipts}
     latest_refs = {row.carrier_ref for row in receipts if ("latest", row.carrier_kind, row.carrier_ref) not in rows}
     latest = list(await db.scalars(select(ContentInputReceipt).where(ContentInputReceipt.tenant_id == tenant_id,
@@ -729,6 +848,7 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
         raise ContentInputReceiptError(
             "content_source_unavailable", "The context source receipt is unsupported.", 503
         ) from exc
+    reader_facts, current_revision = None, None
     try:
         if runtime_request is not None:
             principal, _requester = await _runtime_input_actor(db, tenant_id, runtime_request)
@@ -749,14 +869,32 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 if not is_machine_runtime_actor(_requester):
                     await check_agent_access(db, _requester, agent_id)
         else:
-            source = await db.scalar(
-                select(Agent)
-                .where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
-                .execution_options(populate_existing=True)
-            )
-            if source is None:
-                raise ValueError("context_source_agent_unavailable")
-            await check_agent_access(db, user, agent_id)
+            if _batch_browser_point(db, user):
+                from app.models.config_revision import ConfigRevision
+                from app.services.source_read_queries import source_reader_statement
+
+                statement = source_reader_statement(user, agent_id).where(Agent.tenant_id == tenant_id)
+                if policy_source:
+                    statement = statement.add_columns(ConfigRevision).outerjoin(ConfigRevision, ConfigRevision.id == policy_id)
+                elif resident or identity:
+                    statement = statement.add_columns(ConfigRevision).outerjoin(ConfigRevision,
+                        (ConfigRevision.tenant_id == tenant_id) & (ConfigRevision.entity_type == "agent_bootstrap")
+                        & (ConfigRevision.entity_id == Agent.id) & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
+                reader_facts = (await db.execute(statement)).first()
+                source = reader_facts[0] if reader_facts is not None else None
+                current_revision = reader_facts[5] if reader_facts is not None and len(reader_facts) > 5 else None
+                if source is None:
+                    raise ValueError("context_source_agent_unavailable")
+                await _source_reader_access(db, user, reader_facts)
+            else:
+                source = await db.scalar(
+                    select(Agent)
+                    .where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+                    .execution_options(populate_existing=True)
+                )
+                if source is None:
+                    raise ValueError("context_source_agent_unavailable")
+                await check_agent_access(db, user, agent_id)
     except (HTTPException, ValueError) as exc:
         raise ContentInputReceiptError(
             "content_source_access_denied", "The context source is no longer authorized.", 403
@@ -770,7 +908,7 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
             render_owner_action_policy_prompt_section,
         )
 
-        revision = await db.get(ConfigRevision, policy_id, populate_existing=True)
+        revision = current_revision if reader_facts is not None else await db.get(ConfigRevision, policy_id, populate_existing=True)
         if (
             revision is None
             or revision.tenant_id != tenant_id
@@ -866,7 +1004,7 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
         from app.models.config_revision import ConfigRevision
         from app.services.config_versioning import canonical_content_hash
 
-        row = (await db.execute(select(ConfigRevision, Agent).select_from(Agent)
+        row = (current_revision, source) if reader_facts is not None else (await db.execute(select(ConfigRevision, Agent).select_from(Agent)
             .outerjoin(ConfigRevision, (ConfigRevision.tenant_id == tenant_id)
                 & (ConfigRevision.entity_type == "agent_bootstrap") & (ConfigRevision.entity_id == Agent.id)
                 & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
@@ -1268,10 +1406,19 @@ async def _validate_session_actor_identity(db, tenant_id, dependency, *, user, r
         raise ContentInputReceiptError(
             "content_source_unavailable", "The actor observation is invalid or unavailable.", 503
         ) from exc
-    session = await _input_row(db, ChatSession, scope["session_id"])
+    reader_facts = None
+    if _batch_browser_point(db, user) and runtime_request is None:
+        from app.services.source_read_queries import source_reader_statement, reader_columns
+
+        reader_facts = (await db.execute(source_reader_statement(user, ChatSession.agent_id).add_columns(ChatSession)
+            .outerjoin(ChatSession, ChatSession.id == scope["session_id"]).options(*reader_columns(ChatSession)))).first()
+        session = reader_facts[5] if reader_facts is not None else None
+    else:
+        session = await _input_row(db, ChatSession, scope["session_id"])
     if session is None or session.agent_id != scope["agent_id"] or session.tenant_id != tenant_id:
         raise ContentInputReceiptError("content_source_changed", "The actor's source session is unavailable.", 403)
-    await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request)
+    await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request,
+        reader_facts=reader_facts)
 
 
 async def _validate_session_dependencies(db, tenant_id, dependencies, **context):
@@ -1296,6 +1443,54 @@ async def _validate_session_dependencies(db, tenant_id, dependencies, **context)
         except ValueError as exc:
             raise ContentInputReceiptError("content_source_unavailable", "The session source receipt is invalid.", 503) from exc
         cached = _preflight_inputs(db)
+        if _batch_browser_point(db, context.get("user")) and context.get("runtime_request") is None:
+            from app.models.agent import Agent
+            from app.models.session_v2 import SessionModelResult
+            from app.services.source_read_queries import source_reader_statement, model_source_state_columns, reader_columns
+
+            for dependency, source_id in zip(selected, ids):
+                retained = cached.get(("session_source", model, source_id))
+                if retained is None or (model is SessionToolInvocation and retained[2] is None):
+                    statement = source_reader_statement(context["user"], ChatSession.agent_id).add_columns(ChatSession, model, linked)
+                    statement = statement.join(ChatSession, ChatSession.agent_id == Agent.id).join(model, model.session_id == ChatSession.id)
+                    statement = statement.outerjoin(linked, binding & (linked.tenant_id == tenant_id)
+                        & (linked.session_id == model.session_id)).where(model.id == source_id,
+                            model.tenant_id == tenant_id, ChatSession.tenant_id == tenant_id)
+                    if model is SessionToolInvocation:
+                        statement = statement.add_columns(*model_source_state_columns()).outerjoin(SessionModelResult,
+                            (SessionModelResult.tenant_id == tenant_id) & (SessionModelResult.session_id == model.session_id)
+                            & (SessionModelResult.run_id == model.run_id)
+                            & (SessionModelResult.provider_request_id == model.provider_request_id))
+                    facts = (await db.execute(statement)).first()
+                    await _validate_session_dependency(db, tenant_id, dependency,
+                        row=(facts[6], facts[5], facts[7]) if facts is not None else None, model=model,
+                        reader_facts=facts, model_state=tuple(facts[8:]) if facts is not None and len(facts) > 8 else None,
+                        **context)
+                    continue
+                source, _binding, linked_row = retained
+                statement = source_reader_statement(context["user"], ChatSession.agent_id).add_columns(ChatSession).options(*reader_columns(ChatSession))
+                statement = statement.outerjoin(ChatSession, ChatSession.id == source.session_id)
+                if model is SessionToolInvocation:
+                    statement = statement.add_columns(*model_source_state_columns()).outerjoin(SessionModelResult,
+                        (SessionModelResult.tenant_id == tenant_id) & (SessionModelResult.session_id == source.session_id)
+                        & (SessionModelResult.run_id == source.run_id)
+                        & (SessionModelResult.provider_request_id == source.provider_request_id))
+                else:
+                    statement = statement.add_columns(SessionTurnInput).outerjoin(SessionTurnInput,
+                        (SessionTurnInput.command_id == source.id) & (SessionTurnInput.tenant_id == tenant_id)
+                        & (SessionTurnInput.session_id == source.session_id)).options(load_only(
+                            SessionTurnInput.id, SessionTurnInput.tenant_id, SessionTurnInput.session_id,
+                            SessionTurnInput.command_id, SessionTurnInput.content_parts_json, SessionTurnInput.content_hash))
+                facts = (await db.execute(statement)).first()
+                session = facts[5] if facts is not None else None
+                if model is SessionCommand:
+                    linked_row = facts[6] if facts is not None else None
+                await _validate_session_dependency(db, tenant_id, dependency,
+                    row=(source, session, linked_row) if session is not None else None, model=model,
+                    reader_facts=facts, model_state=tuple(facts[6:]) if facts is not None and len(facts) > 6 else None, **context)
+            continue
+        if cached is not None and _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog:
+            cached = None  # Live non-browser/global authority retains its existing reader.
         rows = {row[0].id: row for row in await db.execute(
             select(model, ChatSession, linked).join(ChatSession, ChatSession.id == model.session_id)
             .outerjoin(linked, binding & (linked.tenant_id == tenant_id) & (linked.session_id == model.session_id))
@@ -1316,7 +1511,8 @@ async def _validate_session_dependencies(db, tenant_id, dependencies, **context)
 
 
 async def _validate_session_dependency(
-    db, tenant_id, dependency, *, row, model, user, runtime_request, active_workspace_receipts=None
+    db, tenant_id, dependency, *, row, model, user, runtime_request, active_workspace_receipts=None,
+    reader_facts=None, model_state=None
 ):
     from app.models.session_v2 import SessionCommand, SessionToolInvocation
     from app.services.session_model_inputs import _hash
@@ -1356,6 +1552,7 @@ async def _validate_session_dependency(
         session,
         user=user,
         runtime_request=runtime_request,
+        reader_facts=reader_facts,
         delegated_user_command=(
             model is SessionCommand
             and source.namespace == "human_input"
@@ -1423,14 +1620,12 @@ async def _validate_session_dependency(
                     403,
                 )
     if model is SessionToolInvocation and source.tool_name in {"list_files", "fs_list", "glob_search"}:
-        from app.models.session_v2 import SessionModelResult
-
         pointer = (payload.get("metadata") or {}).get("native_directory_read_receipt")
         if pointer is not None:
             # This receipt attests only the exact native names/status, with no
             # body sources or new grants. Ancestor inputs remain flattened in
             # the consumer's inventory; do not recursively expand them again.
-            native_model = await _input_row(db, SessionModelResult, event.result_id, populate_existing=False) if event else None
+            native_model = await _input_model_request(db, event.result_id) if event else None
             try:
                 bound = (
                     await load_native_directory_read_evidence(
@@ -1466,7 +1661,8 @@ async def _validate_session_dependency(
         token = _ACTIVE_GROUP_TOOL_SOURCES.set(active | {key})
         try:
             sources, complete = await _origin_dependencies(
-                db, tenant_id=tenant_id, agent_id=session.agent_id, ref=f"session-tool-result:{source.id}"
+                db, tenant_id=tenant_id, agent_id=session.agent_id, ref=f"session-tool-result:{source.id}",
+                current_model_state=model_state if reader_facts is not None else None,
             )
             if not complete:
                 raise ContentInputReceiptError(
@@ -1485,7 +1681,7 @@ async def _validate_session_dependency(
 
 
 async def _authorize_session_input_source(
-    db, tenant_id, session, *, user, runtime_request, delegated_user_command=False
+    db, tenant_id, session, *, user, runtime_request, delegated_user_command=False, reader_facts=None
 ):
     from app.core.source_read_purpose import current_source_recipient
 
@@ -1495,13 +1691,13 @@ async def _authorize_session_input_source(
     if cached is not None and key in cached:
         return
     await _resolve_session_input_source(db, tenant_id, session, user=user,
-        runtime_request=runtime_request, delegated_user_command=delegated_user_command)
+        runtime_request=runtime_request, delegated_user_command=delegated_user_command, reader_facts=reader_facts)
     if cached is not None:
         cached[key] = (session, user, runtime_request)
 
 
 async def _resolve_session_input_source(
-    db, tenant_id, session, *, user, runtime_request, delegated_user_command=False
+    db, tenant_id, session, *, user, runtime_request, delegated_user_command=False, reader_facts=None
 ):
     from fastapi import HTTPException
     from app.core.permissions import authorize_session_action, require_agent_execution_access
@@ -1559,7 +1755,10 @@ async def _resolve_session_input_source(
                     db, requester, agent_id=session.agent_id, session_id=session.id, action="read_content_input_source"
                 )
                 return
-            await _input_agent_access(db, requester, session.agent_id)
+            if reader_facts is None:
+                await _input_agent_access(db, requester, session.agent_id)
+            else:
+                await _source_reader_access(db, requester, reader_facts)
             await require_current_group_member(db, session=session, user=requester)
             return
         except HTTPException as exc:
@@ -1586,9 +1785,17 @@ async def _resolve_session_input_source(
                 )
             if not business_inspection_allowed() and session.user_id != getattr(user, "id", None):
                 raise ValueError("private_session_recipient_mismatch")
-            await authorize_session_action(
-                db, user, agent_id=session.agent_id, session_id=session.id, action="read_content_input_source"
-            )
+            if reader_facts is None:
+                await authorize_session_action(
+                    db, user, agent_id=session.agent_id, session_id=session.id, action="read_content_input_source"
+                )
+            else:
+                from app.core.permissions import authorize_loaded_session_access
+                from app.services.source_read_queries import source_reader_access
+
+                agent, level = await source_reader_access(db, user, reader_facts)
+                await authorize_loaded_session_access(db, user, agent=agent, session=session,
+                    access_level=level, action="read_content_input_source")
             return
         if session.user_id != requester.id:
             raise ValueError("session_source_actor_mismatch")
@@ -1887,7 +2094,7 @@ async def _validate_company_publication_dependency(db, tenant_id, dependency, *,
 async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, runtime_request, active_receipts):
     from fastapi import HTTPException
     from app.models.workspace_resource import WorkspaceResourceManifest
-    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path, check_agent_access as workspace_agent_access
 
     try:
         receipt_id = uuid.UUID(dependency["source_id"])
@@ -1915,16 +2122,34 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
             "content_source_unavailable", "The workspace source binding is invalid.", 503
         ) from exc
     cached = _preflight_inputs(db)
-    manifest_key = ("manifest", agent_id, path)
-    manifest = cached[manifest_key] if cached is not None and manifest_key in cached else await db.scalar(
-        select(WorkspaceResourceManifest)
-        .where(
-            WorkspaceResourceManifest.tenant_id == tenant_id,
-            WorkspaceResourceManifest.agent_id == agent_id,
-            WorkspaceResourceManifest.path == path,
-        )
-        .execution_options(populate_existing=True)
-    )
+    facts, source_facts, latest = None, None, None
+    if _batch_browser_point(db, user) and runtime_request is None:
+        from sqlalchemy.orm import aliased
+        from app.models.chat_session import ChatSession
+        from app.services.source_read_queries import source_reader_statement, resource_permission_rows
+        from app.core.resource_authority import workspace_resource_id
+
+        current = aliased(ContentInputReceipt)
+        latest_id = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
+            ContentInputReceipt.carrier_kind == "workspace_artifact", ContentInputReceipt.carrier_ref == receipt.carrier_ref
+            ).order_by(ContentInputReceipt.revision.desc()).limit(1).scalar_subquery()
+        root_owned = select(ChatSession.id).where(ChatSession.id == WorkspaceResourceManifest.root_session_id,
+            ChatSession.agent_id == agent_id, ChatSession.user_id == user.id).exists()
+        facts = (await db.execute(source_reader_statement(user, agent_id).add_columns(
+            WorkspaceResourceManifest, current, root_owned,
+            resource_permission_rows("workspace_file", workspace_resource_id(agent_id, path), tenant_id))
+            .outerjoin(WorkspaceResourceManifest, (WorkspaceResourceManifest.tenant_id == tenant_id)
+                & (WorkspaceResourceManifest.agent_id == agent_id) & (WorkspaceResourceManifest.path == path))
+            .outerjoin(current, current.id == latest_id))).first()
+        manifest, latest = (facts[5], facts[6]) if facts is not None else (None, None)
+        source_facts = (manifest, facts[7], facts[8]) if facts is not None else None
+    else:
+        manifest_key = ("manifest", agent_id, path)
+        manifest = cached[manifest_key] if cached is not None and manifest_key in cached else await db.scalar(
+            select(WorkspaceResourceManifest)
+            .where(WorkspaceResourceManifest.tenant_id == tenant_id,
+                WorkspaceResourceManifest.agent_id == agent_id, WorkspaceResourceManifest.path == path)
+            .execution_options(populate_existing=True))
     if manifest is None or manifest.authority_state != "owned" or manifest.deleted_at is not None:
         raise ContentInputReceiptError(
             "content_source_access_denied", "The workspace source is unavailable or quarantined.", 403
@@ -1963,12 +2188,15 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
                 if principal is not None and principal.agent_id == agent_id
                 else None,
                 runtime_principal=principal,
+                agent_access=await _source_reader_access(db, user, facts, access_check=workspace_agent_access) if facts is not None else None,
+                source_facts=source_facts,
             )
     except (HTTPException, WorkspaceAuthorityError) as exc:
         raise ContentInputReceiptError(
             "content_source_access_denied", "The workspace source is no longer authorized for this reader.", 403
         ) from exc
-    latest = await latest_workspace_receipt(db, tenant_id, agent_id, path)
+    if source_facts is None:
+        latest = await latest_workspace_receipt(db, tenant_id, agent_id, path)
     if latest is None or latest.revision < receipt.revision or manifest.content_hash != latest.content_sha256:
         raise ContentInputReceiptError(
             "content_source_changed", "The current workspace bytes have no matching receipt.", 403
@@ -2294,7 +2522,8 @@ async def validate_runtime_workspace_receipt(db, tenant_id, principal, receipt, 
 async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, runtime_principal=None):
     from app.services.historical_model_inputs import source_resolution
 
-    with source_resolution():
+    with source_resolution(), group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as scope:
+        scope.browser_reader = user if runtime_principal is None else None
         return await _validate_artifact_content_receipt(
             db, tenant_id, user, artifact, runtime_principal=runtime_principal
         )
@@ -2321,6 +2550,9 @@ async def _validate_artifact_content_receipt(db, tenant_id, user, artifact, *, r
         raise ContentInputReceiptError(
             "workspace_content_unverified", "The artifact's source receipt does not match its captured bytes."
         )
+    _preflight_inputs(db)[ContentInputReceipt, receipt.id] = receipt
+    await _preload_execution_sources(db, tenant_id, [{"source_kind": "workspace_artifact",
+        "source_id": str(receipt.id), "source_version": receipt.content_sha256}])
     if runtime_principal is not None:
         await _runtime_input_actor(db, tenant_id, runtime_principal)
     if snapshot.get("selection_model_result_id") is not None:
@@ -2333,7 +2565,10 @@ async def _validate_artifact_content_receipt(db, tenant_id, user, artifact, *, r
             raise ContentInputReceiptError(
                 "artifact_selection_unavailable", "The artifact selection source is invalid.", 503
             ) from exc
-        model = await db.get(SessionModelResult, model_id, populate_existing=True)
+        model = await db.get(SessionModelResult, model_id, populate_existing=True, options=[load_only(
+            SessionModelResult.id, SessionModelResult.tenant_id, SessionModelResult.session_id,
+            SessionModelResult.run_id, SessionModelResult.state, SessionModelResult.model_request_hash,
+            SessionModelResult.model_request_snapshot_json)])
         dependencies, complete = model_output_dependencies(model)
         if not complete or (model.tenant_id, model.session_id, model.run_id) != (
             artifact.tenant_id,
@@ -2989,7 +3224,7 @@ async def _load_native_read_evidence(
         or proof.get("invocation_id") != str(invocation.id)
         or proof.get("model_result_id") != str(model_result.id)
         or proof.get("model_request_hash") != model_result.model_request_hash
-        or _sha256(model_result.model_request_snapshot_json) != model_result.model_request_hash
+        or _model_request_digest(db, model_result) != model_result.model_request_hash
         or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
         or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
         or proof.get("tool_result_hash") != content_hash
@@ -3194,7 +3429,7 @@ async def load_skill_input_evidence(db, *, agent_id, invocation, model_result, a
         or proof.get("invocation_id") != str(invocation.id)
         or proof.get("model_result_id") != str(model_result.id)
         or proof.get("model_request_hash") != model_result.model_request_hash
-        or _sha256(model_result.model_request_snapshot_json) != model_result.model_request_hash
+        or _model_request_digest(db, model_result) != model_result.model_request_hash
         or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
         or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
         or proof.get("tool_result_hash") != content_hash
@@ -3335,7 +3570,7 @@ async def load_workspace_input_evidence(db, *, agent_id, invocation, model_resul
             or proof.get("invocation_id") != str(invocation.id)
             or proof.get("model_result_id") != str(model_result.id)
             or proof.get("model_request_hash") != model_result.model_request_hash
-            or _sha256(model_result.model_request_snapshot_json) != model_result.model_request_hash
+            or _model_request_digest(db, model_result) != model_result.model_request_hash
             or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
             or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
             or proof.get("tool_result_hash") != content_hash
@@ -3544,7 +3779,7 @@ async def load_workspace_execution_evidence(db, *, agent_id, invocation, model_r
             or proof.get("invocation_id") != str(invocation.id)
             or proof.get("model_result_id") != str(model_result.id)
             or proof.get("model_request_hash") != model_result.model_request_hash
-            or _sha256(model_result.model_request_snapshot_json) != model_result.model_request_hash
+            or _model_request_digest(db, model_result) != model_result.model_request_hash
             or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
             or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
             or proof.get("tool_result_hash") != content_hash

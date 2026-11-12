@@ -424,19 +424,20 @@ async def _load_configured_channel_types(
             require_tenant=True,
             source="agent_context_resource_channels",
         ) as db:
-            result = await db.execute(
-                sa_select(ChannelConfig.channel_type)
-                .where(
-                    ChannelConfig.agent_id == agent_id,
-                    ChannelConfig.tenant_id == tenant_id,
-                    ChannelConfig.is_configured,
-                )
-                .order_by(ChannelConfig.channel_type)
-            )
-            values = list(result.scalars().all())
-            company_channels = (await db.execute(sa_select(TenantChannelConfig).where(
-                TenantChannelConfig.tenant_id == tenant_id, TenantChannelConfig.is_active,
-            ))).scalars().all()
+            from sqlalchemy import func, literal
+            from sqlalchemy.orm import load_only
+
+            agent_channels = sa_select(func.array_agg(ChannelConfig.channel_type)).where(
+                ChannelConfig.agent_id == agent_id, ChannelConfig.tenant_id == tenant_id,
+                ChannelConfig.is_configured).scalar_subquery()
+            anchor = sa_select(literal(1)).subquery()
+            rows = (await db.execute(sa_select(agent_channels, TenantChannelConfig).select_from(anchor)
+                .outerjoin(TenantChannelConfig, (TenantChannelConfig.tenant_id == tenant_id) & TenantChannelConfig.is_active)
+                .options(load_only(TenantChannelConfig.id, TenantChannelConfig.channel_type, TenantChannelConfig.is_active,
+                    TenantChannelConfig.app_id, TenantChannelConfig.app_secret, TenantChannelConfig.extra_config,
+                    TenantChannelConfig.encrypt_key, TenantChannelConfig.verification_token)))).all()
+            values = list(rows[0][0] or []) if rows else []
+            company_channels = [row[1] for row in rows if row[1] is not None]
             values.extend(config.channel_type for config in company_channels if config.is_configured and (
                 config.channel_type not in {"dingtalk", "wecom"} or company_channel_ready(config)))
             return tuple(sorted({

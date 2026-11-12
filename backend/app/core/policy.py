@@ -196,11 +196,14 @@ async def classify_permission(
             return "absent"
     result = await db.execute(statement.execution_options(populate_existing=True))
     permissions = result.scalars().all()
-    applicable = [
-        permission
-        for permission in permissions
-        if permission_effect_applies(permission, action=action, context=context)
-    ]
+    return classify_loaded_permissions(permissions, principals=principals, action=action, context=context)
+
+
+def classify_loaded_permissions(permissions, *, principals, action, context=None):
+    """Apply the same deny/allow rules to this check point's joined grant rows."""
+    applicable = [permission for permission in permissions
+        if (permission.principal_type, permission.principal_id) in principals
+        and permission_effect_applies(permission, action=action, context=context)]
     if any(str(getattr(permission, "effect", "allow") or "allow") == "deny" for permission in applicable):
         return "deny"
     if any(str(getattr(permission, "effect", "allow") or "allow") == "allow" for permission in applicable):

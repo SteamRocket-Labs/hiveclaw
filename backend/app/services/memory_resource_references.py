@@ -40,8 +40,8 @@ def _source_session(path: str) -> uuid.UUID:
     return uuid.UUID(parts[len(prefix)])
 
 
-async def _private_sessions(db, *, tenant_id, agent_id, user_id, session_ids):
-    sessions = list(await db.scalars(select(ChatSession).where(ChatSession.id.in_(session_ids),
+async def _private_sessions(db, *, tenant_id, agent_id, user_id, session_ids, sessions=None):
+    sessions = sessions if sessions is not None else list(await db.scalars(select(ChatSession).where(ChatSession.id.in_(session_ids),
         ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id,
         ChatSession.user_id == user_id).execution_options(populate_existing=True)))
     if {session.id for session in sessions} != set(session_ids) or any(
@@ -130,7 +130,9 @@ async def validate_reference(db, tenant_id, dependency, *, user=None, runtime_re
 
     try:
         source_id = uuid.UUID(dependency["source_id"])
-        row = await db.get(InvocationSpan, source_id, populate_existing=True)
+        from app.services.content_input_receipts import _input_row
+
+        row = await _input_row(db, InvocationSpan, source_id)
         p = (row.metadata_json or {}).get(SOURCE_KIND) if row is not None else None
         if not isinstance(p, dict) or set(p) != {"schema", "tenant_id", "agent_id", "session_id", "user_id",
             "source_session_id", "resource_path", "files"} or p["schema"] != _SCHEMA:
@@ -148,6 +150,28 @@ async def validate_reference(db, tenant_id, dependency, *, user=None, runtime_re
             raise ValueError("memory_reference_binding_invalid")
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise ContentInputReceiptError("content_source_unavailable", "The memory index observation is unavailable.", 503) from exc
+    from app.services.content_input_receipts import _batch_browser_point
+
+    if (runtime_request is None and user is not None and user.role != "platform_admin"
+        and _batch_browser_point(db, user)):
+        from types import SimpleNamespace
+        from app.models.user import User
+        from app.services.source_read_queries import source_reader_statement, source_reader_access, _json_rows, reader_columns
+
+        session_ids = {scope["session_id"], scope["source_session_id"]}
+        facts = (await db.execute(source_reader_statement(user, scope["agent_id"]).add_columns(User,
+            _json_rows(ChatSession, ("id", "audience_kind"), ChatSession.id.in_(session_ids),
+                ChatSession.tenant_id == tenant_id, ChatSession.agent_id == scope["agent_id"],
+                ChatSession.user_id == user.id)).outerjoin(User, User.id == user.id).options(*reader_columns(User)))).first()
+        requester = facts[5] if facts is not None else None
+        if (requester is None or not requester.is_active or requester.tenant_id != tenant_id
+            or requester.id != scope["user_id"]):
+            raise ContentInputReceiptError("content_source_access_denied", "The original memory requester is unavailable.", 403)
+        await source_reader_access(db, requester, facts)
+        sessions = [SimpleNamespace(id=uuid.UUID(row["id"]), audience_kind=row["audience_kind"]) for row in facts[6] or []]
+        await _private_sessions(db, tenant_id=tenant_id, agent_id=scope["agent_id"], user_id=requester.id,
+            session_ids=session_ids, sessions=sessions)
+        return
     if runtime_request is not None:
         principal, requester = await _runtime_input_actor(db, tenant_id, runtime_request)
         if principal.agent_id != scope["agent_id"]:

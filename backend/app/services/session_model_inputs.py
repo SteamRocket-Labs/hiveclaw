@@ -538,16 +538,24 @@ def model_output_dependencies(result) -> tuple[list[dict[str, str]], bool]:
 
 def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     snapshot = result.model_request_snapshot_json
-    if not isinstance(snapshot, dict) or _hash(snapshot) != result.model_request_hash:
+    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS, _immutable_model_digest
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    key = ("model_snapshot_dependencies", id(snapshot), result.model_request_hash)
+    if scope is not None and scope.active and scope.source_catalog and key in scope.model_inputs:
+        return scope.model_inputs[key]
+    digest = _immutable_model_digest(result) if isinstance(snapshot, dict) else None
+    if not isinstance(snapshot, dict) or (digest if digest is not None else _hash(snapshot)) != result.model_request_hash:
         return [], False
     bindings = snapshot.get("input_bindings")
     if not isinstance(bindings, dict) or bindings.get("schema") != "hive.model_input_bindings.v1":
         return [], False
     dependencies = _stored_dependencies(bindings.get("dependencies"))
     coverage = bindings.get("dependency_coverage")
-    return dependencies or [], dependencies is not None and isinstance(coverage, dict) and coverage.get(
-        "complete"
-    ) is True
+    value = dependencies or [], dependencies is not None and isinstance(coverage, dict) and coverage.get("complete") is True
+    if scope is not None and scope.active and scope.source_catalog:
+        scope.model_inputs[key] = value
+    return value
 
 
 async def load_compaction_source(db, *, tenant_id, agent_id, source_id, session_id=None):
@@ -780,17 +788,19 @@ async def permission_abort_result_bound(db, *, invocation, event, content):
         return False
 
 
-async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
+async def _origin_dependencies(db, *, tenant_id, agent_id, ref, current_model_state=None):
     from app.services.historical_model_inputs import source_resolution
-    from app.services.content_input_receipts import _preflight_inputs
+    from app.services.content_input_receipts import _preflight_inputs, _DISCLOSURE_SOURCE_VALIDATIONS
 
     cached = _preflight_inputs(db)
     key = ("origin", tenant_id, agent_id, ref)
-    if cached is not None and key in cached:
+    reuse_resolution = cached is not None and not _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog
+    if reuse_resolution and key in cached:
         return cached[key]
     with source_resolution():
-        result = await _resolve_origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
-    if cached is not None:
+        result = await _resolve_origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref,
+            current_model_state=current_model_state)
+    if reuse_resolution:
         cached[key] = result
     return result
 
@@ -813,7 +823,7 @@ async def _context_origin_dependencies(db, *, tenant_id, agent_id, origin):
     return dependencies or [], dependencies is not None and origin["dependency_coverage"]["complete"] is True
 
 
-async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
+async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_model_state=None):
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.organization_identity import ContentInputReceipt
     from app.models.session_v2 import SessionCommand
@@ -1009,6 +1019,19 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         )
         .execution_options(populate_existing=True)
     )
+    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
+
+    if (cached is not None and _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog
+        and model_key in cached.get("tool_models", {}) and model is not None):
+        from types import SimpleNamespace
+
+        from app.services.source_read_queries import model_source_state_columns
+
+        live = current_model_state if current_model_state is not None else (await db.execute(
+            select(*model_source_state_columns()).where(SessionModelResult.id == model.id,
+                SessionModelResult.tenant_id == tenant_id))).first()
+        values = dict(zip(("state", "reconciliation_owner", "round_committed_event_id", "seal_json"), live or (None,) * 4))
+        model = SimpleNamespace(**{**{name: value for name, value in vars(model).items() if not name.startswith("_")}, **values})
     dependencies, inherited_complete = await recover_model_dependencies(
         db, tenant_id=tenant_id, agent_id=agent_id, result=model
     )

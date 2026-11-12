@@ -243,7 +243,7 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
     from app.models.agent import Agent
     from app.services.content_input_receipts import _preflight_inputs
 
-    rows = _preflight_inputs(db)
+    rows = _preflight_inputs(db, authority=True)
     key = ("platform_skill_sources", tenant_id, agent_id)
     if rows is not None and key in rows:
         sources = rows[key]
@@ -254,12 +254,21 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
     if rows is not None:
         source_path = None
 
-    row = (await db.execute(select(ConfigRevision, Agent).select_from(Agent)
+    lineage = None
+    statement = (select(ConfigRevision, Agent).select_from(Agent)
         .outerjoin(ConfigRevision, (ConfigRevision.tenant_id == tenant_id)
             & (ConfigRevision.entity_type == "agent_bootstrap") & (ConfigRevision.entity_id == Agent.id)
             & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
-        .where(Agent.id == agent_id).execution_options(populate_existing=True))).first()
-    revision, agent = row if row is not None else (None, None)
+        .where(Agent.id == agent_id).execution_options(populate_existing=True))
+    if source_path is not None and len(Path(source_path).parts) >= 3:
+        from sqlalchemy.orm import aliased
+
+        installation = aliased(ConfigRevision)
+        lineage = _installation_id(agent_id, Path(source_path).parts[1])
+        statement = statement.add_columns(select(installation.id).where(installation.tenant_id == tenant_id,
+            installation.entity_type == "agent_skill_install", installation.entity_id == lineage).exists())
+    row = (await db.execute(statement)).first()
+    revision, agent = row[:2] if row is not None else (None, None)
     content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
     if agent is None or agent.tenant_id != tenant_id:
         return {}
@@ -340,7 +349,7 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
         candidates[path] = (parts[1], digest)
     installation_ids = {_installation_id(agent_id, folder) for folder, _digest in candidates.values()}
     # Read every folder's current lineage together, anew for each source read.
-    superseded = (
+    superseded = ({lineage} if row[2] else set()) if lineage is not None and row is not None else (
         set(
             await db.scalars(
                 select(ConfigRevision.entity_id).where(

@@ -361,41 +361,58 @@ async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_ag
 
 
 async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UUID) -> dict[str, Any]:
-    source_agent = await db.get(Agent, agent_id, populate_existing=True)
-    if source_agent is None:
-        return {"same_owner_agents": [], "public_agents": [], "collaboration_groups": []}
-    if not is_a2a_participating_agent(source_agent):
-        return {"same_owner_agents": [], "public_agents": [], "collaboration_groups": []}
+    from sqlalchemy import func
+    from sqlalchemy.dialects.postgresql import aggregate_order_by
+    from sqlalchemy.orm import load_only
 
-    same_owner_agents = await list_same_owner_agents(db, source_agent)
-    public_agents = await list_public_agents(db, source_agent)
-    collaboration_groups = await list_active_collaboration_groups_for_agent(db, source_agent)
-    same_owner_agents = [agent for agent in same_owner_agents if is_a2a_participating_agent(agent)]
-    public_agents = [agent for agent in public_agents if is_a2a_participating_agent(agent)]
+    source, peer = aliased(Agent), aliased(Agent)
+    group, member, source_member = AgentCollaborationGroup, aliased(AgentCollaborationGroupMember), aliased(AgentCollaborationGroupMember)
+    source_participating = ~and_(source.agent_class == HR_AGENT_CLASS, source.name == HR_AGENT_NAME)
+    owner = func.coalesce(source.owner_user_id, source.creator_id)
+    peer_owner = func.coalesce(peer.owner_user_id, peer.creator_id)
+    participating = ~and_(peer.agent_class == HR_AGENT_CLASS, peer.name == HR_AGENT_NAME)
+    active = [peer.id != source.id, peer.deleted_at.is_(None), peer.deactivated_at.is_(None),
+        peer.status.in_(list(ACTIVE_AGENT_STATUSES)), participating]
+    peer_json = func.jsonb_build_object(*[value for field in (
+        "id", "name", "role_description", "status", "agent_type", "agent_class", "owner_user_id", "creator_id")
+        for value in (field, getattr(peer, field))])
+
+    def peers(*conditions):
+        return select(func.jsonb_agg(aggregate_order_by(peer_json, peer.name.asc()))).where(
+            *active, source_participating, peer.tenant_id == source.tenant_id, *conditions).correlate(source).scalar_subquery()
+
+    same_owner = peers(owner.is_not(None), peer_owner == owner)
+    public = peers(peer_owner != owner, exists(select(1).where(AgentPermission.agent_id == peer.id,
+        AgentPermission.scope_type == "company",
+        or_(AgentPermission.tenant_id == source.tenant_id, AgentPermission.tenant_id.is_(None))).correlate(peer, source)))
+    member_json = func.jsonb_build_object("agent_id", peer.id, "id", peer.id, "name", peer.name,
+        "role_description", func.coalesce(peer.role_description, ""), "status", member.status,
+        "role", member.role, "owner_user_id", member.agent_owner_user_id, "agent_class", peer.agent_class)
+    members = select(func.jsonb_agg(aggregate_order_by(member_json, peer.name.asc()))).select_from(peer).join(
+        member, member.agent_id == peer.id).where(*active, member.group_id == group.id,
+            member.status == ACTIVE_MEMBER_STATUS).correlate(source, group).scalar_subquery()
+    groups = select(func.jsonb_agg(aggregate_order_by(func.jsonb_build_object("group_id", group.id,
+        "group_name", group.name, "purpose", func.coalesce(group.purpose, ""), "status", group.status,
+        "expires_at", group.expires_at, "members", members), group.updated_at.desc()))).where(
+            source_participating, group.tenant_id == source.tenant_id, group.status == ACTIVE_GROUP_STATUS,
+            exists(select(1).where(source_member.group_id == group.id, source_member.agent_id == source.id,
+                source_member.status == ACTIVE_MEMBER_STATUS).correlate(group, source))).correlate(source).scalar_subquery()
+    row = (await db.execute(select(source, same_owner, public, groups).where(source.id == agent_id)
+        .options(load_only(source.id, source.name, source.agent_class))
+        .execution_options(populate_existing=True))).first()
+    empty = {"same_owner_agents": [], "public_agents": [], "collaboration_groups": []}
+    if row is None or not is_a2a_participating_agent(row[0]):
+        return empty
+    same = [SimpleNamespace(**peer) for peer in row[1] or []]
+    public = [SimpleNamespace(**peer) for peer in row[2] or []]
+    groups = []
+    for group in row[3] or []:
+        members = [{key: value for key, value in member.items() if key != "agent_class"}
+            for member in group["members"] or [] if is_a2a_participating_agent(SimpleNamespace(**member))]
+        if members and not _is_expired(datetime.fromisoformat(group["expires_at"]) if group["expires_at"] else None):
+            groups.append({**{key: value for key, value in group.items() if key not in {"expires_at", "members"}}, "members": members})
     return {
-        "same_owner_agents": [serialize_agent_for_a2a(agent, relation="same_owner") for agent in same_owner_agents],
-        "public_agents": [serialize_agent_for_a2a(agent, relation="public") for agent in public_agents],
-        "collaboration_groups": [
-            {
-                "group_id": str(group.group_id),
-                "group_name": group.group_name,
-                "purpose": group.purpose,
-                "status": group.status,
-                "members": [
-                    {
-                        "agent_id": str(member.agent_id),
-                        "id": str(member.agent_id),
-                        "name": member.name,
-                        "role_description": member.role_description,
-                        "status": member.status,
-                        "role": member.role,
-                        "owner_user_id": str(member.owner_user_id),
-                    }
-                    for member in group.members
-                    if is_a2a_participating_agent(member)
-                ],
-            }
-            for group in collaboration_groups
-            if any(is_a2a_participating_agent(member) for member in group.members)
-        ],
+        "same_owner_agents": [serialize_agent_for_a2a(peer, relation="same_owner") for peer in same if is_a2a_participating_agent(peer)],
+        "public_agents": [serialize_agent_for_a2a(peer, relation="public") for peer in public if is_a2a_participating_agent(peer)],
+        "collaboration_groups": groups,
     }

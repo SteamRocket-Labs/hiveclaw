@@ -303,31 +303,18 @@ async def test_a2a_read_model_includes_public_agents(monkeypatch):
         agent_class="internal_tenant",
     )
 
+    # The roster now comes from one joined statement. Return its JSONB
+    # projections, including HR rows so the retained Python filters still run.
     class FakeDb:
-        async def get(self, model, agent_id, *, populate_existing=False):  # noqa: ARG002
-            assert populate_existing is True
-            return source
+        async def execute(self, statement):
+            import json
 
-    async def fake_same_owner(*_args, **_kwargs):
-        return [same_owner, system_hr]
-
-    async def fake_public(*_args, **_kwargs):
-        return [public_peer, public_system_hr]
-
-    async def fake_groups(*_args, **_kwargs):
-        return [
-            SimpleNamespace(
-                group_id=uuid4(),
-                group_name="group",
-                purpose="",
-                status="active",
-                members=[group_hr_member, group_public_member],
-            )
-        ]
-
-    monkeypatch.setattr(mod, "list_same_owner_agents", fake_same_owner)
-    monkeypatch.setattr(mod, "list_public_agents", fake_public)
-    monkeypatch.setattr(mod, "list_active_collaboration_groups_for_agent", fake_groups)
+            assert statement.get_execution_options()["populate_existing"] is True
+            members = [{**vars(member), "id": str(member.agent_id)} for member in (group_hr_member, group_public_member)]
+            values = json.loads(json.dumps([[vars(same_owner), vars(system_hr)],
+                [vars(public_peer), vars(public_system_hr)], [{"group_id": str(uuid4()), "group_name": "group",
+                    "purpose": "", "status": "active", "expires_at": None, "members": members}]], default=str))
+            return SimpleNamespace(first=lambda: (source, *values))
 
     read_model = await mod.build_a2a_collaboration_read_model(FakeDb(), source.id)
 
@@ -353,9 +340,9 @@ async def test_system_hr_source_read_model_is_empty(monkeypatch):
     source = _agent(name="__system_hr__", agent_class="internal_system")
 
     class FakeDb:
-        async def get(self, model, agent_id, *, populate_existing=False):  # noqa: ARG002
-            assert populate_existing is True
-            return source
+        async def execute(self, statement):
+            assert statement.get_execution_options()["populate_existing"] is True
+            return SimpleNamespace(first=lambda: (source, None, None, None))
 
     async def fake_same_owner(*_args, **_kwargs):
         raise AssertionError("system HR source must not load same-owner A2A candidates")

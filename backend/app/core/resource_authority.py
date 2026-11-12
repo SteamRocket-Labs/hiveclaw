@@ -220,6 +220,7 @@ async def authorize_resource_action(
     agent_access: tuple[Agent, str] | None = None,
     audit: bool = True,
     runtime_principal: Any | None = None,
+    resource_facts=None,
 ) -> ResourceAuthorityDecision:
     """Authorize a resource without widening generic Agent access.
 
@@ -317,12 +318,9 @@ async def authorize_resource_action(
                 authority_source="resource_owner",
                 full_control=True,
             )
-        if await _root_session_owned_by_user(
-            db,
-            root_session_id=root_session_id,
-            agent_id=agent_id,
-            user_id=user.id,
-        ):
+        if (resource_facts[0] if resource_facts is not None else await _root_session_owned_by_user(
+            db, root_session_id=root_session_id, agent_id=agent_id, user_id=user.id,
+        )):
             return ResourceAuthorityDecision(
                 agent=agent,
                 access_level=access_level,
@@ -369,13 +367,19 @@ async def authorize_resource_action(
             full_control=True,
         )
 
-    if state == OWNED_AUTHORITY_STATE and await _has_explicit_resource_grant(
-        db,
-        user=user,
-        resource_kind=resource_kind,
-        resource_id=resource_id,
-        action=action,
-    ):
+    if resource_facts is not None:
+        from app.core.policy import classify_loaded_permissions
+        from app.services.source_read_queries import permission_rows
+
+        principals = [("user", user.id)]
+        if user.role != "platform_admin" and getattr(user, "department_id", None):
+            principals.append(("department", user.department_id))
+        granted = classify_loaded_permissions(permission_rows(resource_facts[1]), principals=principals,
+            action=action, context={"tenant_id": str(user.tenant_id) if user.tenant_id else None}) == "allow"
+    else:
+        granted = state == OWNED_AUTHORITY_STATE and await _has_explicit_resource_grant(
+            db, user=user, resource_kind=resource_kind, resource_id=resource_id, action=action)
+    if state == OWNED_AUTHORITY_STATE and granted:
         return ResourceAuthorityDecision(
             agent=agent,
             access_level=access_level,

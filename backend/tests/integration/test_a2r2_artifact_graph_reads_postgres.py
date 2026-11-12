@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from app.database import tenant_scoped_session
 from app.models.chat_artifact import ChatArtifact
 from app.models.organization_identity import ContentInputReceipt
-from tests.integration.test_r15e_artifact_graph_reads_postgres import BODY, _read, graph  # noqa: F401
+from tests.integration.test_r15e_artifact_graph_reads_postgres import BODY, _read, graph, native_workspace  # noqa: F401
 from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -105,7 +105,9 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
             "currency": "USD", "booked": 19000 + i * 31, "recognized": 17000 + i * 29,
             "procedure": "Reconcile invoices against signed orders. Explain late bookings, currency changes, "
                 "credits and renewals using the retained source report; keep original line-item references.",
-            "invoice_ref": f"FY2026-{i:05d}", "owner": f"Sales team {i % 17}"}
+            "invoice_ref": f"FY2026-{i:05d}", "owner": f"Sales team {i % 17}",
+            "order_sha256": hashlib.sha256(f"order-{i}".encode()).hexdigest(),
+            "ledger_record_id": uuid.uuid5(uuid.NAMESPACE_URL, f"sales-ledger-record-{i}").hex}
         for i in range(1200)]})
     assert len(n.production_context.encode()) >= 300_000
     n.sources = []
@@ -207,7 +209,7 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
     n.depth = 44
 
 
-async def test_production_shaped_delivered_reads(graph, owner_sessionmaker, app_user_sessionmaker, monkeypatch):
+async def test_production_shaped_delivered_reads(graph, owner_sessionmaker, app_user_sessionmaker, monkeypatch):  # noqa: F811
     from app.services import content_input_receipts as receipts
 
     n = graph
@@ -236,6 +238,40 @@ async def test_production_shaped_delivered_reads(graph, owner_sessionmaker, app_
     for kind, count in expected.items():
         assert count * .9 <= counts[kind] <= count * 1.1, counts
     assert sizes[0] >= 300_000
+    # The production sample averages 268 KB stored, not just on the wire.
+    # Distinct realistic evidence digests keep this fixture from compressing
+    # into an unrealistically small request payload.
+    assert sizes[1] >= 300_000
+    ids = {kind: [raw for selected, raw in closure if selected == kind] for kind in counts}
+    async with owner_sessionmaker() as db:
+        row_sizes = list(await db.execute(text("""
+            SELECT 'workspace_artifact' AS kind, max(pg_column_size(r)) AS stored_row_bytes,
+                max(octet_length(r.dependencies_json::text)) AS json_bytes FROM content_input_receipts r
+                WHERE r.tenant_id=:tenant AND r.id=ANY(CAST(:workspace AS uuid[]))
+            UNION ALL SELECT 'explicit_memory', max(pg_column_size(r)), max(octet_length(r.authority_json::text))
+                FROM content_input_receipts r WHERE r.tenant_id=:tenant AND r.id=ANY(CAST(:memory AS uuid[]))
+            UNION ALL SELECT 'session_tool_invocation', max(pg_column_size(t)), max(octet_length(t.effective_arguments_json::text))
+                FROM session_tool_invocations t WHERE t.tenant_id=:tenant AND t.id=ANY(CAST(:tools AS uuid[]))
+            UNION ALL SELECT 'session_command', max(pg_column_size(c)), max(octet_length(c.request_json::text))
+                FROM session_commands c WHERE c.tenant_id=:tenant AND c.id=ANY(CAST(:commands AS uuid[]))
+            UNION ALL SELECT 'tool_result_event', max(pg_column_size(e)), max(octet_length(e.metadata_json::text))
+                FROM chat_transcript_events e JOIN session_tool_invocations t ON t.result_event_id=e.id
+                WHERE t.tenant_id=:tenant AND t.id=ANY(CAST(:tools AS uuid[]))
+            UNION ALL SELECT s.span_type, max(pg_column_size(s)), max(octet_length(s.metadata_json::text))
+                FROM invocation_spans s WHERE s.tenant_id=:tenant AND (s.id=ANY(CAST(:spans AS uuid[]))
+                    OR s.metadata_json #>> '{native_directory_read_evidence,invocation_id}'=ANY(CAST(:tool_text AS text[]))
+                    OR s.metadata_json #>> '{native_clock_read_evidence,invocation_id}'=ANY(CAST(:tool_text AS text[])))
+                GROUP BY s.span_type
+            UNION ALL SELECT 'context_or_skill_witness', max(pg_column_size(c)), max(octet_length(c.content::text))
+                FROM config_revisions c WHERE c.tenant_id=:tenant AND c.entity_id=:agent AND c.is_active
+        """), {"tenant": n.tenant, "agent": n.agent,
+            "workspace": [uuid.UUID(raw) for raw in ids["workspace_artifact"]],
+            "memory": [uuid.UUID(raw) for raw in ids["explicit_memory"]],
+            "tools": [uuid.UUID(raw) for raw in ids["session_tool_invocation"]],
+            "commands": [uuid.UUID(raw) for raw in ids["session_command"]],
+            "spans": [uuid.UUID(raw) for kind in ("session_actor_identity", "memory_resource_reference", "agent_directory_observation") for raw in ids[kind]],
+            "tool_text": ids["session_tool_invocation"]}))
+    print("A2R2_ROW_SIZES", json.dumps([dict(row._mapping) for row in row_sizes]), flush=True)
     measurements = []
     for delay in (0, .00235):
         for endpoint in ("download", "content", "preview"):
@@ -245,3 +281,62 @@ async def test_production_shaped_delivered_reads(graph, owner_sessionmaker, app_
             if endpoint != "preview":
                 assert (response.content if endpoint == "download" else response.json()["content"].encode()) == BODY.encode()
     assert all(row["seconds"] <= 2.0 for row in measurements if row["injected_rtt"]), measurements
+
+
+@pytest.mark.parametrize("endpoint", ["download", "content"])
+async def test_platform_reader_keeps_live_owner_bypass(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch, endpoint,  # noqa: F811
+):
+    from app.api import files
+    from app.core.security import get_current_user
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services import content_input_receipts as receipts
+    from tests.integration.test_r12a_source_graph_work_postgres import _graph, BODY as GRAPH_BODY
+    from tests.integration.test_r15e_artifact_graph_reads_postgres import _profile
+
+    n = await _graph(native_workspace, 4, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    home = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=home, name="Platform home", slug=f"platform-home-{home.hex}"))
+        await db.flush()
+        user = await db.get(User, n.user)
+        user.role, user.tenant_id = "platform_admin", home
+        await db.commit()
+
+    async def selected_platform_reader():
+        async with owner_sessionmaker() as db:
+            reader = await db.get(User, n.user)
+            db.expunge(reader)
+            reader.tenant_id = n.tenant
+            return reader
+
+    app = n.client._transport.app
+    app.dependency_overrides[get_current_user] = selected_platform_reader
+    monkeypatch.setattr(files, "_load_download_user_from_jwt", lambda **_kwargs: selected_platform_reader())
+    url = f"/agents/{n.agent}/files/artifacts/{n.artifact}/{endpoint}"
+    with _profile(monkeypatch) as totals:
+        allowed = await n.client.get(url)
+    assert allowed.status_code == 200, allowed.text
+    assert (allowed.content if endpoint == "download" else allowed.json()["content"].encode()) == GRAPH_BODY.encode()
+    print("A2R2_PLATFORM_READ", json.dumps({"endpoint": endpoint,
+        "by_function_kind": [{"function": function, "kind": kind, "statements": row["statements"]}
+            for (function, kind), row in sorted(totals.items())]}), flush=True)
+    read_row, revoked = receipts._input_row, False
+
+    async def deactivate_after_receipt(db, model, source_id, **kwargs):
+        nonlocal revoked
+        row = await read_row(db, model, source_id, **kwargs)
+        if model is ContentInputReceipt and source_id == n.receipts[0].id and not revoked:
+            async with owner_sessionmaker() as writer:
+                (await writer.get(User, n.user)).is_active = False
+                await writer.commit()
+            revoked = True
+        return row
+
+    monkeypatch.setattr(receipts, "_input_row", deactivate_after_receipt)
+    response = await n.client.get(url)
+    assert revoked
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["code"] == "content_source_access_denied"
+    assert b"COMPANY_SOURCE_MARKER" not in response.content

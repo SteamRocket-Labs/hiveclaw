@@ -574,7 +574,7 @@ def _approval_continuation_display_content(reason):
 
 
 async def _result_page_already_read(db, *, tenant_id, agent_id, session_id, user_id, items) -> bool:
-    """Use settled native reads in a completed later turn of this same parent."""
+    """Use settled native reads of the same result in this parent session."""
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionToolInvocation
@@ -595,7 +595,7 @@ async def _result_page_already_read(db, *, tenant_id, agent_id, session_id, user
             SessionToolInvocation.session_id == session_id,
             SessionToolInvocation.effect_state == "effect_committed",
             SessionToolInvocation.tool_name.in_(("check_async_task", "task_output", "list_async_tasks", "read_runtime_result")),
-            RuntimeTask.status == "completed", RuntimeTask.root_user_id == user_id,
+            RuntimeTask.root_user_id == user_id,
             ChatTranscriptEvent.created_at >= min(task.completed_at for task in tasks)))).all()
     unread = {str(task.id): task for task in tasks}
     refs = {item["source_run_id"]: item["result_ref"] for item in items}

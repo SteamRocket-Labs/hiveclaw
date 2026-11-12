@@ -112,7 +112,7 @@ async def test_a_running_status_read_does_not_consume_the_later_result(
 
     seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
         child_success=True, before_child_completion=read_running)
-    assert seed["return_id"] is not None
+    assert seed["return_id"] is not None, "A running read does not consume the finished result"
 
 
 async def test_backend_emits_one_receipt_for_one_child_even_when_delivery_replays(
@@ -132,3 +132,31 @@ async def test_backend_emits_one_receipt_for_one_child_even_when_delivery_replay
         assert len(notifications) == 1
         assert notifications[0].metadata_json["item_count"] == 1
         print("R19A_BACKEND_RESULT_RECEIPTS", [(event.event_type, event.sequence) for event in notifications])
+
+
+async def test_failed_parent_turn_that_read_the_result_does_not_repeat_it(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, auxiliary_models,
+):
+    import app.runtime.invoker as invoker
+    from app.kernel.loop_guard import LoopGuard
+    from app.services.web_chat_runtime import start_web_chat_run
+
+    async def read_until_guard(seed):
+        async with owner_sessionmaker() as db:
+            queued = await start_web_chat_run(db=db, agent=await db.get(Agent, seed["agent_id"]),
+                user=await db.get(User, seed["user_id"]), session=await db.get(ChatSession, seed["session_id"]),
+                content="Read the colleague's finished task.", extra_metadata={"source": "websocket_message"})
+            run_id = UUID(queued["run_id"])
+            await db.commit()
+        client = ScriptedLLMClient([{"tool_calls": [_call("check_async_task", {"task_id": str(seed["child_id"])},
+            f"terminal-read-{i}")], "finish_reason": "tool_calls"} for i in range(LoopGuard().identical_tool_threshold)])
+        monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+        await _execute(owner_sessionmaker, run_id, "r19a-failed-later-parent")
+        assert len(client.requests) == LoopGuard().identical_tool_threshold
+        async with owner_sessionmaker() as db:
+            later = await db.get(RuntimeTask, run_id)
+            assert later.status == "failed" and later.metadata_json["error_code"] == "identical_terminal_task_read"
+
+    seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        before_notification=read_until_guard)
+    assert seed["return_id"] is None, "A failed turn still consumed its settled child reads"

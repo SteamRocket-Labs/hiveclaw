@@ -124,7 +124,7 @@ async def graph(native_workspace, owner_sessionmaker, app_user_sessionmaker, mon
     from app.services.agent_manager import AgentManager
     from app.services.config_versioning import canonical_content_hash
     from app.services.content_input_receipts import record_session_actor_identity
-    from app.services.memory_resource_references import _capture_reference
+    from tests.integration._memory_reference_rows import capture_memory_reference
     from app.services.owner_action_policy import resolve_owner_action_policy_prompt_section
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.services.skill_source_receipts import _platform_skill_sources
@@ -196,7 +196,7 @@ async def graph(native_workspace, owner_sessionmaker, app_user_sessionmaker, mon
         actor, _ = await record_session_actor_identity(db, tenant_id=n.tenant, agent_id=n.agent,
             session_id=n.session, user_id=n.user, display_name=user.display_name, runtime_task_id=n.run)
         _, directory = await observe_directory(db, tenant_id=n.tenant, agent_id=n.agent, runtime_request=principal)
-        reference = await _capture_reference(db, item=MemoryItem(kind=MemoryKind.EPISODIC, content="",
+        reference = await capture_memory_reference(db, item=MemoryItem(kind=MemoryKind.EPISODIC, content="",
             source=resource, metadata={"session_id": str(n.session)}), data_root=n.root.parent,
             tenant_id=n.tenant, reader=principal, user=user)
         from app.models.session_v2 import SessionCommand
@@ -218,7 +218,7 @@ async def graph(native_workspace, owner_sessionmaker, app_user_sessionmaker, mon
     n.leaves = {"explicit_memory": memory_sources[0], "session_tool_invocation": tools[0],
         "agent_platform_skill_file": skills[0]}
     n.common = SimpleNamespace(skills=skills[1:], tools=tools[1:], context=context, directory=directory,
-        reference=reference.source_refs[0], identity=identity, actor=actor, policy=policy[0], resident=resident)
+        reference=reference[0], identity=identity, actor=actor, policy=policy[0], resident=resident)
     prepare = session_model_round.prepare_model_request
 
     async def expose_sources(db, **kwargs):
@@ -237,7 +237,7 @@ async def _grow(n, size, owner_sessionmaker, app_user_sessionmaker):
     from app.models.runtime_task import RuntimeTask
     from app.services.agent_directory_sources import observe_directory
     from app.services.explicit_memory_authority import latest_memory_receipt
-    from app.services.memory_resource_references import _capture_reference
+    from tests.integration._memory_reference_rows import capture_memory_reference
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.models.user import User
 
@@ -277,10 +277,10 @@ async def _grow(n, size, owner_sessionmaker, app_user_sessionmaker):
                 (n.root / resource).mkdir(parents=True)
                 for name in ("manifest.json", "summary.md"):
                     (n.root / resource / name).write_text("{}" if name.endswith("json") else "Retained index")
-                reference = await _capture_reference(db, item=MemoryItem(kind=MemoryKind.EPISODIC, content="",
+                reference = await capture_memory_reference(db, item=MemoryItem(kind=MemoryKind.EPISODIC, content="",
                     source=resource, metadata={"session_id": str(n.session)}), data_root=n.root.parent,
                     tenant_id=n.tenant, reader=principal, user=await db.get(User, n.user))
-                common.reference = reference.source_refs[0]
+                common.reference = reference[0]
             await db.commit()
         if size == 8:
             ancestors = n.receipts[:]

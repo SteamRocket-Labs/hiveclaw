@@ -92,7 +92,7 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
     from app.services.agent_context import load_agent_context_resource
     from app.services.agent_directory_sources import observe_directory
     from app.services.content_input_receipts import record_session_actor_identity, record_workspace_receipt
-    from app.services.memory_resource_references import _capture_reference
+    from tests.integration._memory_reference_rows import capture_memory_reference
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.services.session_model_inputs import tool_result_source_hash
     from app.services.session_semantic_history import _event_payload
@@ -167,10 +167,10 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
                 (n.root / resource).mkdir(parents=True)
                 (n.root / resource / "manifest.json").write_text("{}")
                 (n.root / resource / "summary.md").write_text("Retained sales reporting index")
-                reference = await _capture_reference(db, item=MemoryItem(kind=MemoryKind.EPISODIC, content="",
+                reference = await capture_memory_reference(db, item=MemoryItem(kind=MemoryKind.EPISODIC, content="",
                     source=resource, metadata={"session_id": str(n.session)}), data_root=n.root.parent,
                     tenant_id=n.tenant, reader=principal, user=await db.get(User, n.user))
-                dependencies += reference.source_refs
+                dependencies += reference
             if i < 18:
                 user = await db.get(User, n.user)
                 user.display_name = f"Report owner {i}"

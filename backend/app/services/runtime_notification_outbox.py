@@ -1581,7 +1581,7 @@ class RuntimeNotificationOutboxService:
         return sorted(prepared, key=lambda page: (page.parent_session_id.hex, page.integration_epoch))
 
     async def _deliver_page(self, page: ClaimedResultIntegrationPage) -> dict[str, Any]:
-        from app.services.agent_session_continuation import continue_parent_session_with_result_page
+        from app.services.agent_session_continuation import _result_page_already_read, continue_parent_session_with_result_page
 
         subagent_items = [
             item for item in page.items if item.source_kind == "subagent" and item.child_session_id is not None
@@ -1589,12 +1589,17 @@ class RuntimeNotificationOutboxService:
         subagent_summaries: dict[uuid.UUID, str] = {}
 
         root_status = None
+        already_read = False
         async with tenant_scoped_session(
             page.tenant_id,
             session_factory=self._session_factory,
             require_tenant=True,
             source="runtime_result_page_sequence_preflight",
         ) as sequence_db:
+            if page.delivery_mode == "parent_continuation":
+                already_read = await _result_page_already_read(sequence_db, tenant_id=page.tenant_id,
+                    agent_id=page.parent_agent_id, session_id=page.parent_session_id, user_id=page.parent_user_id,
+                    items=list(page.manifest.get("items") or []))
             if page.root_runtime_task_id is not None and page.delivery_mode == "parent_continuation":
                 root_status = await sequence_db.scalar(select(RuntimeTask.status).where(
                     RuntimeTask.id == page.root_runtime_task_id, RuntimeTask.tenant_id == page.tenant_id,
@@ -1685,7 +1690,7 @@ class RuntimeNotificationOutboxService:
         budget_run_id: uuid.UUID | None = None
         continuation_denial = {"killed": "runtime_root_cancelled",
             "needs_reconciliation": "runtime_root_needs_reconciliation"}.get(root_status)
-        if page.delivery_mode == "parent_continuation" and budget_run_ids and continuation_denial is None:
+        if page.delivery_mode == "parent_continuation" and not already_read and budget_run_ids and continuation_denial is None:
             try:
                 budget_run_id = _uuid(next(iter(budget_run_ids)), field="budget_run_id")
             except ValueError:
@@ -1804,7 +1809,7 @@ class RuntimeNotificationOutboxService:
                 integration_page_id=page.id,
                 manifest=page.manifest,
                 inherited_budget_run_id=budget_run_id,
-                resume_parent=page.delivery_mode == "parent_continuation" and continuation_denial is None,
+                resume_parent=page.delivery_mode == "parent_continuation" and not already_read and continuation_denial is None,
                 **({"continuation_denial": continuation_denial} if continuation_denial else {}),
                 # Transient admission-time claim fence: threaded, never
                 # persisted into any durable authority marker.

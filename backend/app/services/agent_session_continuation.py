@@ -8,6 +8,7 @@ new durable turn; terminal sessions reject the continuation and record it.
 from __future__ import annotations
 
 from html import escape
+import json
 import logging
 import uuid
 from typing import Any
@@ -570,6 +571,60 @@ def _approval_continuation_display_content(reason):
         "approval_return_unavailable": "审批结果暂时无法送回，原任务未继续。",
         "origin_session_authority_unresolved": "原对话暂不可用，本次未继续执行。",
     }.get(reason, "审批结果已保留，本次对话未继续。" if reason else "审批结果已返回。")
+
+
+async def _result_page_already_read(db, *, tenant_id, agent_id, session_id, user_id, items) -> bool:
+    """Use settled native reads in a completed later turn of this same parent."""
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.runtime_display_status import delegation_failure_result_page, is_delegation_failure_result_page
+
+    if not items or any(item.get("source_kind") != "a2a_delegation" for item in items):
+        return False
+    tasks = list(await db.scalars(select(RuntimeTask).where(
+        RuntimeTask.id.in_([uuid.UUID(item["source_run_id"]) for item in items]),
+        RuntimeTask.tenant_id == tenant_id, RuntimeTask.parent_agent_id == agent_id,
+        RuntimeTask.parent_session_id == str(session_id), RuntimeTask.root_user_id == user_id)))
+    if len(tasks) != len(items) or any(task.completed_at is None for task in tasks):
+        return False
+    reads = (await db.execute(select(SessionToolInvocation.tool_name, ChatTranscriptEvent.metadata_json)
+        .join(ChatTranscriptEvent, ChatTranscriptEvent.id == SessionToolInvocation.result_event_id)
+        .join(RuntimeTask, RuntimeTask.id == SessionToolInvocation.run_id)
+        .where(SessionToolInvocation.tenant_id == tenant_id,
+            SessionToolInvocation.session_id == session_id,
+            SessionToolInvocation.effect_state == "effect_committed",
+            SessionToolInvocation.tool_name.in_(("check_async_task", "task_output", "list_async_tasks", "read_runtime_result")),
+            RuntimeTask.status == "completed", RuntimeTask.root_user_id == user_id,
+            ChatTranscriptEvent.created_at >= min(task.completed_at for task in tasks)))).all()
+    unread = {str(task.id): task for task in tasks}
+    refs = {item["source_run_id"]: item["result_ref"] for item in items}
+    for tool, metadata in reads:
+        payload = (metadata or {}).get("v2_payload") or {}
+        if payload.get("outcome") != "success":
+            continue
+        try:
+            body = json.loads(payload.get("model_visible_content", payload.get("content", "")))
+        except (TypeError, ValueError):
+            continue
+        records = body if tool == "list_async_tasks" and isinstance(body, list) else [
+            body.get("task") if tool == "task_output" and isinstance(body, dict) and body.get("ok") is True else body]
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            for task_id, task in list(unread.items()):
+                failure = delegation_failure_result_page(task_id=task_id, status=task.status,
+                    metadata=task.metadata_json or {}, result_summary=task.result_summary)
+                full_page = (tool == "read_runtime_result" and record.get("result_ref") == refs[task_id]
+                    and record.get("status") == "ok" and record.get("offset") == 0 and record.get("complete") is True)
+                task_result = (record.get("task_id") in {task_id, task.id.hex}
+                    and ((failure is not None and is_delegation_failure_result_page(record)
+                        and record.get("result") == failure["result"])
+                        or (task.status == "completed" and record.get("status") == "completed"
+                            and task.result_summary is not None and record.get("result") == task.result_summary)))
+                if full_page or task_result:
+                    unread.pop(task_id)
+    return not unread
 
 
 async def continue_parent_session_with_result_page(

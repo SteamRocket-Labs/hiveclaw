@@ -298,6 +298,33 @@ def _company_tool_error(
     )
 
 
+# A rejected Company Knowledge proposal must tell the model what is true for the
+# input that reached this exit. Only the not-company-evidence exit may speak
+# about the member's own file and its real route (E2E run 13); every other exit
+# names its own cause so the model can fix it or report it honestly.
+_COMPANY_PROPOSAL_NOT_SUBMITTED_NEXT_ACTION = (
+    "The proposal was not submitted; fix what `reason_codes` names and submit again, or tell "
+    "the member the company-library update was not submitted."
+)
+_COMPANY_PROPOSAL_SOURCE_REFS_REQUIRED_NEXT_ACTION = (
+    "The proposal was not submitted; `source_refs` is required and must list one or more "
+    "`company-evidence://` references."
+)
+_COMPANY_PROPOSAL_MEMBER_FILE_NEXT_ACTION = (
+    "The proposal was not submitted: only `company-evidence://` references can back it, so the "
+    "member's own file cannot be submitted here. To get their document into the company "
+    "library, the member opens the account menu 「知识库」 (their personal knowledge page) and, "
+    "on a document whose status is ready, uses its 「提交公司审核」 button (\"Submit to Company "
+    "review\" in the English UI); a workspace file must first be added to their knowledge base "
+    "and become ready, and credential-level documents are refused."
+)
+_COMPANY_PROPOSAL_EVIDENCE_NOT_ACCEPTED_NEXT_ACTION = (
+    "The proposal was not submitted: the given `company-evidence://` reference is not accepted "
+    "company material this assistant can use; tell the member the company-library update was "
+    "not submitted."
+)
+
+
 @tool(
     ToolMeta(
         name="search_company_kb",
@@ -309,8 +336,10 @@ def _company_tool_error(
             "currently valid publications that pass fresh discover/search permission, source ACL, sensitivity, "
             "and complete-evidence checks. Denied candidates do not leak title, count, score, source URI, or "
             "existence. Search returns bounded snippets and typed publication/document/segment references; call "
-            "`read_company_kb` for exact content. Company Knowledge is tool-only and is never prefetched into "
-            "the prompt."
+            "`read_company_kb` for exact content. An empty result means no company material visible to the "
+            "member matched this search — within the supplied filters, when filters were given (the result "
+            "`note` states which); tell the member what was not found instead of rewording the same request. "
+            "Company Knowledge is tool-only and is never prefetched into the prompt."
         ),
         parameters={
             "type": "object",
@@ -623,7 +652,12 @@ async def explain_company_kb_source(request: ToolExecutionRequest) -> str:
             "publishes, approves, retires, changes permissions, or mutates an active publication. The platform "
             "persists the model-authored proposed_change byte-faithfully with source refs, accountable runtime "
             "identity, coverage, sensitivity, and a review policy; only the governed review/publication path can "
-            "turn it into Company truth."
+            "turn it into Company truth. Only accepted `company-evidence://` references pointing at company "
+            "material — including company material published from a member's personal promotion — can back a "
+            "proposal; a member's own file cannot. The member can open the account menu 「知识库」 (Knowledge), "
+            "open a document whose status is ready and use its 「提交公司审核」 button (\"Submit to Company "
+            "review\" in the English UI); a workspace file must first be added to their knowledge base and "
+            "become ready, and credential-level documents are refused."
         ),
         parameters={
             "type": "object",
@@ -675,12 +709,20 @@ async def propose_company_kb_update(request: ToolExecutionRequest) -> str:
     reason = str(request.arguments.get("reason") or "").strip()
     if tenant_id is None:
         return json.dumps(
-            {"status": "rejected", "reason_codes": ["tenant_id_required"], "next_action": "none"},
+            {
+                "status": "rejected",
+                "reason_codes": ["tenant_id_required"],
+                "next_action": _COMPANY_PROPOSAL_NOT_SUBMITTED_NEXT_ACTION,
+            },
             ensure_ascii=False,
         )
     if not isinstance(source_refs, list) or not source_refs:
         return json.dumps(
-            {"status": "rejected", "reason_codes": ["source_refs_required"], "next_action": "none"},
+            {
+                "status": "rejected",
+                "reason_codes": ["source_refs_required"],
+                "next_action": _COMPANY_PROPOSAL_SOURCE_REFS_REQUIRED_NEXT_ACTION,
+            },
             ensure_ascii=False,
         )
     if not isinstance(proposed_change, dict) or not proposed_change or not reason:
@@ -688,7 +730,7 @@ async def propose_company_kb_update(request: ToolExecutionRequest) -> str:
             {
                 "status": "rejected",
                 "reason_codes": ["proposed_change_and_reason_required"],
-                "next_action": "none",
+                "next_action": _COMPANY_PROPOSAL_NOT_SUBMITTED_NEXT_ACTION,
             },
             ensure_ascii=False,
         )
@@ -706,7 +748,7 @@ async def propose_company_kb_update(request: ToolExecutionRequest) -> str:
                 {
                     "status": "rejected",
                     "reason_codes": ["company_evidence_source_refs_required"],
-                    "next_action": "none",
+                    "next_action": _COMPANY_PROPOSAL_MEMBER_FILE_NEXT_ACTION,
                 },
                 ensure_ascii=False,
             )
@@ -847,11 +889,17 @@ async def propose_company_kb_update(request: ToolExecutionRequest) -> str:
                     trace_id=trace_id,
                 )
     except (LookupError, PermissionError, RuntimeError, ValueError) as exc:
+        reason_code = str(exc)
+        next_action = (
+            _COMPANY_PROPOSAL_EVIDENCE_NOT_ACCEPTED_NEXT_ACTION
+            if reason_code == "complete_accessible_company_evidence_required"
+            else _COMPANY_PROPOSAL_NOT_SUBMITTED_NEXT_ACTION
+        )
         return json.dumps(
             {
                 "status": "rejected",
-                "reason_codes": [str(exc)],
-                "next_action": "none",
+                "reason_codes": [reason_code],
+                "next_action": next_action,
             },
             ensure_ascii=False,
         )

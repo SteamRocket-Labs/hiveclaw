@@ -213,25 +213,51 @@ class CompanyKnowledgeSearchHit:
         }
 
 
+# An empty retrieval result must tell the model the outcome instead of echoing
+# the discover/search actions the policy evaluated; a literal action list here
+# reads as an instruction to keep searching (E2E run 13: 61 identical empty
+# results drove a 15-minute loop). Each sentence stays true for the input that
+# produced it: a filtered search only speaks about "these filters", and the
+# document list (no query at all) never mentions rewording one.
+EMPTY_COMPANY_SEARCH_NOTE = (
+    "No company material visible to this member matched this search; rewording the same request "
+    "will not find material that is not there, so tell the member what was not found."
+)
+EMPTY_COMPANY_SEARCH_NOTE_WITH_FILTERS = (
+    "No company material visible to this member matched this search within these filters; "
+    "rewording the same request will not look outside them, so tell the member what was not "
+    "found within these filters."
+)
+EMPTY_COMPANY_DOCUMENT_LIST_NOTE = "No company documents are visible here."
+
+
 @dataclass(frozen=True, slots=True)
 class CompanyKnowledgeSearchResult(_JsonResult):
     status: str
     results: tuple[CompanyKnowledgeSearchHit, ...]
     warnings: tuple[str, ...] = ()
+    filters_applied: bool = False
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        authority: dict[str, Any] = {
+            "schema": "hive.company_knowledge_retrieval_authority.v1",
+            "scope": "company",
+            "evaluation": "per_result_fresh",
+            "required_actions": ["discover", "search"],
+            "publication_state": "active_valid_only",
+        }
+        payload: dict[str, Any] = {
             "status": self.status,
             "results": [result.as_dict() for result in self.results],
-            "authority": {
-                "schema": "hive.company_knowledge_retrieval_authority.v1",
-                "scope": "company",
-                "evaluation": "per_result_fresh",
-                "required_actions": ["discover", "search"],
-                "publication_state": "active_valid_only",
-            },
+            "authority": authority,
             "warnings": list(self.warnings),
         }
+        if not self.results:
+            del authority["required_actions"]
+            payload["note"] = (
+                EMPTY_COMPANY_SEARCH_NOTE_WITH_FILTERS if self.filters_applied else EMPTY_COMPANY_SEARCH_NOTE
+            )
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,18 +363,23 @@ class CompanyKnowledgeDocumentListResult(_JsonResult):
     warnings: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        authority: dict[str, Any] = {
+            "schema": "hive.company_knowledge_retrieval_authority.v1",
+            "scope": "company",
+            "evaluation": "per_result_fresh",
+            "required_actions": ["discover", "search"],
+            "publication_state": "active_valid_only",
+        }
+        payload: dict[str, Any] = {
             "status": self.status,
             "documents": [document.as_dict() for document in self.documents],
-            "authority": {
-                "schema": "hive.company_knowledge_retrieval_authority.v1",
-                "scope": "company",
-                "evaluation": "per_result_fresh",
-                "required_actions": ["discover", "search"],
-                "publication_state": "active_valid_only",
-            },
+            "authority": authority,
             "warnings": list(self.warnings),
         }
+        if not self.documents:
+            del authority["required_actions"]
+            payload["note"] = EMPTY_COMPANY_DOCUMENT_LIST_NOTE
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -739,6 +770,7 @@ class CompanyKnowledgeGateway:
         return CompanyKnowledgeSearchResult(
             status="ok" if results else "empty",
             results=tuple(results),
+            filters_applied=bool(filters),
         )
 
     async def _select_bundle(

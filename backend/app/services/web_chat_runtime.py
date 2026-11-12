@@ -48,6 +48,11 @@ from app.services.chat_message_parts import (
 )
 from app.services.chat_artifact_delivery import create_chat_artifacts_for_message, tool_session_write_paths
 from app.services.chat_transcript import append_session_event, lock_transcript_session
+from app.services.company_knowledge_gateway import (
+    EMPTY_COMPANY_SEARCH_NOTE,
+    EMPTY_COMPANY_SEARCH_NOTE_WITH_FILTERS,
+    _normalize_filters,
+)
 from app.services.conversation_interaction_service import mark_latest_pending_clarification_answered
 from app.services.llm_client import STREAM_RETRY_TOMBSTONE
 from app.services.knowledge_provenance import ontology_result_source_rows
@@ -1398,6 +1403,25 @@ _KNOWLEDGE_TOOL_REPLAY_SCOPES = {
 }
 
 
+def _empty_company_search_replay_note(payload: dict[str, Any], args: dict[str, Any]) -> str:
+    """Replay the outcome sentence of an empty company search.
+
+    A result written since R17a carries the boundary's own note; an older one
+    has none (or round 1's broader sentence), so choose by whether the call's
+    filters narrowed the query. This reads only the call arguments, never the
+    rows permission removed, so denied and absent stay indistinguishable.
+    """
+    note = payload.get("note")
+    if note in (EMPTY_COMPANY_SEARCH_NOTE, EMPTY_COMPANY_SEARCH_NOTE_WITH_FILTERS):
+        return note
+    filters = args.get("filters")
+    try:
+        narrowed = bool(_normalize_filters(filters if isinstance(filters, dict) else None))
+    except (TypeError, ValueError):
+        narrowed = True  # the filtered sentence never claims more than the call searched
+    return EMPTY_COMPANY_SEARCH_NOTE_WITH_FILTERS if narrowed else EMPTY_COMPANY_SEARCH_NOTE
+
+
 def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], raw_result: Any) -> str | None:
     """Return the pointer-only next-turn view for governed knowledge tools.
 
@@ -1489,17 +1513,26 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
             "references": references,
             "content_omitted": True,
             "instruction": (
-                ("Call query_company_ontology/get_company_object/explain_company_fact again if the content is needed.")
-                if tool_name
-                in {
-                    "query_company_ontology",
-                    "get_company_object",
-                    "explain_company_fact",
-                }
+                # An empty replayed company search must keep the truth the
+                # boundary computed (its `note` names the filters case), not
+                # invite another call for content that is not there. Only a
+                # search that ran and found nothing is empty; an invalid or
+                # unavailable search keeps the call-again instruction.
+                _empty_company_search_replay_note(payload, args)
+                if tool_name == "search_company_kb" and not rows and payload.get("status") == "empty"
                 else (
-                    "Call search_company_kb/read_company_kb again if the content is needed."
-                    if scope == "company"
-                    else "Call search_personal_kb/read_personal_kb again if the content is needed."
+                    ("Call query_company_ontology/get_company_object/explain_company_fact again if the content is needed.")
+                    if tool_name
+                    in {
+                        "query_company_ontology",
+                        "get_company_object",
+                        "explain_company_fact",
+                    }
+                    else (
+                        "Call search_company_kb/read_company_kb again if the content is needed."
+                        if scope == "company"
+                        else "Call search_personal_kb/read_personal_kb again if the content is needed."
+                    )
                 )
             ),
         }

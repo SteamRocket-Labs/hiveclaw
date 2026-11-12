@@ -772,6 +772,110 @@ def test_company_knowledge_replay_projection_keeps_publication_references_not_co
     assert "company-evidence://private" not in projection
 
 
+def test_empty_company_knowledge_search_replay_states_the_outcome_not_another_call() -> None:
+    # Local literals (not gateway imports) so a regression fails on the
+    # assertion itself.
+    empty_note = (
+        "No company material visible to this member matched this search; rewording the same request "
+        "will not find material that is not there, so tell the member what was not found."
+    )
+    filtered_note = (
+        "No company material visible to this member matched this search within these filters; "
+        "rewording the same request will not look outside them, so tell the member what was not "
+        "found within these filters."
+    )
+    from app.services.web_chat_runtime import _knowledge_tool_replay_projection
+
+    empty_result = json.dumps(
+        {
+            "status": "empty",
+            "results": [],
+            "authority": {"evaluation": "per_result_fresh"},
+            "note": empty_note,
+            "warnings": [],
+        }
+    )
+    projection = _knowledge_tool_replay_projection(
+        tool_name="search_company_kb",
+        args={"query": "vacation policy"},
+        raw_result=empty_result,
+    )
+    payload = json.loads(projection)
+    assert payload["result_count"] == 0
+    assert payload["instruction"] == empty_note
+    assert "Call search_company_kb" not in payload["instruction"]
+
+    # The boundary's own note (filters case) survives the replay verbatim.
+    filtered_result = json.dumps(
+        {
+            "status": "empty",
+            "results": [],
+            "authority": {"evaluation": "per_result_fresh"},
+            "note": filtered_note,
+            "warnings": [],
+        }
+    )
+    projection = _knowledge_tool_replay_projection(
+        tool_name="search_company_kb",
+        args={"query": "Handbook", "filters": {"namespaces": ["company/general"]}},
+        raw_result=filtered_result,
+    )
+    assert json.loads(projection)["instruction"] == filtered_note
+
+    # A legacy empty result persisted before the note existed still gets the
+    # fixed outcome sentence instead of the call-again nudge.
+    legacy_result = json.dumps(
+        {
+            "status": "empty",
+            "results": [],
+            "authority": {"evaluation": "per_result_fresh", "required_actions": ["discover", "search"]},
+            "warnings": [],
+        }
+    )
+    projection = _knowledge_tool_replay_projection(
+        tool_name="search_company_kb",
+        args={"query": "old transcript"},
+        raw_result=legacy_result,
+    )
+    assert json.loads(projection)["instruction"] == empty_note
+
+    # A legacy filtered empty result (no note) must not claim more than the
+    # call searched: the call's own filters choose the sentence.
+    projection = _knowledge_tool_replay_projection(
+        tool_name="search_company_kb",
+        args={"query": "Handbook", "filters": {"namespaces": ["company/general"]}},
+        raw_result=legacy_result,
+    )
+    assert json.loads(projection)["instruction"] == filtered_note
+
+    # A search that did not run (invalid) or did not answer (unavailable) is
+    # not "nothing matched"; it keeps the call-again instruction.
+    for failed in (
+        {"status": "invalid_request", "results": [], "authority": None, "warnings": ["query is required"]},
+        {"status": "unavailable", "results": [], "warnings": ["company_knowledge_backend_unavailable"]},
+    ):
+        projection = _knowledge_tool_replay_projection(
+            tool_name="search_company_kb",
+            args={},
+            raw_result=json.dumps(failed),
+        )
+        assert (
+            json.loads(projection)["instruction"]
+            == "Call search_company_kb/read_company_kb again if the content is needed."
+        )
+
+    # Other replay instructions are unchanged.
+    projection = _knowledge_tool_replay_projection(
+        tool_name="search_personal_kb",
+        args={"query": "notes"},
+        raw_result=json.dumps({"results": [], "warnings": []}),
+    )
+    assert (
+        json.loads(projection)["instruction"]
+        == "Call search_personal_kb/read_personal_kb again if the content is needed."
+    )
+
+
 def test_conversation_reload_surfaces_malformed_tool_call_record() -> None:
     from app.services.web_chat_runtime import conversation_from_history_messages
 

@@ -70,7 +70,7 @@ function scopeQuery(scope?: AssistantScopeEcho): string {
 
 export const assistantApi = {
   get: (scope?: AssistantScopeEcho, options?: RequestOptions) => get<AssistantBinding>(`/assistant${scopeQuery(scope)}`, options),
-  open: (body: AssistantScopeEcho & { idempotency_key?: string; replace_unavailable?: boolean }, options?: RequestOptions) =>
+  open: (body: AssistantScopeEcho & { idempotency_key?: string; replace_unavailable?: boolean; ui_language?: string }, options?: RequestOptions) =>
     post<AssistantBinding>('/assistant/open', body, options),
   select: (body: AssistantScopeEcho & { agent_id: string }) => post<AssistantBinding>('/assistant/select', body),
 };

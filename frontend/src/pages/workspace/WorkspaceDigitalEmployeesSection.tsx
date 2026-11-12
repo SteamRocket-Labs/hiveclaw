@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
 import { agentApi, type AgentOwnerCandidate, type AgentRetirementPending } from '../../api/domains/agents';
+import { assistantNameForDisplay, assistantRoleForDisplay } from '../assistant/assistantScope';
 import { usersApi } from '../../api/domains/users';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import { Modal } from '../../components/ui';
@@ -303,9 +304,9 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                                     return (
                                         <tr key={agent.id} className="ws-employees-row">
                                             <td className="ws-employees-td">
-                                                <div className="ws-employees-name">{agent.name}</div>
+                                                <div className="ws-employees-name">{assistantNameForDisplay(agent.name, t('assistant.title', 'My Assistant'))}</div>
                                                 <div className="ws-employees-role">
-                                                    {agent.role_description || t('employees.noRole', 'No role description yet')}
+                                                    {assistantRoleForDisplay(agent.role_description || '', t('assistant.role', 'The user\'s assistant')) || t('employees.noRole', 'No role description yet')}
                                                 </div>
                                             </td>
                                             <td className="ws-employees-td" data-label={t('workspace.digitalEmployees.employeeOwner', 'Owner')}>

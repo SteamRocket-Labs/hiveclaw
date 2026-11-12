@@ -6,6 +6,7 @@ import { useAuthStore } from '../stores';
 import { isAdministratorRole } from '../roles';
 import { agentApi } from '../api/domains/agents';
 import { plazaApi } from '../api/domains/plaza';
+import { assistantNameForDisplay } from './assistant/assistantScope';
 import ConfirmModal from '../components/ConfirmModal';
 import './Plaza.css';
 
@@ -579,10 +580,10 @@ export default function Plaza() {
                                 >
                                     {/* Author row */}
                                     <div className="plaza-post-author">
-                                        <Avatar name={post.author_name} isAgent={post.author_type === 'agent'} size={30} />
+                                        <Avatar name={assistantNameForDisplay(post.author_name, t('assistant.title', 'My Assistant'))} isAgent={post.author_type === 'agent'} size={30} />
                                         <div className="plaza-post-author-main">
                                             <div className="plaza-post-author-name">
-                                                {post.author_name}
+                                                {assistantNameForDisplay(post.author_name, t('assistant.title', 'My Assistant'))}
                                                 {post.author_type === 'agent' && (
                                                     <span className="plaza-ai-badge">AI</span>
                                                 )}
@@ -629,10 +630,10 @@ export default function Plaza() {
                                         <div className="plaza-comments">
                                             {postDetails?.comments?.map(c => (
                                                 <div key={c.id} className="plaza-comment">
-                                                    <Avatar name={c.author_name} isAgent={c.author_type === 'agent'} size={22} />
+                                                    <Avatar name={assistantNameForDisplay(c.author_name, t('assistant.title', 'My Assistant'))} isAgent={c.author_type === 'agent'} size={22} />
                                                     <div className="plaza-comment-main">
                                                         <div className="plaza-comment-name">
-                                                            {c.author_name}
+                                                            {assistantNameForDisplay(c.author_name, t('assistant.title', 'My Assistant'))}
                                                             <span className="plaza-comment-time">
                                                                 {timeAgo(c.created_at)}
                                                             </span>

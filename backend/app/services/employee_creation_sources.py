@@ -39,7 +39,7 @@ async def load_known_native_default_context(db, *, tenant_id, agent_id, ref):
     from app.models.user_assistant_binding import UserAssistantBinding
     from app.services.agent_context import _strip_primary_heading, agent_identity_content
     from app.services.agent_manager import EMPTY_SELF_CONTENT, _render_agent_soul_from_blueprint
-    from app.services.assistant_binding import ASSISTANT_EMPLOYEE_NAME, ASSISTANT_ROLE
+    from app.services.assistant_binding import ASSISTANT_ROLE, DEFAULT_ASSISTANT_NAMES
 
     if ref not in {"identity", "soul", "memory/self/self.md"}:
         return None
@@ -88,8 +88,9 @@ async def load_known_native_default_context(db, *, tenant_id, agent_id, ref):
         .limit(1)
         .execution_options(populate_existing=True)
     )
-    if audit is None or audit.details != {
-        "name": ASSISTANT_EMPLOYEE_NAME,
+    if audit is None or audit.details.get("name") not in DEFAULT_ASSISTANT_NAMES or {
+        key: value for key, value in audit.details.items() if key != "name"
+    } != {
         "agent_type": "native",
         "source": "approved_default",
         "blueprint_click": False,
@@ -145,7 +146,7 @@ async def load_known_native_default_context(db, *, tenant_id, agent_id, ref):
         or content.get("schema") != "hive.ai_asset.agent.v1"
         or content.get("asset_type") != "agent"
         or not isinstance(config, dict)
-        or config.get("name") != ASSISTANT_EMPLOYEE_NAME
+        or config.get("name") not in DEFAULT_ASSISTANT_NAMES
         or config.get("role_description") != ASSISTANT_ROLE
         or config.get("agent_type") != "native"
         or config.get("agent_class") != "internal_tenant"
@@ -190,7 +191,9 @@ async def load_known_native_default_context(db, *, tenant_id, agent_id, ref):
         if creator is None:
             return None
         soul = _render_agent_soul_from_blueprint(
-            agent_name=ASSISTANT_EMPLOYEE_NAME,
+            # The soul was rendered from the provisioned default name; a zh
+            # provisioning used the localized default, not the English bytes.
+            agent_name=audit.details["name"],
             role_description=ASSISTANT_ROLE,
             creator_name=creator.display_name,
             created_at=agent.created_at.astimezone(timezone.utc).strftime("%Y-%m-%d"),

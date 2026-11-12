@@ -15,6 +15,123 @@ from tests.integration.test_failed_delegation_continuation import _call, _execut
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient
 
 
+async def _read_completed_result(owner, monkeypatch, seed, reader, *, fail_after_read=False):
+    """Read through the real kernel, then finish or time out before notification delivery."""
+    import json
+    import app.runtime.invoker as invoker
+    from app.services.llm_client import LLMError
+    from app.services.web_chat_runtime import start_web_chat_run
+
+    async with owner() as db:
+        notice = await db.scalar(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.source_run_id == str(seed["child_id"])))
+        seed["result_ref"] = notice.result_ref
+        queued = await start_web_chat_run(db=db, agent=await db.get(Agent, seed["agent_id"]),
+            user=await db.get(User, seed["user_id"]), session=await db.get(ChatSession, seed["session_id"]),
+            content="Read the colleague result.", extra_metadata={"source": "websocket_message"})
+        run_id = UUID(queued["run_id"])
+        await db.commit()
+    arguments = {"check_async_task": {"task_id": str(seed["child_id"])},
+        "task_output": {"runtime_task_id": str(seed["child_id"])}, "list_async_tasks": {},
+        "read_runtime_result": {"result_ref": seed["result_ref"]}}[reader]
+    client = ScriptedLLMClient([{"tool_calls": [_call(reader, arguments, "r3-read")],
+        "finish_reason": "tool_calls"}, LLMError("Provider stream delivery is unknown: ReadTimeout: timed out")
+        if fail_after_read else {"content": "I read the colleague's summary."}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    await _execute(owner, run_id, "r19a-r3-later-read")
+    assert len(client.requests) == 2
+    async with owner() as db:
+        later = await db.get(RuntimeTask, run_id)
+        assert later.status == ("failed" if fail_after_read else "completed"), later.metadata_json
+        if fail_after_read:
+            assert later.metadata_json["error_code"] == "timeout"
+        events = list(await db.scalars(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.run_id == run_id, ChatTranscriptEvent.item_kind == "tool_result")))
+        assert len(events) == 1
+        payload = events[0].metadata_json["v2_payload"]
+        assert payload["outcome"] == "success"
+        content = payload.get("model_visible_content", payload["content"])
+    body = json.loads(content)
+    if reader == "list_async_tasks":
+        body = next(row for row in body if UUID(row["task_id"]) == seed["child_id"])
+    elif reader == "task_output":
+        body = body["task"]
+    if reader == "read_runtime_result":
+        assert body["status"] == "ok" and body["complete"] is True
+    else:
+        assert body["status"] == "completed"
+        assert body["result"] == "Three sales points: quality, service, value."
+
+
+@pytest.mark.parametrize("reader", ["check_async_task", "task_output", "list_async_tasks"])
+@pytest.mark.parametrize("has_artifact", [False, True])
+async def test_summary_read_does_not_consume_a_corrected_or_artifact_result_page(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, auxiliary_models, reader, has_artifact,
+):
+    from uuid import uuid4
+    from app.models.audit import ChatMessage
+    from app.models.chat_artifact import ChatArtifact
+
+    async def add_artifact(seed):
+        if not has_artifact:
+            return
+        async with owner_sessionmaker() as db:
+            child = await db.get(RuntimeTask, seed["child_id"])
+            message = ChatMessage(id=uuid4(), agent_id=child.child_agent_id, tenant_id=child.tenant_id,
+                role="assistant", content="Report attached.", conversation_id=child.child_session_id)
+            db.add(message)
+            await db.flush()
+            # A committed child artifact fixture; collection, manifest and notification are native.
+            db.add(ChatArtifact(id=uuid4(), agent_id=child.child_agent_id, tenant_id=child.tenant_id,
+                session_id=UUID(child.child_session_id), message_id=message.id, runtime_task_id=child.id,
+                owner_user_id=seed["user_id"], root_session_id=seed["session_id"], path="workspace/report.md",
+                name="report.md", snapshot_hash="a" * 64, snapshot_json={"revision_id": "a" * 64}))
+            await db.commit()
+
+    async def read_before_notice(seed):
+        await _read_completed_result(owner_sessionmaker, monkeypatch, seed, reader)
+
+    seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        child_success=True, target_artifact_path=None if has_artifact else "workspace/missing.md",
+        before_child_completion=add_artifact, before_notification=read_before_notice)
+    item = seed["delivery_page"].manifest["items"][0]
+    assert item["terminal_status"] == ("completed" if has_artifact else "blocked")
+    assert item["artifact_count"] == int(has_artifact)
+    assert seed["return_id"] is not None, "A task summary did not read this page's correction or artifacts"
+
+
+@pytest.mark.parametrize("reader", ["check_async_task", "read_runtime_result"])
+async def test_timeout_after_result_read_still_wakes_the_parent(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, auxiliary_models, reader,
+):
+    async def read_then_timeout(seed):
+        await _read_completed_result(owner_sessionmaker, monkeypatch, seed, reader, fail_after_read=True)
+
+    seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        child_success=True, before_notification=read_then_timeout)
+    assert seed["return_id"] is not None, "A model timeout cannot consume the completion wake"
+
+
+async def test_already_read_normalizes_manifest_task_uuid(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, auxiliary_models,
+):
+    from app.services.agent_session_continuation import _result_page_already_read
+
+    async def read_before_notice(seed):
+        await _read_completed_result(owner_sessionmaker, monkeypatch, seed, "read_runtime_result")
+
+    async def check_hex_key(seed, page):
+        items = [{**item, "source_run_id": UUID(item["source_run_id"]).hex}
+            for item in page.manifest["items"]]
+        async with owner_sessionmaker() as db:
+            assert await _result_page_already_read(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+                session_id=seed["session_id"], user_id=seed["user_id"], items=items)
+
+    seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        child_success=True, before_notification=read_before_notice, before_page_delivery=check_hex_key)
+    assert seed["return_id"] is None
+
+
 @pytest.fixture
 def auxiliary_models(monkeypatch):
     class AuxiliaryClient(ScriptedLLMClient):
@@ -159,7 +276,7 @@ async def test_failed_parent_turn_that_read_the_result_does_not_repeat_it(
 
     seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
         before_notification=read_until_guard)
-    assert seed["return_id"] is None, "A failed turn still consumed its settled child reads"
+    assert seed["return_id"] is None, "The terminal-read guard already consumed this result before stopping"
 
 
 @pytest.mark.parametrize("interrupted", [False, True])

@@ -45,7 +45,8 @@ async def _execute(owner, run_id, worker):
 
 async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rounds=8, parent_tokens=30,
     child_terminal_reader=None, second_child=False, nested_running=False, child_success=False,
-    before_notification=None, deliver=True, before_child_completion=None, before_page_delivery=None):
+    before_notification=None, deliver=True, before_child_completion=None, before_page_delivery=None,
+    target_artifact_path=None):
     import app.database as database
     import app.runtime.invoker as invoker
     import app.services.tenant_resolver as tenant_resolver
@@ -93,9 +94,12 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
     monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", seed["data_root"])
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
 
+    delegation_args = {"agent_name": "Weekly colleague", "message": "List three work points.", "msg_type": "consult"}
+    if target_artifact_path:
+        delegation_args.update(target_artifact_path=target_artifact_path, edit_mode="modify_existing")
     parent_script = [
-        {"tool_calls": [_call("send_message_to_agent", {"agent_name": "Weekly colleague",
-            "message": "List three work points.", "msg_type": "consult"}, "delegate")],
+        {"tool_calls": [_call("delegate_to_agent" if target_artifact_path else "send_message_to_agent",
+            delegation_args, "delegate")],
             "usage": {"total_tokens": parent_tokens}, "finish_reason": "tool_calls"},
     ]
     if second_child:
@@ -301,6 +305,12 @@ async def test_repeated_running_child_read_fails_without_transcript_reconciliati
             metadata=child.metadata_json, result_summary=child.result_summary)
         assert page["result"] == "同事正在处理，结果回来后会在这里继续。"
         assert "待确认" not in page["result"]
+        assert "still running" in page["note"]
+        assert "completion notification" in page["note"]
+        assert "ended" not in page["note"] and "offer to retry" not in page["note"]
+        from app.services.runtime_display_status import is_delegation_failure_result_page
+
+        assert is_delegation_failure_result_page(page)
 
 
 async def test_result_return_keeps_the_original_runtime_budget(

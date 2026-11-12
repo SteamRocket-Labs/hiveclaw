@@ -574,7 +574,7 @@ def _approval_continuation_display_content(reason):
 
 
 async def _result_page_already_read(db, *, tenant_id, agent_id, session_id, user_id, items) -> bool:
-    """Use settled native reads of the same result in this parent session."""
+    """Match settled native reads to this delivered page in the parent session."""
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionToolInvocation
@@ -588,7 +588,8 @@ async def _result_page_already_read(db, *, tenant_id, agent_id, session_id, user
         RuntimeTask.parent_session_id == str(session_id), RuntimeTask.root_user_id == user_id)))
     if len(tasks) != len(items) or any(task.completed_at is None for task in tasks):
         return False
-    reads = (await db.execute(select(SessionToolInvocation.tool_name, ChatTranscriptEvent.metadata_json)
+    reads = (await db.execute(select(SessionToolInvocation.tool_name, ChatTranscriptEvent.metadata_json,
+            RuntimeTask.status, RuntimeTask.metadata_json)
         .join(ChatTranscriptEvent, ChatTranscriptEvent.id == SessionToolInvocation.result_event_id)
         .join(RuntimeTask, RuntimeTask.id == SessionToolInvocation.run_id)
         .where(SessionToolInvocation.tenant_id == tenant_id,
@@ -597,9 +598,13 @@ async def _result_page_already_read(db, *, tenant_id, agent_id, session_id, user
             SessionToolInvocation.tool_name.in_(("check_async_task", "task_output", "list_async_tasks", "read_runtime_result")),
             RuntimeTask.root_user_id == user_id,
             ChatTranscriptEvent.created_at >= min(task.completed_at for task in tasks)))).all()
-    unread = {str(task.id): task for task in tasks}
-    refs = {item["source_run_id"]: item["result_ref"] for item in items}
-    for tool, metadata in reads:
+    unread = {str(uuid.UUID(str(task.id))): task for task in tasks}
+    refs = {str(uuid.UUID(item["source_run_id"])): item for item in items}
+    for tool, metadata, read_status, read_metadata in reads:
+        # A failed model turn did not integrate the result. The terminal-read
+        # guard is the exception: it stopped only after reading it repeatedly.
+        if read_status == "failed" and (read_metadata or {}).get("error_code") != "identical_terminal_task_read":
+            continue
         payload = (metadata or {}).get("v2_payload") or {}
         if payload.get("outcome") != "success":
             continue
@@ -615,9 +620,11 @@ async def _result_page_already_read(db, *, tenant_id, agent_id, session_id, user
             for task_id, task in list(unread.items()):
                 failure = delegation_failure_result_page(task_id=task_id, status=task.status,
                     metadata=task.metadata_json or {}, result_summary=task.result_summary)
-                full_page = (tool == "read_runtime_result" and record.get("result_ref") == refs[task_id]
+                item = refs[task_id]
+                full_page = (tool == "read_runtime_result" and record.get("result_ref") == item["result_ref"]
                     and record.get("status") == "ok" and record.get("offset") == 0 and record.get("complete") is True)
-                task_result = (record.get("task_id") in {task_id, task.id.hex}
+                task_result = (item.get("terminal_status") == task.status and int(item.get("artifact_count") or 0) == 0
+                    and record.get("task_id") in {task_id, task.id.hex}
                     and ((failure is not None and is_delegation_failure_result_page(record)
                         and record.get("result") == failure["result"])
                         or (task.status == "completed" and record.get("status") == "completed"

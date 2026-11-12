@@ -202,4 +202,9 @@ export const DYNAMIC_KEY_RULES = [
     expression: 'ACTION_ERROR_KEYS[code]',
     reason: 'ACTION_ERROR_KEYS is the exhaustive HR abandon/retry error-code translation map; unknown codes fall back to the generic member line.',
   },
+  {
+    source: 'src/pages/ExternalPrincipalBindingsPanel.tsx',
+    expression: 'PROVIDER_LABEL_KEYS[principal.provider.trim().toLowerCase()]',
+    reason: 'PROVIDER_LABEL_KEYS is the finite channel-provider label map in the same file; the call is guarded by a lookup, and unknown providers show the raw provider code.',
+  },
 ];

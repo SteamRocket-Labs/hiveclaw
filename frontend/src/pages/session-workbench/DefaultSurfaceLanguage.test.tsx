@@ -321,20 +321,20 @@ describe('default screen language (B2)', () => {
     } as unknown as ThreadItem;
     const markup = renderToStaticMarkup(<ThreadItemRenderer item={item} approvalArguments={{ command }}
       approvalActions={<button>允许本次</button>} />);
-    expect(markup).toContain('可能修改内容、读取敏感信息或影响工作区以外');
+    expect(markup).toContain('批准后这次操作才会执行，完成后结果会回到这里。');
     expect(markup).not.toMatch(/可逆或只读|可撤销或只读操作/);
     expect(markup).toContain('允许本次');
   });
 
   it.each<[string, Record<string, unknown>, boolean, string]>([
-    ['execute_code', { language: 'bash', code: "env | grep -iE key; find / -name '*.pem'" }, false, '可能修改内容、读取敏感信息或影响工作区以外'],
-    ['run_skill_tool', {}, false, '可能修改内容、读取敏感信息或影响工作区以外'],
-    ['send_email', {}, false, '可能修改内容、读取敏感信息或影响工作区以外'],
-    ['write_file', { path: 'report.md' }, false, '可能修改内容、读取敏感信息或影响工作区以外'],
-    ['unknown_tool', {}, false, '可能修改内容、读取敏感信息或影响工作区以外'],
+    ['execute_code', { language: 'bash', code: "env | grep -iE key; find / -name '*.pem'" }, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
+    ['run_skill_tool', {}, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
+    ['send_email', {}, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
+    ['write_file', { path: 'report.md' }, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
+    ['unknown_tool', {}, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
     ...['ls', 'ls -la', 'wc -l report.csv', 'grep foo workspace/x.md', 'cat report.md']
       .map((command): [string, Record<string, unknown>, boolean, string] => ['run_command', { command }, false, '可逆或只读']),
-    ['run_command', {}, false, '可能修改内容、读取敏感信息或影响工作区以外'],
+    ['run_command', {}, false, '批准后这次操作才会执行，完成后结果会回到这里。'],
     ['delete_file', { path: 'report.md' }, true, '不可撤销的操作'],
     ['create_employee_from_request', {}, true, '不可撤销的操作'],
   ])('localizes the impact of %s with %j', (toolName, toolArguments, destructive, expected) => {
@@ -484,12 +484,9 @@ describe('default screen language (B2)', () => {
     expect(summary).toContain('boss@example.com');
     expect(summary).toContain('Q3 复盘');
     expect(summary).toContain('请查收');
-    fireEvent.click(screen.getByRole('button', { name: '完整参数' }));
-    const body = view.container.querySelector('pre')!.textContent!;
-    expect(body).toContain('"to"');
-    expect(body).toContain('boss@example.com');
-    expect(body).toContain('Q3 复盘');
-    expect(body).toContain('请查收');
+    // X1: raw JSON left the member card; the proposal fields above carry it.
+    expect(view.container.querySelector('pre')).toBeNull();
+    expect(screen.queryByRole('button', { name: '完整参数' })).toBeNull();
     cleanup();
   });
 

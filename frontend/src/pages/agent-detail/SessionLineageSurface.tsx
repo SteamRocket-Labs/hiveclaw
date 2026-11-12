@@ -259,6 +259,14 @@ export function checkpointPromptIntent(checkpoint: Record<string, unknown>): str
   return '';
 }
 
+/** Auto-resumed runs checkpoint on the internal integration instruction; the
+ * node reads as the localized receipt label, never the raw English text. */
+export function gitlineCheckpointLabel(preview: string, t: (key: string, fallback: string) => string): string {
+  return preview.startsWith('Runtime result integration')
+    ? t('agent.chat.disclosure.system.resultsAvailable', 'Task results received')
+    : preview;
+}
+
 export function sessionCheckpointPreview(checkpoint: Record<string, unknown>, index: number): string {
   const intent = checkpointPromptIntent(checkpoint) || `Checkpoint ${index + 1}`;
   if (intent.length <= SESSION_CHECKPOINT_PREVIEW_MAX_CHARS) return intent;
@@ -447,7 +455,7 @@ export function SessionGitLine({
         {checkpoints.map((checkpoint, index) => {
           const id = sessionCheckpointId(checkpoint);
           const isFocused = Boolean(id && id === focusedCheckpointId);
-          const previewLabel = sessionCheckpointPreview(checkpoint, index);
+          const previewLabel = gitlineCheckpointLabel(sessionCheckpointPreview(checkpoint, index), t);
           const isRewoundTail = rewindAnchorIndex >= 0 && index > rewindAnchorIndex;
           const nodeState = isRewoundTail
             ? 'rewound_tail'

@@ -239,7 +239,8 @@
         "target": "Target",
         "query": "Query",
         "url": "URL",
-        "title": "Title"
+        "title": "Title",
+        "content": "Content"
       },
       "value": {
         "success": "success",
@@ -248,7 +249,7 @@
         "oneAction": "one action",
         "destructive": "destructive",
         "reversible": "reversible or read-only",
-        "approvalUncertain": "May modify content, read sensitive information, or affect areas outside the workspace",
+        "approvalUncertain": "It runs only after you approve; the outcome returns to this conversation.",
         "employeePermanent": "The employee can be deactivated, but cannot be deleted."
       },
       "inspectTechnicalDetails": "Inspect technical details",
@@ -494,8 +495,8 @@
       "sendMessage": "Send a message",
       "sendFile": "Send a file",
       "browser": "Operate a web page",
-      "plazaPost": "Publish a post",
-      "plazaComment": "Comment on a post",
+      "plazaPost": "Publish a post to the company plaza",
+      "plazaComment": "Comment on a company plaza post",
       "feishuDoc": "Use Feishu documents",
       "feishuSheet": "Use Feishu spreadsheets",
       "feishuBase": "Use Feishu Base",

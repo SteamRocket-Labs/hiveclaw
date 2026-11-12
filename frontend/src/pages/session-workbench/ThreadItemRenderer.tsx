@@ -77,7 +77,8 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
     const summary = args ? data.tool_name === 'run_command' ? { command: args.command, cwd: 'workspace/' }
       : data.tool_name === 'create_employee_from_request' ? { name: args.name, first_task: args.first_task }
         : ['send_email', 'reply_email'].includes(data.tool_name || '') ? { recipient: args.to || args.recipient, subject: args.subject, body: args.body }
-          : {} : {};
+          : data.tool_name === 'plaza_create_post' ? { content: args.content }
+            : {} : {};
     const proposalDetails = Object.entries(summary).flatMap(([label, value]) => {
       const text = Array.isArray(value) ? value.join(', ') : value;
       return typeof text === 'string' && text ? [{ label, value: text.length > 240 ? `${text.slice(0, 240)}…` : text }] : [];
@@ -87,8 +88,9 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
       : data.tool_name === 'run_command' && isSimpleWorkspaceRead((args || data.arguments)?.command)
         ? t('sessionWorkbench.threadItem.value.reversible', 'Reversible or read-only')
         : t('sessionWorkbench.threadItem.value.approvalUncertain', 'May modify content, read sensitive information, or affect areas outside the workspace');
+    // The action already leads the member sentence; a repeated 工具 row adds
+    // internal vocabulary without new information (X1 run 14/15).
     return [
-      { label: 'tool', value: approvalActionLabel(data.tool_name, t) },
       { label: 'expires', value: expires ? new Date(expires).toLocaleString(language) : null },
       { label: 'impact', value: data.tool_name === 'create_employee_from_request'
         ? `${impact} · ${t('sessionWorkbench.threadItem.value.employeePermanent', 'The employee can be deactivated, but cannot be deleted.')}`
@@ -298,19 +300,6 @@ export function ThreadItemRenderer({
       ))}
     </dl>
   );
-  const argumentsBody = item.item_type === 'approval_request' && approvalArguments != null && (
-    <>
-    <button type="button" className="btn btn-secondary" aria-expanded={showArguments} onClick={() => setShowArguments(!showArguments)}>
-      <IconChevronRight size={13} aria-hidden="true" style={{ transform: showArguments ? 'rotate(90deg)' : undefined }} />
-      {t('agent.chat.permission.fullArguments', 'Full parameters')}
-    </button>
-    {showArguments && <pre
-      className="thread-item-arguments"
-      aria-label={t('agent.chat.permission.actionDetails', 'Action details')}
-      style={{ maxHeight: '240px', overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
-    >{JSON.stringify(approvalArguments, null, 2)}</pre>}
-    </>
-  );
 
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') {
     // A settled permission decision collapses to one plain line (product
@@ -353,14 +342,13 @@ export function ThreadItemRenderer({
         ) : null}
       </header>
       {visibleContent && <div className="thread-item-content">{visibleContent}</div>}
-      {(detailBody || argumentsBody) && (shouldCollapse(item) ? (
+      {detailBody && (shouldCollapse(item) ? (
         <details className="thread-item-disclosure">
           <summary>
             <IconChevronRight size={13} aria-hidden="true" />
             {t('sessionWorkbench.threadItem.details', 'Details')}
           </summary>
           {detailBody}
-          {argumentsBody}
         </details>
       ) : detailBody)}
       {item.item_type === 'approval_request' && approvalActions && (

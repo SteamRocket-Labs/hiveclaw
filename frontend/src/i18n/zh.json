@@ -239,7 +239,8 @@
         "target": "目标",
         "query": "查询内容",
         "url": "网址",
-        "title": "标题"
+        "title": "标题",
+        "content": "内容"
       },
       "value": {
         "success": "成功",
@@ -248,7 +249,7 @@
         "oneAction": "仅本次操作",
         "destructive": "不可撤销的操作",
         "reversible": "可逆或只读",
-        "approvalUncertain": "可能修改内容、读取敏感信息或影响工作区以外",
+        "approvalUncertain": "批准后这次操作才会执行，完成后结果会回到这里。",
         "employeePermanent": "创建后可停用，但不能删除。"
       },
       "inspectTechnicalDetails": "查看技术详情",
@@ -494,8 +495,8 @@
       "sendMessage": "发送消息",
       "sendFile": "发送文件",
       "browser": "操作网页",
-      "plazaPost": "发布帖子",
-      "plazaComment": "评论帖子",
+      "plazaPost": "发布帖子到公司广场",
+      "plazaComment": "评论公司广场上的帖子",
       "feishuDoc": "使用“飞书文档”相关操作",
       "feishuSheet": "使用“飞书表格”相关操作",
       "feishuBase": "使用“飞书多维表格”相关操作",

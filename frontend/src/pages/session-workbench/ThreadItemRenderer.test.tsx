@@ -144,7 +144,7 @@ describe('ThreadItemRenderer', () => {
     'cat secrets.yaml', 'cat service-account.json', 'cat kubeconfig',
   ])
   ('keeps a recognized workspace read reversible: %s', (command) => {
-    for (const impact of [undefined, '可能修改内容、读取敏感信息或影响工作区以外']) {
+    for (const impact of [undefined, '批准后这次操作才会执行，完成后结果会回到这里。']) {
       const markup = renderToStaticMarkup(<ThreadItemRenderer item={commandApproval(command, impact)} />);
       expect(markup).toContain('Reversible or read-only');
       expect(markup).not.toContain(uncertainImpact);

@@ -2005,11 +2005,8 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
         await _handle_restart_recovery_required(state, exc)
         return
     failure = _runtime_exception_failure(exc)
-    database_failure = is_runtime_persistence_error(exc)
     summary = (
-        "这次没有完成，请稍后再试。"
-        if database_failure
-        else "Execution stopped before the next effect; restore authority or revise the work."
+        "Execution stopped before the next effect; restore authority or revise the work."
         if isinstance(exc, ExecutionAuthorityUnavailable)
         else "Canonical session history is unavailable; model invocation did not start."
         if isinstance(exc, SessionSemanticHistoryUnavailable)
@@ -2045,8 +2042,6 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
             status="failed",
             result_summary=summary,
             metadata_json=metadata,
-            **({"failure": {"message": summary, "terminal_reason": failure.terminal_reason}}
-               if database_failure else {}),
             **changes,
         )
         if not finalized:

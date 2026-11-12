@@ -495,7 +495,7 @@ it.each(['live', 'history'] as const)('renders delivery-safe retry actions with 
   const [rejected, unknown, legacy] = cards.map(card => screen.getByText(card.content)
     .closest('.session-tui-render-cell') as HTMLElement);
   expect(within(rejected).queryByTestId('thread-item-retry-turn')).not.toBeNull();
-  expect(rejected.textContent).toContain('The model service could not finish this task. Check the configuration before retrying.');
+  expect(rejected.textContent).toContain('The model service could not finish this task. Ask an administrator to check the model configuration.');
   expect(rejected.textContent).not.toContain('can be retried safely');
   expect(within(unknown).queryByTestId('thread-item-retry-turn')).toBeNull();
   expect(within(legacy).queryByTestId('thread-item-retry-turn')).not.toBeNull();

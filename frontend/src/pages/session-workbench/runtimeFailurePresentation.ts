@@ -1,5 +1,5 @@
 export type RuntimeFailurePresentation = {
-  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown';
+  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error';
   fallback: string;
 };
 
@@ -7,7 +7,14 @@ export function runtimeFailurePresentation(
   failureCode: unknown,
   retryable: boolean,
   deliveryState?: unknown,
+  terminalReason?: unknown,
 ): RuntimeFailurePresentation {
+  if (terminalReason === 'persistence_error') {
+    return {
+      kind: 'persistence_error',
+      fallback: 'This task did not finish. Please try again later.',
+    };
+  }
   if (deliveryState === 'unknown') {
     // Unknown delivery with retryable=false must not promise a retry: keep
     // only the "not confirmed finished" meaning in plain words.
@@ -48,6 +55,6 @@ export function runtimeFailurePresentation(
   }
   return {
     kind: 'unavailable',
-    fallback: 'This task did not finish. Please try again later.',
+    fallback: 'The model service could not finish this task. Ask an administrator to check the model configuration.',
   };
 }

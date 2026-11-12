@@ -157,7 +157,8 @@
         "quotaExhausted": "Model quota or balance is insufficient. Ask an administrator to check quota, or switch models and retry.",
         "rateLimited": "The model service is busy. Try again later, or switch models and retry.",
         "retryable": "The model service is temporarily unavailable. This task can be retried safely.",
-        "unavailable": "This task did not finish. Please try again later."
+        "unavailable": "The model service could not finish this task. Ask an administrator to check the model configuration.",
+        "persistenceError": "This task did not finish. Please try again later."
       },
       "permissionNeeded": "This needs your approval: {{tool}}.",
       "thisTool": "this tool",

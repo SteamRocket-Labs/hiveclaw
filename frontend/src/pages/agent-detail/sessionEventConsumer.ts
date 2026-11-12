@@ -465,7 +465,7 @@ function projectCanonicalItem(
     const failureRetrySafe = 'retry_safe' in item.payload ? item.payload.retry_safe === true : failureRetryable;
     const deliveryState = typeof item.payload.delivery_state === 'string' ? item.payload.delivery_state : null;
     const failureMessage = failedDelegation && typeof item.payload.message === 'string'
-      ? item.payload.message : runtimeFailurePresentation(failureCode, failureRetryable, deliveryState).fallback;
+      ? item.payload.message : runtimeFailurePresentation(failureCode, failureRetryable, deliveryState, failureReason).fallback;
     const scope = item.scope;
     const threadItem: ThreadItem = {
       schema: 'hive.thread_item.v1',

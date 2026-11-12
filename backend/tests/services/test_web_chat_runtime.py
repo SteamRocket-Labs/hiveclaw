@@ -6584,10 +6584,6 @@ async def test_execute_web_chat_run_persists_typed_failure_without_platform_auth
             "status": "failed",
             "result_summary": f"Web chat run failed: {type(invoke_error).__name__}",
             "metadata_json": {"error": str(invoke_error), "terminal_reason": expected_reason},
-            **({
-                "result_summary": "这次没有完成，请稍后再试。",
-                "failure": {"message": "这次没有完成，请稍后再试。", "terminal_reason": "persistence_error"},
-            } if expected_reason == "persistence_error" else {}),
         }
     ]
     assert updates == []

@@ -1119,6 +1119,9 @@ async def append_model_stream_delta(
 ) -> ChatTranscriptEvent:
     """Commit one visible Provider batch and its outbox before live delivery."""
 
+    from app.services.chat_transcript import lock_transcript_session
+
+    await lock_transcript_session(db, session_id=session_id)
     phase_contract = {
         "unknown": ("assistant_text", {"audience": "direct_user"}),
         "commentary": ("assistant_commentary", {"audience": "direct_user"}),
@@ -1223,6 +1226,9 @@ async def seal_model_response(
 ) -> dict[str, Any]:
     """Commit the immutable Provider result seal without declaring Run terminal."""
 
+    from app.services.chat_transcript import lock_transcript_session
+
+    await lock_transcript_session(db, session_id=session_id)
     round_id = _round_id(run_id, round_index, continuation_index)
     result = await db.scalar(
         select(SessionModelResult)
@@ -1515,6 +1521,9 @@ async def commit_sealed_model_round(
 ) -> dict[str, Any]:
     """Persist the complete obligation registry and round-committed fence."""
 
+    from app.services.chat_transcript import lock_transcript_session
+
+    await lock_transcript_session(db, session_id=session_id)
     round_id = _round_id(run_id, round_index, continuation_index)
     result = await db.scalar(
         select(SessionModelResult)

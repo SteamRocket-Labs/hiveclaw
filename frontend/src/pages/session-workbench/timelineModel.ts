@@ -1641,9 +1641,10 @@ function buildRunCell(
   const runId = messageRunId(answer?.message)
     ?? visibleSourceMessages.map((entry) => messageRunId(entry.message)).find((value): value is string => Boolean(value));
   // The final answer renders as its own message right below the block; an
-  // in-run prose copy with the same bytes must not repeat it inside the block.
-  const dedupedSteps = answer
-    ? dropStepsRepeatingAnswer(timeline.steps, answer.message)
+  // in-run prose copy with the same bytes is marked so the renderer skips the
+  // repeat while the step still counts toward the block's own records.
+  const markedSteps = answer
+    ? markStepsRepeatingAnswer(timeline.steps, answer.message)
     : timeline.steps;
   return {
     kind: 'active_run',
@@ -1652,8 +1653,7 @@ function buildRunCell(
     timeline: answer
       ? {
           ...timeline,
-          steps: dedupedSteps,
-          summary: buildRunAggregateSummary(dedupedSteps),
+          steps: markedSteps,
           answerMessageId: messageId(answer.message, `assistant-${answer.index}`),
         }
       : timeline,
@@ -1661,14 +1661,14 @@ function buildRunCell(
   };
 }
 
-/** Hide in-run prose/commentary steps whose text is exactly the final answer. */
-function dropStepsRepeatingAnswer(steps: RunStepSnapshot[], answer: AgentChatMessage): RunStepSnapshot[] {
+/** Mark in-run prose/commentary steps whose text is exactly the final answer. */
+function markStepsRepeatingAnswer(steps: RunStepSnapshot[], answer: AgentChatMessage): RunStepSnapshot[] {
   const answerText = assistantReplyForDisplay(answer.content || '').trim();
   if (!answerText) return steps;
-  return steps.filter((step) => {
-    if (step.kind !== 'prose' && step.kind !== 'commentary') return true;
+  return steps.map((step) => {
+    if (step.kind !== 'prose' && step.kind !== 'commentary') return step;
     const stepText = assistantReplyForDisplay(typeof step.details === 'string' ? step.details : '').trim();
-    return stepText !== answerText;
+    return stepText === answerText ? { ...step, repeatsAnswer: true } : step;
   });
 }
 

@@ -46,6 +46,10 @@ export type RunStepStatus =
 export type RunStepPresentation = 'process' | 'tool_history' | 'surface' | 'external';
 
 export interface RunStepSnapshot {
+  /** This step's text is byte-identical to the final answer below the block;
+   * renderers skip the repeat while step counts keep the record. */
+  repeatsAnswer?: boolean;
+
   id: string;
   toolCallId?: string | null;
   kind: RunStepKind;

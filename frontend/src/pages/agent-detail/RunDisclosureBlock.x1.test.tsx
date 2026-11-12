@@ -61,3 +61,11 @@ it('a short plain tool result keeps its line layout', () => {
   expect(container.textContent).toContain('第二行结果');
   expect(container.querySelector('.run-detail-summary')).toBeNull();
 });
+
+it('the marked in-run copy of the answer renders nowhere in the block', () => {
+  const { container } = render(<RunDisclosureBlock timeline={{ id: 'run', status: 'done', steps: [{
+    id: 'copy', kind: 'prose', title: 'Assistant update', status: 'done', visibility: 'visible',
+    details: '最终答复原文', repeatsAnswer: true,
+  }] }} />);
+  expect(container.textContent).not.toContain('最终答复原文');
+});

@@ -4328,7 +4328,8 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Approval required');
-    expect(markup).toContain('Full parameters');
+    // X1: raw JSON left the card; the command itself is a plain detail row.
+    expect(markup).not.toContain('Full parameters');
     expect(markup).not.toContain('run_command');
     expect(markup).toContain('rm workspace/report.md');
     expect(markup).toContain('Allow once');

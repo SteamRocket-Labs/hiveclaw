@@ -26,11 +26,13 @@ describe('X1 expanded block does not repeat the final answer', () => {
     const run = model.cells.find((cell) => cell.kind === 'active_run');
     if (!run || run.kind !== 'active_run') return;
     expect(run.timeline.answerMessageId).toBeTruthy();
-    const repeated = run.timeline.steps.filter(
+    // The in-run copy stays as a counted record but is marked for the
+    // renderer; the block keeps its real process steps.
+    const copies = run.timeline.steps.filter(
       (step) => (step.kind === 'prose' || step.kind === 'commentary') && step.details === answer,
     );
-    expect(repeated).toHaveLength(0);
-    // The block keeps its real process steps.
+    expect(copies).toHaveLength(1);
+    expect(copies[0].repeatsAnswer).toBe(true);
     expect(run.timeline.steps.some((step) => step.kind === 'reasoning')).toBe(true);
   });
 
@@ -50,9 +52,11 @@ describe('X1 expanded block does not repeat the final answer', () => {
     const model = buildThreadTimeline({ messages, isWaiting: false, isStreaming: false, activeRunStatus: null });
     expect(model.cells.some((cell) => cell.kind === 'assistant_final')).toBe(true);
     const runs = model.cells.filter((cell) => cell.kind === 'active_run');
+    expect(runs.length).toBeGreaterThan(0);
     for (const run of runs) {
       if (run.kind !== 'active_run') continue;
-      expect(run.timeline.steps.some((step) => step.details === answer)).toBe(false);
+      const copies = run.timeline.steps.filter((step) => step.details === answer);
+      expect(copies.every((step) => step.repeatsAnswer === true)).toBe(true);
     }
   });
 

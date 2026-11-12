@@ -78,7 +78,8 @@ it('keeps the recorded child-session title and original result prose', () => {
     && message.eventReason === 'delegation_completed');
   expect(children).toHaveLength(1);
   const row = mount(children).querySelector('[data-testid="run-disclosure-step"]')!;
-  expect(row.querySelector('.run-step-title')?.textContent).toBe('交给其他数字员工');
+  // X1: a completed delegation receipt titles the direction it traveled.
+  expect(row.querySelector('.run-step-title')?.textContent).toBe('同事交回的结果');
   expect(row.textContent).toContain(children[0].content);
 });
 

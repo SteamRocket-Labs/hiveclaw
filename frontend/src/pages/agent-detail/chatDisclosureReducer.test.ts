@@ -848,7 +848,8 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps.map((step) => [step.kind, step.title])).toEqual([
       ['a2a', 'Delegation step'],
       ['subagent', 'Subagent step'],
-      ['a2a', 'Delegation update'],
+      // X1: a completed delegation receipt reads as coming back, not going out.
+      ['a2a', 'Delegation result'],
     ]);
   });
 

@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
+import { QueryClientContext, useQueryClient } from '@tanstack/react-query';
 import { runtimeStatusLabel } from './runtimeStatus';
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -173,13 +173,15 @@ function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
  * authority-filtered employee list contains it (no new permission logic). */
 function ColleagueConversationLink({ metadata }: { metadata: Record<string, unknown> }) {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
+  // Some render hosts (tests, static projections) mount without a provider;
+  // without a known cache there is nothing to gate on, so no link.
+  const queryClient = React.useContext(QueryClientContext) as ReturnType<typeof useQueryClient> | null;
   const agentId = typeof metadata.target_agent_id === 'string' ? metadata.target_agent_id : '';
   const sessionId = typeof metadata.child_session_id === 'string' ? metadata.child_session_id : '';
   const tenantId = localStorage.getItem('current_tenant_id')
     || useAuthStore.getState().user?.tenant_id
     || '';
-  const listed = queryClient.getQueryData<Array<{ id: string }>>(['agents', tenantId]) || [];
+  const listed = queryClient?.getQueryData<Array<{ id: string }>>(['agents', tenantId]) || [];
   if (!agentId || !sessionId || !listed.some((agent) => agent.id === agentId)) return null;
   return (
     <p className="run-colleague-link">
@@ -335,6 +337,9 @@ function proseText(step: RunStepSnapshot): string {
 }
 
 function RunProse({ step }: { step: RunStepSnapshot }) {
+  // The answer renders as its own message below the block; its in-run copy
+  // with the same bytes is not shown twice (X1 run 15).
+  if (step.repeatsAnswer) return null;
   const content = assistantReplyForDisplay(proseText(step));
   if (!content) return null;
   return (

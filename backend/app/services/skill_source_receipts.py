@@ -241,9 +241,10 @@ async def record_original_platform_skill_sources(db, *, agent, workspace):
 async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
     from app.config import get_settings
     from app.models.agent import Agent
-    from app.services.content_input_receipts import _preflight_inputs
+    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS, _preflight_inputs
 
-    rows = _preflight_inputs(db, authority=True)
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    rows = _preflight_inputs(db, authority=scope is not None and scope.source_catalog)
     key = ("platform_skill_sources", tenant_id, agent_id)
     if rows is not None and key in rows:
         sources = rows[key]
@@ -629,14 +630,11 @@ async def validate_skill_file_dependency(db, tenant_id, dependency, *, user, run
             from app.services.content_input_receipts import _batch_browser_point
 
             if _batch_browser_point(db, user):
-                from app.services.source_read_queries import source_reader_statement, source_reader_access
+                from app.core.permissions import agent_access_from_facts
+                from app.services.source_read_queries import source_reader_statement
 
                 facts = (await db.execute(source_reader_statement(user, agent_id))).first()
-                if facts is None:
-                    from app.core.permissions import _validate_loaded_agent_for_user
-
-                    await _validate_loaded_agent_for_user(db, user, None)
-                agent, _level = await source_reader_access(db, user, facts, access_check=check_agent_access)
+                agent, _level = await agent_access_from_facts(db, user, facts)
             else:
                 agent, _level = await check_agent_access(db, user, agent_id)
             if agent.tenant_id != tenant_id:

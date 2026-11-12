@@ -10,11 +10,11 @@ from types import SimpleNamespace
 
 from sqlalchemy.orm import load_only
 
-from sqlalchemy import String, bindparam, case, or_, select, text
+from sqlalchemy import String, bindparam, or_, select, text
 
 from app.models.organization_identity import ContentInputReceipt
 from app.services.team_memory import _safe_component, _slugify
-from app.services.source_read_queries import source_reader_access as _source_reader_access
+from app.core.permissions import agent_access_from_facts
 
 _ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
 _DISCLOSURE_SOURCE_VALIDATIONS = ContextVar("disclosure_source_validations", default=None)
@@ -175,8 +175,10 @@ async def _input_row(db, model, source_id, *, populate_existing=True):
     if rows is not None and key in rows:
         row = rows[key]
         if model.__name__ == "SessionModelResult" and row is not None and scope.source_catalog:
-            state = await db.scalar(select(model.state).where(model.id == source_id, model.tenant_id == row.tenant_id))
-            return SimpleNamespace(**{**vars(row), "state": state})
+            live = (await db.execute(select(model.state, model.seal_json)
+                .where(model.id == source_id, model.tenant_id == row.tenant_id))).first()
+            return SimpleNamespace(**{**vars(row), "state": live[0] if live else None,
+                "seal_json": live[1] if live else None})
         return row
     options = {}
     if scope is not None and scope.source_catalog and model.__name__ == "InvocationSpan":
@@ -186,7 +188,7 @@ async def _input_row(db, model, source_id, *, populate_existing=True):
     row = await db.get(model, source_id, populate_existing=populate_existing, **options)
     if rows is not None and not (scope.source_catalog and (
         (model is ContentInputReceipt and row is not None and row.carrier_kind != "workspace_artifact")
-        or (model.__name__ == "InvocationSpan" and (row is None or row.span_type == "workspace_output"))
+        or (model.__name__ == "InvocationSpan" and (row is None or row.span_type in {"workspace_output", "remote_action"}))
     )):
         rows[key] = row
     return row
@@ -311,9 +313,8 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
         if immutable_only and model is SessionToolInvocation:
             statement = statement.where(SessionToolInvocation.result_event_id.is_not(None))
         if immutable_only and model is InvocationSpan:
-            # Claimed approval execution may update this row's native receipt
-            # bookkeeping after the original invocation has settled.
-            statement = statement.where(InvocationSpan.span_type != "workspace_output")
+            # Approval bookkeeping and remote actions have post-settle writers.
+            statement = statement.where(InvocationSpan.span_type.not_in(("workspace_output", "remote_action")))
         loaded = list(await db.scalars(statement.execution_options(populate_existing=True))) if missing else []
         if not (immutable_only and model is InvocationSpan):
             rows.update({(model, source_id): None for source_id in missing})
@@ -339,8 +340,7 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                 & (SessionModelResult.provider_request_id == SessionToolInvocation.provider_request_id))
                 .where(SessionToolInvocation.id.in_([row.id for row in tools])))))
     if immutable_only:
-        statement = statement.with_only_columns(*model_columns, case((SessionModelResult.id.in_(
-            ids.get("session_model_result", ())), SessionModelResult.seal_json)).label("seal_json"))
+        statement = statement.with_only_columns(*model_columns)
         models = [SimpleNamespace(**row._mapping) for row in await db.execute(statement)]
     else:
         models = list(await db.scalars(statement.execution_options(populate_existing=True)))
@@ -900,7 +900,7 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 current_revision = reader_facts[5] if reader_facts is not None and len(reader_facts) > 5 else None
                 if source is None:
                     raise ValueError("context_source_agent_unavailable")
-                await _source_reader_access(db, user, reader_facts)
+                await agent_access_from_facts(db, user, reader_facts)
             else:
                 source = await db.scalar(
                     select(Agent)
@@ -1425,8 +1425,9 @@ async def _validate_session_actor_identity(db, tenant_id, dependency, *, user, r
     if _batch_browser_point(db, user) and runtime_request is None:
         from app.services.source_read_queries import source_reader_statement, reader_columns
 
-        reader_facts = (await db.execute(source_reader_statement(user, ChatSession.agent_id).add_columns(ChatSession)
-            .outerjoin(ChatSession, ChatSession.id == scope["session_id"]).options(*reader_columns(ChatSession)))).first()
+        reader_facts = (await db.execute(source_reader_statement(user, ChatSession.agent_id, source=ChatSession)
+            .add_columns(ChatSession).where(ChatSession.id == scope["session_id"])
+            .options(*reader_columns(ChatSession)))).first()
         session = reader_facts[5] if reader_facts is not None else None
     else:
         session = await _input_row(db, ChatSession, scope["session_id"])
@@ -1790,7 +1791,7 @@ async def _resolve_session_input_source(
             if reader_facts is None:
                 await _input_agent_access(db, requester, session.agent_id)
             else:
-                await _source_reader_access(db, requester, reader_facts)
+                await agent_access_from_facts(db, requester, reader_facts)
             await require_current_group_member(db, session=session, user=requester)
             return
         except HTTPException as exc:
@@ -1823,9 +1824,7 @@ async def _resolve_session_input_source(
                 )
             else:
                 from app.core.permissions import authorize_loaded_session_access
-                from app.services.source_read_queries import source_reader_access
-
-                agent, level = await source_reader_access(db, user, reader_facts)
+                agent, level = await agent_access_from_facts(db, user, reader_facts)
                 await authorize_loaded_session_access(db, user, agent=agent, session=session,
                     access_level=level, action="read_content_input_source")
             return
@@ -2126,7 +2125,7 @@ async def _validate_company_publication_dependency(db, tenant_id, dependency, *,
 async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, runtime_request, active_receipts):
     from fastapi import HTTPException
     from app.models.workspace_resource import WorkspaceResourceManifest
-    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path, check_agent_access as workspace_agent_access
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
     try:
         receipt_id = uuid.UUID(dependency["source_id"])
@@ -2229,7 +2228,7 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
                 if principal is not None and principal.agent_id == agent_id
                 else None,
                 runtime_principal=principal,
-                agent_access=await _source_reader_access(db, user, facts, access_check=workspace_agent_access) if facts is not None else None,
+                agent_access=await agent_access_from_facts(db, user, facts) if facts is not None else None,
                 source_facts=source_facts,
             )
     except (HTTPException, WorkspaceAuthorityError) as exc:

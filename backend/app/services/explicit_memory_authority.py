@@ -412,10 +412,11 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
         facts = None
         if joined:
             agent_binding = source_uuid(func.split_part(ContentInputReceipt.carrier_ref, "\n", 1))
-            facts = (await db.execute(source_reader_statement(user, agent_binding).add_columns(ContentInputReceipt, User, ChatSession)
-                .join(ContentInputReceipt, ContentInputReceipt.id == uuid.UUID(dependency["source_id"]))
+            facts = (await db.execute(source_reader_statement(user, agent_binding, source=ContentInputReceipt)
+                .add_columns(ContentInputReceipt, User, ChatSession)
                 .outerjoin(User, User.id == user.id)
                 .outerjoin(ChatSession, ChatSession.id == source_uuid(ContentInputReceipt.authority_json["source_session_id"].astext))
+                .where(ContentInputReceipt.id == uuid.UUID(dependency["source_id"]))
                 .options(*reader_columns(User, ChatSession)))).first()
             receipt, requester, session = (facts[5], facts[6], facts[7]) if facts is not None else (None,) * 3
         else:
@@ -453,8 +454,9 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
         latest_id = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
             ContentInputReceipt.carrier_kind == "explicit_memory", ContentInputReceipt.carrier_ref == receipt.carrier_ref
             ).order_by(ContentInputReceipt.revision.desc()).limit(1).scalar_subquery()
-        facts = (await db.execute(source_reader_statement(user, agent_id).add_columns(User, ChatSession, current)
-            .outerjoin(User, User.id == user.id).outerjoin(ChatSession, ChatSession.id == session.id)
+        facts = (await db.execute(source_reader_statement(user, ChatSession.agent_id, source=ChatSession)
+            .add_columns(User, ChatSession, current).outerjoin(User, User.id == user.id)
+            .where(ChatSession.id == session.id)
             .outerjoin(current, current.id == latest_id).options(*reader_columns(User, ChatSession),
                 load_only(current.id, current.authority_json)))).first()
         requester, current_session, latest = (facts[5], facts[6], facts[7]) if facts is not None else (None,) * 3

@@ -543,7 +543,9 @@ def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     key = ("model_snapshot_dependencies", id(snapshot), result.model_request_hash)
     if scope is not None and scope.active and scope.source_catalog and key in scope.model_inputs:
-        return scope.model_inputs[key]
+        retained, value = scope.model_inputs[key]
+        if retained is snapshot:
+            return value
     digest = _immutable_model_digest(result) if isinstance(snapshot, dict) else None
     if not isinstance(snapshot, dict) or (digest if digest is not None else _hash(snapshot)) != result.model_request_hash:
         return [], False
@@ -554,7 +556,7 @@ def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     coverage = bindings.get("dependency_coverage")
     value = dependencies or [], dependencies is not None and isinstance(coverage, dict) and coverage.get("complete") is True
     if scope is not None and scope.active and scope.source_catalog:
-        scope.model_inputs[key] = value
+        scope.model_inputs[key] = (snapshot, value)
     return value
 
 

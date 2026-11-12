@@ -156,7 +156,8 @@ async def validate_reference(db, tenant_id, dependency, *, user=None, runtime_re
         and _batch_browser_point(db, user)):
         from types import SimpleNamespace
         from app.models.user import User
-        from app.services.source_read_queries import source_reader_statement, source_reader_access, _json_rows, reader_columns
+        from app.core.permissions import agent_access_from_facts
+        from app.services.source_read_queries import source_reader_statement, _json_rows, reader_columns
 
         session_ids = {scope["session_id"], scope["source_session_id"]}
         facts = (await db.execute(source_reader_statement(user, scope["agent_id"]).add_columns(User,
@@ -167,7 +168,7 @@ async def validate_reference(db, tenant_id, dependency, *, user=None, runtime_re
         if (requester is None or not requester.is_active or requester.tenant_id != tenant_id
             or requester.id != scope["user_id"]):
             raise ContentInputReceiptError("content_source_access_denied", "The original memory requester is unavailable.", 403)
-        await source_reader_access(db, requester, facts)
+        await agent_access_from_facts(db, requester, facts)
         sessions = [SimpleNamespace(id=uuid.UUID(row["id"]), audience_kind=row["audience_kind"]) for row in facts[6] or []]
         await _private_sessions(db, tenant_id=tenant_id, agent_id=scope["agent_id"], user_id=requester.id,
             session_ids=session_ids, sessions=sessions)

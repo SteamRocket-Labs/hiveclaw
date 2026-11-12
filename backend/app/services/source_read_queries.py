@@ -21,15 +21,13 @@ def _json_rows(model, fields, *where):
     ))).where(*where).correlate(Agent).scalar_subquery()
 
 
-def source_reader_statement(user, agent_id):
+def source_reader_statement(user, agent_id, *, source=None):
     """Select live ACL inputs together; the canonical ACL still decides access."""
-    scope = _preflight_inputs_for_statement()
-    literal_agent = isinstance(agent_id, uuid.UUID)
-    key = ("source_reader_statement", user.id, agent_id if literal_agent else str(agent_id))
+    scope = _preflight_inputs_for_statement() if isinstance(agent_id, uuid.UUID) and source is None else None
+    key = ("source_reader_statement", user.id, agent_id)
     if scope is not None and key in scope:
         statement = scope[key]
         return statement
-    selected_agent = agent_id
     permissions = _json_rows(AgentPermission, ("scope_type", "scope_id", "access_level"),
         AgentPermission.agent_id == Agent.id)
     teams = select(func.jsonb_agg(BusinessTeamMembership.business_team_id)).join(
@@ -40,8 +38,10 @@ def source_reader_statement(user, agent_id):
             BusinessTeam.tenant_id == Agent.tenant_id, User.is_active.is_(True),
             User.tenant_id == Agent.tenant_id).correlate(Agent).scalar_subquery()
     resources = resource_permission_rows("agent", Agent.id, Agent.tenant_id)
-    statement = (select(Agent, Tenant.is_active, permissions, teams, resources).select_from(Agent)
-        .outerjoin(Tenant, Tenant.id == Agent.tenant_id).where(Agent.id == selected_agent)
+    statement = select(Agent, Tenant.is_active, permissions, teams, resources)
+    statement = (statement.select_from(Agent).where(Agent.id == agent_id) if source is None
+        else statement.select_from(source).outerjoin(Agent, Agent.id == agent_id))
+    statement = (statement.outerjoin(Tenant, Tenant.id == Agent.tenant_id)
         .options(load_only(Agent.id, Agent.tenant_id, Agent.owner_user_id, Agent.creator_id,
             Agent.deleted_at, Agent.deactivated_at, Agent.deactivation_reason, Agent.name,
             Agent.role_description, Agent.status, Agent.agent_class, Agent.agent_type, Agent.created_at),
@@ -84,20 +84,6 @@ def permission_rows(values):
                 fields[key] = datetime.fromisoformat(fields[key])
         rows.append(SimpleNamespace(**fields))
     return rows
-
-
-async def source_reader_access(db, user, facts, *, access_check=None):
-    from app.core import permissions as authority
-
-    agent, active, permissions, teams, resources = facts[:5] if facts is not None else (None,) * 5
-    team_ids = [uuid.UUID(value) for value in teams or []] if (
-        getattr(user, "is_active", True) is True and agent is not None and user.tenant_id == agent.tenant_id) else []
-    token = authority._LIVE_AGENT_ACCESS_FACTS.set((db, user, agent, active,
-        (permission_rows(permissions), team_ids, permission_rows(resources))))
-    try:
-        return await (access_check or authority.check_agent_access)(db, user, agent.id)
-    finally:
-        authority._LIVE_AGENT_ACCESS_FACTS.reset(token)
 
 
 def model_source_state_columns():

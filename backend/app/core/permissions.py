@@ -1,7 +1,5 @@
 """RBAC permission checking utilities."""
 
-from contextvars import ContextVar
-
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -386,14 +384,20 @@ async def check_agent_access(
     must call :func:`check_agent_operator_reachability` explicitly.
     """
 
-    facts = _LIVE_AGENT_ACCESS_FACTS.get()
-    if (facts is not None and user.role != "platform_admin" and facts[0] is db
-        and facts[1] is user and facts[2].id == agent_id):
-        agent = await _validate_loaded_agent_for_user(db, user, facts[2] if facts[3] is True else None,
-            retirement_history=_retirement_history)
-        return await _agent_access_for_loaded(db, user, agent, facts=facts[4])
     agent = await _load_agent_for_user(db, user, agent_id, retirement_history=_retirement_history)
     return await _agent_access_for_loaded(db, user, agent)
+
+
+async def agent_access_from_facts(db, user, facts) -> Tuple[Agent, str]:
+    """Apply the canonical ACL to facts read at this explicit check point."""
+    from app.services.source_read_queries import permission_rows
+
+    agent, active, permissions, teams, resources = facts[:5] if facts is not None else (None,) * 5
+    agent = await _validate_loaded_agent_for_user(db, user, agent if active is True else None)
+    team_ids = [uuid.UUID(value) for value in teams or []] if (
+        getattr(user, "is_active", True) is True and user.tenant_id == agent.tenant_id) else []
+    return await _agent_access_for_loaded(db, user, agent,
+        facts=(permission_rows(permissions), team_ids, permission_rows(resources)))
 
 
 async def _agent_access_for_loaded(db, user, agent, *, facts=None) -> Tuple[Agent, str]:
@@ -502,9 +506,6 @@ async def _agent_access_for_loaded(db, user, agent, *, facts=None) -> Tuple[Agen
         return agent, "use"
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
-
-
-_LIVE_AGENT_ACCESS_FACTS = ContextVar("live_agent_access_facts", default=None)
 
 
 async def _agent_access_for_live_row(db, user, agent, tenant_active):

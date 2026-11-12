@@ -1374,6 +1374,7 @@ async def append_session_events(
         locked_session=locked_session,
     )
     rows: list[ChatTranscriptEvent] = []
+    outboxes: list[SessionEventOutbox] = []
     for sequence, draft in zip(allocation.sequences, drafts, strict=True):
         if draft.item_kind == "tool_result" and isinstance(draft.payload.get("content"), str):
             from app.tools.output_limits import bound_tool_output
@@ -1482,9 +1483,8 @@ async def append_session_events(
             created_at=draft.occurred_at,
         )
         db.add(row)
-        await db.flush()
         envelope_sha = _sha256(envelope)
-        db.add(
+        outboxes.append(
             SessionEventOutbox(
                 tenant_id=tenant_uuid,
                 session_id=session_uuid,
@@ -1496,6 +1496,10 @@ async def append_session_events(
             )
         )
         rows.append(row)
+    # Flush the whole event group before its FK-dependent outbox group. Both
+    # remain in this transaction under the same sequence authority.
+    await db.flush()
+    db.add_all(outboxes)
     await db.flush()
     return rows
 

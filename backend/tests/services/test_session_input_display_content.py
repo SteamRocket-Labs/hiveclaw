@@ -100,6 +100,9 @@ class _WiringDB:
     def add(self, value):
         self.added.append(value)
 
+    def add_all(self, values):
+        self.added.extend(values)
+
     async def commit(self):
         self.commits += 1
 

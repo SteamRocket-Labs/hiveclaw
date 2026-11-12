@@ -34,10 +34,13 @@ def test_pool_settings_defaults_and_env_override(monkeypatch) -> None:
 
 def test_engine_pool_kwargs_reads_settings() -> None:
     from app.config import get_settings
+    from app.core.request_timing import TimedAsyncAdaptedQueuePool
     from app.database import _engine_pool_kwargs
 
     settings = get_settings()
+    # Request checkout timing selects TimedAsyncAdaptedQueuePool as poolclass.
     assert _engine_pool_kwargs(settings) == {
+        "poolclass": TimedAsyncAdaptedQueuePool,
         "pool_size": settings.DB_POOL_SIZE,
         "max_overflow": settings.DB_MAX_OVERFLOW,
         "pool_timeout": settings.DB_POOL_TIMEOUT,

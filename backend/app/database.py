@@ -19,6 +19,7 @@ from sqlalchemy.orm import DeclarativeBase, Session as SyncSession
 from sqlalchemy.types import TypeDecorator
 
 from app.config import get_settings
+from app.core.request_timing import TimedAsyncAdaptedQueuePool
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError
 
 logger = logging.getLogger(__name__)
@@ -218,8 +219,9 @@ def _normalize_async_url(url: str) -> str:
     return url
 
 
-def _engine_pool_kwargs(settings) -> dict[str, int | bool]:
+def _engine_pool_kwargs(settings) -> dict[str, Any]:
     return {
+        "poolclass": TimedAsyncAdaptedQueuePool,
         "pool_size": settings.DB_POOL_SIZE,
         "max_overflow": settings.DB_MAX_OVERFLOW,
         "pool_timeout": settings.DB_POOL_TIMEOUT,
@@ -297,6 +299,7 @@ schema_engine = (
     else create_async_engine(
         _schema_url,
         echo=settings.DEBUG,
+        poolclass=TimedAsyncAdaptedQueuePool,
         pool_size=2,
         max_overflow=2,
         json_serializer=_postgres_json_serializer,

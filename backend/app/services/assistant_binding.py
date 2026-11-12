@@ -11,11 +11,11 @@ import uuid
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import exists, or_, select, text
+from sqlalchemy import bindparam, exists, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access, effective_agent_owner_id
+from app.core.permissions import agent_access_from_facts, check_agent_access, effective_agent_owner_id
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import enter_rls_bypass
 from app.models.agent import Agent
@@ -31,6 +31,7 @@ from app.services.native_employee_provisioning import (
     provision_native_employee,
     resume_native_employee,
 )
+from app.services.source_read_queries import source_reader_statement
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +304,7 @@ async def _visible_agent(db: AsyncSession, agent_id: uuid.UUID | None) -> Agent 
     return result.scalar_one_or_none()
 
 
-async def _eligible(db: AsyncSession, user: User, agent: Agent) -> bool:
+async def _eligible(db: AsyncSession, user: User, agent: Agent, *, access_statement=None) -> bool:
     if agent.agent_type != "native":
         return False
     if agent.name == HR_AGENT_NAME or agent.agent_class == "internal_system":
@@ -313,7 +314,15 @@ async def _eligible(db: AsyncSession, user: User, agent: Agent) -> bool:
     if get_agent_lifecycle_block_reason(agent) is not None:
         return False
     try:
-        await check_agent_access(db, user, agent.id)
+        if user.role == "platform_admin":
+            await check_agent_access(db, user, agent.id)
+        else:
+            # Each candidate keeps its own live ACL checkpoint. Join that
+            # checkpoint's facts instead of fetching each grant kind in turn.
+            statement = access_statement if access_statement is not None else source_reader_statement(
+                user, bindparam("assistant_candidate_id"))
+            facts = (await db.execute(statement, {"assistant_candidate_id": agent.id})).first()
+            await agent_access_from_facts(db, user, facts)
     except HTTPException:
         return False
     return True
@@ -620,8 +629,9 @@ async def _candidates(db: AsyncSession, user: User, tenant_id: uuid.UUID) -> lis
         )
     ).scalars().all()
     listed: list[dict[str, Any]] = []
+    statement = source_reader_statement(user, bindparam("assistant_candidate_id"))
     for agent in rows:
-        if not await _eligible(db, user, agent):
+        if not await _eligible(db, user, agent, access_statement=statement):
             continue
         listed.append(
             {

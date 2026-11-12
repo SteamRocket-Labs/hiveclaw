@@ -191,12 +191,6 @@ function ColleagueConversationLink({ metadata }: { metadata: Record<string, unkn
   );
 }
 
-/** One plain line for raw provider text; never a wall of markdown. */
-function compactStepText(text: string, limit: number): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  return normalized.length <= limit ? normalized : `${normalized.slice(0, Math.max(0, limit - 1))}…`;
-}
-
 function commandOutcome(details: unknown): 'done' | 'failed' | 'unknown' | null {
   const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
   const execution = record.executionResult as { exit_code?: unknown; timed_out?: unknown } | undefined;
@@ -247,13 +241,9 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
       try {
         JSON.parse(result);
       } catch {
-        // Provider dumps (page scrapes, feeds) are not member prose: long raw
-        // text reads as one short plain line (X1 run 15 step 8c); short plain
-        // results keep their line layout.
+        // Non-command steps show exactly what production shows (R11g /
+        // X1-r2 ruling 2); per-tool member summaries are a later slice.
         const trimmed = result.trim();
-        if (trimmed.length > 400) {
-          return <p className="run-detail-summary">{compactStepText(trimmed, 200)}</p>;
-        }
         const lines = trimmed.split(/\r?\n/);
         return <p>{lines.map((line, index) => (
           <React.Fragment key={index}>

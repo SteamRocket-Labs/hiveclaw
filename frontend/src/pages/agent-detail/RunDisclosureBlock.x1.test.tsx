@@ -28,7 +28,7 @@ it('a step preview never shows raw markdown markers', () => {
   expect(container.textContent).not.toContain('**');
 });
 
-it('a long raw provider dump renders as one short plain line, not a wall of markdown', () => {
+it('a long raw provider dump shows in full, exactly what production shows (X1-r2 ruling 2)', () => {
   const dump = [
     '已改用其他方式获取以下结果：',
     '',
@@ -42,12 +42,9 @@ it('a long raw provider dump renders as one short plain line, not a wall of mark
   }] }} />);
   fireEvent.click(toolGroupToggle(container));
   fireEvent.click(container.querySelector('.run-tool-history-toggle') as HTMLButtonElement);
-  const summary = container.querySelector('.run-detail-summary');
-  expect(summary).toBeTruthy();
-  const text = summary?.textContent || '';
-  expect(text.length).toBeLessThanOrEqual(200);
-  expect(text.endsWith('…')).toBe(true);
-  expect(container.textContent).not.toContain('line 119');
+  expect(container.querySelector('.run-detail-summary')).toBeNull();
+  expect(container.textContent).toContain('line 0 of the raw page markdown');
+  expect(container.textContent).toContain('line 119 of the raw page markdown');
 });
 
 it('a short plain tool result keeps its line layout', () => {

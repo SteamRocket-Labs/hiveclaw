@@ -1878,7 +1878,7 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
             "with the row's mcp_server_id and replacing the question text with the member's language to show the existing connection card. "
             "Registration alone does not mean the member is connected. Never ask for credentials in chat. "
             "When you tell the member the route, quote its clickable labels exactly as given and do not mention "
-            "tool search, tool names, MCP management tools or any other internal mechanism."
+            "tool search, tool names, management tools or any other internal mechanism."
         )
     else:
         lines.append("Company application registration is unknown; do not claim that an application is unconnected.")

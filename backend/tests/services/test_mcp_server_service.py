@@ -71,7 +71,9 @@ class _SpyDB:
         self.committed = True
 
 
-def _server(name="GitHub", key="github", status="connected", auth="configured", transport="sse"):
+def _server(name="GitHub", key="github", status="connected", auth="configured", transport="sse", config_json=None):
+    # G4b: list_tenant_servers exposes the derived oauth_configured fact, so the
+    # fixture mirrors the model's config_json column.
     return SimpleNamespace(
         id=uuid4(),
         name=name,
@@ -79,6 +81,7 @@ def _server(name="GitHub", key="github", status="connected", auth="configured", 
         status=status,
         auth_status=auth,
         transport=transport,
+        config_json=config_json,
     )
 
 
@@ -143,6 +146,7 @@ async def test_list_tenant_servers_dto_is_server_first_without_pack():
         "server_key": "github",
         "status": "connected",
         "auth_status": "configured",
+        "oauth_configured": False,
         "transport": "sse",
         "tool_count": 3,
         "agent_count": 1,

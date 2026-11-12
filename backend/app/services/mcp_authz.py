@@ -43,6 +43,18 @@ class MCPCompanyCredentialAuthorityDenied(MCPAuthzError):
     """The current principal cannot issue company credential authority."""
 
 
+async def validate_mcp_public_url(server_url: str):
+    """Apply the shared public-address policy at MCP ingress and HTTP hops."""
+    from app.services.governed_egress import GovernedEgressError, validate_public_http_url
+
+    try:
+        return await validate_public_http_url(server_url)
+    except GovernedEgressError as exc:
+        raise MCPAuthzError(
+            "连接失败：请使用可访问的公开的 HTTP 或 HTTPS 地址；不支持本机、内网、链路本地、共享地址或云元数据地址。"
+        ) from exc
+
+
 MCP_COMPANY_CREDENTIAL_SCOPE = "_hive_mcp_company_credential_v1"
 
 

@@ -14,9 +14,13 @@ INSPECT_MCP_TOOL_DESCRIPTION = (
 )
 
 IMPORT_MCP_SERVER_DESCRIPTION = (
-    "Import an MCP server from Smithery registry into the platform. Treat this as "
+    "Connect a public MCP HTTP/SSE URL or import a server from the Smithery registry. "
+    "For a URL supplied by the user, call directly with server_id as its display name "
+    "and config={\"mcp_url\": \"https://...\"}; no registry key or discovery call is needed. "
+    "New tools wait for administrator metadata review in 公司连接 → 应用连接 → MCP 与插件 → MCP 服务器. "
+    "Treat this as "
     "an explicit platform-extension workflow, not a normal task-execution step. "
-    "Use discover_resources first to find the server ID. If previously imported "
+    "For a registry entry, use discover_resources to find the server ID. If previously imported "
     "tools stopped working, set reauthorize=true to re-run authorization."
 )
 

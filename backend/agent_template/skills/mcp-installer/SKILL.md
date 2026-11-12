@@ -63,6 +63,11 @@ specific MCP resources.
 
 ### 1. Search first
 
+If the user supplied a public MCP HTTP/SSE URL, skip registry discovery and
+import that URL directly using the direct-URL example below. A no-credential
+endpoint needs no Smithery or ModelScope key. Registry discovery is only needed
+when choosing a server from a catalog.
+
 ```python
 discover_resources(query="<what the user wants>", max_results=5)
 ```
@@ -98,6 +103,12 @@ import_mcp_server(
 ```
 
 ### 4. Verify after import
+
+Newly discovered tools remain unavailable until an administrator reviews their
+metadata. Report a pending import as pending, never as ready. The administrator
+opens 公司连接 → 连接应用与审核工具 → MCP 与插件 → MCP 服务器 and reviews each
+tool's description and permissions. Preserve company and employee policy denials.
+Only after that review should you verify and call the imported tools.
 
 ```python
 list_mcp_tools()

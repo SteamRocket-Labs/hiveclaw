@@ -279,11 +279,11 @@ async def inspect_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
             "properties": {
                 "server_id": {
                     "type": "string",
-                    "description": "Smithery server ID, e.g. '@anthropic/brave-search' or '@anthropic/fetch'",
+                    "description": "Display name for a direct public URL import, or Smithery server ID",
                 },
                 "config": {
                     "type": "object",
-                    "description": "Optional server configuration (e.g. API keys required by the server)",
+                    "description": "For a direct public URL, pass mcp_url. No registry credentials are required for a no-auth endpoint. Use the secure connection card for credentials.",
                 },
                 "reauthorize": {
                     "type": "boolean",

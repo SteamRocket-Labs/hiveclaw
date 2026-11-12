@@ -618,7 +618,9 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
         if "import_mcp_server" in missing:
             guidance += (
                 " This assistant cannot install company connections. If the company has not connected the requested app, "
-                "tell the member in one sentence that it is not connected and an administrator can add it in 公司连接 (company connections). "
+                "tell the member that this assistant cannot add the connection under current company settings. "
+                "An administrator can open 公司连接 → 应用连接 → MCP 与插件 → 扩展与增值能力, "
+                "click 添加扩展, test the public URL and import its tools, then open MCP 服务器 to review and enable them. "
                 "Do not try browsers, CLIs, commands or other routes to reach it. "
                 "For an already registered app, use its available tools and the existing personal-account connection card."
             )

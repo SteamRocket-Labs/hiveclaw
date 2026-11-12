@@ -344,16 +344,6 @@ async def _provider_available_tools(agent_id: uuid.UUID | None = None) -> set[st
     if xcrawl_key:
         available.add("xcrawl_scrape")
 
-    try:
-        from app.services.resource_discovery import _get_modelscope_api_token, _get_smithery_api_key
-
-        smithery_key = await _get_smithery_api_key(agent_id)
-        modelscope_token = await _get_modelscope_api_token()
-        if smithery_key or modelscope_token:
-            available |= {"discover_resources", "import_mcp_server"}
-    except Exception:
-        logger.debug("[Tools] Provider availability lookup failed", exc_info=True)
-
     return available
 
 
@@ -393,8 +383,6 @@ async def _filter_unavailable_tools(agent_id: uuid.UUID, tools: list[dict]) -> l
         "firecrawl_search",
         "firecrawl_fetch",
         "xcrawl_scrape",
-        "discover_resources",
-        "import_mcp_server",
     }
     available = await _provider_available_tools(agent_id)
     return [

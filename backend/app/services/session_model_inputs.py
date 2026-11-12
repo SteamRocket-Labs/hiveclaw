@@ -864,10 +864,15 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
                     ChatTranscriptEvent.session_id == result.session_id,
                     ChatTranscriptEvent.item_kind == "run",
                     ChatTranscriptEvent.lifecycle == "cancelled",
+                    ChatTranscriptEvent.run_id == result.run_id,
                 )
             )
         ).all()
-        # The cancelled event binds its run through the scope, not a column.
+        # V2 run-level cancelled events persist the run binding in the run_id
+        # column: append_session_events writes it from the scope and the v2
+        # contract forces the column to equal scope_json.run_id. The query
+        # above therefore narrows to this run; the scope re-check below is
+        # belt and braces and also guards a null result.run_id.
         return [], any(
             is_member_stop_run_event(event) and _source_scope_run_id(event) == result.run_id
             for event in cancelled_events
@@ -885,8 +890,10 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
                 ChatSession.agent_id == agent_id, ChatTranscriptEvent.item_kind == "run",
                 ChatTranscriptEvent.lifecycle == "cancelled"))
         # Binding is the cancelled event plus its control id. This mechanical
-        # stop notice contains no user/document/tool body dependencies.
-        return [], event is not None and bool(_event_payload(event).get("control_id"))
+        # stop notice contains no user/document/tool body dependencies. The
+        # query above already pins item_kind/lifecycle, so the shared member-
+        # stop predicate reduces to the same control_id test.
+        return [], event is not None and is_member_stop_run_event(event)
     if kind == "session-kernel-context":
         # Complete inventory is separate from the live leaf-authority readers.
         origin = await load_context_message_origin(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)

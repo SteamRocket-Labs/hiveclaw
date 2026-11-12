@@ -1140,7 +1140,10 @@ async def _member_stopped_mid_tool_session(
             wire_request={"messages": [{"role": "user", "content": prompt}], "tools": []},
         )
         for index, spec in enumerate(calls):
-            tool_use_id = f"search-{uuid.uuid4().hex}"
+            # An explicit "id" lets a test reproduce a seal whose provider id
+            # carries bytes (e.g. a trailing space) that prepare_tool_invocation
+            # strips before storing the invocation.
+            tool_use_id = str(spec.get("id") or f"search-{uuid.uuid4().hex}")
             arguments = dict(spec.get("arguments") or {"query": f"news-{index}"})
             invocation = await _stop_mid_tool_call(
                 db,
@@ -2175,6 +2178,69 @@ async def test_started_effect_call_cut_by_stop_reaches_next_turn_model_input(
     assert history._USER_STOP_MARKER in contents, wire
     assert "无法核实" not in json.dumps(wire, ensure_ascii=False), wire
     assert stopped["receipt"]["held_items"] == [], stopped["receipt"]
+
+
+async def test_padded_seal_tool_call_id_pairs_via_stripped_lookup_and_resolves_with_original(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """Reviewer nit 3 regression: the seal may carry a provider id with a
+    trailing space while prepare_tool_invocation stores the stripped form.
+    The interrupted pairing must find the invocation through the stripped
+    lookup, keep the seal's original bytes as the wire tool_call_id, and the
+    resolver must accept the ref built from the original id."""
+
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.services import session_semantic_history as history
+    from app.services.session_model_inputs import _resolve_origin_dependencies
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索新闻",
+        followup="刚才做了什么？",
+        calls=[{"kind": "fence", "id": "toolu_x "}],
+    )
+    sealed_id, = stopped["tool_use_ids"]
+    assert sealed_id == "toolu_x "
+
+    async with owner_sessionmaker() as db:
+        invocation, = (
+            await db.scalars(
+                select(SessionToolInvocation).where(SessionToolInvocation.run_id == stopped["run1"])
+            )
+        ).all()
+        assert (invocation.provider_tool_use_id, invocation.effect_state, invocation.result_event_id) == (
+            "toolu_x",
+            "effect_started",
+            None,
+        ), invocation
+
+    tool_result_entries = [entry for entry in stopped["conversation"] if entry.get("role") == "tool"]
+    assert [(entry.get("tool_call_id"), entry["content"]) for entry in tool_result_entries] == [
+        ("toolu_x ", history._INTERRUPTED_TOOL_CALL_NO_RESULT)
+    ], stopped["conversation"]
+
+    bindings, wire = await _next_turn_model_input(owner_sessionmaker, stopped=stopped)
+    tool_messages = [message for message in wire if message.get("role") == "tool"]
+    assert [(message["tool_call_id"], message["content"]) for message in tool_messages] == [
+        ("toolu_x ", history._INTERRUPTED_TOOL_CALL_NO_RESULT)
+    ], wire
+    assistant_message = next(message for message in wire if message.get("role") == "assistant")
+    assert [call["id"] for call in assistant_message["tool_calls"]] == ["toolu_x "], wire
+    assert stopped["receipt"]["held_items"] == [], stopped["receipt"]
+
+    async with owner_sessionmaker() as db:
+        result = await db.scalar(
+            select(SessionModelResult).where(SessionModelResult.run_id == stopped["run1"])
+        )
+        assert result is not None
+        assert await _resolve_origin_dependencies(
+            db,
+            tenant_id=stopped["tenant_id"],
+            agent_id=stopped["agent_id"],
+            ref=f"session-tool-interrupted:{result.id}:{sealed_id}",
+        ) == ([], True)
 
 
 async def test_mixed_round_keeps_settled_result_and_interrupted_call_on_the_wire(

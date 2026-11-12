@@ -60,6 +60,27 @@ describe('X1 expanded block does not repeat the final answer', () => {
     }
   });
 
+  it('a report_progress note whose text equals the final answer stays visible (X1-r2 ruling 3)', () => {
+    const answer = '好的，已经发到广场。';
+    const model2: AgentChatMessage[] = [
+      { id: 'input', role: 'user', content: '发到广场', timestamp: '2026-11-12T07:00:00Z' },
+      {
+        id: 'progress-1', role: 'tool_call', toolName: 'report_progress', toolStatus: 'done',
+        content: '', toolArgs: { message: answer }, timestamp: '2026-11-12T07:00:05Z',
+      },
+      {
+        id: 'assistant-final-1', role: 'assistant', content: answer, timestamp: '2026-11-12T07:00:20Z',
+        sessionItem: { id: 'assistant-final-1', kind: 'assistant_final', lifecycle: 'completed', terminal: true } as AgentChatMessage['sessionItem'],
+      },
+    ];
+    const model = buildThreadTimeline({ messages: model2, isWaiting: false, isStreaming: false, activeRunStatus: null });
+    const run = model.cells.find((cell) => cell.kind === 'active_run');
+    if (!run || run.kind !== 'active_run') throw new Error('run cell missing');
+    const progress = run.timeline.steps.filter((step) => step.kind === 'commentary');
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress.every((step) => step.repeatsAnswer !== true)).toBe(true);
+  });
+
   it('keeps a distinct in-run progress note that is not the final answer', () => {
     const note = '先去读取这份明细，再动手核对。';
     const answer = '核对完成，两处差异已列出。';

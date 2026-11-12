@@ -1661,15 +1661,22 @@ function buildRunCell(
   };
 }
 
-/** Mark in-run prose/commentary steps whose text is exactly the final answer. */
+/** Mark only the run's last assistant_text prose step whose display text is
+ * byte-identical to the final answer. Commentary, report_progress notes and
+ * anything carrying a toolCallId stay visible even if the text matches
+ * (X1-r2 ruling 3). */
 function markStepsRepeatingAnswer(steps: RunStepSnapshot[], answer: AgentChatMessage): RunStepSnapshot[] {
   const answerText = assistantReplyForDisplay(answer.content || '').trim();
   if (!answerText) return steps;
-  return steps.map((step) => {
-    if (step.kind !== 'prose' && step.kind !== 'commentary') return step;
-    const stepText = assistantReplyForDisplay(typeof step.details === 'string' ? step.details : '').trim();
-    return stepText === answerText ? { ...step, repeatsAnswer: true } : step;
+  let lastIndex = -1;
+  steps.forEach((step, index) => {
+    if (step.kind === 'prose' && !step.toolCallId) lastIndex = index;
   });
+  if (lastIndex < 0) return steps;
+  const last = steps[lastIndex];
+  const lastText = assistantReplyForDisplay(typeof last.details === 'string' ? last.details : '').trim();
+  if (lastText !== answerText) return steps;
+  return steps.map((step, index) => (index === lastIndex ? { ...step, repeatsAnswer: true } : step));
 }
 
 function hasOpenRunCell(cells: ThreadTimelineCell[]): boolean {
@@ -1879,6 +1886,17 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
     if (!runCell) return false;
     runCell.sourceMessages.push({ message, index });
     runCell.timeline.steps.push(...buildRunTimelineFromMessages([message]).steps);
+    if (runCell.timeline.answerMessageId) {
+      const answered = messages
+        .map((source, index) => ({ message: source, index }))
+        .find(({ message, index }) => (
+          isRenderableAssistantAnswer(message)
+          && messageId(message, `assistant-${index}`) === runCell.timeline.answerMessageId
+        ));
+      if (answered) {
+        runCell.timeline.steps = markStepsRepeatingAnswer(runCell.timeline.steps, answered.message);
+      }
+    }
     runCell.timeline.summary = buildRunAggregateSummary(runCell.timeline.steps);
     return true;
   };

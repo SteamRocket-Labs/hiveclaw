@@ -250,29 +250,40 @@ async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_p
 
     monkeypatch.setattr(memory_service, "get_settings", lambda: NS(AGENT_DATA_DIR=str(tmp_path)))
     monkeypatch.setattr(memory_service, "_resolve_accountability_context", AsyncMock(return_value=object()))
-    authorized = [(NS(entry_id="revoked", content="REVOKED_RECALL_SECRET", category="project",
+    valid_pair = (NS(entry_id="valid", content="VALID_RECALLED_MEMORY", category="project",
         status="active", sensitivity="PL1_public", created_at="2026-11-06"),
-        NS(id="revoked", content_sha256="v1")),
-        (NS(entry_id="valid", content="VALID_RECALLED_MEMORY", category="project",
-        status="active", sensitivity="PL1_public", created_at="2026-11-06"),
-        NS(id="valid", content_sha256="v1"))] if resident_index else []
-    monkeypatch.setattr("app.services.explicit_memory_authority.authorized_explicit_entries", AsyncMock(return_value=authorized))
-    result = await memory_service.build_memory_context(aid, tenant, query="q", session_id=str(uuid.uuid4()),
+        NS(id="valid", content_sha256="v1"))
+
+    async def authorize_with_one_own_issue(*, entries, issue_observer=None, **_kwargs):
+        # Authorization returns empty and no issues for the empty case: the
+        # requester simply has no authorized entries (no other member involved).
+        if resident_index and issue_observer is not None:
+            issue_observer.append({"memory_id": "revoked", "status": "denied",
+                "code": "content_source_access_denied"})
+        return [valid_pair] if resident_index else []
+
+    monkeypatch.setattr("app.services.explicit_memory_authority.authorized_explicit_entries",
+        authorize_with_one_own_issue)
+    result = await memory_service.build_memory_context(aid, tenant, session_id=str(uuid.uuid4()),
         current_user_id=uuid.uuid4(), return_result=True)
     assert "VALID_RESIDENT_MEMORY" in result.content
-    assert result.status == "ready", result
     if not resident_index:
-        # Nothing authorized and no issues: other members' entries stay
-        # silently omitted — no index, no bodies, and no withheld-note.
+        assert result.status == "ready", result
         assert "Explicit Memory Index" not in result.content, result.content
         assert "REVOKED_RECALL_SECRET" not in result.content and "VALID_RECALLED_MEMORY" not in result.content
         assert "记忆暂时无法核实" not in result.content, result.content
         return
-    # The index preview is the only place the revoked entry's bytes appear.
-    assert "REVOKED_RECALL_SECRET" in result.content
+    # The dropped entry leaves no preview; the A4c note names it by count.
+    assert result.status == "degraded", result
+    assert "REVOKED_RECALL_SECRET" not in result.content
+    note = "有1 条记忆暂时无法核实，已略过，可继续使用其余内容。"
+    assert result.content.rsplit("\n\n", 1)[-1] == note, result.content
+    # A second unbound reason on the same compiled content (as a session
+    # learning projection adds) must not let the gate swallow the note.
     message = LLMMessage(role="system", content=result.content, context_origin=ContextMessageOrigin.capture(
         kind="dynamic_prompt", role="system", content=result.content,
-        sources=result.source_refs, unbound=result.source_unbound))
+        sources=result.source_refs,
+        unbound=(*result.source_unbound, "session_learning_sources_unbound")))
     split = getattr(session_model_round, "split_context_message", lambda message, sections: [message])
     parts = split(message, getattr(result, "sections", ()))
     messages = [{"role": part.role, "content": part.content} for part in parts]
@@ -284,3 +295,4 @@ async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_p
     assert "REVOKED_RECALL_SECRET" not in json.dumps(wire)
     assert "VALID_RESIDENT_MEMORY" in json.dumps(wire)
     assert "VALID_RECALLED_MEMORY" in json.dumps(wire)
+    assert note in json.dumps(wire, ensure_ascii=False), json.dumps(wire, ensure_ascii=False)

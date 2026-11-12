@@ -222,9 +222,12 @@ async def _build_memory_context_result(
             entries=load_explicit_overlay_entries(data_root, agent_id), issue_observer=issues)
         if issues:
             degraded_components.append("explicit_memory_source_authority")
-            # A4c in the prompt: the requester's own entries dropped by the
-            # recheck are named by count; other members' entries stay omitted.
-            withheld_note = f"有{len(issues)} 条记忆暂时无法核实，已略过，可继续使用其余内容。"
+            # A4c in the prompt: only the requester's own entries (issues that
+            # carry a memory_id) are named by count. An id-less group-outage
+            # issue may belong to another member and stays silently omitted.
+            own_issues = [issue for issue in issues if issue.get("memory_id")]
+            if own_issues:
+                withheld_note = f"有{len(own_issues)} 条记忆暂时无法核实，已略过，可继续使用其余内容。"
         overlay_sources = {entry.entry_id: (source_dependency(receipt),) for entry, receipt in authorized}
         resident = with_explicit_memory_index(base_resident, [entry for entry, _receipt in authorized],
             overlay_sources,
@@ -234,9 +237,14 @@ async def _build_memory_context_result(
         logger.warning("Resident explicit source authority unavailable: %s", type(exc).__name__)
         degraded_components.append("explicit_memory_source_authority")
         withheld_note = "有部分记忆暂时无法核实，已略过，可继续使用其余内容。"
+    withheld_section = ()
     if withheld_note:
         noted = f"{resident.text}\n\n{withheld_note}" if resident.text else withheld_note
         resident = replace(resident, text=noted)
+        # A complete section of its own: no sources to bind, no unbound
+        # reasons to claim, so split_context_message keeps it intact even
+        # when the surrounding compiled content carries other unbound data.
+        withheld_section = ({"content": withheld_note, "sources": (), "unbound": ()},)
 
     resident_unbound = tuple(f"resident_source_unverified:{ref['source_id']}" for ref in resident.source_refs
         if ref["source_kind"] != "explicit_memory" and (
@@ -250,11 +258,10 @@ async def _build_memory_context_result(
     common = {
         "source_refs": resident.source_refs,
         "source_unbound": resident_unbound,
-        "sections": tuple(
-            ([{"content": base_resident.text, "sources": base_resident.source_refs, "unbound": resident_unbound}]
-                if base_resident.text else [])
-            + overlay_sections
-        ),
+        "sections": (
+            ({"content": base_resident.text, "sources": base_resident.source_refs, "unbound": resident_unbound},)
+            if base_resident.text else ()
+        ) + tuple(overlay_sections) + withheld_section,
     }
     if degraded_components:
         return MemoryContextResult(

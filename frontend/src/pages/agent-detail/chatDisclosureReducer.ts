@@ -359,9 +359,11 @@ function eventTitle(message: AgentChatMessage): string {
   if (message.eventType === 'child_session' && String(message.eventReason || '').startsWith('delegation_')) {
     // The direction matters: a completed/blocked/failed receipt came BACK
     // from the colleague; only started/progress updates go the other way.
-    return ['delegation_completed', 'delegation_blocked', 'delegation_failed'].includes(String(message.eventReason))
+    return message.eventReason === 'delegation_completed'
       ? 'Delegation result'
-      : 'Delegation update';
+      : ['delegation_blocked', 'delegation_failed'].includes(String(message.eventReason))
+        ? 'Delegation unfinished'
+        : 'Delegation update';
   }
   return message.eventTitle || 'Runtime event';
 }

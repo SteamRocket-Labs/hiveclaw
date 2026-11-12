@@ -501,7 +501,7 @@
       "sendFile": "Send a file",
       "browser": "Operate a web page",
       "plazaPost": "Publish a post to the company plaza",
-      "plazaComment": "Comment on a company plaza post",
+      "plazaComment": "Comment on a post",
       "feishuDoc": "Use Feishu documents",
       "feishuSheet": "Use Feishu spreadsheets",
       "feishuBase": "Use Feishu Base",
@@ -2741,7 +2741,8 @@
           "planStep": "Plan",
           "permissionRequest": "Permission request",
           "runtimeEvent": "Activity",
-          "delegationResult": "Result returned from a colleague"
+          "delegationResult": "Result returned from a colleague",
+          "delegationUnfinished": "The colleague did not finish this"
         },
         "aggregate": {
           "files": "Read {{count}} files",
@@ -4740,7 +4741,7 @@
       "unavailableBody": "The quarantine status could not be verified. No empty-state conclusion was made; retry to restore the authoritative result.",
       "retry": "Retry",
       "emptyTitle": "No retired shared files",
-      "emptyBody": "There are no retired shared files right now; this does not reflect the Company Knowledge Base state."
+      "emptyBody": "This is a verified empty result for the retired shared-file quarantine, not a Company Knowledge Base status."
     },
     "audit": {
       "title": "Audit Log",

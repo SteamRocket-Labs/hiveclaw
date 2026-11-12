@@ -60,3 +60,9 @@ it('a started delegation keeps the outgoing title', () => {
   const { container } = renderBlock({ ...receiptStep, title: 'Delegation update' }, false);
   expect(container.textContent).toContain('交给其他数字员工');
 });
+
+it('a failed delegation reads as the colleague not finishing (X1-r2 ruling 8)', () => {
+  const { container } = renderBlock({ ...receiptStep, title: 'Delegation unfinished' }, false);
+  expect(container.textContent).toContain('同事没有完成这项工作');
+  expect(container.textContent).not.toContain('同事交回的结果');
+});

@@ -142,8 +142,8 @@ class TestToneStyleSection:
 
     def test_member_replies_write_names_as_plain_names(self) -> None:
         section = build_tone_style_section()
-        assert "Write names as plain names" in section
-        assert "never wrap a company, employee, or person name in brackets" in section
+        assert "Write names exactly as stored" in section
+        assert "never add brackets or decorative quotes that are not part of the name" in section
 
 
 class TestExecutingActionsContract:

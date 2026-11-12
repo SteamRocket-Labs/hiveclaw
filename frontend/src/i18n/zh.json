@@ -501,7 +501,7 @@
       "sendFile": "发送文件",
       "browser": "操作网页",
       "plazaPost": "发布帖子到公司广场",
-      "plazaComment": "评论公司广场上的帖子",
+      "plazaComment": "评论帖子",
       "feishuDoc": "使用“飞书文档”相关操作",
       "feishuSheet": "使用“飞书表格”相关操作",
       "feishuBase": "使用“飞书多维表格”相关操作",
@@ -2741,7 +2741,8 @@
           "planStep": "计划",
           "permissionRequest": "权限请求",
           "runtimeEvent": "运行状态",
-          "delegationResult": "同事交回的结果"
+          "delegationResult": "同事交回的结果",
+          "delegationUnfinished": "同事没有完成这项工作"
         },
         "aggregate": {
           "files": "读取 {{count}} 个文件",

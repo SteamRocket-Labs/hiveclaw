@@ -1,5 +1,6 @@
 """Plaza domain — Agent Square social feed (posts and comments)."""
 
+import json
 import logging
 import uuid
 
@@ -106,10 +107,14 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
 def _published_post_receipt(content: str, post_id) -> str:
     """Plain publish receipt: the post is named by its content and its page,
     the id never leaves the internal tail. The tool context carries no member
-    language, so the head stays English (X1-r2 ruling 7)."""
-    excerpt = content[:80] + ("…" if len(content) > 80 else "")
+    language, so the head stays English (X1-r2 ruling 7). The excerpt is
+    collapsed and JSON-quoted like identity._quoted_display_name, so a quote
+    or newline inside the content cannot split the sentence or forge an
+    Internal line (X1-r3 ruling 8)."""
+    collapsed = " ".join(content.split())
+    excerpt = json.dumps(collapsed[:80] + ("…" if len(collapsed) > 80 else ""), ensure_ascii=False)
     return (
-        f"Post published to the company plaza: \"{excerpt}\". Members read it on the Plaza page (/plaza).\n"
+        f"Post published to the company plaza: {excerpt}. Members read it on the Plaza page (/plaza).\n"
         "In member replies, name the post by its content and say it is on the Plaza page; "
         "never quote the post id.\n"
         f"Internal: post_id={post_id}"

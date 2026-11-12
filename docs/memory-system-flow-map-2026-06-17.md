@@ -109,29 +109,24 @@ flowchart TB
   %% ---------------------------------------------------------------------------
   %% Read side and prompt assembly
   %% ---------------------------------------------------------------------------
-  subgraph E["E. Read / Activation / Prompt Assembly"]
-    PRINCIPAL["PrincipalStack: owner / company / current user / creator"] --> ACTIVATION["ActivationContext"]
-    T3_WIKI --> RETRIEVER["MemoryRetriever"]
+  subgraph E["E. Read / Activation / Prompt Assembly (A2m: bodies on demand)"]
+    PRINCIPAL["PrincipalStack: owner / company / current user / creator"] --> ACTIVATION["ActivationContext (offline eval only)"]
+    T3_WIKI --> RETRIEVER["MemoryRetriever._gather_authorized_candidates: offline recall-eval seam"]
     COMPAT_T3 --> RETRIEVER
     T2_FILES --> RETRIEVER
     EXPLICIT_OVERLAY --> RETRIEVER
     SESSION_CTX --> RETRIEVER
     ACTIVATION --> RETRIEVER
     RETRIEVER --> SCORE["ActivationScorer: relevance, lifecycle, sensitivity, owner/company scope"]
-    SCORE --> SNAPSHOT["Dynamic memory snapshot"]
+    SCORE --> SNAPSHOT["Offline recall-eval scorecard — no prompt use since A2m"]
 
     SOUL --> IDENTITY["Frozen identity section"]
-    SNAPSHOT --> LONG_TERM["Active long-term memory: selected T3 snippets"]
-    SNAPSHOT --> ACTIVE_T2["Active summary memory: selected T2 blocks"]
-    SNAPSHOT --> WORKING["Session working memory: TTL projection"]
-    SNAPSHOT --> NAV_MAP["Optional compact index.md navigation map"]
+    EXPLICIT_OVERLAY --> RESIDENT_INDEX["Resident prompt memory: identity/profiles + authorized explicit index (authority-checked, zero model calls)"]
     SKILL_SRC --> SKILL_CONTEXT["Loaded skills only when relevant"]
-    SKILL_CONTEXT --> LONG_TERM
+    SKILL_CONTEXT --> FINAL_PROMPT
     IDENTITY --> FINAL_PROMPT["Final prompt: frozen prefix + cache boundary + dynamic suffix"]
-    LONG_TERM --> FINAL_PROMPT
-    ACTIVE_T2 --> FINAL_PROMPT
-    WORKING --> FINAL_PROMPT
-    NAV_MAP --> FINAL_PROMPT
+    RESIDENT_INDEX --> FINAL_PROMPT
+    FINAL_PROMPT --> ON_DEMAND["Bodies fetched by the main model itself: search_memory / load_memory; knowledge pages under memory/knowledge/ and own T2 packages under memory/t2/sessions/ via list + read_file"]
     FINAL_PROMPT --> INV
   end
 

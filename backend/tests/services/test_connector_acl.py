@@ -268,7 +268,9 @@ def test_viking_scheme_without_authoritative_acl_fails_closed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_memory_retriever_does_not_inject_connector_sources(tmp_path) -> None:
+async def test_offline_eval_gather_does_not_inject_connector_sources(tmp_path) -> None:
+    """Connector sources stay out of the offline eval seam's candidates (the
+    live prompt path no longer runs any gather at all)."""
     from app.memory.activation import ActivationContext
     from app.memory.retriever import MemoryRetriever
     from app.memory.types import MemoryKind

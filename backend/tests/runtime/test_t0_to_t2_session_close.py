@@ -348,10 +348,12 @@ async def test_turn_stop_does_not_hold_runtime_claim_while_t2_llm_job_runs(monke
 
 
 @pytest.mark.asyncio
-async def test_turn_stop_committed_t2_is_available_to_the_next_chat_prompt_without_heartbeat(
+async def test_turn_stop_committed_t2_is_gatherable_by_the_offline_recall_seam(
     monkeypatch,
     tmp_path,
 ) -> None:
+    """A committed T2 package is not prefetched into any prompt (A2m); this
+    proves the offline eval seam still gathers it, unchanged."""
     from app.memory.retriever import MemoryRetriever
 
     _patch_t0_root(monkeypatch, tmp_path)

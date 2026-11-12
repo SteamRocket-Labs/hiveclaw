@@ -547,9 +547,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     # source, so its creation consumes only the member's direct request and
     # stays policy_direct (no click). The explicit variant reads a memory file
     # first, keeps mixed inputs, and still requires the member's click.
-    creation_requires_click = not parent_complete or discovery_case or (
-        input_case == "first_task_explicit_unverified_memory"
-    )
+    creation_requires_click = not parent_complete or discovery_case
     seed = await _seed_run(
         owner_sessionmaker,
         tmp_path,

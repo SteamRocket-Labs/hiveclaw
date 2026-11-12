@@ -674,7 +674,6 @@ def test_runtime_prompt_surfaces_do_not_reintroduce_legacy_focus_truth_source() 
         "backend/app/services/agent_context.py",
         "backend/app/tools/workspace.py",
         "backend/app/tools/handlers/hr.py",
-        "backend/app/memory/assembler.py",
         "backend/app/memory/retriever.py",
     ]
     combined = "\n".join((project_root / path).read_text(encoding="utf-8") for path in prompt_surface_paths)

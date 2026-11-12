@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -19,7 +20,11 @@ from sqlalchemy import event, select as sa_select
 
 from tests.integration.test_m1g24_workspace_artifact_authority_postgres import native_workspace  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = [
+    pytest.mark.usefixtures("migrated_pg_url"),
+    pytest.mark.skipif(not os.environ.get("HC_A2M_TIMING"),
+        reason="seeds 200 entries + 50 packages; run with HC_A2M_TIMING=1 -s to record a timing line"),
+]
 
 
 async def test_a2m_timing_report(native_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch):

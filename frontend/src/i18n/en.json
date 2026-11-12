@@ -4933,7 +4933,13 @@
     "handoverKnowledge": "Uploaded knowledge",
     "handoverWork": "Unfinished work",
     "handoverSchedules": "Schedules to review before resuming",
-    "handoverCredentials": "Personal connections and tool keys are revoked and are not passed to the receiving member."
+    "handoverCredentials": "Personal connections and tool keys are revoked and are not passed to the receiving member.",
+    "providerWechatPersonal": "WeChat",
+    "providerFeishu": "Feishu",
+    "providerTelegram": "Telegram",
+    "providerDingtalk": "DingTalk",
+    "providerSlack": "Slack",
+    "providerWecom": "WeCom"
   },
   "account": {
     "title": "Account Settings",

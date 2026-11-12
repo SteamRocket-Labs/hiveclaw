@@ -3982,7 +3982,7 @@
       "auditLog": "审计日志"
     },
     "originals": {
-      "open": "管理原件",
+      "open": "管理原始文件",
       "title": "原件管理",
       "scope": "仅列出已登记原件。可编辑工作区副本和独立备份使用各自的生命周期。移除原件不代表已回收物理空间。",
       "policy": "原件保留策略",
@@ -3993,10 +3993,10 @@
       "savePolicy": "保存原件策略",
       "policyUnknown": "无法读取原件策略，或保存结果未知。请重新读取后再保存。",
       "reload": "重新读取原件策略与清单",
-      "uploading": "上传待对账",
+      "uploading": "已上传，等待核对",
       "available": "可用",
       "quarantined": "已隔离",
-      "deleting": "删除待对账",
+      "deleting": "已删除，等待核对",
       "deleted": "已退役",
       "failed": "待修复",
       "filter": "原件状态",
@@ -4077,18 +4077,19 @@
     },
     "storage": {
       "title": "存储与保留策略",
-      "scope": "回收过期且未登记为成果的交付快照和孤立 Office 预览。已发布成果、活跃工作以及待对账或待审批工作仍受保护。本策略不会删除员工工作区或公司知识。",
+      "scope": "回收过期且未登记为成果的交付快照，以及不再被任何工作使用的 Office 预览。已发布成果、活跃工作以及等待核对或等待批准的工作仍受保护。本策略不会删除员工工作区或公司知识。",
       "default": "正在使用安装默认策略。",
       "version": "公司策略 · 版本 {{version}}",
       "enabled": "启用定期清理",
       "days": "未登记快照保留天数",
-      "effective": "保存的策略从下一次维护开始生效，保存本身不会触发清理。暂停时也会保留孤立 Office 预览。",
+      "effective": "保存的策略从下一次维护开始生效，保存本身不会触发清理。暂停期间，这些文件和预览都会原样保留。",
       "capacity": "员工共享卷：已用 {{used}} / {{total}} GiB · 可用 {{free}} GiB。这是共享物理容量，不是公司配额。",
       "capacityUnavailable": "暂时无法读取卷容量，请重新加载重试。",
       "saveUnknown": "策略可能已改变，或保存响应丢失。请重新加载已保存策略，审阅后再保存。",
       "loadFailed": "无法读取已保存策略，请重新加载重试。",
       "saved": "策略已保存，将由下一次维护使用。",
-      "reload": "重新加载已保存策略"
+      "reload": "重新加载已保存策略",
+      "emptyBody": "这里目前没有已退役的共享文件；这不代表公司知识库的状态。"
     },
     "title": "公司后台",
     "dangerZone": "危险操作",
@@ -4933,7 +4934,13 @@
     "handoverKnowledge": "上传的知识",
     "handoverWork": "未完成的工作",
     "handoverSchedules": "接手后逐项确认的定时任务",
-    "handoverCredentials": "个人连接及工具密钥会撤销，不会交给接手人。"
+    "handoverCredentials": "个人连接及工具密钥会撤销，不会交给接手人。",
+    "providerWechatPersonal": "微信",
+    "providerFeishu": "飞书",
+    "providerTelegram": "Telegram",
+    "providerDingtalk": "钉钉",
+    "providerSlack": "Slack",
+    "providerWecom": "企业微信"
   },
   "account": {
     "title": "账户设置",

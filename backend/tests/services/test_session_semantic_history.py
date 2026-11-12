@@ -140,6 +140,8 @@ async def _prepare_round(
     run_id,
     turn_id,
     round_index,
+    messages=None,
+    wire_request=None,
 ):
     from app.services.session_model_round import prepare_model_request
 
@@ -151,11 +153,11 @@ async def _prepare_round(
         run_id=run_id,
         turn_id=turn_id,
         round_index=round_index,
-        messages=[{"role": "user", "content": "marker"}],
+        messages=messages if messages is not None else [{"role": "user", "content": "marker"}],
         tools=None,
         provider="openai",
         model="gpt-test",
-        wire_request={"messages": [], "tools": []},
+        wire_request=wire_request if wire_request is not None else {"messages": [], "tools": []},
         attempt_owner="semantic-history-test",
     )
 
@@ -241,6 +243,8 @@ async def _settle_tool_invocation(
             session_id=session_id,
             invocation_id=invocation.id,
         )
+    from app.services.session_tool_runtime import _sha256
+
     await complete_tool_invocation(
         db,
         tenant_id=tenant_id,
@@ -264,7 +268,7 @@ async def _settle_tool_invocation(
             },
             "execution_frame": {
                 "status": "failed" if outcome == "failed" else "completed",
-                "output_hash": "c" * 64,
+                "output_hash": _sha256(str(result_content)),
             },
         },
     )
@@ -926,6 +930,445 @@ async def test_dangling_prior_tool_call_never_replays_without_its_result(
     assert receipt["status"] == "degraded"
     assert receipt["held_items"][0]["kind"] == "unsettled_tool_round"
     assert receipt["held_items"][0]["missing_provider_tool_use_ids"] == [dangling_tool_use_id]
+
+
+async def _stop_mid_tool_call(
+    db,
+    *,
+    tenant_id,
+    agent_id,
+    session_id,
+    run_id,
+    turn_id,
+    provider_request_id,
+    tool_use_id,
+    spec,
+):
+    """Drive one issued call to the durable shape the stop will catch it in.
+
+    ``kind`` selects the shape: ``prepared`` (prepare_tool_invocation only),
+    ``fence`` (through the real mark_tool_effect_started effect fence, no
+    result), ``settled`` (complete_tool_invocation success),
+    ``needs_reconciliation`` (quarantined after prepare), and
+    ``approval_ticket_broken`` (an approval_required result whose enterprise
+    ticket stops matching after the write).
+    """
+
+    import json as _json
+
+    tool_name = str(spec.get("tool") or "web_search")
+    arguments = dict(spec.get("arguments") or {"query": f"news-{tool_use_id.hex[:6]}"})
+    kind = spec.get("kind", "prepared")
+    if kind == "approval_ticket_broken":
+        from pathlib import Path
+
+        from app.models.audit import ApprovalRequest
+        from app.services.approval_ticket import (
+            build_approval_execution_envelope,
+            hash_approval_execution_envelope,
+            hash_tool_input,
+        )
+        from app.services.session_tool_runtime import complete_tool_invocation, prepare_tool_invocation
+        from app.tools.runtime import ToolExecutionContext
+
+        invocation = await prepare_tool_invocation(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            provider_request_id=provider_request_id,
+            provider_tool_use_id=tool_use_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+        approval_id = uuid.uuid4()
+        decision_id = f"decision-{tool_use_id}"
+        envelope = build_approval_execution_envelope(
+            context=ToolExecutionContext(
+                agent_id=agent_id,
+                user_id=spec["user_id"],
+                tenant_id=str(tenant_id),
+                workspace=Path("/synthetic/workspace"),
+                session_id=str(session_id),
+                turn_id=turn_id,
+                runtime_task_id=str(run_id),
+            ),
+            tool_call_id=tool_use_id,
+            emit_runtime_hooks=False,
+        )
+        ticket = ApprovalRequest(
+            id=approval_id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            action_type=tool_name,
+            requested_by=spec["user_id"],
+            decision_id=decision_id,
+            tool_name=tool_name,
+            normalized_arguments=dict(arguments),
+            input_hash=hash_tool_input(tool_name, arguments),
+            execution_envelope=envelope,
+            execution_envelope_hash=hash_approval_execution_envelope(envelope),
+        )
+        db.add(ticket)
+        await db.flush()
+        await complete_tool_invocation(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            invocation_id=invocation.id,
+            provider_result_content=_json.dumps(
+                {"status": "approval_required", "approval_id": str(approval_id), "tool_name": tool_name}
+            ),
+            execution_evidence={
+                "schema": "hive.tool_execution_evidence.v1",
+                "status": "settled",
+                "pre_effect_fence_ref": "test-pre-effect-fence",
+                "retryable": False,
+                "tool_decision": {
+                    "schema": "hive.tool_decision.v1",
+                    "decision_id": decision_id,
+                    "outcome": "require_approval",
+                    "approval_id": str(approval_id),
+                    "input_hash": invocation.args_hash,
+                    "policy_snapshot_hash": "a" * 64,
+                    "capability_snapshot_hash": "b" * 64,
+                },
+                "execution_frame": {"status": "completed", "output_hash": "c" * 64},
+            },
+        )
+        # The write-side check passed with the original decision id; rotating it
+        # afterwards leaves the read-side ticket check failing.
+        ticket.decision_id = f"{decision_id}-rotated"
+        await db.flush()
+        return invocation
+    result_content = spec.get("result_content")
+    invocation = await _settle_tool_invocation(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        provider_request_id=provider_request_id,
+        provider_tool_use_id=tool_use_id,
+        tool_name=tool_name,
+        arguments=arguments,
+        result_content=result_content if kind == "settled" else None,
+        outcome=spec.get("outcome", "success"),
+    )
+    if kind == "fence":
+        from app.services.session_tool_runtime import mark_tool_effect_started
+
+        await mark_tool_effect_started(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            invocation_id=invocation.id,
+        )
+    elif kind == "needs_reconciliation":
+        from app.services.session_tool_runtime import mark_tool_invocation_needs_reconciliation
+
+        await mark_tool_invocation_needs_reconciliation(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            invocation_id=invocation.id,
+            reason_code="test_effect_receipt_lost",
+            recovery_owner="session_tool_runtime:effect_receipt_pending",
+        )
+    return invocation
+
+
+async def _member_stopped_mid_tool_session(
+    owner_sessionmaker,
+    monkeypatch,
+    *,
+    prompt,
+    followup,
+    calls,
+    member_stop=True,
+):
+    """A run the member stopped while issued tool calls never settled.
+
+    Drives the real ingress, model-round sealing, tool-invocation lifecycle,
+    member-stop control input, and canonical terminal settlement, then loads
+    the successor turn's provider conversation through the live entry. With
+    ``member_stop=False`` the run is killed without a stop control instead.
+    """
+
+    import json as _json
+
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.user import User
+    from app.services import web_chat_runtime as runtime
+    from app.services.session_live_input import submit_live_cancel_input, submit_live_human_input
+
+    tenant_id, user_id, agent_id, session_id = await _seed(owner_sessionmaker)
+    plan_text = "开始检索，先并行跑几组关键词"
+    _input1, run1, turn1 = await _submit_turn(
+        owner_sessionmaker,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        content=prompt,
+    )
+    await _bind_round_one(
+        owner_sessionmaker,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run1,
+        turn_id=turn1,
+    )
+    tool_use_ids, invocations, sealed_calls = [], {}, []
+    async with owner_sessionmaker() as db:
+        request_id = await _prepare_round(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run1,
+            turn_id=turn1,
+            round_index=1,
+            # Bind the round the way production does: the request that sealed
+            # this round carried the turn's own input as a resolvable source.
+            messages=[{"role": "user", "content": prompt, "source_ref": f"session-input:{_input1}"}],
+            wire_request={"messages": [{"role": "user", "content": prompt}], "tools": []},
+        )
+        for index, spec in enumerate(calls):
+            # An explicit "id" lets a test reproduce a seal whose provider id
+            # carries bytes (e.g. a trailing space) that prepare_tool_invocation
+            # strips before storing the invocation.
+            tool_use_id = str(spec.get("id") or f"search-{uuid.uuid4().hex}")
+            arguments = dict(spec.get("arguments") or {"query": f"news-{index}"})
+            invocation = await _stop_mid_tool_call(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                run_id=run1,
+                turn_id=turn1,
+                provider_request_id=request_id,
+                tool_use_id=tool_use_id,
+                spec={"user_id": user_id, **spec, "arguments": arguments},
+            )
+            tool_use_ids.append(tool_use_id)
+            invocations[tool_use_id] = invocation
+            sealed_calls.append(
+                {
+                    "id": tool_use_id,
+                    "type": "function",
+                    "function": {
+                        "name": str(spec.get("tool") or "web_search"),
+                        "arguments": _json.dumps(arguments, ensure_ascii=False),
+                    },
+                }
+            )
+        await _seal_round(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run1,
+            turn_id=turn1,
+            round_index=1,
+            provider_request_id=request_id,
+            content=plan_text,
+            tool_calls=sealed_calls,
+        )
+        await db.commit()
+
+    if member_stop:
+        async def signal(**_kwargs):
+            return None
+
+        monkeypatch.setattr(runtime, "signal_web_chat_cancel", signal)
+        async with owner_sessionmaker() as db:
+            receipt = await submit_live_cancel_input(
+                db=db,
+                agent=await db.get(Agent, agent_id),
+                user=await db.get(User, user_id),
+                session=await db.get(ChatSession, session_id),
+                run_id=run1,
+                source="web",
+            )
+            await db.commit()
+        assert receipt["status"] == "applying", receipt
+    await _set_run_status(owner_sessionmaker, run_id=run1, status="killed")
+
+    input_id, run2, turn2 = uuid.uuid4(), None, None
+    async with owner_sessionmaker() as db:
+        followup_receipt = await submit_live_human_input(
+            db=db,
+            agent=await db.get(Agent, agent_id),
+            user=await db.get(User, user_id),
+            session=await db.get(ChatSession, session_id),
+            content=followup,
+            source="web",
+            input_id=input_id,
+            idempotency_key=f"live:{input_id}",
+        )
+        await db.commit()
+    assert followup_receipt["admission_state"] == "admitted", followup_receipt
+    run2 = uuid.UUID(str((followup_receipt.get("run") or {})["run_id"]))
+    turn2 = str((followup_receipt.get("run") or {})["turn_id"])
+    _runtime_task, history_messages, conversation = await _load_history_via_live_entry(
+        owner_sessionmaker, monkeypatch, run_id=run2
+    )
+    return {
+        "run1": run1,
+        "run2": run2,
+        "turn2": turn2,
+        "tenant_id": tenant_id,
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "tool_use_ids": tool_use_ids,
+        "invocations": invocations,
+        "plan_text": plan_text,
+        "prompt": prompt,
+        "followup": followup,
+        "admission": followup_receipt["admission_state"],
+        "history_messages": history_messages,
+        "conversation": conversation,
+        "receipt": _runtime_task.metadata_json["session_semantic_history"],
+    }
+
+
+async def _next_turn_model_input(owner_sessionmaker, *, stopped):
+    """Run the real next-round source binding and withholding pass.
+
+    Round 1 stopped at the assembled conversation; this converts it exactly
+    like the model-round prepare path (``build_model_input_bindings`` +
+    ``_validate_or_withhold_model_sources``) and returns the bindings plus the
+    post-withholding wire messages the provider adapter would receive.
+    """
+
+    from app.kernel.engine import _dicts_to_llm_messages, _llm_messages_to_dicts
+    from app.services.session_model_inputs import build_model_input_bindings
+    from app.services.session_model_round import _validate_or_withhold_model_sources
+
+    async with owner_sessionmaker() as db:
+        messages = _dicts_to_llm_messages(stopped["conversation"])
+        wire = {"messages": _llm_messages_to_dicts(messages), "tools": []}
+        bindings = await build_model_input_bindings(
+            db,
+            tenant_id=stopped["tenant_id"],
+            agent_id=stopped["agent_id"],
+            session_id=stopped["session_id"],
+            messages=messages,
+            wire_messages=wire["messages"],
+        )
+        await _validate_or_withhold_model_sources(
+            db,
+            tenant_id=stopped["tenant_id"],
+            agent_id=stopped["agent_id"],
+            session_id=stopped["session_id"],
+            run_id=stopped["run2"],
+            input_bindings=bindings,
+            messages=messages,
+            wire_request=wire,
+        )
+        await db.commit()
+        return bindings, wire["messages"]
+
+
+async def test_member_stop_replays_interrupted_tool_calls_to_next_turn(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """Run13 defect: the next turn's model input must show the two search calls
+    the stop cut off as interrupted with no result, not erase the round."""
+
+    from app.services import session_semantic_history as history
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索新闻并写一篇综述",
+        followup="刚才做了什么？",
+        calls=[{"kind": "prepared"}, {"kind": "prepared"}],
+    )
+    conversation = stopped["conversation"]
+    search_one, search_two = stopped["tool_use_ids"]
+
+    tool_call_entries = [entry for entry in conversation if isinstance(entry.get("tool_calls"), list)]
+    assert len(tool_call_entries) == 1, f"stopped round's assistant calls missing: {conversation}"
+    assert [call["id"] for call in tool_call_entries[0]["tool_calls"]] == [search_one, search_two]
+    assert tool_call_entries[0]["content"] == stopped["plan_text"], (
+        f"stopped round's plan text missing: {conversation}"
+    )
+
+    tool_result_entries = [entry for entry in conversation if entry.get("role") == "tool"]
+    assert sorted(entry["tool_call_id"] for entry in tool_result_entries) == sorted(
+        [search_one, search_two]
+    ), f"interrupted calls must replay with one result each: {conversation}"
+    assert all(
+        entry["content"] == history._INTERRUPTED_TOOL_CALL_NEVER_RAN for entry in tool_result_entries
+    ), f"interrupted results must carry the fixed no-result sentence: {tool_result_entries}"
+    for entry in tool_result_entries:
+        assert conversation.index(tool_call_entries[0]) < conversation.index(entry), (
+            f"each interrupted result must follow its assistant call: {conversation}"
+        )
+
+    contents = [entry.get("content") for entry in conversation]
+    assert contents.index(stopped["prompt"]) < contents.index(stopped["plan_text"])
+    assert contents.index(stopped["plan_text"]) < contents.index(history._USER_STOP_MARKER)
+    assert stopped["receipt"]["held_items"] == [], stopped["receipt"]
+
+
+async def test_interrupted_stop_replay_pairs_for_provider_adapters(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """The assembled stop history converts validly for the adapters in use:
+    every tool call id has exactly one result, after its call, in both the
+    OpenAI and Anthropic wire formats."""
+
+    from app.kernel.engine import _dicts_to_llm_messages
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="检索行业动态",
+        followup="继续",
+        calls=[{"kind": "prepared"}, {"kind": "prepared"}],
+    )
+    api_messages = _dicts_to_llm_messages(stopped["conversation"])
+    search_one, search_two = stopped["tool_use_ids"]
+
+    openai_entries = [message.to_openai_format() for message in api_messages]
+    issued = [
+        call["id"]
+        for entry in openai_entries
+        for call in (entry.get("tool_calls") or [])
+    ]
+    answered = [entry.get("tool_call_id") for entry in openai_entries if entry.get("role") == "tool"]
+    assert issued == [search_one, search_two]
+    assert sorted(answered) == sorted([search_one, search_two])
+
+    anthropic_entries = [
+        converted for message in api_messages if (converted := message.to_anthropic_format()) is not None
+    ]
+    block_order: list[tuple[str, str]] = []
+    for entry in anthropic_entries:
+        blocks = entry.get("content") if isinstance(entry.get("content"), list) else []
+        for block in blocks:
+            if block.get("type") == "tool_use":
+                block_order.append(("use", block["id"]))
+            elif block.get("type") == "tool_result":
+                block_order.append(("result", block["tool_use_id"]))
+    assert [use_id for kind, use_id in block_order if kind == "use"] == [search_one, search_two]
+    assert sorted(use_id for kind, use_id in block_order if kind == "result") == sorted(
+        [search_one, search_two]
+    )
+    for use_id in (search_one, search_two):
+        use_at = block_order.index(("use", use_id))
+        result_at = block_order.index(("result", use_id))
+        assert use_at < result_at, f"tool_result for {use_id} must follow its tool_use: {block_order}"
 
 
 async def test_current_run_semantics_stay_out_of_history_and_resume_owns_them(
@@ -1633,3 +2076,406 @@ async def test_an_unbound_company_approval_round_remains_held(owner_sessionmaker
     assert marker not in json.dumps(conversation)
     held = task.metadata_json["session_semantic_history"]["held_items"]
     assert any(item["kind"] == "unsettled_tool_round" and item["missing_provider_tool_use_ids"] == [tool_id] for item in held)
+
+
+async def test_interrupted_notices_survive_real_next_turn_source_binding(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """B1: the synthetic interrupted notice is a resolvable model-input source.
+
+    Round 1 stopped at the assembled conversation; through the real
+    build_model_input_bindings + _validate_or_withhold_model_sources pass the
+    next turn's wire must keep the plan text, both issued calls with their
+    arguments, one fixed notice per call, the stop marker — and must not
+    replace them with the un-verifiable-context system note.
+    """
+
+    import json
+
+    from app.services import session_semantic_history as history
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索新闻并写一篇综述",
+        followup="刚才做了什么？",
+        calls=[{"kind": "prepared"}, {"kind": "prepared"}],
+    )
+    bindings, wire = await _next_turn_model_input(owner_sessionmaker, stopped=stopped)
+    search_one, search_two = stopped["tool_use_ids"]
+
+    entries = {entry.get("source_ref"): entry for entry in bindings["messages"]}
+    interrupted_entries = [ref for ref in entries if str(ref).startswith("session-tool-interrupted:")]
+    assert sorted(str(ref).rsplit(":", 1)[1] for ref in interrupted_entries) == sorted(
+        [search_one, search_two]
+    ), bindings["messages"]
+    assert all(
+        entries[ref]["status"] == "bound" and entries[ref]["dependency_status"] == "resolved"
+        for ref in interrupted_entries
+    ), [entries[ref] for ref in interrupted_entries]
+
+    contents = [message.get("content") for message in wire]
+    assert stopped["plan_text"] in contents, wire
+    assistant = next(message for message in wire if message.get("content") == stopped["plan_text"])
+    assert [call["id"] for call in assistant.get("tool_calls") or []] == [search_one, search_two]
+    assert json.loads(assistant["tool_calls"][0]["function"]["arguments"]) == {"query": "news-0"}, wire
+    assert json.loads(assistant["tool_calls"][1]["function"]["arguments"]) == {"query": "news-1"}, wire
+
+    tool_messages = [message for message in wire if message.get("role") == "tool"]
+    assert sorted(message["tool_call_id"] for message in tool_messages) == sorted([search_one, search_two])
+    assert all(
+        message["content"] == history._INTERRUPTED_TOOL_CALL_NEVER_RAN for message in tool_messages
+    ), tool_messages
+    assert history._USER_STOP_MARKER in contents, wire
+    assert "无法核实" not in json.dumps(wire, ensure_ascii=False), wire
+    # The synthetic notices are read-model pairing, not settled results.
+    assert stopped["receipt"]["coverage"]["settled_tool_results"] == 0, stopped["receipt"]
+
+
+async def test_started_effect_call_cut_by_stop_reaches_next_turn_model_input(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """B2/run13: a call that crossed the real effect fence and was cut off
+    before any result pairs with the unknown-effect sentence, both in the
+    assembled conversation and on the post-binding wire."""
+
+    import json
+
+    from app.services import session_semantic_history as history
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索新闻并写一篇综述",
+        followup="刚才做了什么？",
+        calls=[{"kind": "fence"}],
+    )
+    search_id, = stopped["tool_use_ids"]
+
+    async with owner_sessionmaker() as db:
+        from app.models.session_v2 import SessionToolInvocation
+
+        invocation = await db.get(SessionToolInvocation, stopped["invocations"][search_id].id)
+        assert (invocation.effect_state, invocation.result_event_id) == ("effect_started", None)
+
+    conversation = stopped["conversation"]
+    conversation_contents = [entry.get("content") for entry in conversation]
+    assert stopped["plan_text"] in conversation_contents, conversation
+    tool_result_entries = [entry for entry in conversation if entry.get("role") == "tool"]
+    assert [entry["content"] for entry in tool_result_entries] == [
+        history._INTERRUPTED_TOOL_CALL_NO_RESULT
+    ], conversation
+
+    bindings, wire = await _next_turn_model_input(owner_sessionmaker, stopped=stopped)
+    contents = [message.get("content") for message in wire]
+    assert stopped["plan_text"] in contents, wire
+    tool_messages = [message for message in wire if message.get("role") == "tool"]
+    assert [(message["tool_call_id"], message["content"]) for message in tool_messages] == [
+        (search_id, history._INTERRUPTED_TOOL_CALL_NO_RESULT)
+    ], wire
+    assert history._USER_STOP_MARKER in contents, wire
+    assert "无法核实" not in json.dumps(wire, ensure_ascii=False), wire
+    assert stopped["receipt"]["held_items"] == [], stopped["receipt"]
+
+
+async def test_padded_seal_tool_call_id_pairs_via_stripped_lookup_and_resolves_with_original(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """Reviewer nit 3 regression: the seal may carry a provider id with a
+    trailing space while prepare_tool_invocation stores the stripped form.
+    The interrupted pairing must find the invocation through the stripped
+    lookup, keep the seal's original bytes as the wire tool_call_id, and the
+    resolver must accept the ref built from the original id."""
+
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.services import session_semantic_history as history
+    from app.services.session_model_inputs import _resolve_origin_dependencies
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索新闻",
+        followup="刚才做了什么？",
+        calls=[{"kind": "fence", "id": "toolu_x "}],
+    )
+    sealed_id, = stopped["tool_use_ids"]
+    assert sealed_id == "toolu_x "
+
+    async with owner_sessionmaker() as db:
+        invocation, = (
+            await db.scalars(
+                select(SessionToolInvocation).where(SessionToolInvocation.run_id == stopped["run1"])
+            )
+        ).all()
+        assert (invocation.provider_tool_use_id, invocation.effect_state, invocation.result_event_id) == (
+            "toolu_x",
+            "effect_started",
+            None,
+        ), invocation
+
+    tool_result_entries = [entry for entry in stopped["conversation"] if entry.get("role") == "tool"]
+    assert [(entry.get("tool_call_id"), entry["content"]) for entry in tool_result_entries] == [
+        ("toolu_x ", history._INTERRUPTED_TOOL_CALL_NO_RESULT)
+    ], stopped["conversation"]
+
+    bindings, wire = await _next_turn_model_input(owner_sessionmaker, stopped=stopped)
+    tool_messages = [message for message in wire if message.get("role") == "tool"]
+    assert [(message["tool_call_id"], message["content"]) for message in tool_messages] == [
+        ("toolu_x ", history._INTERRUPTED_TOOL_CALL_NO_RESULT)
+    ], wire
+    assistant_message = next(message for message in wire if message.get("role") == "assistant")
+    assert [call["id"] for call in assistant_message["tool_calls"]] == ["toolu_x "], wire
+    assert stopped["receipt"]["held_items"] == [], stopped["receipt"]
+
+    async with owner_sessionmaker() as db:
+        result = await db.scalar(
+            select(SessionModelResult).where(SessionModelResult.run_id == stopped["run1"])
+        )
+        assert result is not None
+        assert await _resolve_origin_dependencies(
+            db,
+            tenant_id=stopped["tenant_id"],
+            agent_id=stopped["agent_id"],
+            ref=f"session-tool-interrupted:{result.id}:{sealed_id}",
+        ) == ([], True)
+
+
+async def test_mixed_round_keeps_settled_result_and_interrupted_call_on_the_wire(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """A stopped round with one settled call and one cut-off call keeps both:
+    the real result next to the fixed notice, and no withheld replacement."""
+
+    import json
+
+    from app.services import session_semantic_history as history
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索行业动态并总结",
+        followup="继续之前的检索",
+        calls=[
+            {"kind": "settled", "result_content": "industry news digest"},
+            {"kind": "fence"},
+        ],
+    )
+    settled_id, cut_off_id = stopped["tool_use_ids"]
+
+    bindings, wire = await _next_turn_model_input(owner_sessionmaker, stopped=stopped)
+    contents = [message.get("content") for message in wire]
+    assert stopped["plan_text"] in contents, wire
+    tool_messages = {message["tool_call_id"]: message["content"] for message in wire if message.get("role") == "tool"}
+    assert tool_messages[settled_id] == "industry news digest", wire
+    assert tool_messages[cut_off_id] == history._INTERRUPTED_TOOL_CALL_NO_RESULT, wire
+    assert history._USER_STOP_MARKER in contents, wire
+    assert "无法核实" not in json.dumps(wire, ensure_ascii=False), wire
+    assert stopped["receipt"]["coverage"]["settled_tool_results"] == 1, stopped["receipt"]
+    assert stopped["receipt"]["held_items"] == [], stopped["receipt"]
+
+
+async def test_needs_reconciliation_call_keeps_the_stopped_round_held(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """A quarantined effect in a member-stopped run still withholds the whole
+    round: the stop pairing never claims an unknown effect is settled."""
+
+    import json
+
+    from app.services import session_semantic_history as history
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索新闻",
+        followup="继续",
+        calls=[{"kind": "needs_reconciliation"}],
+    )
+
+    held = stopped["receipt"]["held_items"]
+    assert any(item["kind"] == "unsettled_tool_round" for item in held), held
+    contents = [entry.get("content") for entry in stopped["conversation"]]
+    assert stopped["plan_text"] not in contents
+    assert history._INTERRUPTED_TOOL_CALL_NEVER_RAN not in contents
+    assert history._INTERRUPTED_TOOL_CALL_NO_RESULT not in contents
+
+    bindings, wire = await _next_turn_model_input(owner_sessionmaker, stopped=stopped)
+    assert not [
+        entry for entry in bindings["messages"] if str(entry.get("source_ref", "")).startswith("session-tool-interrupted:")
+    ], bindings["messages"]
+    wire_contents = [message.get("content") for message in wire]
+    assert stopped["plan_text"] not in wire_contents, wire
+    assert "无法核实" not in json.dumps(wire, ensure_ascii=False), wire
+
+
+async def test_approval_required_with_broken_ticket_keeps_the_stopped_round_held(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """A prepared call that already recorded an approval_required result with a
+    failing ticket check stays held: the stop pairing must not overwrite a
+    recorded receipt with the never-ran sentence."""
+
+    import json
+
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services import session_semantic_history as history
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="发送通知前准备",
+        followup="继续",
+        calls=[{"kind": "approval_ticket_broken", "tool": "send_web_message"}],
+    )
+    tool_use_id, = stopped["tool_use_ids"]
+
+    async with owner_sessionmaker() as db:
+        invocation = await db.get(SessionToolInvocation, stopped["invocations"][tool_use_id].id)
+        assert invocation.effect_state == "prepared_not_started"
+        assert invocation.result_event_id is not None
+
+    held = stopped["receipt"]["held_items"]
+    assert any(
+        item["kind"] == "unsettled_tool_round" and item["missing_provider_tool_use_ids"] == [tool_use_id]
+        for item in held
+    ), held
+    contents = [entry.get("content") for entry in stopped["conversation"]]
+    assert stopped["plan_text"] not in contents
+    assert history._INTERRUPTED_TOOL_CALL_NEVER_RAN not in contents
+
+
+async def test_kill_without_member_stop_keeps_the_round_held(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """No stop control bound to the cancelled run means no stop pairing: the
+    dangling round stays held exactly as before this slice."""
+
+    from app.services import session_semantic_history as history
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索新闻",
+        followup="继续",
+        calls=[{"kind": "prepared"}],
+        member_stop=False,
+    )
+
+    held = stopped["receipt"]["held_items"]
+    assert any(item["kind"] == "unsettled_tool_round" for item in held), held
+    contents = [entry.get("content") for entry in stopped["conversation"]]
+    assert stopped["plan_text"] not in contents
+    assert history._USER_STOP_MARKER not in contents
+
+
+async def test_session_tool_interrupted_ref_resolution_rejects_foreign_scope(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """The synthetic ref binds only its own seal, its own issued call, and a
+    run cancelled with a stop control — the same resolver group chat
+    (shared_group_authority), project references (project_context) and
+    compaction catalogues (invocation_trace) read through."""
+
+    from app.models.session_v2 import SessionModelResult
+    from app.services.session_model_inputs import _resolve_origin_dependencies
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索新闻",
+        followup="继续",
+        calls=[{"kind": "prepared"}],
+    )
+    search_id, = stopped["tool_use_ids"]
+
+    async with owner_sessionmaker() as db:
+        result = await db.scalar(
+            select(SessionModelResult).where(SessionModelResult.run_id == stopped["run1"])
+        )
+        assert result is not None
+        ref = f"session-tool-interrupted:{result.id}:{search_id}"
+        assert await _resolve_origin_dependencies(
+            db, tenant_id=stopped["tenant_id"], agent_id=stopped["agent_id"], ref=ref
+        ) == ([], True)
+        assert await _resolve_origin_dependencies(
+            db, tenant_id=uuid.uuid4(), agent_id=stopped["agent_id"], ref=ref
+        ) == ([], False)
+        assert await _resolve_origin_dependencies(
+            db, tenant_id=stopped["tenant_id"], agent_id=uuid.uuid4(), ref=ref
+        ) == ([], False)
+        assert await _resolve_origin_dependencies(
+            db,
+            tenant_id=stopped["tenant_id"],
+            agent_id=stopped["agent_id"],
+            ref=f"session-tool-interrupted:{result.id}:not-the-issued-call",
+        ) == ([], False)
+        assert await _resolve_origin_dependencies(
+            db,
+            tenant_id=stopped["tenant_id"],
+            agent_id=stopped["agent_id"],
+            ref="session-tool-interrupted:not-a-uuid:x",
+        ) == ([], False)
+        assert await _resolve_origin_dependencies(
+            db,
+            tenant_id=stopped["tenant_id"],
+            agent_id=stopped["agent_id"],
+            ref=f"session-tool-interrupted:{result.id}",
+        ) == ([], False)
+
+    stopped_without_control = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索新闻",
+        followup="继续",
+        calls=[{"kind": "prepared"}],
+        member_stop=False,
+    )
+    held_without_control = next(
+        item for item in stopped_without_control["receipt"]["held_items"]
+        if item["kind"] == "unsettled_tool_round"
+    )
+    async with owner_sessionmaker() as db:
+        result = await db.scalar(
+            select(SessionModelResult).where(
+                SessionModelResult.run_id == stopped_without_control["run1"]
+            )
+        )
+        assert result is not None
+        assert await _resolve_origin_dependencies(
+            db,
+            tenant_id=stopped_without_control["tenant_id"],
+            agent_id=stopped_without_control["agent_id"],
+            ref=f"session-tool-interrupted:{result.id}:{held_without_control['missing_provider_tool_use_ids'][0]}",
+        ) == ([], False)
+
+
+async def test_member_stop_with_started_effect_still_accepts_next_member_message(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """Production run13 shape: a killed run's effect_started call must not
+    block the member's follow-up at the real start path
+    (TOOL_EFFECT_RECONCILIATION_TASK_STATUSES only gates failed and
+    needs_reconciliation runs)."""
+
+    stopped = await _member_stopped_mid_tool_session(
+        owner_sessionmaker,
+        monkeypatch,
+        prompt="搜索新闻并写一篇综述",
+        followup="刚才做了什么？",
+        calls=[{"kind": "fence"}],
+    )
+    assert stopped["admission"] == "admitted"
+    async with owner_sessionmaker() as db:
+        from app.models.runtime_task import RuntimeTask
+
+        task = await db.get(RuntimeTask, stopped["run2"])
+        assert task is not None and task.status not in {"failed", "needs_reconciliation"}

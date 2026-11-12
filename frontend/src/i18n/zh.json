@@ -2652,6 +2652,9 @@
         "resultFile": "{{action}}：{{file}}。{{status}}",
         "resultAction": "{{action}}。{{status}}",
         "toolCompleted": "本次操作：{{tools}}",
+        "toolInterrupted": "已中断：{{tools}}",
+        "interruptedBadge": "已中断",
+        "stepInterrupted": "已中断，没有返回结果。",
         "toolHistory": "工具调用历史",
         "system": {
           "resultsReceived": "收到 {{count}} 项任务结果",

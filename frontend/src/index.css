@@ -2611,6 +2611,13 @@
   cursor: default;
 }
 
+/* Marks a call the member's stop cut off before any result existed. */
+.run-tool-history-status {
+  margin-left: 6px;
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+}
+
 .run-tool-history-toggle:not(:disabled) {
   cursor: pointer;
 }

@@ -819,9 +819,64 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     from app.models.session_v2 import SessionCommand
     from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence, _preflight_inputs
     from app.services.knowledge_provenance import KNOWLEDGE_TOOL_NAMES, build_knowledge_provenance
-    from app.services.session_semantic_history import _event_payload
+    from app.services.session_semantic_history import _event_payload, _source_scope_run_id, is_member_stop_run_event
     from app.services.historical_model_inputs import recover_model_dependencies
 
+    if ref.startswith("session-tool-interrupted:"):
+        # The stop-pairing read model carries "{result.id}:{tool_call_id}",
+        # which the UUID parse below cannot read. Binding is the committed
+        # seal, its issued call, and the run's stop-control cancellation —
+        # like the run-stop marker, this synthetic notice has no body sources.
+        result_raw, sep, tool_call_id = ref[len("session-tool-interrupted:") :].partition(":")
+        try:
+            result_id = uuid.UUID(result_raw)
+        except (ValueError, TypeError):
+            return [], False
+        if not sep or not tool_call_id:
+            return [], False
+        result = await db.scalar(
+            select(SessionModelResult)
+            .join(ChatSession, ChatSession.id == SessionModelResult.session_id)
+            .where(
+                SessionModelResult.id == result_id,
+                SessionModelResult.tenant_id == tenant_id,
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == agent_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if result is None:
+            return [], False
+        seal = result.seal_json if isinstance(result.seal_json, dict) else {}
+        response = seal.get("response") if isinstance(seal.get("response"), dict) else {}
+        issued_ids = {
+            str(call.get("id") or "")
+            for call in (response.get("tool_calls") if isinstance(response.get("tool_calls"), list) else [])
+            if isinstance(call, dict)
+        }
+        if tool_call_id not in issued_ids:
+            return [], False
+        cancelled_events = (
+            await db.scalars(
+                select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.tenant_id == tenant_id,
+                    ChatTranscriptEvent.agent_id == agent_id,
+                    ChatTranscriptEvent.session_id == result.session_id,
+                    ChatTranscriptEvent.item_kind == "run",
+                    ChatTranscriptEvent.lifecycle == "cancelled",
+                    ChatTranscriptEvent.run_id == result.run_id,
+                )
+            )
+        ).all()
+        # V2 run-level cancelled events persist the run binding in the run_id
+        # column: append_session_events writes it from the scope and the v2
+        # contract forces the column to equal scope_json.run_id. The query
+        # above therefore narrows to this run; the scope re-check below is
+        # belt and braces and also guards a null result.run_id.
+        return [], any(
+            is_member_stop_run_event(event) and _source_scope_run_id(event) == result.run_id
+            for event in cancelled_events
+        )
     try:
         kind, raw_id = ref.split(":", 1)
         source_id = uuid.UUID(raw_id)
@@ -835,8 +890,10 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
                 ChatSession.agent_id == agent_id, ChatTranscriptEvent.item_kind == "run",
                 ChatTranscriptEvent.lifecycle == "cancelled"))
         # Binding is the cancelled event plus its control id. This mechanical
-        # stop notice contains no user/document/tool body dependencies.
-        return [], event is not None and bool(_event_payload(event).get("control_id"))
+        # stop notice contains no user/document/tool body dependencies. The
+        # query above already pins item_kind/lifecycle, so the shared member-
+        # stop predicate reduces to the same control_id test.
+        return [], event is not None and is_member_stop_run_event(event)
     if kind == "session-kernel-context":
         # Complete inventory is separate from the live leaf-authority readers.
         origin = await load_context_message_origin(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)

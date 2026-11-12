@@ -738,8 +738,11 @@ export function isAssistantAnswer(message: AgentChatMessage): boolean {
 }
 
 export function buildRunAggregateSummary(steps: RunStepSnapshot[]): RunAggregateSummary | undefined {
-  const hiddenProcessTools = steps.filter((step) => step.presentation === 'tool_history');
-  const files = steps.filter((step) => step.presentation !== 'external'
+  // An interrupted call never returned a result, so it must not surface as a
+  // counted completed action ("Searched the web N times") inside a stopped run.
+  const completed = steps.filter((step) => step.status !== 'interrupted');
+  const hiddenProcessTools = completed.filter((step) => step.presentation === 'tool_history');
+  const files = completed.filter((step) => step.presentation !== 'external'
     && ['read_file', 'fs_read', 'read_document'].includes(String((step.details as { toolName?: string } | null)?.toolName))).length;
   const searches = hiddenProcessTools.filter((step) => step.kind === 'search').length;
   const commands = hiddenProcessTools.filter((step) => step.kind === 'command').length;

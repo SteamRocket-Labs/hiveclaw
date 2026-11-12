@@ -511,11 +511,61 @@ async def test_build_memory_context_makes_no_model_call(monkeypatch, tmp_path) -
         return object()  # any resolved accountability unblocks the resident build
 
     monkeypatch.setattr(memory_service, "_resolve_accountability_context", fake_accountability)
-    result = await memory_service.build_memory_context(uuid.uuid4(), uuid.uuid4(), query="q",
+    result = await memory_service.build_memory_context(uuid.uuid4(), uuid.uuid4(),
         current_user_id=uuid4(), return_result=True)
 
     assert result.status == "ready"
     assert result.code == "memory_context_ready"
+
+
+@pytest.mark.asyncio
+async def test_withheld_note_counts_only_the_requesters_own_issues(monkeypatch, tmp_path) -> None:
+    """A4c: the count names only own entries; an id-less group-outage issue
+    that may belong to another member stays out of the sentence."""
+    from app.services import memory_service
+
+    monkeypatch.setattr(
+        memory_service,
+        "get_settings",
+        lambda: type("S", (), {"AGENT_DATA_DIR": str(tmp_path), "MEMORY_RESIDENT_BUDGET_CHARS": 12000.0})(),
+    )
+
+    async def fake_accountability(**_kw):
+        return object()
+
+    monkeypatch.setattr(memory_service, "_resolve_accountability_context", fake_accountability)
+
+    group_outage = {"status": "unavailable", "code": "explicit_memory_group_unavailable"}
+
+    async def group_outage_only(*, entries, issue_observer=None, **_kwargs):
+        if issue_observer is not None:
+            issue_observer.append(dict(group_outage))
+        return []
+
+    monkeypatch.setattr("app.services.explicit_memory_authority.authorized_explicit_entries", group_outage_only)
+    foreign_group = await memory_service.build_memory_context(uuid.uuid4(), uuid.uuid4(),
+        current_user_id=uuid4(), return_result=True)
+    # The outage still degrades, but the requester has no own dropped entry,
+    # so no sentence: another member's entry stays silently omitted.
+    assert foreign_group.status == "degraded", foreign_group
+    assert "explicit_memory_source_authority" in foreign_group.degraded_components, foreign_group
+    assert "记忆暂时无法核实" not in foreign_group.content, foreign_group.content
+
+    async def own_plus_group(*, entries, issue_observer=None, **_kwargs):
+        if issue_observer is not None:
+            issue_observer.append({"memory_id": "own-1", "status": "denied",
+                "code": "content_source_access_denied"})
+            issue_observer.append({"memory_id": "own-2", "status": "denied",
+                "code": "content_source_access_denied"})
+            issue_observer.append(dict(group_outage))
+        return []
+
+    monkeypatch.setattr("app.services.explicit_memory_authority.authorized_explicit_entries", own_plus_group)
+    own = await memory_service.build_memory_context(uuid.uuid4(), uuid.uuid4(),
+        current_user_id=uuid4(), return_result=True)
+    assert own.status == "degraded", own
+    assert "有2 条记忆暂时无法核实，已略过，可继续使用其余内容。" in own.content, own.content
+    assert "有3 条记忆暂时无法核实" not in own.content, own.content
 
 
 @pytest.mark.asyncio
@@ -534,8 +584,7 @@ async def test_build_memory_context_fails_closed_when_activation_context_unresol
         agent_id,
         tenant_id,
         session_id="session-1",
-        query="salary planning",
-        current_user_id=uuid4(),
+                current_user_id=uuid4(),
         current_user_name="Viewer",
     )
 
@@ -576,8 +625,7 @@ async def test_build_memory_context_passes_activation_context(monkeypatch, tmp_p
         agent_id,
         tenant_id,
         session_id="session-1",
-        query="Q3 salary planning for Acme",
-        current_user_id=viewer_id,
+                current_user_id=viewer_id,
         current_user_name="Bob",
     )
 
@@ -642,8 +690,7 @@ async def test_build_memory_context_omits_pl3_for_non_owner(monkeypatch, tmp_pat
     context = await memory_service.build_memory_context(
         agent_id,
         tenant_id,
-        query="salary planning",
-        current_user_id=viewer_id,
+                current_user_id=viewer_id,
         current_user_name="Bob",
     )
 
@@ -672,8 +719,7 @@ async def test_resident_profile_failure_is_critical_not_empty_context(monkeypatc
     result = await memory_service.build_memory_context(
         uuid4(),
         uuid4(),
-        query="hello",
-        return_result=True,
+                return_result=True,
     )
 
     assert result.status == "unavailable"
@@ -702,8 +748,7 @@ async def test_unresolved_memory_authority_is_typed_fail_closed(monkeypatch, tmp
     result = await memory_service.build_memory_context(
         uuid4(),
         uuid4(),
-        query="hello",
-        return_result=True,
+                return_result=True,
     )
 
     assert result.status == "blocked_authority"

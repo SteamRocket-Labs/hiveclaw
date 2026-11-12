@@ -272,7 +272,7 @@ async def test_group_memory_reaches_each_authorized_consumer_without_private_mem
         from app.services import memory_service
 
         result = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(session),
-            runtime_task_id=str(run), current_user_id=user, query="release")
+            runtime_task_id=str(run), current_user_id=user)
     assert "GROUP_RELEASE_MARKER" in result and "ORCHID_PRIVATE_MARKER" not in result, result
 
 

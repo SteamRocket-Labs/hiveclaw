@@ -352,8 +352,8 @@ async def test_turn_stop_committed_t2_is_gatherable_by_the_offline_recall_seam(
     monkeypatch,
     tmp_path,
 ) -> None:
-    """A committed T2 package is not prefetched into any prompt (A2m); this
-    proves the offline eval seam still gathers it, unchanged."""
+    """A committed T2 package stays gatherable through the offline recall-eval
+    seam (``_gather_authorized_candidates``) after TURN_STOP."""
     from app.memory.retriever import MemoryRetriever
 
     _patch_t0_root(monkeypatch, tmp_path)
@@ -417,7 +417,8 @@ async def test_turn_stop_committed_t2_is_gatherable_by_the_offline_recall_seam(
         )
     )
 
-    recalled = await MemoryRetriever(data_root=tmp_path)._retrieve_episodic(agent_id, "next-chat-session")
+    recalled = [item for item in await MemoryRetriever(data_root=tmp_path)._gather_authorized_candidates(
+        agent_id, "next chat turn", "next-chat-session", str(tenant_id)) if item.kind.value == "episodic"]
 
     assert len(recalled) == 1
     assert recalled[0].metadata["session_id"] == session_id

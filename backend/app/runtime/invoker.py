@@ -810,13 +810,11 @@ async def _resolve_memory_context(
     session_id = request.memory_session_id
     if not session_id and request.session_context:
         session_id = request.session_context.session_id
-    query = _last_user_query(request.messages)
     turn_metadata = _ensure_turn_metadata(request) if session_id else _session_metadata(request.session_context)
 
     if request.agent_id and tenant_id:
         _memory_kwargs = {
             "session_id": session_id,
-            "query": query,
         }
         _memory_sig = inspect.signature(build_memory_context).parameters
         current_user_name = None

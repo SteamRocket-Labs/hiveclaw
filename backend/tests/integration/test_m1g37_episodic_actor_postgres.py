@@ -106,7 +106,7 @@ async def test_memory_service_context_keeps_resident_identity_on_authority_outag
         raise OSError("synthetic explicit-authority outage")
 
     monkeypatch.setattr("app.services.explicit_memory_authority.authorized_explicit_entries", failing_authorize)
-    result = await memory_service.build_memory_context(s.agent, s.tenant, session_id=str(s.session), query="review",
+    result = await memory_service.build_memory_context(s.agent, s.tenant, session_id=str(s.session),
         current_user_id=s.user, return_result=True)
     assert result.status == "degraded", result
     assert result.degraded_components == ("explicit_memory_source_authority",), result

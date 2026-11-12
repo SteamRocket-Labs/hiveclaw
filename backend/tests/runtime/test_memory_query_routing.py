@@ -13,12 +13,12 @@ async def test_resolve_memory_context_uses_single_query_scoped_retrieval(monkeyp
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest
 
-    memory_calls: list[tuple[str | None, str]] = []
+    memory_calls: list[str | None] = []
 
-    async def fake_build_memory_context(agent_id, tenant_id, *, session_id=None, query="", **kwargs):
+    async def fake_build_memory_context(agent_id, tenant_id, *, session_id=None, **kwargs):
         del agent_id, tenant_id, kwargs
-        memory_calls.append((str(session_id), query))
-        return "QUERY_SCOPED_MEMORY" if query else "SNAPSHOT_MEMORY"
+        memory_calls.append(str(session_id) if session_id else None)
+        return "SNAPSHOT_MEMORY"
 
     monkeypatch.setattr(invoker, "build_memory_context", fake_build_memory_context)
 
@@ -31,19 +31,20 @@ async def test_resolve_memory_context_uses_single_query_scoped_retrieval(monkeyp
         session_context=SessionContext(session_id="s-1"),
     )
 
+    # A2m: the resident build carries no query; retrieval is the model's own
+    # tool work, so the same context loads for any question.
     result = await invoker._resolve_memory_context(request, uuid4())
-    assert "QUERY_SCOPED_MEMORY" in result
-    assert "SNAPSHOT_MEMORY" not in result
+    assert "SNAPSHOT_MEMORY" in result
     assert '<context_block kind="memory_context" source="memory_provider:context">' in result
-    assert memory_calls == [("s-1", "latest question")]
+    assert memory_calls == ["s-1"]
     assert request.session_context.metadata["context_artifacts"][0]["kind"] == "memory_context"
 
     # After prefix is cached, memory context should STILL be loaded (not skipped)
     # This ensures the engine's hash-based cache invalidation works correctly.
     request.session_context.prompt_prefix = "CACHED_PREFIX"
     result = await invoker._resolve_memory_context(request, uuid4())
-    assert "QUERY_SCOPED_MEMORY" in result  # Memory always loaded, even with cached prefix
-    assert memory_calls == [("s-1", "latest question"), ("s-1", "latest question")]
+    assert "SNAPSHOT_MEMORY" in result  # Memory always loaded, even with cached prefix
+    assert memory_calls == ["s-1", "s-1"]
 
 
 @pytest.mark.asyncio
@@ -295,13 +296,11 @@ async def test_resolve_memory_context_passes_durable_turn_and_surfaces_degraded_
         _tenant_id,
         *,
         session_id=None,
-        query="",
         return_result=False,
         **_kwargs,
     ):
         captured.update(
             session_id=session_id,
-            query=query,
             return_result=return_result,
         )
         return MemoryContextResult(
@@ -334,7 +333,6 @@ async def test_resolve_memory_context_passes_durable_turn_and_surfaces_degraded_
 
     assert captured == {
         "session_id": "session-budget",
-        "query": "continue",
         "return_result": True,
     }
     assert "RESIDENT_INDEX" in context

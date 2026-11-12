@@ -37,7 +37,6 @@ async def _recall(s, session_factory, surface, entry_ids):
             session_id=str(s.second_session),
             runtime_task_id=str(s.second_run),
             current_user_id=n.foreign,
-            query="Recall the document release cadence",
             return_result=True,
         )
         return context.content, context

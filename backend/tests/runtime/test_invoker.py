@@ -3118,8 +3118,8 @@ async def test_invoke_agent_loads_runtime_memory_and_defers_projection_until_ter
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_build_memory_context(_agent_id, _tenant_id, *, session_id=None, query="", **_kwargs):
-        captured["loaded"] = (_agent_id, _tenant_id, session_id, query)
+    async def fake_build_memory_context(_agent_id, _tenant_id, *, session_id=None, **_kwargs):
+        captured["loaded"] = (_agent_id, _tenant_id, session_id)
         return "RUNTIME_MEMORY"
 
     async def fake_build_agent_runtime_context(*args, **kwargs):
@@ -3162,7 +3162,7 @@ async def test_invoke_agent_loads_runtime_memory_and_defers_projection_until_ter
     )
 
     assert result.content == "done"
-    assert captured["loaded"] == (agent_id, tenant_id, "session-1", "hello")
+    assert captured["loaded"] == (agent_id, tenant_id, "session-1")
     _sys_prompt = fake_client.calls[0]["messages"][0].content
     assert "BASE_PROMPT" in _sys_prompt
     assert "RUNTIME_MEMORY" not in _sys_prompt

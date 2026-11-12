@@ -26,10 +26,13 @@ from app.models.llm import LLMModel
 from app.models.tenant import Tenant
 from app.models.tenant_setting import TenantSetting
 from app.models.user import User
-from app.services.agency_charter import AgentAccountabilityContext, build_default_accountability_context
 from app.services.conversation_summarizer import estimate_tokens
 
 logger = logging.getLogger(__name__)
+
+# Fixed truthy marker: the resident build only asks whether accountability
+# resolved, never what it contains.
+_ACCOUNTABILITY_RESOLVED = object()
 
 
 CompactionCallback = Callable[[dict], Awaitable[None] | None]
@@ -65,7 +68,6 @@ async def build_memory_context(
     *,
     session_id: str | None = None,
     runtime_task_id: str | None = None,
-    query: str = "",
     current_user_id: uuid.UUID | str | None = None,
     current_user_name: str | None = None,
     return_result: bool = False,
@@ -83,7 +85,6 @@ async def build_memory_context(
         tenant_id,
         session_id=session_id,
         runtime_task_id=runtime_task_id,
-        query=query,
         current_user_id=current_user_id,
         current_user_name=current_user_name,
     )
@@ -96,7 +97,6 @@ async def _build_memory_context_result(
     *,
     session_id: str | None,
     runtime_task_id: str | None,
-    query: str,
     current_user_id: uuid.UUID | str | None,
     current_user_name: str | None,
 ) -> MemoryContextResult:
@@ -286,54 +286,26 @@ async def _resolve_accountability_context(
     *,
     agent_id: uuid.UUID,
     tenant_id: uuid.UUID,
-    current_user_id: uuid.UUID | str | None,
-    current_user_name: str | None,
-) -> AgentAccountabilityContext | None:
+    current_user_id: uuid.UUID | str | None = None,
+    current_user_name: str | None = None,
+) -> object | None:
+    """Fail-closed accountability check for the resident memory build.
+
+    Only whether the agent/tenant pair resolves matters here: ``None`` blocks
+    prompt memory, anything truthy proceeds. The caller never reads further
+    fields, so no user or charter assembly is done on this live path.
+    """
+    del current_user_id, current_user_name
     try:
         async with tenant_scoped_session(tenant_id) as db:
             row = (await db.execute(select(Agent, Tenant).join(Tenant, Tenant.id == Agent.tenant_id)
                 .where(Agent.id == agent_id, Agent.tenant_id == tenant_id))).first()
-            agent, tenant = row if row is not None else (None, None)
-
-            if agent is None or tenant is None:
+            if row is None:
                 return None
-
-            current_user_uuid = _coerce_uuid(current_user_id)
-            owner_uuid = (
-                getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None) or current_user_uuid
-            )
-            creator_uuid = getattr(agent, "creator_id", None)
-
-            users = {user.id: user for user in await db.scalars(select(User).where(
-                User.id.in_({value for value in (owner_uuid, creator_uuid, current_user_uuid) if value}))) }
-            owner, creator, current_user = (users.get(value) for value in (owner_uuid, creator_uuid, current_user_uuid))
-
-            owner_id = str(owner_uuid or agent_id)
-            owner_name = _display_name(owner) or owner_id
-            creator_id = str(creator_uuid) if creator_uuid else None
-            creator_name = _display_name(creator) if creator else None
-            resolved_current_user_id = str(current_user_uuid) if current_user_uuid else None
-            resolved_current_user_name = current_user_name or _display_name(current_user)
-
-            return build_default_accountability_context(
-                company_id=str(tenant_id),
-                company_name=getattr(tenant, "name", None) or str(tenant_id),
-                owner_id=owner_id,
-                owner_name=owner_name,
-                current_user_id=resolved_current_user_id,
-                current_user_name=resolved_current_user_name,
-                creator_id=creator_id,
-                creator_name=creator_name,
-            )
+            return _ACCOUNTABILITY_RESOLVED
     except Exception as exc:
         logger.warning("Failed to resolve activation accountability context for agent %s: %s", agent_id, exc)
         raise
-
-
-def _display_name(user: User | None) -> str | None:
-    if not user:
-        return None
-    return getattr(user, "display_name", None) or getattr(user, "username", None) or getattr(user, "email", None)
 
 
 

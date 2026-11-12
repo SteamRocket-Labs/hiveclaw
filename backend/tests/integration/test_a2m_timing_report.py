@@ -126,7 +126,7 @@ async def test_a2m_timing_report(native_workspace, owner_sessionmaker, app_user_
         started = time.perf_counter()
         result = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(n.session),
             runtime_task_id=str(n.run), current_user_id=n.user,
-            query=f"what was timing fact 137 {marker}", return_result=True)
+            return_result=True)
         elapsed_ms = (time.perf_counter() - started) * 1000
     finally:
         event.remove(source_engine, "after_cursor_execute", executed)

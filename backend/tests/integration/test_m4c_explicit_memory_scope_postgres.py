@@ -168,10 +168,10 @@ async def test_another_members_work_cannot_consume_private_explicit_memory(share
         from app.services import memory_service
 
         own_context = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(n.session),
-            current_user_id=n.user, query="release")
+            current_user_id=n.user)
         assert "ORCHID_PRIVATE_MARKER" in own_context, own_context
         result = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(s.second_session),
-            current_user_id=n.foreign, query="release")
+            current_user_id=n.foreign)
         assert "ORCHID_PRIVATE_MARKER" not in result, result
         return
     # Every on-demand surface (search, load, raw file) must still withhold the

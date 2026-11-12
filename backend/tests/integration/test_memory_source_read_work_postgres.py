@@ -166,7 +166,7 @@ async def memory_dag(native_workspace, owner_sessionmaker, app_user_sessionmaker
 
 async def resolve(n):
     return await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(n.session),
-        runtime_task_id=str(n.run), current_user_id=n.user, query="Recall fixture release", return_result=True)
+        runtime_task_id=str(n.run), current_user_id=n.user, return_result=True)
 
 
 @pytest.mark.parametrize("surface,bound", [("context", 260), ("search", 260), ("load", 150)])

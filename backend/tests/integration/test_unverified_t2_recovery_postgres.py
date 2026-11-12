@@ -154,7 +154,7 @@ async def test_memory_reference_rechecks_current_reader_without_attesting_body(
 
     s = t2_work
     result = await build_memory_context(s["agent_id"], s["tenant_id"], session_id=str(s["session_id"]),
-        current_user_id=s["user_id"], runtime_task_id=str(s["run_id"]), query="Calculate the current report", return_result=True)
+        current_user_id=s["user_id"], runtime_task_id=str(s["run_id"]), return_result=True)
     request = ToolExecutionRequest(tool_name="create_employee_from_request", arguments={},
         context=ToolExecutionContext(agent_id=s["agent_id"], user_id=s["user_id"], tenant_id=str(s["tenant_id"]),
             session_id=str(s["session_id"]), runtime_task_id=str(s["run_id"]), workspace=s["agent_root"]))

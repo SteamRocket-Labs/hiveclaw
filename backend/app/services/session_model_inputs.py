@@ -827,7 +827,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.organization_identity import ContentInputReceipt
     from app.models.session_v2 import SessionCommand
-    from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence, _preflight_inputs
+    from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence, _preflight_inputs, _DISCLOSURE_SOURCE_VALIDATIONS
     from app.services.knowledge_provenance import KNOWLEDGE_TOOL_NAMES, build_knowledge_provenance
     from app.services.session_semantic_history import _event_payload
     from app.services.historical_model_inputs import recover_model_dependencies
@@ -927,7 +927,10 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
         return [], False
     cached = _preflight_inputs(db)
     retained = cached.get(("session_source", SessionToolInvocation, source_id)) if cached is not None else None
-    invocation = retained[0] if retained is not None and retained[1].agent_id == agent_id else await db.scalar(
+    catalog = cached is not None and _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog
+    retained_binding = retained is not None and (
+        current_model_state is not None if catalog else retained[1].agent_id == agent_id)
+    invocation = retained[0] if retained_binding else await db.scalar(
         select(SessionToolInvocation)
         .join(ChatSession, ChatSession.id == SessionToolInvocation.session_id)
         .where(
@@ -992,7 +995,8 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
         return dependencies, complete and valid
     if invocation.result_event_id is None:
         return [], False
-    event = retained[2] if retained is not None and retained[0] is invocation else await db.scalar(
+    event = retained[2] if (retained is not None and retained[0] is invocation
+        and retained[2] is not None and retained[2].agent_id == agent_id) else await db.scalar(
         select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.id == invocation.result_event_id,
             ChatTranscriptEvent.tenant_id == tenant_id,
@@ -1019,8 +1023,6 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
         )
         .execution_options(populate_existing=True)
     )
-    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
-
     if (cached is not None and _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog
         and model_key in cached.get("tool_models", {}) and model is not None):
         from types import SimpleNamespace

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from sqlalchemy.orm import load_only
 
-from sqlalchemy import String, case, or_, select, text
+from sqlalchemy import String, bindparam, case, or_, select, text
 
 from app.models.organization_identity import ContentInputReceipt
 from app.services.team_memory import _safe_component, _slugify
@@ -179,8 +179,10 @@ async def _input_row(db, model, source_id, *, populate_existing=True):
             return SimpleNamespace(**{**vars(row), "state": state})
         return row
     row = await db.get(model, source_id, populate_existing=populate_existing)
-    if rows is not None and not (model is ContentInputReceipt and row is not None
-        and row.carrier_kind != "workspace_artifact" and scope.source_catalog):
+    if rows is not None and not (scope.source_catalog and (
+        (model is ContentInputReceipt and row is not None and row.carrier_kind != "workspace_artifact")
+        or (model.__name__ == "InvocationSpan" and (row is None or row.span_type == "workspace_output"))
+    )):
         rows[key] = row
     return row
 
@@ -303,10 +305,15 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
             statement = statement.options(load_only(*columns))
         if immutable_only and model is SessionToolInvocation:
             statement = statement.where(SessionToolInvocation.result_event_id.is_not(None))
+        if immutable_only and model is InvocationSpan:
+            # Claimed approval execution may update this row's native receipt
+            # bookkeeping after the original invocation has settled.
+            statement = statement.where(InvocationSpan.span_type != "workspace_output")
         loaded = list(await db.scalars(statement.execution_options(populate_existing=True))) if missing else []
-        rows.update({(model, source_id): None for source_id in missing})
+        if not (immutable_only and model is InvocationSpan):
+            rows.update({(model, source_id): None for source_id in missing})
         rows.update({(model, row.id): row for row in loaded})
-        return [rows[(model, source_id)] for source_id in source_ids if rows[(model, source_id)] is not None]
+        return [rows[(model, source_id)] for source_id in source_ids if rows.get((model, source_id)) is not None]
 
     tools = await _load_source_rows(SessionToolInvocation, ids.get("session_tool_invocation", ()))
     receipts = await _load_source_rows(ContentInputReceipt, ids.get("workspace_artifact", set())
@@ -349,15 +356,16 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
             session_ids.add(uuid.UUID(receipt.authority_json["source_session_id"]))
         except (KeyError, TypeError, ValueError, AttributeError):
             pass
-    await _load_source_rows(ChatSession, session_ids, columns=[ChatSession.id, ChatSession.tenant_id, ChatSession.agent_id]
-        if immutable_only else None)
+    if not immutable_only:
+        await _load_source_rows(ChatSession, session_ids)
     event_ids = {row.result_event_id for row in tools if row.result_event_id}
     if immutable_only:
         # Bridge bookkeeping updates metadata_json, but never its v2_payload.
         # Select only the settled payload and immutable binding/hash columns.
         event_columns = [ChatTranscriptEvent.id, ChatTranscriptEvent.tenant_id, ChatTranscriptEvent.agent_id,
             ChatTranscriptEvent.session_id, ChatTranscriptEvent.run_id, ChatTranscriptEvent.invocation_id,
-            ChatTranscriptEvent.result_id, ChatTranscriptEvent.content_hash]
+            ChatTranscriptEvent.result_id, ChatTranscriptEvent.content_hash,
+            ChatTranscriptEvent.item_kind, ChatTranscriptEvent.lifecycle]
         events = []
         for values in await db.execute(select(*event_columns,
             ChatTranscriptEvent.metadata_json["v2_payload"].label("payload")).where(
@@ -376,11 +384,13 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
         session = rows.get((ChatSession, source.session_id))
         linked = by_command.get(source.id) if isinstance(source, SessionCommand) else rows.get(
             (ChatTranscriptEvent, source.result_event_id))
-        if linked is not None and (session is None or linked.session_id != source.session_id or (
-            isinstance(source, SessionToolInvocation) and (linked.agent_id != session.agent_id
-                or linked.run_id != source.run_id or linked.invocation_id != source.id))):
+        if linked is not None and (linked.session_id != source.session_id
+            or (isinstance(source, SessionToolInvocation)
+                and (linked.run_id != source.run_id or linked.invocation_id != source.id))
+            or (not immutable_only and (session is None
+                or (isinstance(source, SessionToolInvocation) and linked.agent_id != session.agent_id)))):
             linked = None
-        rows[("session_source", type(source), source.id)] = (source, session, linked) if session else None
+        rows[("session_source", type(source), source.id)] = (source, session, linked) if immutable_only or session else None
     rows["tool_models"] = dict.fromkeys((row.session_id, row.run_id, row.provider_request_id) for row in tools)
     rows["tool_models"].update({(row.session_id, row.run_id, row.provider_request_id): row for row in models})
     span_ids = {uuid.uuid5(row.id, name) for row in tools for name in (
@@ -1468,23 +1478,40 @@ async def _validate_session_dependencies(db, tenant_id, dependencies, **context)
                         **context)
                     continue
                 source, _binding, linked_row = retained
-                statement = source_reader_statement(context["user"], ChatSession.agent_id).add_columns(ChatSession).options(*reader_columns(ChatSession))
-                statement = statement.outerjoin(ChatSession, ChatSession.id == source.session_id)
+                statements = _DISCLOSURE_SOURCE_VALIDATIONS.get().statements
+                statement_key = ("live_session_source", context["user"].id, tenant_id, model)
+                statement = statements.get(statement_key)
+                if statement is None:
+                    statement = source_reader_statement(context["user"], ChatSession.agent_id).add_columns(ChatSession).options(*reader_columns(ChatSession))
+                    statement = statement.outerjoin(ChatSession, ChatSession.id == bindparam("source_session_id")).where(ChatSession.tenant_id == tenant_id)
+                    if model is SessionToolInvocation:
+                        statement = statement.add_columns(*model_source_state_columns()).outerjoin(SessionModelResult,
+                            (SessionModelResult.tenant_id == tenant_id)
+                            & (SessionModelResult.session_id == bindparam("source_session_id"))
+                            & (SessionModelResult.run_id == bindparam("source_run_id"))
+                            & (SessionModelResult.provider_request_id == bindparam("source_request_id")))
+                    else:
+                        statement = statement.add_columns(SessionTurnInput).outerjoin(SessionTurnInput,
+                            (SessionTurnInput.command_id == bindparam("source_command_id")) & (SessionTurnInput.tenant_id == tenant_id)
+                            & (SessionTurnInput.session_id == bindparam("source_session_id"))).options(load_only(
+                                SessionTurnInput.id, SessionTurnInput.tenant_id, SessionTurnInput.session_id,
+                                SessionTurnInput.command_id, SessionTurnInput.content_parts_json, SessionTurnInput.content_hash))
+                    statements[statement_key] = statement
+                parameters = {"source_session_id": source.session_id}
                 if model is SessionToolInvocation:
-                    statement = statement.add_columns(*model_source_state_columns()).outerjoin(SessionModelResult,
-                        (SessionModelResult.tenant_id == tenant_id) & (SessionModelResult.session_id == source.session_id)
-                        & (SessionModelResult.run_id == source.run_id)
-                        & (SessionModelResult.provider_request_id == source.provider_request_id))
+                    parameters.update(source_run_id=source.run_id, source_request_id=source.provider_request_id)
                 else:
-                    statement = statement.add_columns(SessionTurnInput).outerjoin(SessionTurnInput,
-                        (SessionTurnInput.command_id == source.id) & (SessionTurnInput.tenant_id == tenant_id)
-                        & (SessionTurnInput.session_id == source.session_id)).options(load_only(
-                            SessionTurnInput.id, SessionTurnInput.tenant_id, SessionTurnInput.session_id,
-                            SessionTurnInput.command_id, SessionTurnInput.content_parts_json, SessionTurnInput.content_hash))
-                facts = (await db.execute(statement)).first()
+                    parameters["source_command_id"] = source.id
+                facts = (await db.execute(statement, parameters)).first()
                 session = facts[5] if facts is not None else None
                 if model is SessionCommand:
                     linked_row = facts[6] if facts is not None else None
+                elif linked_row is not None and session is not None and (
+                    linked_row.agent_id != session.agent_id or linked_row.session_id != source.session_id
+                    or linked_row.run_id != source.run_id or linked_row.invocation_id != source.id
+                ):
+                    # Apply the original result join to this point's live session.
+                    linked_row = None
                 await _validate_session_dependency(db, tenant_id, dependency,
                     row=(source, session, linked_row) if session is not None else None, model=model,
                     reader_facts=facts, model_state=tuple(facts[6:]) if facts is not None and len(facts) > 6 else None, **context)
@@ -2129,19 +2156,27 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
         from app.services.source_read_queries import source_reader_statement, resource_permission_rows
         from app.core.resource_authority import workspace_resource_id
 
-        current = aliased(ContentInputReceipt)
-        latest_id = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
-            ContentInputReceipt.carrier_kind == "workspace_artifact", ContentInputReceipt.carrier_ref == receipt.carrier_ref
-            ).order_by(ContentInputReceipt.revision.desc()).limit(1).scalar_subquery()
-        root_owned = select(ChatSession.id).where(ChatSession.id == WorkspaceResourceManifest.root_session_id,
-            ChatSession.agent_id == agent_id, ChatSession.user_id == user.id).exists()
-        facts = (await db.execute(source_reader_statement(user, agent_id).add_columns(
-            WorkspaceResourceManifest, current, root_owned,
-            resource_permission_rows("workspace_file", workspace_resource_id(agent_id, path), tenant_id))
-            .outerjoin(WorkspaceResourceManifest, (WorkspaceResourceManifest.tenant_id == tenant_id)
-                & (WorkspaceResourceManifest.agent_id == agent_id) & (WorkspaceResourceManifest.path == path))
-            .outerjoin(current, current.id == latest_id)
-            .options(load_only(current.id, current.revision, current.content_sha256)))).first()
+        statements = _DISCLOSURE_SOURCE_VALIDATIONS.get().statements
+        statement_key = ("live_workspace_source", user.id, tenant_id, agent_id)
+        statement = statements.get(statement_key)
+        if statement is None:
+            current = aliased(ContentInputReceipt)
+            latest_id = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
+                ContentInputReceipt.carrier_kind == "workspace_artifact",
+                ContentInputReceipt.carrier_ref == bindparam("source_workspace_ref")
+                ).order_by(ContentInputReceipt.revision.desc()).limit(1).scalar_subquery()
+            root_owned = select(ChatSession.id).where(ChatSession.id == WorkspaceResourceManifest.root_session_id,
+                ChatSession.agent_id == agent_id, ChatSession.user_id == user.id).exists()
+            statement = source_reader_statement(user, agent_id).add_columns(
+                WorkspaceResourceManifest, current, root_owned,
+                resource_permission_rows("workspace_file", bindparam("source_workspace_resource"), tenant_id))
+            statement = (statement.outerjoin(WorkspaceResourceManifest, (WorkspaceResourceManifest.tenant_id == tenant_id)
+                & (WorkspaceResourceManifest.agent_id == agent_id) & (WorkspaceResourceManifest.path == bindparam("source_workspace_path")))
+                .outerjoin(current, current.id == latest_id)
+                .options(load_only(current.id, current.revision, current.content_sha256)))
+            statements[statement_key] = statement
+        facts = (await db.execute(statement, {"source_workspace_ref": receipt.carrier_ref,
+            "source_workspace_path": path, "source_workspace_resource": workspace_resource_id(agent_id, path)})).first()
         manifest, latest = (facts[5], facts[6]) if facts is not None else (None, None)
         source_facts = (manifest, facts[7], facts[8]) if facts is not None else None
     else:

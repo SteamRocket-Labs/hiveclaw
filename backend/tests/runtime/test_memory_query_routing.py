@@ -243,7 +243,6 @@ async def test_resolve_memory_context_emits_durable_degraded_fact_and_model_mark
             code="semantic_retrieval_unavailable",
             user_message="Some long-term memory is temporarily unavailable.",
             retryable=True,
-            attempts=2,
         )
 
     async def capture_span(**kwargs):

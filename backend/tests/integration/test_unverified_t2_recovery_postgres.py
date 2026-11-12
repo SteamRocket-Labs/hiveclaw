@@ -4,7 +4,7 @@ import json
 import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import pytest
 from sqlalchemy import select
@@ -159,21 +159,28 @@ async def test_memory_reference_rechecks_current_reader_without_attesting_body(
         context=ToolExecutionContext(agent_id=s["agent_id"], user_id=s["user_id"], tenant_id=str(s["tenant_id"]),
             session_id=str(s["session_id"]), runtime_task_id=str(s["run_id"]), workspace=s["agent_root"]))
     # On-demand memory prefetched no body and no reference; the recheck
-    # contract is exercised against a reference captured by the projection
-    # boundary itself (the only producer of such dependencies).
-    from app.memory.types import MemoryItem, MemoryKind
-    from app.services.memory_resource_references import _capture_reference
-    from app.services.content_input_receipts import _runtime_input_actor
+    # contract is exercised against a legacy stored reference row, inserted
+    # directly as the data base runs already carry (the capture path is gone).
+    from app.services.memory_resource_references import _FILES, _SCHEMA
+    from app.services.session_model_inputs import _hash
 
-    item = MemoryItem(kind=MemoryKind.EPISODIC, content="reference-only",
-        source=s["package_path"], metadata={"session_id": str(s["previous"]), "source_type": "t2_package"})
+    files = [name for name in _FILES if (s["agent_root"] / s["package_path"] / name).exists()]
+    payload = {"schema": _SCHEMA, "tenant_id": str(s["tenant_id"]), "agent_id": str(s["agent_id"]),
+        "session_id": str(s["session_id"]), "user_id": str(s["user_id"]),
+        "source_session_id": str(s["previous"]), "resource_path": s["package_path"], "files": files}
+    version = _hash(payload)
+    source_id = uuid5(UUID(str(s["session_id"])), f"memory-resource-reference:{version}")
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, s["tenant_id"])
-        reader, actor_user = await _runtime_input_actor(db, s["tenant_id"], request)
-        projected = await _capture_reference(db, item=item, data_root=s["data_root"],
-            tenant_id=s["tenant_id"], reader=reader, user=actor_user)
+        db.add(InvocationSpan(id=source_id, tenant_id=s["tenant_id"], agent_id=s["agent_id"],
+            user_id=s["user_id"], session_id=str(s["session_id"]),
+            trace_id=f"session-context:{s['session_id']}", span_id=f"memory-reference:{source_id}",
+            span_type="memory_resource_reference", name="memory_resource_reference", status="captured",
+            duration_ms=0, started_at=datetime.now(UTC),
+            metadata_json={"memory_resource_reference": payload}))
         await db.commit()
-    dependency = dict(projected.source_refs[0])
+    dependency = {"source_kind": "memory_resource_reference", "source_id": str(source_id),
+        "source_version": version}
     assert result.status == "ready"
     assert not result.source_unbound and "OLD_UNVERIFIED_T2_BODY" not in result.content
     async with app_user_sessionmaker() as db:

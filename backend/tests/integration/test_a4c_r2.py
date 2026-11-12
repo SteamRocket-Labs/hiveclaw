@@ -237,11 +237,9 @@ async def test_recovered_attachment_is_removed_from_rejections(monkeypatch):
 
 @pytest.mark.parametrize("resident_index", [False, True])
 async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_path, resident_index):
-    from app.memory.activation import ActivationContext
     from app.runtime.context_candidates import ContextMessageOrigin
     from app.services import memory_service, session_model_round
     from app.services.llm_client import LLMMessage
-    from app.services.principal_context import PrincipalStack
 
     aid, tenant = uuid.uuid4(), uuid.uuid4()
     directory = tmp_path / str(aid) / "memory/self"
@@ -251,8 +249,7 @@ async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_p
     good = {"source_kind": "explicit_memory", "source_id": "valid", "source_version": "v1"}
 
     monkeypatch.setattr(memory_service, "get_settings", lambda: NS(AGENT_DATA_DIR=str(tmp_path)))
-    monkeypatch.setattr(memory_service, "_resolve_activation_context",
-        AsyncMock(return_value=ActivationContext(query="q", principal_stack=PrincipalStack())))
+    monkeypatch.setattr(memory_service, "_resolve_accountability_context", AsyncMock(return_value=object()))
     authorized = [(NS(entry_id="revoked", content="REVOKED_RECALL_SECRET", category="project",
         status="active", sensitivity="PL1_public", created_at="2026-11-06"),
         NS(id="revoked", content_sha256="v1")),
@@ -263,8 +260,16 @@ async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_p
     result = await memory_service.build_memory_context(aid, tenant, query="q", session_id=str(uuid.uuid4()),
         current_user_id=uuid.uuid4(), return_result=True)
     assert "VALID_RESIDENT_MEMORY" in result.content
+    assert result.status == "ready", result
+    if not resident_index:
+        # Nothing authorized and no issues: other members' entries stay
+        # silently omitted — no index, no bodies, and no withheld-note.
+        assert "Explicit Memory Index" not in result.content, result.content
+        assert "REVOKED_RECALL_SECRET" not in result.content and "VALID_RECALLED_MEMORY" not in result.content
+        assert "记忆暂时无法核实" not in result.content, result.content
+        return
     # The index preview is the only place the revoked entry's bytes appear.
-    assert ("REVOKED_RECALL_SECRET" in result.content) is resident_index
+    assert "REVOKED_RECALL_SECRET" in result.content
     message = LLMMessage(role="system", content=result.content, context_origin=ContextMessageOrigin.capture(
         kind="dynamic_prompt", role="system", content=result.content,
         sources=result.source_refs, unbound=result.source_unbound))
@@ -278,7 +283,4 @@ async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_p
     wire = await validate(db, bindings, messages)
     assert "REVOKED_RECALL_SECRET" not in json.dumps(wire)
     assert "VALID_RESIDENT_MEMORY" in json.dumps(wire)
-    if resident_index:
-        assert "VALID_RECALLED_MEMORY" in json.dumps(wire)
-    else:
-        assert "VALID_RECALLED_MEMORY" not in json.dumps(wire)
+    assert "VALID_RECALLED_MEMORY" in json.dumps(wire)

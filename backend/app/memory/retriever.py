@@ -44,10 +44,11 @@ class MemoryRetriever:
         *,
         activation_context: ActivationContext | None = None,
     ) -> list[MemoryItem]:
-        """Return complete authorized evidence with deterministic ranking.
+        """Gather every candidate session's memory without authority checks.
 
-        This seam exists for the deterministic offline recall eval; the live
-        prompt path no longer consults it.
+        Unauthorized by design: this seam exists only for the deterministic
+        offline recall eval; the live prompt path never consults it, and any
+        live read goes through the authority-checked tools instead.
         """
 
         items: list[MemoryItem] = []

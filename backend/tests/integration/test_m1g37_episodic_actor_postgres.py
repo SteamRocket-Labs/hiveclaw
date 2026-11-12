@@ -88,15 +88,10 @@ async def test_memory_service_context_keeps_resident_identity_on_authority_outag
     s = episodic_reader
 
     async def activation(**_kwargs):
-        from app.memory.activation import ActivationContext
-        from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
-
-        return ActivationContext(query="review", principal_stack=PrincipalStack(
-            current_user=Principal(PrincipalRole.CURRENT_USER, str(s.user)),
-            direct_owner=Principal(PrincipalRole.OWNER, str(s.user))))
+        return object()  # resolved accountability; the resident build proceeds
 
     monkeypatch.setattr(memory_service, "get_settings", lambda: NS(AGENT_DATA_DIR=str(s.root)))
-    monkeypatch.setattr(memory_service, "_resolve_activation_context", activation)
+    monkeypatch.setattr(memory_service, "_resolve_accountability_context", activation)
     from app.memory.profile_plane import ResidentMemory
 
     monkeypatch.setattr("app.memory.profile_plane.load_resident_memory", lambda **_kwargs:

@@ -507,16 +507,10 @@ async def test_build_memory_context_makes_no_model_call(monkeypatch, tmp_path) -
         "get_settings",
         lambda: type("S", (), {"AGENT_DATA_DIR": str(tmp_path), "MEMORY_RESIDENT_BUDGET_CHARS": 12000.0})(),
     )
-    from app.memory.activation import ActivationContext
+    async def fake_accountability(**_kw):
+        return object()  # any resolved accountability unblocks the resident build
 
-    class _P:
-        def can_access_sensitivity(self, _s):
-            return True
-
-    async def fake_activation(**_kw):
-        return ActivationContext(query="q", principal_stack=_P())
-
-    monkeypatch.setattr(memory_service, "_resolve_activation_context", lambda **kw: fake_activation(**kw))
+    monkeypatch.setattr(memory_service, "_resolve_accountability_context", fake_accountability)
     result = await memory_service.build_memory_context(uuid.uuid4(), uuid.uuid4(), query="q",
         current_user_id=uuid4(), return_result=True)
 
@@ -531,10 +525,10 @@ async def test_build_memory_context_fails_closed_when_activation_context_unresol
     agent_id = uuid4()
     tenant_id = uuid4()
 
-    async def fake_resolve_activation_context(*_args, **_kwargs):
+    async def fake_resolve_accountability_context(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(memory_service, "_resolve_activation_context", fake_resolve_activation_context)
+    monkeypatch.setattr(memory_service, "_resolve_accountability_context", fake_resolve_accountability_context)
 
     context = await memory_service.build_memory_context(
         agent_id,
@@ -643,7 +637,6 @@ async def test_build_memory_context_omits_pl3_for_non_owner(monkeypatch, tmp_pat
         )
 
     monkeypatch.setattr(memory_service, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-    monkeypatch.setattr(memory_service, "_get_rerank_model_config", lambda _tenant_id: None, raising=False)
     monkeypatch.setattr(memory_service, "_resolve_accountability_context", fake_resolve_accountability_context)
 
     context = await memory_service.build_memory_context(
@@ -660,12 +653,10 @@ async def test_build_memory_context_omits_pl3_for_non_owner(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_resident_profile_failure_is_critical_not_empty_context(monkeypatch, tmp_path) -> None:
-    from app.memory.activation import ActivationContext
     from app.services import memory_service
-    from app.services.principal_context import PrincipalStack
 
-    async def activation(**kwargs):
-        return ActivationContext(query=kwargs["query"], principal_stack=PrincipalStack())
+    async def activation(**_kwargs):
+        return object()
 
     def broken_resident(**_kwargs):
         raise OSError("owner profile cannot be read")
@@ -675,7 +666,7 @@ async def test_resident_profile_failure_is_critical_not_empty_context(monkeypatc
         "get_settings",
         lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), MEMORY_RESIDENT_BUDGET_CHARS=12_000),
     )
-    monkeypatch.setattr(memory_service, "_resolve_activation_context", activation)
+    monkeypatch.setattr(memory_service, "_resolve_accountability_context", activation)
     monkeypatch.setattr("app.memory.profile_plane.load_resident_memory", broken_resident)
 
     result = await memory_service.build_memory_context(
@@ -706,7 +697,7 @@ async def test_unresolved_memory_authority_is_typed_fail_closed(monkeypatch, tmp
         "get_settings",
         lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), MEMORY_RESIDENT_BUDGET_CHARS=12_000),
     )
-    monkeypatch.setattr(memory_service, "_resolve_activation_context", unresolved)
+    monkeypatch.setattr(memory_service, "_resolve_accountability_context", unresolved)
 
     result = await memory_service.build_memory_context(
         uuid4(),

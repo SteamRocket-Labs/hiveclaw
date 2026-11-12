@@ -20,7 +20,6 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.database import tenant_scoped_session
-from app.memory.activation import ActivationContext
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
@@ -48,7 +47,6 @@ class MemoryContextResult:
     authority_context_available: bool = True
     durable_write_available: bool = True
     external_effects_available: bool = True
-    attempts: int = 1
     degraded_components: tuple[str, ...] = ()
     error_class: str | None = None
     source_refs: tuple[dict[str, str], ...] = ()
@@ -118,10 +116,9 @@ async def _build_memory_context_result(
             error_class=type(exc).__name__,
         )
     try:
-        activation_context = await _resolve_activation_context(
+        accountability = await _resolve_accountability_context(
             agent_id=agent_id,
             tenant_id=tenant_id,
-            query=query,
             current_user_id=current_user_id,
             current_user_name=current_user_name,
         )
@@ -139,7 +136,7 @@ async def _build_memory_context_result(
             error_class=type(exc).__name__,
         )
 
-    if activation_context is None:
+    if accountability is None:
         logger.warning(
             "Memory activation principal unresolved; blocking prompt memory for agent %s",
             agent_id,
@@ -278,36 +275,6 @@ async def _build_memory_context_result(
     )
 
 
-async def _resolve_activation_context(
-    *,
-    agent_id: uuid.UUID,
-    tenant_id: uuid.UUID,
-    query: str,
-    current_user_id: uuid.UUID | str | None,
-    current_user_name: str | None,
-) -> ActivationContext | None:
-    accountability = await _resolve_accountability_context(
-        agent_id=agent_id,
-        tenant_id=tenant_id,
-        current_user_id=current_user_id,
-        current_user_name=current_user_name,
-    )
-    if not accountability:
-        return None
-    return ActivationContext(
-        query=query,
-        principal_stack=accountability.principal_stack,
-        owner_terms=_label_terms(
-            accountability.owner_charter.owner_id,
-            accountability.owner_charter.owner_name,
-        ),
-        company_terms=_label_terms(
-            accountability.company_charter.company_id,
-            accountability.company_charter.company_name,
-        ),
-    )
-
-
 async def _resolve_accountability_context(
     *,
     agent_id: uuid.UUID,
@@ -361,15 +328,6 @@ def _display_name(user: User | None) -> str | None:
         return None
     return getattr(user, "display_name", None) or getattr(user, "username", None) or getattr(user, "email", None)
 
-
-def _label_terms(*values: str | None) -> list[str]:
-    terms: list[str] = []
-    for value in values:
-        for token in str(value or "").replace("-", " ").replace("_", " ").split():
-            normalized = token.strip().lower()
-            if normalized and normalized not in terms:
-                terms.append(normalized)
-    return terms
 
 
 def compute_history_limit(

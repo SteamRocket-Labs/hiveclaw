@@ -22,7 +22,7 @@ from app.models.user import User
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.runtime_root_ledger import RuntimeRootIntentSpec
-from app.services.runtime_display_status import FAILED_DELEGATION_MODEL_INSTRUCTION
+from app.services.runtime_display_status import DELEGATION_RUNNING_RESULT_READ_NOTE, FAILED_DELEGATION_MODEL_INSTRUCTION
 
 # The strict durable triple (session_kind + runtime_source + source_channel)
 # used by the Session V2 authority plane — intentionally NOT the broad
@@ -366,7 +366,9 @@ def build_task_notification_runtime_context(
     return "\n".join(lines)
 
 
-def build_result_integration_runtime_context(manifest: dict[str, Any]) -> str:
+def build_result_integration_runtime_context(
+    manifest: dict[str, Any], *, failed_delegation_instruction: str = FAILED_DELEGATION_MODEL_INSTRUCTION,
+) -> str:
     """Render one ref-only durable fan-in page for the parent model.
 
     The platform reports ordering, terminal states, hashes and coverage.  It
@@ -410,7 +412,7 @@ def build_result_integration_runtime_context(manifest: dict[str, Any]) -> str:
     )
     if any(isinstance(item, dict) and item.get("terminal_status") == "failed"
         and item.get("task_type") in {"delegation", "a2a_delegation"} for item in manifest.get("items", [])):
-        lines.append(FAILED_DELEGATION_MODEL_INSTRUCTION)
+        lines.append(failed_delegation_instruction)
     return "\n".join(lines)
 
 
@@ -598,12 +600,14 @@ async def _result_page_already_read(db, *, tenant_id, agent_id, session_id, user
             SessionToolInvocation.tool_name.in_(("check_async_task", "task_output", "list_async_tasks", "read_runtime_result")),
             RuntimeTask.root_user_id == user_id,
             ChatTranscriptEvent.created_at >= min(task.completed_at for task in tasks)))).all()
-    unread = {str(uuid.UUID(str(task.id))): task for task in tasks}
+    unread = {str(task.id): task for task in tasks}
     refs = {str(uuid.UUID(item["source_run_id"])): item for item in items}
     for tool, metadata, read_status, read_metadata in reads:
         # A failed model turn did not integrate the result. The terminal-read
         # guard is the exception: it stopped only after reading it repeatedly.
-        if read_status == "failed" and (read_metadata or {}).get("error_code") != "identical_terminal_task_read":
+        m = read_metadata or {}
+        code = m.get("error_code") or (m.get("outcome") or {}).get("error_code")
+        if read_status in {"failed", "needs_reconciliation"} and code != "identical_terminal_task_read":
             continue
         payload = (metadata or {}).get("v2_payload") or {}
         if payload.get("outcome") != "success":
@@ -623,7 +627,8 @@ async def _result_page_already_read(db, *, tenant_id, agent_id, session_id, user
                 item = refs[task_id]
                 full_page = (tool == "read_runtime_result" and record.get("result_ref") == item["result_ref"]
                     and record.get("status") == "ok" and record.get("offset") == 0 and record.get("complete") is True)
-                task_result = (item.get("terminal_status") == task.status and int(item.get("artifact_count") or 0) == 0
+                task_result = (item.get("terminal_status") == ("blocked" if task.status == "skipped" else task.status)
+                    and int(item.get("artifact_count") or 0) == 0
                     and record.get("task_id") in {task_id, task.id.hex}
                     and ((failure is not None and is_delegation_failure_result_page(record)
                         and record.get("result") == failure["result"])
@@ -659,7 +664,19 @@ async def continue_parent_session_with_result_page(
     if continuation_denial:
         display_content += f" Parent continuation denied: {continuation_denial}. Results remain available for review."
     envelope = build_result_integration_message(manifest)
-    runtime_context = build_result_integration_runtime_context(manifest)
+    failed_ids = [uuid.UUID(item["source_run_id"]) for item in items
+        if item.get("task_type") in {"delegation", "a2a_delegation"} and item.get("terminal_status") == "failed"]
+    instruction = FAILED_DELEGATION_MODEL_INSTRUCTION
+    if failed_ids:
+        from app.models.runtime_task import RuntimeTask
+
+        failures = list(await db.scalars(select(RuntimeTask.metadata_json).where(
+            RuntimeTask.id.in_(failed_ids), RuntimeTask.tenant_id == session.tenant_id)))
+        if len(failures) == len(failed_ids) and all(
+            (metadata or {}).get("error_code") == "identical_running_task_read" for metadata in failures
+        ):
+            instruction = DELEGATION_RUNNING_RESULT_READ_NOTE
+    runtime_context = build_result_integration_runtime_context(manifest, failed_delegation_instruction=instruction)
     metadata = {
         "runtime_result_integration_page": True,
         "integration_page_id": str(integration_page_id),

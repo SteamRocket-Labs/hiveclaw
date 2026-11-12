@@ -46,7 +46,7 @@ async def _execute(owner, run_id, worker):
 async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rounds=8, parent_tokens=30,
     child_terminal_reader=None, second_child=False, nested_running=False, child_success=False,
     before_notification=None, deliver=True, before_child_completion=None, before_page_delivery=None,
-    target_artifact_path=None):
+    target_artifact_path=None, child_skipped=False, before_parent=None):
     import app.database as database
     import app.runtime.invoker as invoker
     import app.services.tenant_resolver as tenant_resolver
@@ -141,6 +141,8 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
         return None
 
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", no_wakeup)
+    if before_parent is not None:
+        await before_parent(seed)
     await _execute(owner, seed["run_id"], "r13b-parent")
     async with owner() as db:
         root = await db.get(RuntimeTask, seed["run_id"])
@@ -152,8 +154,9 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
         if second_child:
             seed["running_id"] = children[1].id
         seed["child_id"] = child.id
-        child.status, child.claimed_by, child.claim_version, child.attempt_count = "running", "r13b-child", 1, 1
-        child.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        if not child_skipped:
+            child.status, child.claimed_by, child.claim_version, child.attempt_count = "running", "r13b-child", 1, 1
+            child.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
         if child_terminal_reader:
             # The colleague's own failed sub-delegation, scoped to its child session.
             nested_agent = Agent(id=uuid4(), tenant_id=seed["tenant_id"], name="Nested colleague",
@@ -208,14 +211,18 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
 
     token = set_runtime_task_fence(task_id=seed["child_id"], worker_id="r13b-child", claim_version=1)
     try:
-        assert await orchestrator.dispatch_persisted_async_delegation(seed["child_id"].hex, wait_for_completion=True)
+        if not child_skipped:
+            assert await orchestrator.dispatch_persisted_async_delegation(seed["child_id"].hex, wait_for_completion=True)
     finally:
         reset_runtime_task_fence(token)
         if child_terminal_reader:
             monkeypatch.setattr(invoker, "execute_tool", native_execute)
     async with owner() as db:
         child = await db.get(RuntimeTask, seed["child_id"])
-        if child_terminal_reader:
+        if child_skipped:
+            assert child.status == "skipped" and child.metadata_json["coordination_publish_state"] == "blocked"
+            assert len(child_client.requests) == 0
+        elif child_terminal_reader:
             from app.kernel.loop_guard import LoopGuard
 
             print("R13B3_NESTED_READS", json.dumps(child_observed, ensure_ascii=False))
@@ -258,10 +265,13 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
     from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
 
     processor = DirectInvocationTerminalBoundaryProcessor(session_factory=app_factory, data_root=seed["data_root"])
-    drained = await RuntimeTerminalBoundaryOutboxService(session_factory=app_factory).drain_once(
-        tenant_id=seed["tenant_id"], worker_id="r13b-terminal", canonical_validator=processor.validate,
-        process_callback=processor, task_types=("delegation",))
-    assert drained["delivered"] == 1, drained
+    if not child_skipped:
+        drained = await RuntimeTerminalBoundaryOutboxService(session_factory=app_factory).drain_once(
+            tenant_id=seed["tenant_id"], worker_id="r13b-terminal", canonical_validator=processor.validate,
+            process_callback=processor, task_types=("delegation",))
+        assert drained["delivered"] == 1, drained
+    # Coordination rejection publishes its notification in the direct dispatch
+    # path; there is no model response to project before reading that notice.
 
     if before_notification is not None:
         await before_notification(seed)
@@ -278,7 +288,8 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
     seed["delivery_page"] = pages[0]
     async with owner() as db:
         notification = await db.scalar(select(RuntimeNotificationOutbox).where(
-            RuntimeNotificationOutbox.source_run_id == str(seed["child_id"])))
+            # Direct rejection publishes hex; boundary projection uses canonical UUIDs.
+            RuntimeNotificationOutbox.source_run_id.in_((str(seed["child_id"]), seed["child_id"].hex))))
         returned = await db.scalar(select(RuntimeTask).where(RuntimeTask.parent_agent_id == seed["agent_id"],
             RuntimeTask.metadata_json["integration_page_id"].astext == str(pages[0].id)))
         if before_notification is not None:

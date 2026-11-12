@@ -83,7 +83,8 @@ async def _settle_origin(owner, app_factory, monkeypatch, seed):
         worker = _route_lanes(phase_patch, app_factory)
         running = asyncio.create_task(worker.start_terminal_boundary_worker_loop(worker_id="r19a-r2-origin"))
         try:
-            async with asyncio.timeout(10):
+            # Hang guard for an unmeasured precondition on a shared machine.
+            async with asyncio.timeout(120):
                 while True:
                     async with owner() as db:
                         row = await db.scalar(select(RuntimeTerminalBoundaryOutbox).where(
@@ -200,7 +201,8 @@ async def test_parent_starts_before_memory_and_web_joins_both_projections(
     assert worker._settings().RUNTIME_TASK_CLAIM_POLL_SECONDS == 1.0
     running = asyncio.create_task(worker.start_runtime_task_worker_loop())
     try:
-        async with asyncio.timeout(85):
+        # Hang guard only; the measured 5 s and 30–40 s assertions below are unchanged.
+        async with asyncio.timeout(300):
             while True:
                 child, notice, parents, boundaries = await _state(owner_sessionmaker, seed, web_run_id)
                 if (notice and notice.delivered_at and len(parents) == 1 and parents[0].status == "completed"

@@ -241,9 +241,9 @@ async def test_later_candidate_observes_revocation_within_the_same_request(
     original = assistant_binding._eligible
     revoked = False
 
-    async def between_checkpoints(db, user, agent):
+    async def between_checkpoints(db, user, agent, **kwargs):
         nonlocal revoked
-        result = await original(db, user, agent)
+        result = await original(db, user, agent, **kwargs)
         if not revoked:
             assert agent.id != target
             async with owner_sessionmaker() as writer:
@@ -259,3 +259,20 @@ async def test_later_candidate_observes_revocation_within_the_same_request(
     candidates = response.json()["candidates"]
     assert len(candidates) == 15
     assert str(target) not in {candidate["id"] for candidate in candidates}
+
+
+async def test_candidate_sql_structure_is_built_once_without_reusing_rows(member_request, monkeypatch):
+    from app.services import source_read_queries
+
+    _seed, client, _sample, _factory = member_request
+    original, built = source_read_queries.source_reader_statement, []
+
+    def statement(*args, **kwargs):
+        built.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(source_read_queries, "source_reader_statement", statement)
+    response = await client.get("/api/assistant")
+    assert response.status_code == 200
+    assert len(response.json()["candidates"]) == 16
+    assert len(built) == 1

@@ -11,7 +11,7 @@ import uuid
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import exists, or_, select, text
+from sqlalchemy import bindparam, exists, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -303,7 +303,7 @@ async def _visible_agent(db: AsyncSession, agent_id: uuid.UUID | None) -> Agent 
     return result.scalar_one_or_none()
 
 
-async def _eligible(db: AsyncSession, user: User, agent: Agent) -> bool:
+async def _eligible(db: AsyncSession, user: User, agent: Agent, *, access_statement=None) -> bool:
     if agent.agent_type != "native":
         return False
     if agent.name == HR_AGENT_NAME or agent.agent_class == "internal_system":
@@ -321,7 +321,9 @@ async def _eligible(db: AsyncSession, user: User, agent: Agent) -> bool:
 
             # Each candidate keeps its own live ACL checkpoint. Join that
             # checkpoint's facts instead of fetching each grant kind in turn.
-            facts = (await db.execute(source_reader_statement(user, agent.id))).first()
+            statement = access_statement if access_statement is not None else source_reader_statement(
+                user, bindparam("assistant_candidate_id"))
+            facts = (await db.execute(statement, {"assistant_candidate_id": agent.id})).first()
             await agent_access_from_facts(db, user, facts)
     except HTTPException:
         return False
@@ -629,8 +631,13 @@ async def _candidates(db: AsyncSession, user: User, tenant_id: uuid.UUID) -> lis
         )
     ).scalars().all()
     listed: list[dict[str, Any]] = []
+    statement = None
+    if user.role != "platform_admin":
+        from app.services.source_read_queries import source_reader_statement
+
+        statement = source_reader_statement(user, bindparam("assistant_candidate_id"))
     for agent in rows:
-        if not await _eligible(db, user, agent):
+        if not await _eligible(db, user, agent, access_statement=statement):
             continue
         listed.append(
             {

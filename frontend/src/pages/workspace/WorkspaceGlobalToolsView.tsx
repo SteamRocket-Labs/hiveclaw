@@ -286,7 +286,13 @@ export default function WorkspaceGlobalToolsView({
                               setMcpForm({ server_url: '', server_name: '' });
                               setMcpRawInput('');
                               if (errors.length > 0) {
-                                showAppToast(`${t('enterprise.tools.mcpImportPending', { count: successCount, defaultValue: '{{count}} tools imported for administrator review.' })} ${errors.join('; ')}`, 'error');
+                                const failed = t('enterprise.tools.mcpImportPartial', {
+                                  count: successCount, total: tools.length, errors: errors.join('; '),
+                                  defaultValue: 'Imported {{count}}/{{total}} tools. Failed: {{errors}}',
+                                });
+                                const review = successCount > 0
+                                  ? t('enterprise.tools.mcpImportReviewHint', 'Review each imported tool in MCP Servers before use.') : '';
+                                showAppToast([failed, review].filter(Boolean).join(' '), 'error');
                               } else {
                                 showAppToast(t('enterprise.tools.mcpImportPending', { count: successCount, defaultValue: '{{count}} tools imported for administrator review.' }), 'success');
                               }

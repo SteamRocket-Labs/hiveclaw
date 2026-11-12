@@ -41,6 +41,10 @@ export function toolFailureForDisplay(details: unknown, t: TFunction, status: Ru
     return null;
   }
   const errorClass = String(error?.error_class);
+  if (error.provider === 'mcp' && ['auth_required', 'configuration_required'].includes(errorClass)
+    && error.diagnostic_hint === '请管理员检查应用连接地址。') {
+    return t('agent.chat.disclosure.failure.connectionAdmin', 'The app connection is unavailable. Ask an administrator to check its settings.');
+  }
   const kind = Object.prototype.hasOwnProperty.call(FAILURE_KIND, errorClass) ? FAILURE_KIND[errorClass] : 'generic';
   if (kind === 'timeout') {
     // Read the exact historical native timeout format to preserve its duration.

@@ -70,6 +70,21 @@ function candidate(fingerprint: string, permissions: string[], runtimeApproved =
 describe('MCP metadata review recovery', () => {
   afterEach(() => cleanup());
 
+  it('submits no authored description when the platform default is unchanged', async () => {
+    mocks.listEnterpriseMcpServers.mockReset().mockResolvedValue([{ id: 'server-1', name: '账本', server_key: 'ledger',
+      status: 'pending_review', auth_status: 'none', transport: 'sse', tool_count: 1, agent_count: 0, agents: [] }]);
+    const pending = { ...candidate(firstDigest, ['ledger:read']), trust_status: 'pending_review',
+      trust_tier: 'external_unreviewed', reviewed_fingerprint: null };
+    mocks.listEnterpriseMcpServerTools.mockReset().mockResolvedValue([pending]);
+    mocks.reviewEnterpriseMcpServerToolMetadata.mockReset().mockResolvedValue({ runtime_approved: true });
+    render(<WorkspaceMcpServersView selectedTenantId="company-default" />);
+    fireEvent.click(await screen.findByRole('button', { name: '审查元数据' }));
+    expect((await screen.findByLabelText('审核后的工具用途') as HTMLTextAreaElement).value).toBe(pending.canonical_description);
+    fireEvent.click(screen.getByRole('button', { name: '批准工具' }));
+    await waitFor(() => expect(mocks.reviewEnterpriseMcpServerToolMetadata).toHaveBeenCalledExactlyOnceWith(
+      'server-1', 'issue_search', { decision: 'approve', expected_fingerprint: firstDigest }));
+  });
+
   it('reloads the API candidate after a stale rejection and approves that digest', async () => {
     expect(en.enterprise.tools.mcpActivationEndpoint).toBe('Endpoint');
     expect(zh.enterprise.tools.mcpActivationEndpoint).toBe('连接地址');

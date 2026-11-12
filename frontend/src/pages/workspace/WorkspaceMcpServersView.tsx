@@ -90,7 +90,8 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
       await extensionsApi.reviewEnterpriseMcpServerToolMetadata(openServerId, tool.tool_name, {
         decision,
         expected_fingerprint: tool.metadata_fingerprint,
-        ...(decision === 'approve' ? { canonical_description: canonicalDescription.trim() } : {}),
+        ...(decision === 'approve' && (canonicalDescription.trim() !== tool.canonical_description.trim() || tool.trust_tier === 'admin_approved')
+          ? { canonical_description: canonicalDescription.trim() } : {}),
       });
       setMetadataTools(await extensionsApi.listEnterpriseMcpServerTools(openServerId));
       await load();

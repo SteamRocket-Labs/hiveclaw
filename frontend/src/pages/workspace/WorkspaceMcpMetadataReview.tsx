@@ -116,9 +116,7 @@ export function McpMetadataReviewPanel({
       ) : (
         <div className="ws-mcp-review-list">
           {tools.map((tool) => {
-            const draft = drafts[tool.tool_id] ?? (tool.trust_status === 'pending_review'
-              ? `${t('enterprise.tools.mcpReviewDefaultDescription', 'Use the reviewed external tool')}: ${tool.display_name}`
-              : tool.canonical_description);
+            const draft = drafts[tool.tool_id] ?? tool.canonical_description;
             const busy = busyTool === tool.tool_id;
             return (
               <article key={tool.tool_id} className="ws-mcp-review-card">

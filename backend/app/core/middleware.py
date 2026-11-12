@@ -8,11 +8,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import get_settings
 from app.core.logging_config import set_trace_id
+from app.core.request_timing import RequestTiming, install_cursor_timing, request_timing
 from loguru import logger
 
 
 class TraceIdMiddleware(BaseHTTPMiddleware):
     """Middleware to inject trace ID into request context and log requests."""
+
+    def __init__(self, app, **kwargs):
+        super().__init__(app, **kwargs)
+        install_cursor_timing()
 
     async def dispatch(self, request: Request, call_next) -> Response:
         # Generate or extract trace ID from header
@@ -22,7 +27,9 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
         # Add trace ID to request state for access in endpoints
         request.state.trace_id = trace_id
 
-        start_time = time.time()
+        start_time = time.perf_counter()
+        timing = RequestTiming()
+        timing_token = request_timing.set(timing)
 
         # Log request
         client_host = request.client.host if request.client else "-"
@@ -30,13 +37,14 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
-            duration = time.time() - start_time
+            duration = time.perf_counter() - start_time
+            timing.active = False
 
             # Add trace ID to response headers
             response.headers["X-Trace-Id"] = trace_id
             # In-app duration for public-probe attribution: total minus this
             # header value is edge/network transit.
-            response.headers["Server-Timing"] = f"app;dur={duration * 1000:.1f}"
+            response.headers["Server-Timing"] = timing.header(duration)
 
             slow_threshold = get_settings().SLOW_REQUEST_WARN_SECONDS
             if duration >= slow_threshold:
@@ -52,6 +60,9 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
             return response
 
         except Exception as exc:
-            duration = time.time() - start_time
-            logger.error(f"<-- {request.method} {request.url.path} ERROR {duration:.3f}s - {exc}")
+            duration = time.perf_counter() - start_time
+            logger.error(f"<-- {request.method} {request.url.path} ERROR {duration:.3f}s - {type(exc).__name__}")
             raise
+        finally:
+            timing.active = False
+            request_timing.reset(timing_token)

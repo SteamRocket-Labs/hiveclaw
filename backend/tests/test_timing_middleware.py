@@ -39,7 +39,7 @@ def test_server_timing_header_present() -> None:
     assert response.status_code == 200
     header = response.headers.get("server-timing", "")
     assert header.startswith("app;dur=")
-    assert float(header.split("=", 1)[1]) >= 0.0
+    assert float(header.split(",", 1)[0].split("=", 1)[1]) >= 0.0
 
 
 def test_slow_request_logs_structured_warning(monkeypatch) -> None:

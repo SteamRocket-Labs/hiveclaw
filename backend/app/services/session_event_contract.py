@@ -1354,6 +1354,164 @@ _LEGACY_TOOL_ENVELOPE_FIELDS = (
 )
 
 
+# X3: an expanded member step for these tools shows one plain sentence instead
+# of the model-facing result bytes (memory management notes and ids, colleague
+# result refusal pages, whole web pages, capability manifests with server ids).
+# The sentence is decided by the tool name, the step status, and typed fields
+# only; result prose is never read or classified. The summary is computed at
+# member-view serialization time and never persisted: the operator envelope and
+# the durable row (the model's input) stay byte-identical.
+MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
+    # a) memory search / read / load
+    "search_memory": "memory_search",
+    "load_memory": "memory_read",
+    # b) runtime / colleague result readers
+    "read_runtime_result": "colleague_result",
+    "check_async_task": "colleague_result",
+    "task_output": "colleague_result",
+    "check_subagent": "colleague_result",
+    "list_async_tasks": "task_list",
+    # c) web fetch / search, including provider variants
+    "web_fetch": "web_fetch",
+    "advanced_web_fetch": "web_fetch",
+    "anysearch_extract": "web_fetch",
+    "exa_fetch": "web_fetch",
+    "tavily_extract": "web_fetch",
+    "firecrawl_fetch": "web_fetch",
+    "xcrawl_scrape": "web_fetch",
+    "web_search": "web_search",
+    "advanced_web_search": "web_search",
+    "anysearch_search": "web_search",
+    "anysearch_batch_search": "web_search",
+    "anysearch_get_sub_domains": "web_search",
+    "exa_search": "web_search",
+    "tavily_search": "web_search",
+    "firecrawl_search": "web_search",
+    # d) tool lookup / deferred loading and its MCP + skills equivalents
+    "tool_search": "capability_lookup",
+    "discover_resources": "capability_lookup",
+    "list_mcp_tools": "capability_lookup",
+    "list_mcp_resources": "capability_lookup",
+    "inspect_mcp_tool": "capability_lookup",
+    "load_skill": "skill_load",
+}
+
+# Structured refusal statuses: a typed `status` field on a JSON result object
+# of one of these tools means the action was refused or did not happen. The
+# member sentence then says it was not done, agreeing with the typed evidence.
+_MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES = frozenset({
+    "error",
+    "failed",
+    "not_found",
+    "denied",
+    "authority_denied",
+    "source_access_denied",
+    "source_unavailable",
+    "infrastructure_unavailable",
+    "integrity_error",
+    "invalid_arguments",
+})
+
+
+def _member_summary_host(args: Any) -> str | None:
+    """Plain host of a fetched page, taken only from the typed url argument."""
+    if not isinstance(args, Mapping):
+        return None
+    url = args.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        host = urlparse(url.strip()).hostname
+    except ValueError:
+        return None
+    return host.strip().lower() or None
+
+
+def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[str, Any] | None:
+    if item_kind != "tool_result":
+        return None
+    # Compatibility envelopes carry the persisted tool envelope only inside
+    # payload.content; canonical payloads lift its typed fields to the top.
+    envelope: Mapping[str, Any] = {}
+    content = payload.get("content")
+    if isinstance(content, str) and content.strip():
+        try:
+            parsed = json.loads(content)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, Mapping):
+            envelope = parsed
+    tool_name = (
+        _text(payload.get("tool_name"))
+        or _text(payload.get("name"))
+        or _text(envelope.get("name"))
+        or _text(envelope.get("tool_name"))
+        or ""
+    )
+    kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
+    if kind is None:
+        return None
+    status = str(payload.get("status") or envelope.get("status") or "").strip().lower()
+    args = payload.get("args")
+    if not isinstance(args, Mapping):
+        args = envelope.get("args")
+    result_obj: Any = None
+    result = payload.get("result")
+    if not isinstance(result, str):
+        result = envelope.get("result")
+    if isinstance(result, str) and result.strip():
+        try:
+            parsed = json.loads(result)
+        except (TypeError, ValueError):
+            parsed = None
+        result_obj = parsed if isinstance(parsed, Mapping) else None
+    failed = status == "failed"
+    if not failed and isinstance(result_obj, Mapping):
+        # Typed fields on a structured result page: an explicit `ok: false` or
+        # a refusal status states the action did not happen (read_runtime_result
+        # refusal pages; async task envelopes). Prose is never classified.
+        if result_obj.get("ok") is False:
+            failed = True
+        else:
+            result_status = result_obj.get("status")
+            if isinstance(result_status, str):
+                failed = result_status.strip().lower() in _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES
+    summary: dict[str, Any] = {"kind": kind, "failed": failed}
+    host = _member_summary_host(args)
+    if host:
+        summary["host"] = host
+    return summary
+
+
+def _apply_member_tool_summary(payload: dict[str, Any], *, item_kind: str) -> dict[str, Any]:
+    """Drop the raw result bytes of a member-summarized tool from the user view.
+
+    The typed summary replaces the raw result content, the envelope JSON that
+    embeds it, replayed inline content, and text parts. Typed mechanics the UI
+    already relies on (args, statuses, ids for pairing, durations, artifact
+    parts) stay untouched.
+    """
+
+    summary = _member_tool_summary(payload, item_kind=item_kind)
+    if summary is None:
+        return payload
+    clean = dict(payload)
+    clean["member_summary"] = summary
+    clean["result"] = ""
+    clean["content"] = ""
+    replacement = clean.get("content_replacement")
+    if isinstance(replacement, Mapping):
+        clean["content_replacement"] = {key: value for key, value in replacement.items() if key != "inline_content"}
+    parts = clean.get("parts")
+    if isinstance(parts, list):
+        clean["parts"] = [
+            part for part in parts if isinstance(part, Mapping) and part.get("type") == "artifact"
+        ]
+    return clean
+
+
 def _legacy_tool_payload(row: Any, metadata: Mapping[str, Any]) -> dict[str, Any]:
     """Lift the exact persisted tool envelope into canonical payload fields.
 
@@ -1520,6 +1678,10 @@ def _serialize_v2_row(row: Any, *, audience: str) -> dict[str, Any]:
         visibility=visibility,
         audience=audience,
     )
+    if audience != "operator":
+        event["payload"] = _apply_member_tool_summary(
+            event["payload"], item_kind=str(event.get("item_kind") or "")
+        )
     if redacted_fields:
         event_visibility = dict(event["visibility"])
         event_visibility["redacted_fields"] = sorted(
@@ -1577,6 +1739,9 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
         )
         if audience == "operator":
             return event
+        event["payload"] = _apply_member_tool_summary(
+            event["payload"], item_kind=str(event.get("item_kind") or "")
+        )
         visibility = dict(event["visibility"])
         if redacted_fields:
             visibility["redacted_fields"] = sorted(set([*visibility.get("redacted_fields", []), *redacted_fields]))
@@ -1613,6 +1778,10 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
         compatibility["payload"], redacted_fields = _redacted_legacy_payload(
             compatibility["payload"], visibility_authority, audience
         )
+        if audience != "operator":
+            compatibility["payload"] = _apply_member_tool_summary(
+                compatibility["payload"], item_kind=str(item_kind or "")
+            )
         if redacted_fields:
             compatibility["redacted_fields"] = redacted_fields
         return compatibility
@@ -1700,6 +1869,8 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
     # projected legacy payload: the operator envelope keeps exact bytes, user
     # projections drop the redacted fields.
     event["payload"], redacted_fields = _redacted_legacy_payload(payload, visibility_authority, audience)
+    if audience != "operator":
+        event["payload"] = _apply_member_tool_summary(event["payload"], item_kind=item_kind)
     if redacted_fields:
         event["visibility"]["redacted_fields"] = redacted_fields
     return event

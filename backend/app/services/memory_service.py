@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Awaitable, Callable, Literal
 
@@ -211,6 +211,7 @@ async def _build_memory_context_result(
     # The resident explicit index is authority-checked at read time; the model
     # loads the full bodies itself through load_memory(ids=[...]).
     resident, overlay_sections = base_resident, []
+    withheld_note = ""
     try:
         from app.memory.explicit_overlay import load_explicit_overlay_entries
         from app.memory.profile_plane import with_explicit_memory_index
@@ -224,6 +225,9 @@ async def _build_memory_context_result(
             entries=load_explicit_overlay_entries(data_root, agent_id), issue_observer=issues)
         if issues:
             degraded_components.append("explicit_memory_source_authority")
+            # A4c in the prompt: the requester's own entries dropped by the
+            # recheck are named by count; other members' entries stay omitted.
+            withheld_note = f"有{len(issues)} 条记忆暂时无法核实，已略过，可继续使用其余内容。"
         overlay_sources = {entry.entry_id: (source_dependency(receipt),) for entry, receipt in authorized}
         resident = with_explicit_memory_index(base_resident, [entry for entry, _receipt in authorized],
             overlay_sources,
@@ -232,6 +236,10 @@ async def _build_memory_context_result(
     except Exception as exc:
         logger.warning("Resident explicit source authority unavailable: %s", type(exc).__name__)
         degraded_components.append("explicit_memory_source_authority")
+        withheld_note = "有部分记忆暂时无法核实，已略过，可继续使用其余内容。"
+    if withheld_note:
+        noted = f"{resident.text}\n\n{withheld_note}" if resident.text else withheld_note
+        resident = replace(resident, text=noted)
 
     resident_unbound = tuple(f"resident_source_unverified:{ref['source_id']}" for ref in resident.source_refs
         if ref["source_kind"] != "explicit_memory" and (

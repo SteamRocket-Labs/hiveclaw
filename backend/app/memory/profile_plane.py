@@ -180,6 +180,8 @@ def _render_resident_explicit_index(entries, *, source_observer=None, section_ob
     lines = [
         f"{len(active)} active entries. This is a bounded navigation index, not full memory bodies.",
         "Use search_memory(query=...) to discover all matches and load_memory(ids=[...]) for full text.",
+        "Your consolidated knowledge pages are under memory/knowledge/ and your own past-session packages "
+        "under memory/t2/sessions/; list those directories and read_file(path=...) to read them.",
     ]
     shown = 0
     for entry in active:

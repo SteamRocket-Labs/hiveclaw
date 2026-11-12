@@ -258,6 +258,15 @@ async def test_index_authority_rechecks_current_sources(memory_dag, owner_sessio
     # Revoked entries are deliberately omitted without an availability issue;
     # changed or cyclic sources retain their existing degraded classification.
     assert ("explicit_memory_source_authority" in result.degraded_components) == (change != "revoked"), result
+    # A4c in the prompt: entries dropped by the recheck are named by count;
+    # a revoked (owner-withdrawn) entry stays silently omitted.
+    if change == "revoked":
+        assert "记忆暂时无法核实" not in result.content, result.content
+    else:
+        # bytes/cycle drop the changed entry alone; a changed shared Skill
+        # source drops its whole dependent chain (six entries in this fixture).
+        expected = 6 if change == "skill" else 1
+        assert f"有{expected} 条记忆暂时无法核实，已略过，可继续使用其余内容。" in result.content, result.content
 
 
 async def test_cyclic_chain_is_not_hidden_by_completed_sibling_walk(memory_dag, owner_sessionmaker):

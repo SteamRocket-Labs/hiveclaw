@@ -356,6 +356,9 @@ async def test_authority_failure_withholds_the_whole_explicit_layer(
     assert result.degraded_components == ("explicit_memory_source_authority",)
     assert all(f"MEMORY_DAG_{index}" not in result.content for index in range(4, 10))
     assert all(source["source_kind"] != "explicit_memory" for source in result.source_refs)
+    # A4c in the prompt: an outage the count cannot survive says 部分, never silence.
+    assert result.content.rsplit("\n\n", 1)[-1] == "有部分记忆暂时无法核实，已略过，可继续使用其余内容。"
+    assert "有1 条记忆暂时无法核实" not in result.content
     del authorize
 
 

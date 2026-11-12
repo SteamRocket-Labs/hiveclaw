@@ -301,3 +301,73 @@ async def test_context_status_ready_normally_and_degraded_on_explicit_authority_
     assert degraded.status == "degraded", degraded
     assert degraded.degraded_components == ("explicit_memory_source_authority",), degraded
     assert degraded.content  # resident identity remains active
+    # A4c in the prompt: the outage note names the loss instead of silence.
+    assert degraded.content.rsplit("\n\n", 1)[-1] == "有部分记忆暂时无法核实，已略过，可继续使用其余内容。"
+
+
+async def test_knowledge_pages_and_own_t2_reachable_by_read_file_via_index_hint(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch,  # noqa: F811
+):
+    """Knowledge pages and the requester's own T2 ride list + read_file, named by the index.
+
+    search_memory deliberately withholds legacy-plane and session-recall bodies on
+    the live path; the resident index names memory/knowledge/ and
+    memory/t2/sessions/ as the file route, and read_file keeps its authority.
+    """
+    from app.models.capability_policy import CapabilityPolicy
+    from app.services import memory_service
+    from tests.integration.test_m1g38_session_recall_actor_postgres import _sources
+    from tests.memory.test_retrieval_pipeline import _write_t2_package
+
+    n = native_workspace
+    own, foreign = await _sources(n, owner_sessionmaker, source="ledger")
+    _write_t2_package(n.root.parent, n.agent, session_id=str(own), summary="OWN_T2_PACKAGE_BODY")
+    _write_t2_package(n.root.parent, n.agent, session_id=str(foreign), summary="OTHER_REQUESTER_T2_BODY")
+    knowledge = n.root / "memory/knowledge/l2-rollup.md"
+    knowledge.parent.mkdir(parents=True, exist_ok=True)
+    knowledge.write_text(
+        "---\ntitle: L2 Rollup\nstatus: active\n---\n## Current Claim\nL2 把计算移到链下。\n",
+        encoding="utf-8",
+    )
+    async with owner_sessionmaker() as db:
+        from app.models.agent import AgentPermission
+
+        db.add(AgentPermission(tenant_id=n.tenant, agent_id=n.agent, scope_type="company", access_level="use"))
+        db.add(CapabilityPolicy(tenant_id=n.tenant, capability="agent.memory.write",
+            allowed=True, requires_approval=False))
+        db.add(CapabilityPolicy(tenant_id=n.tenant, capability="agent.memory.read",
+            allowed=True, requires_approval=False))
+        db.add(CapabilityPolicy(tenant_id=n.tenant, capability="workspace.file.read",
+            allowed=True, requires_approval=False))
+        await db.commit()
+
+    from app.memory.write_gate import MemoryWriteDecision
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+
+    async def reference_review(content, *, category, **_kwargs):
+        return MemoryWriteDecision(original_content=content, content=content, category=category,
+            sensitivity="PL1_public", metadata={"threat_gate_method": "controlled_reference_reviewer"})
+
+    monkeypatch.setattr("app.memory.explicit_overlay.prepare_memory_write_with_llm", reference_review)
+    saved, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
+        {"category": "project", "content": "Knowledge route marker fact for the index."})
+    assert "Saved memory [project]" in saved, saved
+
+    async def _read(path: str) -> str:
+        return str(await n.service.execute("read_file", {"path": path}, agent_id=n.agent, user_id=n.user,
+            session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False))
+
+    # The route the model is told about: two file calls, authority intact.
+    assert "L2 把计算移到链下" in await _read("memory/knowledge/l2-rollup.md")
+    assert "OWN_T2_PACKAGE_BODY" in await _read(next(
+        (n.root / f"memory/t2/sessions/{own}").rglob("summary.md")).relative_to(n.root).as_posix())
+    denied = await _read(next(
+        (n.root / f"memory/t2/sessions/{foreign}").rglob("summary.md")).relative_to(n.root).as_posix())
+    assert "OTHER_REQUESTER_T2_BODY" not in denied and "auth_or_permission" in denied, denied
+
+    # The index header carries the same route on every path that renders it.
+    result = await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(n.session),
+        runtime_task_id=str(n.run), current_user_id=n.user, query="l2 rollup", return_result=True)
+    assert result.status == "ready", result
+    assert "memory/knowledge/" in result.content and "memory/t2/sessions/" in result.content, result.content
+    assert "read_file" in result.content

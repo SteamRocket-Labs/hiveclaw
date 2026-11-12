@@ -1,6 +1,5 @@
 """Memory store abstractions."""
 
-from .assembler import MemoryAssembler
 from .retriever import MemoryRetriever
 from .types import (
     MEMORY_CATEGORIES,
@@ -16,7 +15,6 @@ __all__ = [
     "MEMORY_CATEGORIES",
     "EpisodicMemory",
     "ExternalMemoryRef",
-    "MemoryAssembler",
     "MemoryItem",
     "MemoryKind",
     "MemoryRetriever",

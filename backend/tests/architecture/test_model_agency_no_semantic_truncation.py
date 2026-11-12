@@ -293,7 +293,6 @@ def test_feishu_readers_default_to_full_content() -> None:
 
 def test_memory_curation_inputs_and_loads_are_not_fixed_count_or_character_pruned() -> None:
     forbidden_by_file = {
-        "memory/assembler.py": ("compact[:4]", "total_chars + line_len > budget_chars"),
         "memory/t0/ledger.py": ("decision.sanitized_text[:4000]",),
         "memory/t2/segment_package.py": (
             "not in set(selected_ids)][:4]",
@@ -650,7 +649,6 @@ def test_semantic_gate_scores_are_explanations_not_platform_cutoffs() -> None:
 def test_memory_retrieval_never_uses_top_k_or_similarity_as_semantic_authority() -> None:
     retriever = (APP_ROOT / "memory/retriever.py").read_text(encoding="utf-8")
     wiki = (APP_ROOT / "memory/wiki_retrieval.py").read_text(encoding="utf-8")
-    assembler = (APP_ROOT / "memory/assembler.py").read_text(encoding="utf-8")
 
     assert ".limit(previous_limit)" not in retriever
     assert "_content_similar" not in retriever
@@ -659,7 +657,6 @@ def test_memory_retrieval_never_uses_top_k_or_similarity_as_semantic_authority()
     assert "external_limit" not in retriever
     assert "_SCORE_FLOOR" not in wiki
     assert "ranked[: max(1, limit)]" not in wiki
-    assert "_content_hash" not in assembler
 
 
 def test_fast_reflection_and_skill_flywheel_do_not_invent_semantics_from_markers() -> None:

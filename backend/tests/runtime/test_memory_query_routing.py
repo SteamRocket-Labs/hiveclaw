@@ -9,16 +9,18 @@ from app.runtime.session import SessionContext
 
 
 @pytest.mark.asyncio
-async def test_resolve_memory_context_uses_single_query_scoped_retrieval(monkeypatch):
+async def test_resolve_memory_context_loads_resident_context_once_per_call_even_with_cached_prefix(monkeypatch):
+    """A2m: the resident context has no query; it loads once per call, and the
+    cached prompt prefix never skips it."""
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest
 
-    memory_calls: list[tuple[str | None, str]] = []
+    memory_calls: list[str | None] = []
 
-    async def fake_build_memory_context(agent_id, tenant_id, *, session_id=None, query="", **kwargs):
+    async def fake_build_memory_context(agent_id, tenant_id, *, session_id=None, **kwargs):
         del agent_id, tenant_id, kwargs
-        memory_calls.append((str(session_id), query))
-        return "QUERY_SCOPED_MEMORY" if query else "SNAPSHOT_MEMORY"
+        memory_calls.append(str(session_id) if session_id else None)
+        return "SNAPSHOT_MEMORY"
 
     monkeypatch.setattr(invoker, "build_memory_context", fake_build_memory_context)
 
@@ -31,19 +33,20 @@ async def test_resolve_memory_context_uses_single_query_scoped_retrieval(monkeyp
         session_context=SessionContext(session_id="s-1"),
     )
 
+    # A2m: the resident build carries no query; retrieval is the model's own
+    # tool work, so the same context loads for any question.
     result = await invoker._resolve_memory_context(request, uuid4())
-    assert "QUERY_SCOPED_MEMORY" in result
-    assert "SNAPSHOT_MEMORY" not in result
+    assert "SNAPSHOT_MEMORY" in result
     assert '<context_block kind="memory_context" source="memory_provider:context">' in result
-    assert memory_calls == [("s-1", "latest question")]
+    assert memory_calls == ["s-1"]
     assert request.session_context.metadata["context_artifacts"][0]["kind"] == "memory_context"
 
     # After prefix is cached, memory context should STILL be loaded (not skipped)
     # This ensures the engine's hash-based cache invalidation works correctly.
     request.session_context.prompt_prefix = "CACHED_PREFIX"
     result = await invoker._resolve_memory_context(request, uuid4())
-    assert "QUERY_SCOPED_MEMORY" in result  # Memory always loaded, even with cached prefix
-    assert memory_calls == [("s-1", "latest question"), ("s-1", "latest question")]
+    assert "SNAPSHOT_MEMORY" in result  # Memory always loaded, even with cached prefix
+    assert memory_calls == ["s-1", "s-1"]
 
 
 @pytest.mark.asyncio
@@ -243,7 +246,6 @@ async def test_resolve_memory_context_emits_durable_degraded_fact_and_model_mark
             code="semantic_retrieval_unavailable",
             user_message="Some long-term memory is temporarily unavailable.",
             retryable=True,
-            attempts=2,
         )
 
     async def capture_span(**kwargs):
@@ -284,47 +286,38 @@ async def test_resolve_memory_context_emits_durable_degraded_fact_and_model_mark
 
 
 @pytest.mark.asyncio
-async def test_resolve_memory_context_passes_durable_turn_and_surfaces_budget_pressure(monkeypatch) -> None:
+async def test_resolve_memory_context_passes_durable_turn_and_surfaces_degraded_status(monkeypatch) -> None:
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest
     from app.services.memory_service import MemoryContextResult
 
     captured: dict[str, object] = {}
 
-    async def budget_exhausted(
+    async def auxiliary_degraded(
         _agent_id,
         _tenant_id,
         *,
         session_id=None,
-        query="",
-        turn_id=None,
         return_result=False,
         **_kwargs,
     ):
         captured.update(
             session_id=session_id,
-            query=query,
-            turn_id=turn_id,
             return_result=return_result,
         )
         return MemoryContextResult(
             content="RESIDENT_INDEX",
             status="degraded",
-            code="memory_auto_surface_budget_exhausted",
-            user_message=(
-                "Session automatic memory surfacing budget is exhausted; conversation can continue and "
-                "search_memory/load_memory remain available."
-            ),
-            retryable=False,
-            auto_surfaced_bytes=0,
-            auto_surface_total_bytes=60 * 1024,
-            auto_surface_remaining_bytes=0,
+            code="memory_auxiliary_degraded",
+            user_message="Core memory is available, but an auxiliary memory component is temporarily degraded.",
+            retryable=True,
+            degraded_components=("resident_budget_telemetry",),
         )
 
     async def ignore_span(**_kwargs):
         return None
 
-    monkeypatch.setattr(invoker, "build_memory_context", budget_exhausted)
+    monkeypatch.setattr(invoker, "build_memory_context", auxiliary_degraded)
     monkeypatch.setattr(invoker, "persist_invocation_span", ignore_span)
     request = AgentInvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1"),
@@ -342,15 +335,14 @@ async def test_resolve_memory_context_passes_durable_turn_and_surfaces_budget_pr
 
     assert captured == {
         "session_id": "session-budget",
-        "query": "continue",
-        "turn_id": "turn-durable-17",
         "return_result": True,
     }
     assert "RESIDENT_INDEX" in context
-    assert "search_memory/load_memory remain available" in context
+    assert "do not assume complete recall" in context
     status = request.session_context.metadata["memory_context_status"]
-    assert status["auto_surface_total_bytes"] == 60 * 1024
-    assert status["auto_surface_remaining_bytes"] == 0
+    assert status["code"] == "memory_auxiliary_degraded"
+    assert status["degraded_components"] == ["resident_budget_telemetry"]
+    assert "selection_receipt" not in status
     assert status["external_effects_available"] is True
 
 

@@ -4,7 +4,7 @@ import json
 import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import pytest
 from sqlalchemy import select
@@ -19,7 +19,6 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 async def t2_work(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path):
     import app.database as database
     from app.config import get_settings
-    from app.memory.retriever import MemoryRetriever
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.llm import LLMModel
@@ -61,11 +60,6 @@ async def t2_work(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_pa
     monkeypatch.setattr(agent_context, "TOOL_WORKSPACE", seed["data_root"])
     monkeypatch.setattr(agent_manager, "settings", get_settings())
 
-    async def select_memory(_self, *, items, **_kwargs):
-        return [item.metadata["selection_candidate_id"] for item in items], "Inspect available prior work"
-
-    monkeypatch.setattr(MemoryRetriever, "_select_with_model", select_memory)
-
     class LocalSummaryTransport:
         async def stream(self, **_kwargs):
             return SimpleNamespace(content=json.dumps({"summary": "Synthetic summary."}))
@@ -102,12 +96,10 @@ async def test_native_t2_full_read_preserves_complete_body_and_private_audience(
     assert (s["agent_root"] / path).read_text() == original
 
 
-@pytest.mark.parametrize("missing_reference", [False, True])
-async def test_native_new_work_surfaces_unverified_t2_as_recoverable_reference(
-    t2_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, missing_reference,
+async def test_native_new_work_leaks_no_unverified_t2_body_and_stays_ready(
+    t2_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 ):
     import app.runtime.invoker as invoker
-    from app.database import pin_rls_tenant_context
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionModelResult
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -115,14 +107,6 @@ async def test_native_new_work_surfaces_unverified_t2_as_recoverable_reference(
     from app.services.web_chat_runtime import execute_web_chat_run
 
     s = t2_work
-    if missing_reference:
-        from app.memory.retriever import MemoryRetriever
-
-        async def select_then_remove_manifest(_self, *, items, **_kwargs):
-            (s["agent_root"] / s["package_path"] / "manifest.json").unlink()
-            return [item.metadata["selection_candidate_id"] for item in items], "Select available prior work"
-
-        monkeypatch.setattr(MemoryRetriever, "_select_with_model", select_then_remove_manifest)
     client = ScriptedLLMClient([{"content": "360", "finish_reason": "stop"}])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
     async with owner_sessionmaker() as db:
@@ -137,22 +121,20 @@ async def test_native_new_work_surfaces_unverified_t2_as_recoverable_reference(
     assert len(client.requests) == 1
     text = json.dumps(client.requests[0]["messages"])
     assert "NATIVE_OWNER_CONTEXT" in text
-    if not missing_reference:
-        assert s["package_path"] in text
+    assert "OLD_UNVERIFIED_T2_BODY" not in text
     async with app_user_sessionmaker() as db:
+        from app.database import pin_rls_tenant_context
+
         await pin_rls_tenant_context(db, s["tenant_id"])
         rows = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == s["run_id"])))
         assert len(rows) == 1
         bindings = rows[0].model_request_snapshot_json["input_bindings"]
-        (s["agent_root"].parent / "native-memory-input-bindings.json").write_text(json.dumps(bindings, indent=2))
         assert bindings["dependency_coverage"]["complete"], bindings["dependency_coverage"]
         events = list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == s["run_id"],
             ChatTranscriptEvent.event_type == "memory_context_degraded")))
-        code = "episodic_resource_reference_unavailable" if missing_reference else "episodic_body_source_unverified"
-        assert any(event.metadata_json.get("code") == code and event.metadata_json.get("user_summary") for event in events)
-    assert "OLD_UNVERIFIED_T2_BODY" not in text
-    if not missing_reference:
-        assert "read_file" in text and "source_unverified" in text
+        # A turn with no prefetched bodies is not degraded; the model reads
+        # T2 files on demand through read_file with its native authority.
+        assert events == [], events
 
 
 @pytest.mark.parametrize("change", ["body_changed", "inactive", "source_shared", "reader_shared",
@@ -172,12 +154,34 @@ async def test_memory_reference_rechecks_current_reader_without_attesting_body(
 
     s = t2_work
     result = await build_memory_context(s["agent_id"], s["tenant_id"], session_id=str(s["session_id"]),
-        current_user_id=s["user_id"], runtime_task_id=str(s["run_id"]), query="Calculate the current report", return_result=True)
-    dependency = next(dict(ref) for ref in result.source_refs if ref["source_kind"] == "memory_resource_reference")
+        current_user_id=s["user_id"], runtime_task_id=str(s["run_id"]), return_result=True)
     request = ToolExecutionRequest(tool_name="create_employee_from_request", arguments={},
         context=ToolExecutionContext(agent_id=s["agent_id"], user_id=s["user_id"], tenant_id=str(s["tenant_id"]),
             session_id=str(s["session_id"]), runtime_task_id=str(s["run_id"]), workspace=s["agent_root"]))
-    assert result.status == "degraded" and result.code == "episodic_body_source_unverified"
+    # On-demand memory prefetched no body and no reference; the recheck
+    # contract is exercised against a legacy stored reference row, inserted
+    # directly as the data base runs already carry (the capture path is gone).
+    from app.services.memory_resource_references import _FILES, _SCHEMA
+    from app.services.session_model_inputs import _hash
+
+    files = [name for name in _FILES if (s["agent_root"] / s["package_path"] / name).exists()]
+    payload = {"schema": _SCHEMA, "tenant_id": str(s["tenant_id"]), "agent_id": str(s["agent_id"]),
+        "session_id": str(s["session_id"]), "user_id": str(s["user_id"]),
+        "source_session_id": str(s["previous"]), "resource_path": s["package_path"], "files": files}
+    version = _hash(payload)
+    source_id = uuid5(UUID(str(s["session_id"])), f"memory-resource-reference:{version}")
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, s["tenant_id"])
+        db.add(InvocationSpan(id=source_id, tenant_id=s["tenant_id"], agent_id=s["agent_id"],
+            user_id=s["user_id"], session_id=str(s["session_id"]),
+            trace_id=f"session-context:{s['session_id']}", span_id=f"memory-reference:{source_id}",
+            span_type="memory_resource_reference", name="memory_resource_reference", status="captured",
+            duration_ms=0, started_at=datetime.now(UTC),
+            metadata_json={"memory_resource_reference": payload}))
+        await db.commit()
+    dependency = {"source_kind": "memory_resource_reference", "source_id": str(source_id),
+        "source_version": version}
+    assert result.status == "ready"
     assert not result.source_unbound and "OLD_UNVERIFIED_T2_BODY" not in result.content
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, s["tenant_id"])

@@ -235,23 +235,26 @@ async def test_recovered_attachment_is_removed_from_rejections(monkeypatch):
     assert task.metadata_json["rejected_artifact_paths"] == []
 
 
-def test_withheld_note_has_no_internal_code_or_id():
-    from app.services.memory_service import _render_withheld_note
+def _origin_faithful_bindings(parts):
+    """Bindings the way production builds them: a part whose captured origin
+    carries any unbound reason is incomplete — session_model_inputs.py:494
+    marks ``"resolved" if complete else "incomplete"`` from the origin's own
+    coverage — and only incomplete parts get replaced by the wire gate."""
+    messages = [{"message_index": index, "status": "bound", "code": "canonical_origin_matched",
+                 "dependencies": list(part.context_origin.sources),
+                 "dependency_status": "resolved" if not part.context_origin.unbound else "incomplete"}
+                for index, part in enumerate(parts)]
+    all_deps = [ref for message in messages for ref in message["dependencies"]]
+    return {"schema": "hive.model_input_bindings.v1", "status": "resolved", "messages": messages,
+            "dependencies": list({json.dumps(d, sort_keys=True): d for d in all_deps}.values()),
+            "dependency_coverage": {"complete": all(m["dependency_status"] == "resolved" for m in messages)}}
 
-    note = _render_withheld_note({"explicit_memory": {"count": 1, "code": "explicit_memory_source_partial"}})
-    assert "1" in note
-    assert "explicit_memory" not in note
-    assert "source_partial" not in note
 
-
-@pytest.mark.parametrize("resident_index", [False, True])
-async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_path, resident_index):
-    from app.memory.activation import ActivationContext
-    from app.memory.types import MemoryItem, MemoryKind
+@pytest.mark.parametrize("scenario", ["empty", "send_time_revocation", "build_time_issue"])
+async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_path, scenario):
     from app.runtime.context_candidates import ContextMessageOrigin
     from app.services import memory_service, session_model_round
     from app.services.llm_client import LLMMessage
-    from app.services.principal_context import PrincipalStack
 
     aid, tenant = uuid.uuid4(), uuid.uuid4()
     directory = tmp_path / str(aid) / "memory/self"
@@ -260,31 +263,64 @@ async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_p
     bad = {"source_kind": "explicit_memory", "source_id": "revoked", "source_version": "v1"}
     good = {"source_kind": "explicit_memory", "source_id": "valid", "source_version": "v1"}
 
-    class Retriever:
-        async def retrieve(self, *args, **kwargs):
-            return [MemoryItem(kind=MemoryKind.SEMANTIC, content=text, score=1, source=ref["source_id"],
-                source_refs=(ref,), metadata={"entry_id": ref["source_id"]}) for ref, text in (
-                    (bad, "REVOKED_RECALL_SECRET"), (good, "VALID_RECALLED_MEMORY"))]
-
     monkeypatch.setattr(memory_service, "get_settings", lambda: NS(AGENT_DATA_DIR=str(tmp_path)))
-    monkeypatch.setattr(memory_service, "MemoryRetriever", lambda **kwargs: Retriever())
-    monkeypatch.setattr(memory_service, "_get_rerank_model_config", AsyncMock(return_value=None))
-    monkeypatch.setattr(memory_service, "_resolve_activation_context",
-        AsyncMock(return_value=ActivationContext(query="q", principal_stack=PrincipalStack())))
-    authorized = [(NS(entry_id="revoked", content="REVOKED_RECALL_SECRET", category="project",
+    monkeypatch.setattr(memory_service, "_resolve_accountability_context", AsyncMock(return_value=object()))
+    revoked_pair = (NS(entry_id="revoked", content="REVOKED_RECALL_SECRET", category="project",
         status="active", sensitivity="PL1_public", created_at="2026-11-06"),
-        NS(id="revoked", content_sha256="v1"))] if resident_index else []
-    monkeypatch.setattr("app.services.explicit_memory_authority.authorized_explicit_entries", AsyncMock(return_value=authorized))
-    result = await memory_service.build_memory_context(aid, tenant, query="q", session_id=str(uuid.uuid4()),
+        NS(id="revoked", content_sha256="v1"))
+    valid_pair = (NS(entry_id="valid", content="VALID_RECALLED_MEMORY", category="project",
+        status="active", sensitivity="PL1_public", created_at="2026-11-06"),
+        NS(id="valid", content_sha256="v1"))
+
+    async def authorize(*, entries, issue_observer=None, **_kwargs):
+        if scenario == "empty":
+            # Authorization returns empty and no issues: the requester simply
+            # has no authorized entries (no other member involved).
+            return []
+        if scenario == "send_time_revocation":
+            # The stale-receipt shape: authorization still admits both entries;
+            # the send-time validator below drops only the revoked one.
+            return [revoked_pair, valid_pair]
+        # build_time_issue: the recheck itself drops the revoked entry and
+        # reports exactly one own-entry issue.
+        if issue_observer is not None:
+            issue_observer.append({"memory_id": "revoked", "status": "denied",
+                "code": "content_source_access_denied"})
+        return [valid_pair]
+
+    monkeypatch.setattr("app.services.explicit_memory_authority.authorized_explicit_entries", authorize)
+    result = await memory_service.build_memory_context(aid, tenant, session_id=str(uuid.uuid4()),
         current_user_id=uuid.uuid4(), return_result=True)
-    assert "VALID_RESIDENT_MEMORY" in result.content and "REVOKED_RECALL_SECRET" in result.content
+    assert "VALID_RESIDENT_MEMORY" in result.content
+    if scenario == "empty":
+        assert result.status == "ready", result
+        assert "Explicit Memory Index" not in result.content, result.content
+        assert "REVOKED_RECALL_SECRET" not in result.content and "VALID_RECALLED_MEMORY" not in result.content
+        assert "记忆暂时无法核实" not in result.content, result.content
+        return
+
+    if scenario == "send_time_revocation":
+        assert result.status == "ready", result
+        # The index preview is the only place the revoked entry's bytes appear.
+        assert "REVOKED_RECALL_SECRET" in result.content
+        unbound_reasons = result.source_unbound
+    else:
+        # The dropped entry leaves no preview; the A4c note names it by count.
+        assert result.status == "degraded", result
+        assert "REVOKED_RECALL_SECRET" not in result.content
+        note = "有1 条记忆暂时无法核实，已略过，可继续使用其余内容。"
+        assert result.content.rsplit("\n\n", 1)[-1] == note, result.content
+        # A second unbound reason on the same compiled content (as a session
+        # learning projection adds) must not let the gate swallow the note.
+        unbound_reasons = (*result.source_unbound, "session_learning_sources_unbound")
+
     message = LLMMessage(role="system", content=result.content, context_origin=ContextMessageOrigin.capture(
         kind="dynamic_prompt", role="system", content=result.content,
-        sources=result.source_refs, unbound=result.source_unbound))
+        sources=result.source_refs, unbound=unbound_reasons))
     split = getattr(session_model_round, "split_context_message", lambda message, sections: [message])
     parts = split(message, getattr(result, "sections", ()))
     messages = [{"role": part.role, "content": part.content} for part in parts]
-    bindings = _bindings(len(parts), {i: list(part.context_origin.sources) for i, part in enumerate(parts)})
+    bindings = _origin_faithful_bindings(parts)
     db = DB()
     db.session = NS(audience_kind="private")
     patch_validators(monkeypatch, [bad])
@@ -292,3 +328,13 @@ async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_p
     assert "REVOKED_RECALL_SECRET" not in json.dumps(wire)
     assert "VALID_RESIDENT_MEMORY" in json.dumps(wire)
     assert "VALID_RECALLED_MEMORY" in json.dumps(wire)
+    if scenario == "build_time_issue":
+        wire_text = json.dumps(wire, ensure_ascii=False)
+        assert note in wire_text, wire_text
+        gate_note = "有一项上下文暂时无法核实"
+        # The genuinely unbound remainder is still replaced by the gate...
+        assert any(gate_note in str(m.get("content")) for m in wire["messages"]), wire_text
+        # ...but the part that carries the A4c note is not.
+        carrying = [m for m in wire["messages"] if note in str(m.get("content"))]
+        assert carrying, wire_text
+        assert all(gate_note not in str(m.get("content")) for m in carrying), wire_text

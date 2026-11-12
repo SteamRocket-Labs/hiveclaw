@@ -5,7 +5,7 @@ Deterministic, DB-free, LLM-free eval over the REAL memory retrieval paths:
 - ``run_memory_recall_eval``: ranks the fixture page graph through
   ``search_wiki_pages`` (BM25 seeds, optional PPR expansion) — the knowledge
   plane's production ranking function.
-- ``run_retriever_pipeline_eval``: runs the full ``MemoryRetriever.retrieve``
+- ``run_retriever_pipeline_eval``: walks ``MemoryRetriever._gather_authorized_candidates``
   pipeline including ``ActivationScorer``, so later scorer components
   (BaseLevel, ContextBoost, TaskModulation) show up in this scorecard.
 
@@ -484,9 +484,8 @@ async def run_retriever_pipeline_eval(
         # must not leak usage history from one case into the next, so the
         # sidecar is restored after each case (seeded telemetry stays fixed).
         with _sidecar_snapshot(data_root, agent_id):
-            # This scorecard measures deterministic candidate ranking, not
-            # live automatic body selection. Production prompt assembly uses
-            # ``retrieve`` and therefore still requires the model selector.
+            # This scorecard measures deterministic candidate ranking; live
+            # prompt assembly no longer pre-selects bodies with a model call.
             items = await retriever._gather_authorized_candidates(
                 agent_id,
                 case.query,

@@ -810,32 +810,22 @@ async def _resolve_memory_context(
     session_id = request.memory_session_id
     if not session_id and request.session_context:
         session_id = request.session_context.session_id
-    budget_profile = _resolve_context_budget(request)
-    context_window_tokens = getattr(request.model, "max_input_tokens", None) if request.model else None
-    query = _last_user_query(request.messages)
     turn_metadata = _ensure_turn_metadata(request) if session_id else _session_metadata(request.session_context)
 
     if request.agent_id and tenant_id:
         _memory_kwargs = {
             "session_id": session_id,
-            "query": query,
         }
         _memory_sig = inspect.signature(build_memory_context).parameters
         current_user_name = None
         if request.user_id and ("current_user_id" in _memory_sig or "current_user_name" in _memory_sig):
             current_user_name = await _resolve_current_user_name(request.user_id, tenant_id)
-        if "context_window_tokens" in _memory_sig:
-            _memory_kwargs["context_window_tokens"] = context_window_tokens
-        if "budget_profile" in _memory_sig:
-            _memory_kwargs["budget_profile"] = budget_profile
         if "current_user_id" in _memory_sig:
             _memory_kwargs["current_user_id"] = request.user_id
         if "current_user_name" in _memory_sig:
             _memory_kwargs["current_user_name"] = current_user_name
         if "return_result" in _memory_sig:
             _memory_kwargs["return_result"] = True
-        if "turn_id" in _memory_sig:
-            _memory_kwargs["turn_id"] = turn_metadata.get("turn_id")
         if "runtime_task_id" in _memory_sig:
             _memory_kwargs["runtime_task_id"] = turn_metadata.get("runtime_task_id") or turn_metadata.get("task_id")
         memory_clock = asyncio.get_running_loop()
@@ -974,17 +964,11 @@ async def _consume_memory_context_status(
         "status": result.status,
         "code": result.code,
         "retryable": result.retryable,
-        "attempts": result.attempts,
         "degraded_components": list(result.degraded_components),
         "conversation_available": result.conversation_available,
         "authority_context_available": result.authority_context_available,
         "durable_write_available": result.durable_write_available,
         "external_effects_available": result.external_effects_available,
-        "auto_surfaced_bytes": result.auto_surfaced_bytes,
-        "auto_surface_total_bytes": result.auto_surface_total_bytes,
-        "auto_surface_remaining_bytes": result.auto_surface_remaining_bytes,
-        "auto_surface_selected_count": result.auto_surface_selected_count,
-        "selection_receipt": result.selection_receipt,
         "duration_ms": round(max(0.0, float(duration_ms)), 3),
     }
     metadata["memory_context_status"] = status_fact

@@ -52,9 +52,6 @@ class SessionWorkingSet:
     items: list[dict] = field(default_factory=list)
     load_error: str | None = None
 
-    def as_pairs(self) -> tuple[tuple[str, float], ...]:
-        return tuple((str(item["ref"]), float(item["strength"])) for item in self.items)
-
 
 def advance_working_set(
     existing: SessionWorkingSet | None,

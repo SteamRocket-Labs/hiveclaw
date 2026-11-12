@@ -311,10 +311,9 @@ async def test_later_memory_source_refreshes_platform_skill_lineage(
     assert "SECOND_MEMORY" not in json.dumps(wire)
 
 
-async def test_post_selection_source_recovery_keeps_healthy_memory_ready(
-    memory_dag, owner_sessionmaker, monkeypatch,  # noqa: F811
+async def test_recovered_memory_source_restores_the_ready_index(
+    memory_dag, owner_sessionmaker,  # noqa: F811
 ):
-    from app.memory.retriever import MemoryRetriever
     from app.models.organization_identity import ContentInputReceipt
     from tests.integration.test_memory_source_read_work_postgres import resolve
 
@@ -325,57 +324,42 @@ async def test_post_selection_source_recovery_keeps_healthy_memory_ready(
         row.dependencies_json = [*original, {**n.shared[0], "source_version": "unavailable-version"}]
         await writer.commit()
 
-    async def restore_during_selection(_self, *, items, **_kwargs):
-        assert items and all(item.metadata.get("entry_id") != "dag-9" for item in items)
-        async with owner_sessionmaker() as writer:
-            (await writer.get(ContentInputReceipt, n.receipts[9].id)).dependencies_json = original
-            await writer.commit()
-        return [item.metadata["selection_candidate_id"] for item in items[:5]], "Choose the available memories"
+    withheld = await resolve(n)
+    assert "MEMORY_DAG_9" not in withheld.content, withheld.content
+    assert "explicit_memory_source_authority" in withheld.degraded_components, withheld
 
-    monkeypatch.setattr(MemoryRetriever, "_select_with_model", restore_during_selection)
+    async with owner_sessionmaker() as writer:
+        (await writer.get(ContentInputReceipt, n.receipts[9].id)).dependencies_json = original
+        await writer.commit()
     result = await resolve(n)
     assert result.status == "ready", result
     assert "explicit_memory_source_authority" not in result.degraded_components
     assert "MEMORY_DAG_9" in result.content
 
 
-async def test_post_selection_authority_failure_withholds_the_whole_memory_layer(
+async def test_authority_failure_withholds_the_whole_explicit_layer(
     memory_dag, monkeypatch,  # noqa: F811
 ):
-    from app.memory.retriever import MemoryRetriever
     from app.services import explicit_memory_authority
-    from app.services.content_input_receipts import ContentInputReceiptError
     from tests.integration.test_memory_source_read_work_postgres import resolve
 
-    n, selected, retrievers = memory_dag, [], []
+    n = memory_dag
     authorize = explicit_memory_authority.authorized_explicit_entries
 
-    async def select_before_authority_failure(retriever, *, items, **_kwargs):
-        chosen = [item for item in items if item.metadata.get("source_type") == "explicit_overlay"][:1]
-        assert len(chosen) == 1
-        selected.extend(item.metadata["entry_id"] for item in chosen)
-        retrievers.append(retriever)
-        return [item.metadata["selection_candidate_id"] for item in chosen], "Select one authorized memory"
+    async def failing_authorize(**kwargs):
+        raise OSError("synthetic explicit-authority outage")
 
-    async def authorize_until_selection(**kwargs):
-        if selected:
-            raise ContentInputReceiptError("explicit_memory_reader_changed", "The current memory reader changed.", 403)
-        return await authorize(**kwargs)
-
-    monkeypatch.setattr(MemoryRetriever, "_select_with_model", select_before_authority_failure)
-    monkeypatch.setattr(explicit_memory_authority, "authorized_explicit_entries", authorize_until_selection)
+    monkeypatch.setattr(explicit_memory_authority, "authorized_explicit_entries", failing_authorize)
     result = await resolve(n)
 
-    assert len(selected) == 1
     assert result.status == "degraded"
     assert result.degraded_components == ("explicit_memory_source_authority",)
     assert all(f"MEMORY_DAG_{index}" not in result.content for index in range(4, 10))
     assert all(source["source_kind"] != "explicit_memory" for source in result.source_refs)
+    # A4c in the prompt: an outage the count cannot survive says 部分, never silence.
     assert result.content.rsplit("\n\n", 1)[-1] == "有部分记忆暂时无法核实，已略过，可继续使用其余内容。"
     assert "有1 条记忆暂时无法核实" not in result.content
-    assert retrievers[0].last_withheld["explicit_memory"] == {
-        "count": None, "code": "explicit_memory_source_partial",
-    }
+    del authorize
 
 
 async def test_bulk_tool_inventory_keeps_config_precedence(

@@ -543,7 +543,11 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     )
     revoked_input = input_case in {"revoked", "first_task_revoked"}
     parent_complete = not unbound_input
-    creation_requires_click = not parent_complete or memory_case or discovery_case
+    # A2m: the plain unverified-memory turn no longer prefetches any memory
+    # source, so its creation consumes only the member's direct request and
+    # stays policy_direct (no click). The explicit variant reads a memory file
+    # first, keeps mixed inputs, and still requires the member's click.
+    creation_requires_click = not parent_complete or discovery_case
     seed = await _seed_run(
         owner_sessionmaker,
         tmp_path,
@@ -876,7 +880,6 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     if feishu_creation:
         creation_command_id = await _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch)
     if memory_case:
-        from app.memory.retriever import MemoryRetriever
         from app.models.chat_session import ChatSession
         from tests.memory.test_retrieval_pipeline import _write_t2_package
 
@@ -896,11 +899,6 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             seed["data_root"], seed["agent_id"], session_id=str(prior_session), summary="OLD_UNVERIFIED_CREATION_MEMORY"
         )
         old_memory_path = f"memory/t2/sessions/{prior_session}/segments/seg-1"
-
-        async def select_memory(_self, *, items, **_kwargs):
-            return [item.metadata["selection_candidate_id"] for item in items], "Inspect available prior work"
-
-        monkeypatch.setattr(MemoryRetriever, "_select_with_model", select_memory)
 
     class SyntheticMemoryTransport:
         async def stream(self, **_kwargs):
@@ -1480,9 +1478,11 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             # R5j ac1d44c5 and the 2026-11-08 controller ruling bind this own-private T2 read.
             assert "OLD_UNVERIFIED_CREATION_MEMORY" in json.dumps(creator_client.requests[1]["messages"])
         elif memory_case:
+            # Nothing episodic is prefetched any more: the first request carries
+            # neither the T2 pointer nor its body. The explicit-memory case
+            # above proves the body still arrives through the model's own read.
             visible = json.dumps(creator_client.requests[0]["messages"])
-            assert old_memory_path in visible and "source_unverified" in visible
-            assert "OLD_UNVERIFIED_CREATION_MEMORY" not in visible
+            assert old_memory_path not in visible and "OLD_UNVERIFIED_CREATION_MEMORY" not in visible
         if workspace_listing_case:
             listed = json.dumps(creator_client.requests[1]["messages"])
             assert "prior-unverified-report.md" in listed and prior_body not in listed

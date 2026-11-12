@@ -100,10 +100,6 @@ async def test_context_rich_web_rounds_do_not_inflate_delivered_file_reads(
 
     monkeypatch.setattr("app.memory.explicit_overlay.prepare_memory_write_with_llm", reference_review)
 
-    async def select_memories(_self, *, items, **_kwargs):
-        return [item.metadata["selection_candidate_id"] for item in items], "Use the reporting convention."
-
-    monkeypatch.setattr("app.memory.retriever.MemoryRetriever._select_with_model", select_memories)
     n = SimpleNamespace(
         tenant=seed["tenant_id"],
         user=seed["user_id"],

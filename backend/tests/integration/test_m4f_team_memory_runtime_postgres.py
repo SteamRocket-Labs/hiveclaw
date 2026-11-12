@@ -36,15 +36,13 @@ async def readable_team_memory(runtime_team, owner_sessionmaker, app_user_sessio
     return s, workspace, receipt
 
 
-@pytest.mark.parametrize("surface", ["search", "load", "automatic"])
+@pytest.mark.parametrize("surface", ["search", "load"])
 @pytest.mark.parametrize("damaged_peer", [False, True])
 async def test_current_member_can_consume_team_memory_in_actual_work(
     readable_team_memory, runtime_team, monkeypatch, surface, damaged_peer,  # noqa: F811
 ):
     from pathlib import Path
-    from app.memory.activation import ActivationContext
-    from app.memory.retriever import MemoryRetriever
-    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
+
     from app.services.team_memory import TeamMemoryStore
 
     s, workspace, receipt = readable_team_memory
@@ -56,28 +54,12 @@ async def test_current_member_can_consume_team_memory_in_actual_work(
         entry = TeamMemoryStore().get_entry(str(n.tenant), workspace, "blocked")
         path = Path(entry.absolute_path)
         path.write_text(path.read_text().replace("Originally verified peer", "UNRECEIPTED_TEAM_PEER_MARKER"))
-    if surface in {"search", "load"}:
-        name = "search_memory" if surface == "search" else "load_memory"
-        args = {"query": "release", "scope": "facts"} if surface == "search" else {"ids": [f"team_memory:{workspace}:report"]}
-        if surface == "load" and damaged_peer:
-            args["ids"].insert(0, f"team_memory:{workspace}:blocked")
-        result = str(await n.service.execute(name, args, agent_id=n.agent, user_id=n.foreign,
-            session_id=str(s.second_session), runtime_task_id=str(s.second_run), emit_runtime_hooks=False))
-    else:
-        async def choose(_self, *, items, **_kwargs):
-            return [item.metadata["selection_candidate_id"] for item in items], "Use the current team's release fact"
-
-        monkeypatch.setattr(MemoryRetriever, "_select_with_model", choose)
-        activation = ActivationContext(query="release", principal_stack=PrincipalStack(
-            current_user=Principal(PrincipalRole.CURRENT_USER, str(n.foreign)),
-            direct_owner=Principal(PrincipalRole.OWNER, str(n.user))))
-        items = await MemoryRetriever(data_root=n.root.parent).retrieve(n.agent, "release", str(s.second_session),
-            str(n.tenant), runtime_task_id=str(s.second_run), activation_context=activation,
-            rerank_model_config={"provider": "reference", "model": "local-reference"})
-        result = "\n".join(item.content for item in items)
-        if "TEAM_PROJECT_RELEASE_MARKER" in result:
-            assert any({"source_kind": "team_memory", "source_id": str(receipt.id),
-                "source_version": receipt.content_sha256} in item.source_refs for item in items)
+    name = "search_memory" if surface == "search" else "load_memory"
+    args = {"query": "release", "scope": "facts"} if surface == "search" else {"ids": [f"team_memory:{workspace}:report"]}
+    if surface == "load" and damaged_peer:
+        args["ids"].insert(0, f"team_memory:{workspace}:blocked")
+    result = str(await n.service.execute(name, args, agent_id=n.agent, user_id=n.foreign,
+        session_id=str(s.second_session), runtime_task_id=str(s.second_run), emit_runtime_hooks=False))
     assert "TEAM_PROJECT_RELEASE_MARKER" in result, result
     assert "ORCHID_PRIVATE_MARKER" not in result, result
     assert "UNRECEIPTED_TEAM_PEER_MARKER" not in result, result
@@ -92,7 +74,7 @@ async def leave_team(owner_sessionmaker, workspace, user_id):
         await db.commit()
 
 
-@pytest.mark.parametrize("surface", ["search", "load", "automatic"])
+@pytest.mark.parametrize("surface", ["search", "load"])
 async def test_member_withdrawal_and_browser_admin_inspection_do_not_grant_runtime_reads(
     readable_team_memory, runtime_team, owner_sessionmaker, monkeypatch, surface,  # noqa: F811
 ):
@@ -107,59 +89,13 @@ async def test_member_withdrawal_and_browser_admin_inspection_do_not_grant_runti
     browser = runtime_team[2][1]
     inspected = await browser.get("/enterprise/memory/shared/report", params={"workspace_key": workspace})
     assert inspected.status_code == 200 and "TEAM_PROJECT_RELEASE_MARKER" in inspected.text
-    if surface == "automatic":
-        from app.memory.activation import ActivationContext
-        from app.memory.retriever import MemoryRetriever
-        from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
-
-        observed = []
-
-        async def choose(_self, *, items, **_kwargs):
-            observed.extend(item.content for item in items)
-            return [item.metadata["selection_candidate_id"] for item in items], "Use authorized facts only"
-
-        monkeypatch.setattr(MemoryRetriever, "_select_with_model", choose)
-        context = ActivationContext(query="release", principal_stack=PrincipalStack(
-            current_user=Principal(PrincipalRole.CURRENT_USER, str(n.foreign)),
-            direct_owner=Principal(PrincipalRole.OWNER, str(n.user))))
-        items = await MemoryRetriever(data_root=n.root.parent).retrieve(n.agent, "release", str(s.second_session), str(n.tenant),
-            runtime_task_id=str(s.second_run), activation_context=context, rerank_model_config={"provider": "reference", "model": "local"})
-        result = "\n".join(item.content for item in items)
-        assert all("TEAM_PROJECT_RELEASE_MARKER" not in value for value in observed)
-    else:
-        tool = "search_memory" if surface == "search" else "load_memory"
-        args = {"query": "release", "scope": "facts"} if surface == "search" else {"ids": [f"team_memory:{workspace}:report"]}
-        result = str(await n.service.execute(tool, args, agent_id=n.agent, user_id=n.foreign,
-            session_id=str(s.second_session), runtime_task_id=str(s.second_run), emit_runtime_hooks=False))
+    tool = "search_memory" if surface == "search" else "load_memory"
+    args = {"query": "release", "scope": "facts"} if surface == "search" else {"ids": [f"team_memory:{workspace}:report"]}
+    result = str(await n.service.execute(tool, args, agent_id=n.agent, user_id=n.foreign,
+        session_id=str(s.second_session), runtime_task_id=str(s.second_run), emit_runtime_hooks=False))
     assert "TEAM_PROJECT_RELEASE_MARKER" not in result and "ORCHID_PRIVATE_MARKER" not in result, result
     still_inspected = await browser.get("/enterprise/memory/shared/report", params={"workspace_key": workspace})
     assert still_inspected.status_code == 200
-
-
-async def test_membership_withdrawn_while_selector_runs_withholds_selected_body(
-    readable_team_memory, owner_sessionmaker, monkeypatch,
-):
-    from app.memory.activation import ActivationContext
-    from app.memory.retriever import MemoryRetriever
-    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
-
-    s, workspace, _receipt = readable_team_memory
-    n = s.n
-    observed = []
-
-    async def choose(_self, *, items, **_kwargs):
-        observed.extend(item.content for item in items)
-        await leave_team(owner_sessionmaker, workspace, n.foreign)
-        return [item.metadata["selection_candidate_id"] for item in items], "The source was available before selection"
-
-    monkeypatch.setattr(MemoryRetriever, "_select_with_model", choose)
-    context = ActivationContext(query="release", principal_stack=PrincipalStack(
-        current_user=Principal(PrincipalRole.CURRENT_USER, str(n.foreign)),
-        direct_owner=Principal(PrincipalRole.OWNER, str(n.user))))
-    items = await MemoryRetriever(data_root=n.root.parent).retrieve(n.agent, "release", str(s.second_session), str(n.tenant),
-        runtime_task_id=str(s.second_run), activation_context=context, rerank_model_config={"provider": "reference", "model": "local"})
-    assert any("TEAM_PROJECT_RELEASE_MARKER" in value for value in observed)
-    assert all("TEAM_PROJECT_RELEASE_MARKER" not in item.content for item in items)
 
 
 async def test_actual_tool_result_sources_reach_private_derived_memory_and_membership_withdrawal(
@@ -325,15 +261,12 @@ async def test_ordinary_team_correction_preserves_historical_provenance_and_new_
             "source_version": source.content_sha256} in dependencies, dependencies
 
 
-@pytest.mark.parametrize("surface", ["load", "search", "automatic"])
+@pytest.mark.parametrize("surface", ["load", "search"])
 async def test_private_work_team_memory_uses_its_actual_parent_audience(
     runtime_team, owner_sessionmaker, app_user_sessionmaker, monkeypatch, surface,  # noqa: F811
 ):
     from app.models.agent_team import AgentTeam
     from app.models.user import User
-    from app.memory.activation import ActivationContext
-    from app.memory.retriever import MemoryRetriever
-    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
     s, _business_workspace, (writer, inspector) = runtime_team
     n = s.n
@@ -350,25 +283,12 @@ async def test_private_work_team_memory_uses_its_actual_parent_audience(
     inspected = await inspector.get("/enterprise/memory/shared/report", params={"workspace_key": workspace})
     assert inspected.status_code == 200 and "WORK_TEAM_PARENT_MARKER" in inspected.text
 
-    async def choose(_self, *, items, **_kwargs):
-        return [item.metadata["selection_candidate_id"] for item in items], "Use authorized work-team facts"
-
-    monkeypatch.setattr(MemoryRetriever, "_select_with_model", choose)
     outputs = []
     for user, session, run in ((n.user, n.session, n.run), (n.foreign, s.second_session, s.second_run)):
-        if surface == "automatic":
-            context = ActivationContext(query="release", principal_stack=PrincipalStack(
-                current_user=Principal(PrincipalRole.CURRENT_USER, str(user)),
-                direct_owner=Principal(PrincipalRole.OWNER, str(n.user))))
-            items = await MemoryRetriever(data_root=n.root.parent).retrieve(n.agent, "release", str(session), str(n.tenant),
-                runtime_task_id=str(run), activation_context=context,
-                rerank_model_config={"provider": "reference", "model": "local"})
-            outputs.append("\n".join(item.content for item in items))
-        else:
-            tool = "search_memory" if surface == "search" else "load_memory"
-            args = {"query": "release", "scope": "facts"} if surface == "search" else {"ids": [f"team_memory:{workspace}:report"]}
-            outputs.append(str(await n.service.execute(tool, args, agent_id=n.agent, user_id=user,
-                session_id=str(session), runtime_task_id=str(run), emit_runtime_hooks=False)))
+        tool = "search_memory" if surface == "search" else "load_memory"
+        args = {"query": "release", "scope": "facts"} if surface == "search" else {"ids": [f"team_memory:{workspace}:report"]}
+        outputs.append(str(await n.service.execute(tool, args, agent_id=n.agent, user_id=user,
+            session_id=str(session), runtime_task_id=str(run), emit_runtime_hooks=False)))
     assert "WORK_TEAM_PARENT_MARKER" in outputs[0], outputs[0]
     assert "WORK_TEAM_PARENT_MARKER" not in outputs[1], outputs[1]
 

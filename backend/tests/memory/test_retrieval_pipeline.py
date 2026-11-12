@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.memory.activation import ActivationContext
-from app.memory.retriever import MAX_SELECTION_DESCRIPTOR_BYTES, MemoryRetriever, _selection_descriptor
+from app.memory.retriever import MemoryRetriever
 from app.memory.types import MemoryItem, MemoryKind
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
@@ -225,91 +225,6 @@ def test_legacy_read_knobs_are_retired() -> None:
         assert not hasattr(MemoryRetriever, retired_method)
 
 
-def test_memory_selector_manifest_uses_bounded_descriptors_not_full_bodies() -> None:
-    body = "full-body-prefix " + ("sensitive-tail " * 200)
-    item = MemoryItem(
-        kind=MemoryKind.SEMANTIC,
-        content=body,
-        score=0.9,
-        source="memory/knowledge/payroll.md",
-        metadata={
-            "selection_candidate_id": "memory_candidate:semantic:0:abc",
-            "title": "Payroll exception",
-            "description": "One-line hook for the governed payroll exception.",
-            "entry_id": "knowledge/payroll",
-            "source_type": "knowledge_ppr",
-        },
-    )
-
-    descriptor = _selection_descriptor(item)
-    serialized = json.dumps(descriptor, ensure_ascii=False)
-
-    assert descriptor["name"] == "Payroll exception"
-    assert descriptor["description"] == "One-line hook for the governed payroll exception."
-    assert len(descriptor["description"].encode("utf-8")) <= MAX_SELECTION_DESCRIPTOR_BYTES
-    assert "full-body-prefix" not in serialized
-    assert "sensitive-tail" not in serialized
-    assert descriptor["load_ref"]["entry_id"] == "knowledge/payroll"
-
-
-@pytest.mark.asyncio
-async def test_model_selector_call_receives_only_descriptor_manifest(monkeypatch, tmp_path) -> None:
-    observed: dict[str, object] = {}
-    http_attempt_limits: list[int | None] = []
-    candidate_id = "memory_candidate:semantic:0:abc"
-    item = MemoryItem(
-        kind=MemoryKind.SEMANTIC,
-        content="FULL_MEMORY_BODY_DO_NOT_SEND_TO_SELECTOR " + ("tail " * 1000),
-        score=0.9,
-        source="memory/knowledge/payroll.md",
-        metadata={
-            "selection_candidate_id": candidate_id,
-            "title": "Payroll exception",
-            "description": "Bounded manifest hook",
-            "entry_id": "knowledge/payroll",
-            "source_type": "knowledge_ppr",
-        },
-    )
-
-    async def fake_covered_input(*, sections, review_chunk, **_kwargs):
-        payload = "\n".join(section for _section_id, section in sections)
-        observed["manifest"] = payload
-        observed["chunk_review"] = await review_chunk("map", payload)
-        return payload
-
-    class _Client:
-        async def complete(self, *, messages, **kwargs):
-            observed["final_prompt"] = messages[-1].content
-            http_attempt_limits.append(kwargs.get("_http_max_attempts"))
-            return SimpleNamespace(content=json.dumps({"selected_ids": [candidate_id], "reason": "manifest match"}))
-
-        async def close(self):
-            return None
-
-    monkeypatch.setattr(
-        "app.services.semantic_input_coverage.prepare_covered_semantic_input",
-        fake_covered_input,
-    )
-    monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda _config: _Client())
-    monkeypatch.setattr("app.services.llm_client.with_llm_usage_context", lambda config, **_kwargs: config)
-
-    selected, reason = await MemoryRetriever(data_root=tmp_path)._select_with_model(
-        items=[item],
-        agent_id=uuid.uuid4(),
-        tenant_id=None,
-        query="payroll",
-        model_config={"provider": "fake", "model": "fake"},
-        selection_run_id="selection-test",
-    )
-
-    assert selected == [candidate_id]
-    assert reason == "manifest match"
-    assert "Bounded manifest hook" in observed["manifest"]
-    assert "FULL_MEMORY_BODY_DO_NOT_SEND_TO_SELECTOR" not in observed["manifest"]
-    assert "FULL_MEMORY_BODY_DO_NOT_SEND_TO_SELECTOR" not in observed["final_prompt"]
-    assert http_attempt_limits == [3, 3]
-
-
 def test_plane_read_legacy_t3_fallback_is_observable(data_root: Path, agent_id: uuid.UUID) -> None:
     """Before an agent is migrated, flat-T3 data must not disappear silently.
 
@@ -384,123 +299,22 @@ Runtime activation routes memory candidates.
 
 
 @pytest.mark.asyncio
-async def test_retrieve_no_files(data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever) -> None:
-    items = await retriever.retrieve(agent_id, "anything", session_id=None, tenant_id=None)
+async def test_gather_no_files(data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever) -> None:
+    items = await retriever._gather_authorized_candidates(agent_id, "anything", None, None)
 
     assert [item for item in items if item.kind == MemoryKind.SEMANTIC] == []
 
 
-def _write_complete_overlay_fixture(data_root: Path, agent_id: uuid.UUID) -> None:
-    for index in range(12):
-        content = (
-            "The decisive exception is preserved only in the final record."
-            if index == 11
-            else f"unrelated archived observation {index}"
-        )
-        _write_overlay_entry(data_root, agent_id, entry_id=f"ex-{index}", content=content)
-
-
-@pytest.mark.asyncio
-async def test_model_selector_sees_every_authorized_candidate_and_can_choose_a_low_mechanical_tail(
-    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever, monkeypatch
-) -> None:
-    """Lexical score and fixed top-k are observations, never semantic authority."""
-
-    _write_complete_overlay_fixture(data_root, agent_id)
-    observed: dict[str, object] = {}
-
-    async def fake_selector(*, items, **_kwargs):
-        observed["contents"] = [item.content for item in items]
-        decisive = next(item for item in items if "decisive exception" in item.content)
-        return [decisive.metadata["selection_candidate_id"]], "tail exception is decisive"
-
-    monkeypatch.setattr(retriever, "_select_with_model", fake_selector, raising=False)
-    items = await retriever.retrieve(
-        agent_id,
-        "salary planning",
-        session_id=None,
-        tenant_id=None,
-        rerank_model_config={"provider": "fake", "model": "fake"},
-    )
-
-    assert len(observed["contents"]) == 12
-    assert len(items) == 1
-    assert "decisive exception" in items[0].content
-    assert items[0].metadata["semantic_selection_status"] == "model_selected"
-    assert retriever.last_selection_status == "model_selected"
-
-
-@pytest.mark.asyncio
-async def test_model_selector_failure_surfaces_no_bodies_but_keeps_observable_coverage(
-    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever, monkeypatch
-) -> None:
-    _write_complete_overlay_fixture(data_root, agent_id)
-
-    async def failed_selector(**_kwargs):
-        raise RuntimeError("selector unavailable")
-
-    monkeypatch.setattr(retriever, "_select_with_model", failed_selector, raising=False)
-    items = await retriever.retrieve(
-        agent_id,
-        "salary planning",
-        session_id=None,
-        tenant_id=None,
-        rerank_model_config={"provider": "fake", "model": "fake"},
-    )
-
-    assert items == []
-    assert retriever.last_selection_status == "failed"
-    assert retriever.last_selection_error == "RuntimeError"
-    assert retriever.last_selection_receipt
-
-
-@pytest.mark.asyncio
-async def test_missing_selector_model_surfaces_no_bodies_instead_of_dumping_candidates(
-    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever
-) -> None:
-    _write_complete_overlay_fixture(data_root, agent_id)
-
-    items = await retriever.retrieve(
-        agent_id,
-        "salary planning",
-        session_id=None,
-        tenant_id=None,
-        rerank_model_config=None,
-    )
-
-    assert items == []
-    assert retriever.last_selection_status == "model_unavailable"
-    assert retriever.last_selection_receipt
-
-
-@pytest.mark.asyncio
-async def test_selector_cannot_bypass_five_item_auto_surface_contract(
-    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever, monkeypatch
-) -> None:
-    _write_complete_overlay_fixture(data_root, agent_id)
-
-    async def oversized_selection(*, items, **_kwargs):
-        return [item.metadata["selection_candidate_id"] for item in items[:6]], "six items"
-
-    monkeypatch.setattr(retriever, "_select_with_model", oversized_selection, raising=False)
-    items = await retriever.retrieve(
-        agent_id,
-        "salary planning",
-        session_id=None,
-        tenant_id=None,
-        rerank_model_config={"provider": "fake", "model": "fake"},
-    )
-
-    assert items == []
-    assert retriever.last_selection_status == "failed"
-    assert retriever.last_selection_error == "ValueError"
-
-
-def test_memory_retriever_exposes_only_live_retrieval_entrypoints(data_root: Path) -> None:
+def test_memory_retriever_keeps_only_the_offline_eval_seam(data_root: Path) -> None:
     retriever = MemoryRetriever(data_root=data_root)
 
-    assert callable(retriever.retrieve)
+    # Live prompt assembly no longer retrieves through the retriever; the
+    # deterministic offline recall eval still walks the gather seam.
+    assert callable(retriever._gather_authorized_candidates)
     for dead_api in (
+        "retrieve",
+        "_select_candidates",
+        "_select_with_model",
         "retrieve_candidates",
         "gather_explicit_overlay_candidates",
         "gather_t2_evidence_candidates",
@@ -521,15 +335,15 @@ async def test_activation_context_suppresses_pl3_when_current_user_is_not_owner(
         sensitivity="PL3_sensitive",
     )
 
-    items = await retriever.retrieve(
+    items = await retriever._gather_authorized_candidates(
         agent_id,
         "salary planning",
-        session_id=None,
-        tenant_id=None,
+        None,
+        None,
         activation_context=_activation_context(current_user_id="viewer-1"),
     )
 
-    assert all("salary planning" not in item.content for item in items)
+    assert all("owner-only handling" not in item.content for item in items)
 
 
 @pytest.mark.asyncio
@@ -544,23 +358,15 @@ async def test_activation_context_adds_reasons_and_score(
         metadata={"retention_score": "0.5", "confidence": "0.9"},
     )
 
-    async def select_open_loop(*, items, **_kwargs):
-        candidate = next(item for item in items if "open loop" in item.content)
-        return [candidate.metadata["selection_candidate_id"]], "open loop is relevant"
-
-    monkeypatch.setattr(retriever, "_select_with_model", select_open_loop, raising=False)
-    items = await retriever.retrieve(
+    items = await retriever._gather_authorized_candidates(
         agent_id,
         "salary planning",
-        session_id=None,
-        tenant_id=None,
+        None,
+        None,
         activation_context=_activation_context(),
-        rerank_model_config={"provider": "fake", "model": "fake"},
     )
 
-    semantic_items = [item for item in items if item.kind == MemoryKind.SEMANTIC]
-    assert len(semantic_items) == 1
-    item = semantic_items[0]
+    item = next(candidate for candidate in items if "open loop" in candidate.content)
     assert "goal_relevance" in item.metadata["activation_reasons"]
     assert item.metadata["activation_score"] == item.score
 
@@ -577,11 +383,11 @@ async def test_activation_suppresses_conflicted_entries(
         metadata={"conflict_status": "needs_review"},
     )
 
-    items = await retriever.retrieve(
+    items = await retriever._gather_authorized_candidates(
         agent_id,
         "salary planning",
-        session_id=None,
-        tenant_id=None,
+        None,
+        None,
         activation_context=_activation_context(),
     )
 
@@ -600,18 +406,7 @@ async def test_knowledge_plane_feeds_semantic_items(
         encoding="utf-8",
     )
 
-    async def select_knowledge(*, items, **_kwargs):
-        candidate = next(item for item in items if item.metadata.get("source_type") == "knowledge_ppr")
-        return [candidate.metadata["selection_candidate_id"]], "knowledge claim is relevant"
-
-    monkeypatch.setattr(retriever, "_select_with_model", select_knowledge, raising=False)
-    items = await retriever.retrieve(
-        agent_id,
-        "salary planning",
-        session_id=None,
-        tenant_id=None,
-        rerank_model_config={"provider": "fake", "model": "fake"},
-    )
+    items = await retriever._gather_authorized_candidates(agent_id, "salary planning", None, None)
 
     knowledge = [item for item in items if item.metadata.get("source_type") == "knowledge_ppr"]
     assert knowledge

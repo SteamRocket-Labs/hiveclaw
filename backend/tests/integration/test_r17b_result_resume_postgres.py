@@ -541,3 +541,232 @@ async def test_late_stream_writer_and_reclaimed_prepare_do_not_deadlock(
             if not job.done():
                 job.cancel()
         await asyncio.gather(*jobs, return_exceptions=True)
+
+
+async def _sealed_recovery_round(owner_sessionmaker, app_user_sessionmaker):
+    from app.kernel.engine import _mid_run_items_to_user_messages
+    from app.models.session_v2 import SessionModelResult
+    from app.services.session_model_round import prepare_model_request, seal_model_response
+    from tests.integration.test_m1g27_model_input_bindings_postgres import _bound_input
+
+    tenant, agent, session, run, bound = await _bound_input(owner_sessionmaker)
+    request = dict(
+        tenant_id=tenant,
+        agent_id=agent,
+        session_id=session,
+        run_id=run,
+        turn_id=f"turn-{run.hex}",
+        round_index=1,
+        messages=_mid_run_items_to_user_messages(bound),
+        tools=[],
+        provider="openai",
+        model="synthetic-no-provider",
+    )
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant)
+        request_id = await prepare_model_request(db, **request, attempt_owner="old-worker:1:1")
+        await seal_model_response(
+            db,
+            **{key: request[key] for key in ("tenant_id", "agent_id", "session_id", "run_id", "turn_id", "round_index")},
+            provider_request_id=request_id,
+            response={"content": "Durable recovery bytes", "tool_calls": [], "finish_reason": "stop", "usage": {}},
+        )
+        result_id = await db.scalar(select(SessionModelResult.id).where(SessionModelResult.run_id == run))
+        await db.commit()
+    return request, request_id, result_id
+
+
+@pytest.mark.parametrize("entry", ["web_commit", "reclaimed_prepare"])
+async def test_sealed_sweep_and_live_round_do_not_deadlock(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    tmp_path,
+    entry,
+):
+    from app.models.session_v2 import SessionModelResult
+    from app.services import chat_transcript, session_model_round, session_v2_persistence
+    from app.services.runtime_task_worker import recover_session_model_rounds_once
+
+    worker = ContextVar("r17b_sweep_worker", default=None)
+    live_ready, release_live, candidates_selected, release_sweep, live_locked = (asyncio.Event() for _ in range(5))
+    native_execute, native_lock = AsyncSession.execute, chat_transcript.lock_transcript_session
+    native_commit = session_model_round.commit_sealed_model_round
+    selected = False
+    candidate_had_row_lock = None
+
+    if entry == "web_commit":
+        seed = await recovery._seed_run(owner_sessionmaker, tmp_path, prompt="Return a brief answer.")
+        client = recovery.ScriptedLLMClient([{"content": "The sealed answer."}])
+        recovery._patch_runtime_seams(monkeypatch, seed, app_user_sessionmaker)
+        recovery._patch_invoker_seams(monkeypatch, client, seed, app_user_sessionmaker)
+        tenant, session, run = seed["tenant_id"], seed["session_id"], seed["run_id"]
+    else:
+        request, request_id, _ = await _sealed_recovery_round(owner_sessionmaker, app_user_sessionmaker)
+        tenant, session, run = (request[key] for key in ("tenant_id", "session_id", "run_id"))
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, tenant)
+            task = await db.get(RuntimeTask, run)
+            task.claimed_by, task.claim_version, task.attempt_count = "new-worker", 2, 2
+            await db.commit()
+
+    async def commit(db, **kwargs):
+        if worker.get() == "live":
+            # The real web callback already committed its immutable seal.
+            live_ready.set()
+            await asyncio.wait_for(release_live.wait(), 30)
+        return await native_commit(db, **kwargs)
+
+    async def execute(db, statement, *args, **kwargs):
+        nonlocal selected, candidate_had_row_lock
+        value = await native_execute(db, statement, *args, **kwargs)
+        if (
+            worker.get() == "sweep"
+            and not selected
+            and getattr(statement, "is_select", False)
+            and any(table.name == "session_model_results" for table in statement.get_final_froms())
+        ):
+            selected = True
+            candidate_had_row_lock = statement._for_update_arg is not None
+            candidates_selected.set()
+            await asyncio.wait_for(release_sweep.wait(), 30)
+        return value
+
+    async def lock(db, *, session_id):
+        await native_lock(db, session_id=session_id)
+        if worker.get() == "live" and release_live.is_set() and session_id == session:
+            live_locked.set()
+
+    monkeypatch.setattr(session_model_round, "commit_sealed_model_round", commit)
+    monkeypatch.setattr(AsyncSession, "execute", execute)
+    monkeypatch.setattr(chat_transcript, "lock_transcript_session", lock)
+    monkeypatch.setattr(session_v2_persistence, "lock_transcript_session", lock)
+
+    async def live_round():
+        worker.set("live")
+        if entry == "web_commit":
+            await lifecycle._execute(run, owner_sessionmaker, worker="r17b-sealed-web")
+        else:
+            live_ready.set()
+            await asyncio.wait_for(release_live.wait(), 30)
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, tenant)
+                value = await session_model_round.prepare_model_request(db, **request, attempt_owner="new-worker:2:2")
+                await db.commit()
+                assert value == request_id
+
+    async def sweep():
+        worker.set("sweep")
+        return await recover_session_model_rounds_once(
+            worker_id="r17b-sealed-sweep", run_id=run, session_factory=app_user_sessionmaker,
+        )
+
+    live_job, sweep_job = asyncio.create_task(live_round()), None
+    try:
+        await asyncio.wait_for(live_ready.wait(), 30)
+        sweep_job = asyncio.create_task(sweep())
+        await asyncio.wait_for(candidates_selected.wait(), 30)
+        release_live.set()
+        await asyncio.wait_for(live_locked.wait(), 30)
+        release_sweep.set()
+        counts, _ = await asyncio.wait_for(asyncio.gather(sweep_job, live_job), 40)
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, tenant)
+            result = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == run))
+            committed = list(await db.scalars(select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.result_id == result.id,
+                ChatTranscriptEvent.item_kind == "result_commit",
+                ChatTranscriptEvent.lifecycle == "round_committed",
+            )))
+            failures = list(await db.scalars(select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.session_id == session, ChatTranscriptEvent.item_kind == "runtime_failure",
+            )))
+            assert not failures, [event.metadata_json["v2_payload"] for event in failures]
+            assert result.state == "round_committed"
+            assert len(committed) == 1
+            assert result.round_committed_event_id == committed[0].id
+            task = await db.get(RuntimeTask, run)
+            if entry == "web_commit":
+                assert task.status == "completed", task.result_summary
+                assert len(client.requests) == 1
+            else:
+                assert (task.claimed_by, task.claim_version, task.attempt_count) == ("new-worker", 2, 2)
+        assert counts == {"round_committed": int(entry == "reclaimed_prepare"), "needs_reconciliation": 0}
+        print(f"R17B_SEALED_SWEEP entry={entry}; candidate_row_lock={candidate_had_row_lock}; committed=1; failures=0")
+    finally:
+        release_live.set()
+        release_sweep.set()
+        jobs = [job for job in (live_job, sweep_job) if job is not None]
+        for job in jobs:
+            if not job.done():
+                job.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
+
+
+async def test_sealed_sweep_preserves_cross_tenant_bypass_and_per_candidate_transactions(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+):
+    from sqlalchemy import text
+    from app.models.session_v2 import SessionModelResult
+    from app.services import chat_transcript, session_model_round
+    from app.services.runtime_task_worker import recover_session_model_rounds_once
+
+    rounds = [await _sealed_recovery_round(owner_sessionmaker, app_user_sessionmaker) for _ in range(3)]
+    missing_run = rounds[-1][0]["run_id"]
+    result_ids = [item[2] for item in rounds]
+    native_get, native_lock = AsyncSession.get, chat_transcript.lock_transcript_session
+    native_recover = session_model_round.recover_sealed_model_rounds_once
+    observed = []
+    sweeping = ContextVar("r17b_observe_sweep", default=False)
+
+    async def get(db, entity, ident, *args, **kwargs):
+        # The FK cascades on deletion, so simulate only this corrupted/missing
+        # task lookup; every candidate, result write and transaction is real PG.
+        if sweeping.get() and entity is RuntimeTask and ident == missing_run:
+            return None
+        return await native_get(db, entity, ident, *args, **kwargs)
+
+    async def lock(db, *, session_id):
+        await native_lock(db, session_id=session_id)
+        if sweeping.get():
+            txid, scope = (await db.execute(text(
+                "SELECT txid_current(), current_setting('app.current_tenant_id', true)"
+            ))).one()
+            observed.append((session_id, txid, scope))
+
+    async def recover(db, **kwargs):
+        token = sweeping.set(True)
+        try:
+            role = (await db.execute(text(
+                "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
+            ))).one()
+            assert role == (False, False)
+            return await native_recover(db, **kwargs)
+        finally:
+            sweeping.reset(token)
+
+    monkeypatch.setattr(AsyncSession, "get", get)
+    monkeypatch.setattr(chat_transcript, "lock_transcript_session", lock)
+    monkeypatch.setattr(session_model_round, "recover_sealed_model_rounds_once", recover)
+    async with app_user_sessionmaker() as db:
+        assert list(await db.scalars(select(SessionModelResult).where(SessionModelResult.id.in_(result_ids)))) == []
+    counts = await recover_session_model_rounds_once(worker_id="r17b-multi-sweep", session_factory=app_user_sessionmaker)
+    assert counts == {"round_committed": 2, "needs_reconciliation": 1}
+    assert len({txid for _, txid, _ in observed}) == 3
+    assert {session for session, _, _ in observed} == {item[0]["session_id"] for item in rounds}
+    assert len({scope for _, _, scope in observed}) == 1
+    assert observed[0][2] not in (None, "", *(str(item[0]["tenant_id"]) for item in rounds))
+    async with owner_sessionmaker() as db:
+        results = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.id.in_(result_ids))))
+        for result in results:
+            if result.run_id == missing_run:
+                assert result.state == "needs_reconciliation"
+                assert result.reconciliation_owner == "r17b-multi-sweep:missing_runtime_task"
+                assert result.round_committed_event_id is None
+            else:
+                assert result.state == "round_committed"
+                assert result.reconciliation_owner == "r17b-multi-sweep"
+                assert result.round_committed_event_id is not None
+    async with app_user_sessionmaker() as db:
+        assert list(await db.scalars(select(SessionModelResult).where(SessionModelResult.id.in_(result_ids)))) == []
+    print("R17B_MULTI_SWEEP committed=2; missing_task=1; candidate_transactions=3; bypass_restored=1")

@@ -1807,18 +1807,29 @@ async def recover_sealed_model_rounds_once(
 ) -> dict[str, int]:
     """Finish sealed Round registries without ever re-sending Provider bytes."""
 
+    from app.services.chat_transcript import lock_transcript_session
+
     candidate_statement = (
-        select(SessionModelResult)
+        select(SessionModelResult.id, SessionModelResult.session_id)
         .where(SessionModelResult.state == "sealed")
         .order_by(SessionModelResult.id)
         .limit(max(1, int(limit)))
-        .with_for_update(skip_locked=True)
     )
     if run_id is not None:
         candidate_statement = candidate_statement.where(SessionModelResult.run_id == run_id)
-    candidates = list((await db.execute(candidate_statement)).scalars())
+    candidates = list((await db.execute(candidate_statement)).all())
+    await db.rollback()
     committed = failed = 0
-    for result in candidates:
+    for result_id, session_id in candidates:
+        await lock_transcript_session(db, session_id=session_id)
+        result = await db.scalar(
+            select(SessionModelResult)
+            .where(SessionModelResult.id == result_id, SessionModelResult.state == "sealed")
+            .with_for_update(skip_locked=True)
+        )
+        if result is None:
+            await db.rollback()
+            continue
         task = await db.get(RuntimeTask, result.run_id)
         agent_id = (task.child_agent_id if task.task_type == "delegation" else task.parent_agent_id) if task else None
         if agent_id is None:
@@ -1826,6 +1837,7 @@ async def recover_sealed_model_rounds_once(
             result.reconciliation_owner = f"{worker_id}:missing_runtime_task"
             result.version = int(result.version) + 1
             failed += 1
+            await db.commit()
             continue
         try:
             await commit_sealed_model_round(
@@ -1850,6 +1862,7 @@ async def recover_sealed_model_rounds_once(
             result.reconciliation_owner = worker_id
             result.version = int(result.version) + 1
             failed += 1
+        await db.commit()
     return {"round_committed": committed, "needs_reconciliation": failed}
 
 

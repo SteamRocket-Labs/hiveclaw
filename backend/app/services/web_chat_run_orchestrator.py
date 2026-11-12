@@ -2004,7 +2004,6 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
     if isinstance(exc, SessionRestartRecoveryRequired):
         await _handle_restart_recovery_required(state, exc)
         return
-    failure = _runtime_exception_failure(exc)
     summary = (
         "Execution stopped before the next effect; restore authority or revise the work."
         if isinstance(exc, ExecutionAuthorityUnavailable)
@@ -2012,6 +2011,7 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
         if isinstance(exc, SessionSemanticHistoryUnavailable)
         else f"Web chat run failed: {type(exc).__name__}"
     )
+    failure = _runtime_exception_failure(exc)
     metadata = {"error": str(exc), "terminal_reason": failure.terminal_reason}
     if isinstance(exc, ExecutionAuthorityUnavailable):
         metadata.update(error_code=exc.code, blocked_effect=exc.receipt())

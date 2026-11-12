@@ -570,6 +570,7 @@
     "actionFailed": "Could not complete this action. Please try again.",
     "title": "My Assistant",
     "role": "The user's assistant",
+    "memberRole": "A member's personal assistant",
     "loading": "Loading your assistant",
     "setupByAdmin": "Ask your company admin to set up an assistant.",
     "connectionFailed": "Could not reach your assistant. Please try again.",

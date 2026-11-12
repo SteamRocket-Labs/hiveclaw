@@ -545,6 +545,7 @@
     "actionFailed": "操作未完成，请重试。",
     "title": "我的助理",
     "role": "为你处理工作的助理",
+    "memberRole": "成员的个人助理",
     "loading": "正在读取助理",
     "setupByAdmin": "请联系公司管理员设置助理。",
     "connectionFailed": "暂时无法连接助理，请重试。",

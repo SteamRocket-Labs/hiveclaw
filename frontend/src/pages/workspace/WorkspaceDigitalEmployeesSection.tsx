@@ -4,7 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
 import { agentApi, type AgentOwnerCandidate, type AgentRetirementPending } from '../../api/domains/agents';
-import { assistantNameForSharedDisplay, assistantRoleForDisplay, useAssistantAgentId } from '../assistant/assistantScope';
+import {
+  assistantNameForSharedDisplay, assistantRoleForDisplay, PLATFORM_ASSISTANT_ROLE, useAssistantAgentId,
+} from '../assistant/assistantScope';
 import { usersApi } from '../../api/domains/users';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import { Modal } from '../../components/ui';
@@ -311,7 +313,14 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                                                     ownerName: owner?.display_name || owner?.email || null, t,
                                                 })}</div>
                                                 <div className="ws-employees-role">
-                                                    {assistantRoleForDisplay(agent.role_description || '', t('assistant.role', 'The user\'s assistant')) || t('employees.noRole', 'No role description yet')}
+                                                    {/* X1-r3 ruling 7: only the viewer's own assistant row keeps the
+                                                        possessive role label; another member's default assistant is
+                                                        neutral — it works for that member, not for this viewer. */}
+                                                    {String(agent.id) === String(assistantAgentId || '')
+                                                        ? assistantRoleForDisplay(agent.role_description || '', t('assistant.role', 'The user\'s assistant')) || t('employees.noRole', 'No role description yet')
+                                                        : agent.role_description === PLATFORM_ASSISTANT_ROLE
+                                                            ? t('assistant.memberRole', 'A member\'s personal assistant')
+                                                            : agent.role_description || t('employees.noRole', 'No role description yet')}
                                                 </div>
                                             </td>
                                             <td className="ws-employees-td" data-label={t('workspace.digitalEmployees.employeeOwner', 'Owner')}>

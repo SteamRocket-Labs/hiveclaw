@@ -55,8 +55,12 @@ it('names default assistants by ownership in the zh admin list, custom names unt
   expect(screen.getByText('张三的助理')).toBeTruthy();
   expect(screen.getByText('助理')).toBeTruthy();
   expect(screen.queryByText('My Assistant')).toBeNull();
-  // The default role maps to the plain zh label on every default row.
-  expect(screen.getAllByText('为你处理工作的助理').length).toBe(3);
+  // X1-r3 ruling 7: only the viewer's own assistant row maps the default
+  // role to 「为你处理工作的助理」 — that assistant works for this viewer.
+  // Other members' default assistants are neutral: they work for their
+  // member, not for the admin reading this list.
+  expect(screen.getAllByText('为你处理工作的助理').length).toBe(1);
+  expect(screen.getAllByText('成员的个人助理').length).toBe(2);
   // A real custom name stays untouched.
   expect(screen.getByText('周报助手')).toBeTruthy();
   expect(screen.getByText('写周报')).toBeTruthy();

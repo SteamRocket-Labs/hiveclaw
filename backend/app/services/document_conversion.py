@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import csv
-import io
 import json
 import mimetypes
 import re
@@ -288,8 +286,6 @@ class DocumentConversionService:
     ) -> tuple[str, str, list[str]]:
         warnings: list[str] = []
         is_pdf = _is_pdf_source(source_path, data, source_mime_type)
-        if source_path.suffix.lower() == ".csv" and not is_pdf:
-            return self._convert_with_legacy_extractors(source_path, data, source_mime_type, source_uri), "legacy_python_extractors", []
         try:
             markdown = self._convert_with_markitdown(source_path, data)
             stripped_markdown = markdown.strip()
@@ -328,17 +324,6 @@ class DocumentConversionService:
         self, source_path: Path, data: bytes, source_mime_type: str, source_uri: str | None
     ) -> str:
         ext = source_path.suffix.lower()
-        if ext == ".csv":
-            from charset_normalizer import from_bytes
-
-            reader = csv.reader(io.StringIO(str(from_bytes(data).best())))
-            header = next(reader, None)
-            if header is None:
-                return ""
-            width = len(header)
-            rows = [header, ["---"] * width]
-            rows.extend((row + [""] * width)[:width] for row in reader)
-            return "\n".join("| " + " | ".join(row) + " |" for row in rows)
         if ext in _TEXT_EXTENSIONS or source_mime_type.startswith("text/"):
             text = _decode_text(data)
             if ext in {".html", ".htm"} or "html" in source_mime_type:

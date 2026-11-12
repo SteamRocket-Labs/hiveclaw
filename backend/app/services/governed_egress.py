@@ -38,6 +38,7 @@ _NAT64_NETWORKS = (
 )
 _METADATA_HOSTS = {"metadata.google.internal", "metadata.google.com"}
 _METADATA_ADDRESSES = {
+    ipaddress.ip_address("168.63.129.16"),
     ipaddress.ip_address("169.254.169.254"),
     ipaddress.ip_address("169.254.170.2"),
     ipaddress.ip_address("fd00:ec2::254"),

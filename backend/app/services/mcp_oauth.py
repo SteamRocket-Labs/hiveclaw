@@ -35,6 +35,9 @@ from urllib.parse import urlencode
 
 import httpx
 
+from app.services.mcp_authz import MCPPublicAddressError
+from app.services.mcp_client import public_mcp_http_client
+
 # auth_status enum values on MCPServer (mirror models/mcp_server.py).
 AUTH_NONE = "none"
 AUTH_CONFIGURED = "configured"
@@ -328,12 +331,14 @@ async def refresh_access_token(
 async def _post_token(token_endpoint: str, payload: dict, *, now: float | None) -> OAuthTokenSet:
     stamp = time.time() if now is None else now
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with public_mcp_http_client(30.0, follow_redirects=False) as client:
             resp = await client.post(
                 token_endpoint,
                 data=payload,
                 headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
             )
+    except MCPPublicAddressError as exc:
+        raise OAuthError(message="请管理员检查应用连接地址。", outcome="failed") from exc
     except httpx.HTTPError as exc:
         raise OAuthError(message="OAuth token request outcome is unknown") from exc
     if resp.status_code >= 400:

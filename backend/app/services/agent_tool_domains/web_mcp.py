@@ -21,6 +21,7 @@ from app.services.document_conversion import (
     render_conversion_preview,
 )
 from app.services.governed_egress import GovernedEgressError, fetch_public_http, validate_public_http_url
+from app.services.mcp_authz import MCP_ADMIN_CONNECTION_HINT, MCP_OAUTH_REFRESH_FAILURE, MCPPublicAddressError
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import classify_http_status, render_tool_error, render_tool_fallback
 
@@ -2376,7 +2377,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                         message=oauth_error,
                         provider="mcp",
                         retryable=False,
-                        actionable_hint="Call list_mcp_tools for the connection id, then ask_user_question with configuration.mcp_server_id. Explain the application and purpose; never ask for credentials in chat.",
+                        actionable_hint=MCP_ADMIN_CONNECTION_HINT if oauth_error == MCP_OAUTH_REFRESH_FAILURE else "Call list_mcp_tools for the connection id, then ask_user_question with configuration.mcp_server_id. Explain the application and purpose; never ask for credentials in chat.",
                     )
                 try:
                     scoped_api_key = await resolve_mcp_api_key(db, tool=tool, tenant_id=tid,
@@ -2454,6 +2455,9 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
 
         client = MCPClient(mcp_url, api_key=direct_api_key)
         return await client.call_tool(mcp_name, arguments)
+    except MCPPublicAddressError as exc:
+        from app.tools.handlers.mcp import _render_mcp_authz_error
+        return _render_mcp_authz_error(tool_name, exc)
     except Exception as e:
         return f"❌ MCP tool execution error: {str(e)}"
 
@@ -2508,8 +2512,10 @@ async def _execute_via_smithery_connect(
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
+    from app.services.mcp_client import public_mcp_http_client
+
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with public_mcp_http_client(30, follow_redirects=True) as client:
             tool_resp = await client.post(
                 f"https://api.smithery.ai/connect/{namespace}/{connection_id}/mcp",
                 json={

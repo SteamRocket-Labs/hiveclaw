@@ -20,6 +20,7 @@ from app.services.mcp_metadata_trust import (
 from app.services.mcp_naming import build_mcp_tool_name
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.mcp_authz import MCPAuthzError, validate_mcp_public_url
+from app.services.mcp_client import public_mcp_http_client
 
 
 _PROVIDER_CONFIG_CACHE_TTL_SECONDS = 15.0
@@ -236,7 +237,7 @@ async def _search_smithery_api(query: str, max_results: int, api_key: str) -> li
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with public_mcp_http_client(15, follow_redirects=True) as client:
             resp = await client.get(
                 f"{SMITHERY_API_BASE}/servers",
                 params={"q": query, "pageSize": max_results},
@@ -300,7 +301,7 @@ async def _search_modelscope_api(query: str, max_results: int) -> list[dict]:
         "User-Agent": "modelscope-mcp-server/1.0",
     }
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with public_mcp_http_client(15, follow_redirects=True) as client:
             resp = await client.put(
                 f"{MODELSCOPE_API_BASE}/openapi/v1/mcp/servers",
                 json={"page_size": max_results, "page_number": 1, "search": query, "filter": {}},
@@ -402,7 +403,7 @@ async def _ensure_smithery_connection(api_key: str, mcp_url: str, display_name: 
     """
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        async with public_mcp_http_client(20, follow_redirects=True) as client:
             # Get or create namespace
             ns_resp = await client.get("https://api.smithery.ai/namespaces", headers=headers)
             namespaces = ns_resp.json().get("namespaces", []) if ns_resp.status_code == 200 else []
@@ -539,7 +540,7 @@ async def import_mcp_from_smithery(
     headers = {"Accept": "application/json"}
 
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with public_mcp_http_client(15, follow_redirects=True) as client:
             resp = await client.get(
                 f"{SMITHERY_API_BASE}/servers",
                 params={"q": server_id.lstrip("@"), "pageSize": 5},
@@ -578,7 +579,7 @@ async def import_mcp_from_smithery(
     tools_discovered = []
     deployment_url = None
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with public_mcp_http_client(15, follow_redirects=True) as client:
             detail_resp = await client.get(
                 f"{SMITHERY_API_BASE}/servers/{qualified_name}",
                 headers=headers,
@@ -607,7 +608,8 @@ async def import_mcp_from_smithery(
 
     # Step 3: Determine the MCP server URL for runtime execution
     base_mcp_url = deployment_url or f"https://{qualified_name}.run.tools"
-    await validate_mcp_public_url(base_mcp_url)
+    if deployment_url:
+        await validate_mcp_public_url(deployment_url)
 
     # Step 3.5: Auto-create Smithery Connect namespace + connection
     smithery_config = {}  # will be merged into every AgentTool.config

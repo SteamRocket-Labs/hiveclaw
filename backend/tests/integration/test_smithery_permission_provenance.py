@@ -84,7 +84,7 @@ async def test_approved_smithery_reauthorization_rechecks_exact_permission_evide
 
     original_client = httpx.AsyncClient
     monkeypatch.setattr(discovery.httpx, "AsyncClient", lambda **kwargs: original_client(**{**kwargs, "transport": httpx.MockTransport(respond)}))
-    monkeypatch.setattr(discovery, "SMITHERY_API_BASE", "http://127.0.0.1:55103")
+    monkeypatch.setattr(discovery, "SMITHERY_API_BASE", "http://registry.synthetic.test:55103")
     monkeypatch.setattr(discovery, "_ensure_smithery_connection", existing_connection)
     initial = await discovery.import_mcp_from_smithery(registry_id, agent_id,
         config={"smithery_api_key": "synthetic-registry-key"})

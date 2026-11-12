@@ -47,6 +47,10 @@ class MCPCompanyCredentialAuthorityDenied(MCPAuthzError):
     """The current principal cannot issue company credential authority."""
 
 
+MCP_ADMIN_CONNECTION_HINT = "请管理员检查应用连接地址。"
+MCP_OAUTH_REFRESH_FAILURE = "MCP OAuth refresh failed or its outcome is unknown; 请管理员检查应用连接地址。"
+
+
 async def validate_mcp_public_url(server_url: str):
     """Apply the shared public-address policy at MCP ingress and HTTP hops."""
     from app.services.governed_egress import GovernedEgressError, validate_public_http_url
@@ -55,7 +59,7 @@ async def validate_mcp_public_url(server_url: str):
         return await validate_public_http_url(server_url)
     except GovernedEgressError as exc:
         raise MCPPublicAddressError(
-            "连接失败：请使用可访问的公开的 HTTP 或 HTTPS 地址；不支持本机、内网、链路本地、共享地址或云元数据地址。"
+            "连接失败：请检查网址是否正确，并使用可公开访问的 HTTP 或 HTTPS 地址；不支持本机、内网、链路本地、共享地址或云元数据地址。"
         ) from exc
 
 

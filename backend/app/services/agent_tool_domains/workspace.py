@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.config import get_settings
+from app.runtime.prompts.mcp import MCP_ADMIN_ROUTE
 from app.services.chat_artifact_delivery import is_chat_artifact_snapshot_storage_path
 from app.services.legacy_company_files import COMPANY_CONTEXT_FILENAMES, company_context_path_allowed
 from app.services.managed_capability_guard import sanitize_managed_credential_guidance
@@ -619,8 +620,8 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
             guidance += (
                 " This assistant cannot install company connections. If the company has not connected the requested app, "
                 "tell the member that this assistant cannot add the connection under current company settings. "
-                "An administrator can open 公司连接 → 应用连接 → MCP 与插件 → 扩展与增值能力, "
-                "click 添加扩展, test the public URL and import its tools, then open MCP 服务器 to review and enable them. "
+                f"An administrator can follow {MCP_ADMIN_ROUTE}. "
+                "The extensions page opens on AI 资产; switch to MCP 与插件, test the public URL and import, then review each tool and enable it. "
                 "Do not try browsers, CLIs, commands or other routes to reach it. "
                 "For an already registered app, use its available tools and the existing personal-account connection card."
             )

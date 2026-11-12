@@ -22,6 +22,13 @@ PUBLIC_V4 = "93.184.216.34"
 PUBLIC_V6 = "2606:2800:220:1:248:1893:25c8:1946"
 
 
+@pytest.mark.parametrize("url", ["http://168.63.129.16/", "https://azure-metadata.example/token"])
+async def test_azure_wireserver_is_denied_as_metadata(url):
+    async def azure_dns(_host, _port): return ("168.63.129.16",)
+    with pytest.raises(GovernedEgressError):
+        await validate_public_http_url(url, resolver=azure_dns)
+
+
 def _extract_tool_error(result: str) -> dict:
     start_marker = "<tool_error>"
     end_marker = "</tool_error>"

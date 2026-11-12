@@ -9,6 +9,7 @@ Reference: https://modelcontextprotocol.io/docs
 """
 
 import json
+from collections.abc import Awaitable, Callable
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -18,6 +19,23 @@ from app.services.http_origin import http_origin
 from app.services.mcp_authz import MCPAuthzError, MCPOriginMismatchError, assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key, validate_mcp_public_url
 from app.services.governed_egress import PinnedPublicNetworkBackend, _PinnedAsyncHTTPTransport
 from app.tools.result_envelope import render_tool_error
+
+
+def public_mcp_http_client(
+    timeout: float, *, follow_redirects: bool,
+    request_hook: Callable[[httpx.Request], Awaitable[None]] | None = None,
+) -> httpx.AsyncClient:
+    """Pin every MCP, registry and OAuth HTTP hop before sending it."""
+    backend = PinnedPublicNetworkBackend()
+
+    async def validate_request(request: httpx.Request) -> None:
+        target = await validate_mcp_public_url(str(request.url))
+        backend.register(target.hostname, target.port, target.resolved_ips)
+        if request_hook is not None:
+            await request_hook(request)
+
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=follow_redirects, trust_env=False,
+        transport=_PinnedAsyncHTTPTransport(backend), event_hooks={"request": [validate_request]})
 
 
 class MCPClient:
@@ -52,15 +70,7 @@ class MCPClient:
             request.headers.pop("Authorization", None)
 
     def _http_client(self, timeout: float) -> httpx.AsyncClient:
-        backend = PinnedPublicNetworkBackend()
-
-        async def validate_request(request: httpx.Request) -> None:
-            target = await validate_mcp_public_url(str(request.url))
-            backend.register(target.hostname, target.port, target.resolved_ips)
-            await self._scope_authorization(request)
-
-        return httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False,
-            transport=_PinnedAsyncHTTPTransport(backend), event_hooks={"request": [validate_request]})
+        return public_mcp_http_client(timeout, follow_redirects=True, request_hook=self._scope_authorization)
 
     def _parse_response(self, resp: httpx.Response) -> dict:
         """Parse response — handles both JSON and SSE (text/event-stream) formats."""

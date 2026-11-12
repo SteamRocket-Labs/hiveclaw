@@ -13,7 +13,7 @@ from app.database import pin_rls_tenant_context
 from tests.integration.test_m1g6_role_configuration_postgres import _app
 from tests.integration.test_m1g7_routine_settings_postgres import scoped_runtime_factories  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+pytestmark = pytest.mark.usefixtures("migrated_pg_url", "public_mcp_dns")
 
 
 @pytest.mark.parametrize("origin", ["qualified", "alias", "direct"])
@@ -94,7 +94,7 @@ async def test_first_import_retains_reviewed_employee_capability_and_exact_serve
         kwargs["transport"] = httpx.MockTransport(respond)
         return original_client(**kwargs)
     monkeypatch.setattr(discovery.httpx, "AsyncClient", transport_client)
-    monkeypatch.setattr(discovery, "SMITHERY_API_BASE", "http://127.0.0.1:55105")
+    monkeypatch.setattr(discovery, "SMITHERY_API_BASE", "http://registry.synthetic.test:55105")
     monkeypatch.setattr(discovery, "_ensure_smithery_connection", existing_connection)
     arguments = ({"server_id": display_name, "config": {"mcp_url": endpoint}} if origin == "direct" else {
         "server_id": registry_id if origin == "qualified" else "ledger",

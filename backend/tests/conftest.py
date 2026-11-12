@@ -54,6 +54,7 @@ def public_mcp_dns(monkeypatch):
     """Public DNS for synthetic MCP peers; real fixture sockets stay loopback."""
     import httpcore
     from app.services import governed_egress
+    connected_hosts = []
 
     async def resolve(_host, _port):
         return ("93.184.216.34",)
@@ -77,6 +78,7 @@ def public_mcp_dns(monkeypatch):
         def __init__(self):
             self.backend = httpcore.AnyIOBackend()
         async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            connected_hosts.append(host)
             assert host == "93.184.216.34", "Only the public fixture pin may reach the local stub"
             return FixtureStream(await self.backend.connect_tcp("127.0.0.1", port, timeout, local_address, socket_options))
         async def connect_unix_socket(self, *args, **kwargs):
@@ -88,6 +90,7 @@ def public_mcp_dns(monkeypatch):
     def initialize(self, backend=None, allowed_networks=()):
         original(self, backend=backend or FixtureBackend(), allowed_networks=allowed_networks)
     monkeypatch.setattr(governed_egress.PinnedPublicNetworkBackend, "__init__", initialize)
+    return connected_hosts
 
 
 def pytest_configure(config):

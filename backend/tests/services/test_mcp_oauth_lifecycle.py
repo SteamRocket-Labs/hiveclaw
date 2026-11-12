@@ -18,6 +18,8 @@ from app.models.mcp_server import MCPServer
 from app.services import mcp_oauth
 from app.services.mcp_server_service import resolve_mcp_oauth_bearer
 
+pytestmark = pytest.mark.usefixtures("public_mcp_dns")
+
 
 @pytest.fixture
 async def oauth_server(owner_sessionmaker):

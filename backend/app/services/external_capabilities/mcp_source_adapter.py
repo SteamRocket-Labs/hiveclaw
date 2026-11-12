@@ -38,7 +38,9 @@ async def stage_external_mcp_server_review(
     assert_no_mcp_token_passthrough(raw_config)
     assert_mcp_cloud_transport_allowed(sanitized_url, raw_config.get("transport"))
     for url in (sanitized_url, raw_config.get("mcp_url")):
-        if url:
+        if url is not None:
+            if not isinstance(url, str):
+                await validate_mcp_public_url("")
             clean_url, _ = split_mcp_server_url_and_api_key(url)
             await validate_mcp_public_url(clean_url)
     sanitized_config, has_config_secret = _sanitize_config(raw_config)

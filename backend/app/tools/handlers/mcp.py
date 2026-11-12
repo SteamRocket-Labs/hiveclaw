@@ -32,11 +32,12 @@ def _available_mcp_tools(tenant_id):
 
 
 def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
-    from app.services.mcp_authz import MCPOriginMismatchError, MCPPublicAddressError, MCPStoredCredentialRequired
+    from app.services.mcp_authz import MCP_ADMIN_CONNECTION_HINT, MCPOriginMismatchError, MCPPublicAddressError, MCPStoredCredentialRequired
 
     if isinstance(exc, MCPPublicAddressError):
-        return render_tool_error(tool_name=tool_name, error_class="bad_arguments", message=str(exc),
-            provider="mcp", retryable=False, actionable_hint="请提供可访问的公开 HTTP 或 HTTPS 连接地址。")
+        importing = tool_name == "import_mcp_server"
+        return render_tool_error(tool_name=tool_name, error_class="bad_arguments" if importing else "configuration_required", message=str(exc),
+            provider="mcp", retryable=False, actionable_hint="请提供可公开访问的 HTTP 或 HTTPS 连接地址。" if importing else MCP_ADMIN_CONNECTION_HINT)
     if isinstance(exc, MCPStoredCredentialRequired):
         return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
             provider="mcp", retryable=False,
@@ -460,8 +461,9 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
                 message=str(exc.detail), provider="mcp", retryable=False,
                 actionable_hint="The member can connect their account through the card in this conversation.")
         if auth_error:
+            from app.services.mcp_authz import MCP_ADMIN_CONNECTION_HINT, MCP_OAUTH_REFRESH_FAILURE
             return render_tool_error(tool_name="call_mcp_tool", error_class="auth_required", message=auth_error,
-                provider="mcp", retryable=False, actionable_hint="Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
+                provider="mcp", retryable=False, actionable_hint=MCP_ADMIN_CONNECTION_HINT if auth_error == MCP_OAUTH_REFRESH_FAILURE else "Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
         try:
             api_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid,
                 agent_config=agent_config, oauth_bearer=bearer)
@@ -642,8 +644,9 @@ async def _resolve_agent_mcp_server(
                 message=str(exc.detail), provider="mcp", retryable=False,
                 actionable_hint="The member can connect their account through the card in this conversation.")
         if auth_error:
+            from app.services.mcp_authz import MCP_ADMIN_CONNECTION_HINT, MCP_OAUTH_REFRESH_FAILURE
             return render_tool_error(tool_name=tool_name, error_class="auth_required", message=auth_error,
-                provider="mcp", retryable=False, actionable_hint="Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
+                provider="mcp", retryable=False, actionable_hint=MCP_ADMIN_CONNECTION_HINT if auth_error == MCP_OAUTH_REFRESH_FAILURE else "Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
         try:
             api_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid,
                 agent_config=agent_config, oauth_bearer=bearer)

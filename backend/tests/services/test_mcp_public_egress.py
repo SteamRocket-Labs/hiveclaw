@@ -41,15 +41,15 @@ async def test_import_entries_reject_non_public_urls_before_requests_or_writes(m
             tool_name, arguments = _normalize_tool_command("mcp", {"action": "import_server", **arguments})
             assert tool_name == "import_mcp_server"
         result = await import_mcp_server(uuid4(), arguments)
-        assert "公开的 HTTP 或 HTTPS 地址" in result
+        assert "可公开访问的 HTTP 或 HTTPS 地址" in result
         assert '"error_class": "bad_arguments"' in result
         assert "当前没有权限完成这次操作" not in result
     elif entry == "admin":
-        with pytest.raises(ValueError, match="公开的 HTTP 或 HTTPS 地址"):
+        with pytest.raises(ValueError, match="可公开访问的 HTTP 或 HTTPS 地址"):
             await mcp_source_adapter.stage_external_mcp_server_review(SimpleNamespace(add=forbidden), uuid4(),
                 created_by_user_id=uuid4(), server_id=None, mcp_url=url, server_name="Public docs", config=None)
     else:
-        with pytest.raises(MCPAuthzError, match="公开的 HTTP 或 HTTPS 地址"):
+        with pytest.raises(MCPAuthzError, match="可公开访问的 HTTP 或 HTTPS 地址"):
             await resource_discovery.import_mcp_direct(url, uuid4())
 
 
@@ -82,7 +82,7 @@ async def test_admin_http_entries_return_plain_rejection_without_fetch_or_persis
     async with original(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://g4a.test") as client:
         response = await client.post(entry, json=payload)
     assert response.status_code == 400, response.text
-    assert "公开的 HTTP 或 HTTPS 地址" in response.text
+    assert "可公开访问的 HTTP 或 HTTPS 地址" in response.text
     assert requests == []
 
 
@@ -111,7 +111,7 @@ async def test_stored_mcp_endpoint_is_checked_before_fetch(public_transport, url
         requests.append(str(request.url))
         return httpx.Response(200, json={"result": {"tools": []}})
     public_transport(respond)
-    with pytest.raises(MCPAuthzError, match="公开的 HTTP 或 HTTPS 地址"):
+    with pytest.raises(MCPAuthzError, match="可公开访问的 HTTP 或 HTTPS 地址"):
         await MCPClient(url).list_tools()
     assert requests == []
 
@@ -128,7 +128,7 @@ async def test_mcp_redirect_never_reaches_private_address(public_transport, tran
     public_transport(respond)
     client = MCPClient("https://public-mcp.example/mcp")
     client._transport = transport
-    with pytest.raises(MCPAuthzError, match="公开的 HTTP 或 HTTPS 地址"):
+    with pytest.raises(MCPAuthzError, match="可公开访问的 HTTP 或 HTTPS 地址"):
         await client.list_tools()
     assert requests == ["https://public-mcp.example/mcp" + ("/sse" if transport == "sse" else "")]
 
@@ -140,7 +140,7 @@ async def test_mcp_rejects_private_dns_after_import(public_transport, monkeypatc
     async def rebound(_hostname, _port):
         return ("93.184.216.34", "10.0.0.2")
     monkeypatch.setattr(governed_egress, "resolve_public_addresses", rebound)
-    with pytest.raises(MCPAuthzError, match="公开的 HTTP 或 HTTPS 地址"):
+    with pytest.raises(MCPAuthzError, match="可公开访问的 HTTP 或 HTTPS 地址"):
         await MCPClient("https://public-mcp.example/mcp").list_tools()
 
 

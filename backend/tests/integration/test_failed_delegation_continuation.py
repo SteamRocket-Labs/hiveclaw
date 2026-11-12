@@ -45,7 +45,7 @@ async def _execute(owner, run_id, worker):
 
 async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rounds=8, parent_tokens=30,
     child_terminal_reader=None, second_child=False, nested_running=False, child_success=False,
-    before_notification=None, deliver=True, before_child_completion=None):
+    before_notification=None, deliver=True, before_child_completion=None, before_page_delivery=None):
     import app.database as database
     import app.runtime.invoker as invoker
     import app.services.tenant_resolver as tenant_resolver
@@ -267,6 +267,8 @@ async def _failed_child(owner, app_factory, monkeypatch, tmp_path, *, parent_rou
     pages = await service.prepare_integration_pages(worker_id="r13b-return",
         claimed=[item for item in claimed if item.tenant_id == seed["tenant_id"]])
     assert len(pages) == 1
+    if before_page_delivery is not None:
+        await before_page_delivery(seed, pages[0])
     delivered = await service._deliver_page(pages[0])
     assert delivered.get("ok") is True, delivered
     seed["delivery_page"] = pages[0]

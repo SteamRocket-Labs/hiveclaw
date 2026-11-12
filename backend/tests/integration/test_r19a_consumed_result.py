@@ -160,3 +160,127 @@ async def test_failed_parent_turn_that_read_the_result_does_not_repeat_it(
     seed, _ = await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
         before_notification=read_until_guard)
     assert seed["return_id"] is None, "A failed turn still consumed its settled child reads"
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+async def test_consumed_result_settles_a_wake_reserved_before_interruption(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, auxiliary_models, interrupted,
+):
+    import app.runtime.invoker as invoker
+    from app.models.runtime_budget import RuntimeBudgetRun, RuntimeBudgetEvent
+    from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
+    from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+    from app.services.web_chat_runtime import start_web_chat_run
+
+    observed = {}
+
+    async def read_once(seed):
+        async with owner_sessionmaker() as db:
+            queued = await start_web_chat_run(db=db, agent=await db.get(Agent, seed["agent_id"]),
+                user=await db.get(User, seed["user_id"]), session=await db.get(ChatSession, seed["session_id"]),
+                content="Read the colleague's result.", extra_metadata={"source": "websocket_message"})
+            run_id = UUID(queued["run_id"])
+            await db.commit()
+        client = ScriptedLLMClient([{"tool_calls": [_call("check_async_task", {"task_id": str(seed["child_id"])},
+            "reserved-read")], "finish_reason": "tool_calls"}, {"content": "The colleague's points are available."}])
+        monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+        await _execute(owner_sessionmaker, run_id, "r19a-reserved-parent")
+
+    native_settle = RuntimeBudgetService.settle
+
+    async def reserve_before_delivery(seed, page):
+        observed.update(seed=seed, page=page, key=f"runtime_result_page:{page.id}:continuation")
+        service = RuntimeBudgetService(session_factory=app_user_sessionmaker)
+        await service.reserve(RuntimeBudgetReservation(budget_run_id=seed["budget_run_id"],
+            reservation_key=observed["key"], continuation_wakes=1))
+        async with owner_sessionmaker() as db:
+            run = await db.get(RuntimeBudgetRun, seed["budget_run_id"])
+            assert run.reserved_continuation_wakes == 1
+            observed["used"] = run.used_continuation_wakes
+        if interrupted:
+            async def crash(service, settlement):
+                if settlement.reservation_key == observed["key"]:
+                    raise RuntimeError("reserved wake settlement interrupted")
+                return await native_settle(service, settlement)
+            monkeypatch.setattr(RuntimeBudgetService, "settle", crash)
+
+    async def execute():
+        return await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+            child_success=True, before_notification=read_once, before_page_delivery=reserve_before_delivery)
+
+    if interrupted:
+        with pytest.raises(RuntimeError, match="reserved wake settlement interrupted"):
+            await execute()
+        monkeypatch.setattr(RuntimeBudgetService, "settle", native_settle)
+        service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
+        receipt = await service._deliver_page(observed["page"])
+        assert receipt["deduplicated"] is True
+        await service._mark_page_delivered(page=observed["page"], worker_id="r13b-return", receipt=receipt)
+        seed = observed["seed"]
+    else:
+        seed, _ = await execute()
+        assert seed["return_id"] is None
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeBudgetRun, seed["budget_run_id"])
+        assert run.reserved_continuation_wakes == 0
+        assert run.used_continuation_wakes == observed["used"]
+        settlements = list(await db.scalars(select(RuntimeBudgetEvent).where(
+            RuntimeBudgetEvent.budget_run_id == seed["budget_run_id"],
+            RuntimeBudgetEvent.reservation_key == observed["key"], RuntimeBudgetEvent.event_type == "settlement")))
+        assert len(settlements) == 1 and settlements[0].amounts_json["continuation_wakes"] == 0
+        notifications = list(await db.scalars(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.session_id == seed["session_id"], ChatTranscriptEvent.event_type == "agent_task_notification")))
+        assert len(notifications) == 1
+        extra = list(await db.scalars(select(RuntimeTask).where(RuntimeTask.parent_agent_id == seed["agent_id"],
+            RuntimeTask.metadata_json["integration_page_id"].astext == str(observed["page"].id))))
+        assert not extra
+
+
+async def test_already_started_continuation_keeps_its_existing_wake_charge(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, auxiliary_models,
+):
+    import app.runtime.invoker as invoker
+    from app.models.runtime_budget import RuntimeBudgetRun, RuntimeBudgetEvent
+    from app.services.runtime_budget_service import RuntimeBudgetService
+    from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+
+    observed = {}
+    native_settle = RuntimeBudgetService.settle
+
+    async def interrupt_after_start(seed, page):
+        observed.update(seed=seed, page=page, key=f"runtime_result_page:{page.id}:continuation")
+        async def crash(service, settlement):
+            if settlement.reservation_key == observed["key"]:
+                raise RuntimeError("started wake settlement interrupted")
+            return await native_settle(service, settlement)
+        monkeypatch.setattr(RuntimeBudgetService, "settle", crash)
+
+    with pytest.raises(RuntimeError, match="started wake settlement interrupted"):
+        await _failed_child(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+            child_success=True, before_page_delivery=interrupt_after_start)
+    monkeypatch.setattr(RuntimeBudgetService, "settle", native_settle)
+    seed, page = observed["seed"], observed["page"]
+    async with owner_sessionmaker() as db:
+        returned = await db.scalar(select(RuntimeTask).where(RuntimeTask.parent_agent_id == seed["agent_id"],
+            RuntimeTask.metadata_json["integration_page_id"].astext == str(page.id)))
+        assert returned is not None and returned.status == "pending"
+        run_id = returned.id
+    client = ScriptedLLMClient([{"tool_calls": [_call("check_async_task", {"task_id": str(seed["child_id"])},
+        "started-read")], "finish_reason": "tool_calls"}, {"content": "The result has been integrated."}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    await _execute(owner_sessionmaker, run_id, "r19a-started-wake")
+    assert len(client.requests) == 2
+    service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
+    receipt = await service._deliver_page(page)
+    assert receipt["deduplicated"] is True
+    await service._mark_page_delivered(page=page, worker_id="r13b-return", receipt=receipt)
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeBudgetRun, seed["budget_run_id"])
+        assert run.reserved_continuation_wakes == 0 and run.used_continuation_wakes == 1
+        settlements = list(await db.scalars(select(RuntimeBudgetEvent).where(
+            RuntimeBudgetEvent.budget_run_id == seed["budget_run_id"],
+            RuntimeBudgetEvent.reservation_key == observed["key"], RuntimeBudgetEvent.event_type == "settlement")))
+        assert len(settlements) == 1 and settlements[0].amounts_json["continuation_wakes"] == 1
+        continuations = list(await db.scalars(select(RuntimeTask).where(RuntimeTask.parent_agent_id == seed["agent_id"],
+            RuntimeTask.metadata_json["integration_page_id"].astext == str(page.id))))
+        assert [task.id for task in continuations] == [run_id]

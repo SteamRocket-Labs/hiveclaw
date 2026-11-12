@@ -34,7 +34,9 @@ from app.models.runtime_task import (
 )
 from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
-from app.services.runtime_budget_service import RuntimeBudgetDenied, RuntimeBudgetReservation, RuntimeBudgetService
+from app.services.runtime_budget_service import (
+    RuntimeBudgetDenied, RuntimeBudgetReservation, RuntimeBudgetService, RuntimeBudgetSettlement,
+)
 from app.services.runtime_result_store import (
     RuntimeResultDescriptor,
     RuntimeResultIntegrationPage as RuntimeResultIntegrationPageValue,
@@ -1718,6 +1720,25 @@ class RuntimeNotificationOutboxService:
                 if admission_decision is not None and admission_decision.waiting:
                     raise CompletionDeliveryDeferred("runtime_budget_approval_required")
 
+        async def settle_previous_wake(db, event):
+            if not already_read or not budget_run_ids:
+                return
+            try:
+                run_id = _uuid(next(iter(budget_run_ids)), field="budget_run_id")
+            except ValueError:
+                return
+            service = RuntimeBudgetService(session_factory=self._session_factory)
+            key = f"runtime_result_page:{page.id}:continuation"
+            reservation = await service._existing_event(db, run_id, key, "reservation")
+            if reservation is None or await service._existing_event(db, run_id, key, "settlement") is not None:
+                return
+            # A prior attempt may have reserved before this result was read.
+            # The durable notification tells whether it actually woke a turn.
+            await service.settle(RuntimeBudgetSettlement(budget_run_id=run_id, reservation_key=key,
+                runtime_task_id=reservation.runtime_task_id,
+                actual_continuation_wakes=0 if (event.metadata_json or {}).get("consumer") == "session_projection" else 1,
+                reason="runtime_result_page_delivered"))
+
         async with tenant_scoped_session(
             page.tenant_id,
             session_factory=self._session_factory,
@@ -1734,6 +1755,7 @@ class RuntimeNotificationOutboxService:
                 )
             ).scalar_one_or_none()
             if existing is not None:
+                await settle_previous_wake(db, existing)
                 if admission is not None and admission_decision is not None:
                     await admission.settle(
                         admission_decision,
@@ -1824,6 +1846,7 @@ class RuntimeNotificationOutboxService:
                     )
                 )
             ).scalar_one_or_none()
+            await settle_previous_wake(db, delivered_event)
             if admission is not None and admission_decision is not None:
                 await admission.settle(
                     admission_decision,

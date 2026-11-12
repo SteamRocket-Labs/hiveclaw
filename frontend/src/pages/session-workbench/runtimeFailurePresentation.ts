@@ -1,5 +1,5 @@
 export type RuntimeFailurePresentation = {
-  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error';
+  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error' | 'timeout' | 'empty_search';
   fallback: string;
 };
 
@@ -15,15 +15,23 @@ export function runtimeFailurePresentation(
       fallback: 'This task did not finish. Please try again later.',
     };
   }
-  if (failureCode === 'timeout' && deliveryState === 'unknown') {
-    // R18a: a timed-out provider stream that still ends as a visible failure is
-    // a plain provider failure — the runtime only fails an unknown delivery
-    // when the request held no provider-side effect (genuinely ambiguous sends
-    // are fenced as needs_reconciliation and never render this card). It gets
-    // the same administrator-directed sentence as other provider failures.
+  if (failureCode === 'repeated_empty_search') {
+    // R18a round 2: the loop guard stopped the turn after several consecutive
+    // typed-empty searches; the plain sentence is the member's answer, and no
+    // retry action is offered (retry_safe is false for this failure).
     return {
-      kind: 'unavailable',
-      fallback: 'The model service could not finish this task. Ask an administrator to check the model configuration.',
+      kind: 'empty_search',
+      fallback: 'Several searches found no matching material.',
+    };
+  }
+  if (failureCode === 'timeout' && deliveryState === 'unknown') {
+    // R18a round 2 (ruling 4): a timed-out stream that ends as a visible
+    // failure is transient — the request was authenticated and streaming, so
+    // naming a configuration problem would be untrue, and retrying the whole
+    // turn is not offered because earlier rounds may have committed effects.
+    return {
+      kind: 'timeout',
+      fallback: 'The model service timed out and this task did not finish. Please try again later.',
     };
   }
   if (deliveryState === 'unknown') {

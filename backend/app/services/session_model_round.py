@@ -1728,7 +1728,15 @@ async def fail_model_request(
         or result.state not in {"prepared", "streaming"}
     ):
         return
-    provider_effect = provider_request_has_effect(dict((result.model_request_snapshot_json or {}).get("wire_request") or {}))
+    snapshot = result.model_request_snapshot_json if isinstance(result.model_request_snapshot_json, dict) else {}
+    wire_request = snapshot.get("wire_request")
+    # R18a round 2: a snapshot without its exact wire request cannot prove the
+    # send was effect-free, so it fails closed into reconciliation. (Placeholder
+    # snapshots never reach the kernel's fail callback on a live path; this
+    # keeps the boundary itself honest.)
+    provider_effect = (
+        True if not isinstance(wire_request, dict) else provider_request_has_effect(dict(wire_request))
+    )
     if error_class == "cancelled" or (run_task is not None and
         (run_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}):
         error_class = "cancelled"

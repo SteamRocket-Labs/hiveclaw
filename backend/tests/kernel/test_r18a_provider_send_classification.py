@@ -119,3 +119,55 @@ async def test_ledger_settled_needs_reconciliation_still_fences_the_run():
     kernel = _kernel(client, fail_effectful)
     with pytest.raises(ProviderRequestNeedsReconciliation):
         await kernel.handle(_request(fail_effectful))
+
+
+@pytest.mark.asyncio
+async def test_ledger_settled_failure_skips_the_fallback_model():
+    """R18a round 2 (reviewer blocker 1): with a fallback model configured, a
+    ledger-settled effect-free failure must exit with the classified provider
+    error. Re-preparing the same round on the fallback would hit prepare's
+    failed-not-retry-safe fence and turn the run back into a reconciliation."""
+
+    from app.kernel.contracts import TerminalReason
+    from app.services.llm_client import LLMError
+
+    async def fail_settled_failed(**_payload) -> str:
+        return "failed"
+
+    primary = _FakeClient([LLMError("Provider stream delivery is unknown: ReadTimeout: timed out")])
+    fallback_client = _FakeClient([
+        SimpleNamespace(content="must not be sent", tool_calls=[], reasoning_content=None,
+                        usage={"total_tokens": 1}),
+    ])
+
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+
+    kernel = AgentKernel(KernelDependencies(
+        resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        resolve_current_user_name=lambda *_a, **_k: "Member",
+        build_system_prompt=lambda *_a, **_k: "PROMPT",
+        resolve_memory_context=lambda *_a, **_k: "",
+        get_tools=lambda *_a, **_k: [],
+        maybe_compress_messages=lambda messages, **_k: messages,
+        create_client=lambda model: primary if model.provider == "openai" else fallback_client,
+        execute_tool=lambda *_a, **_k: "",
+        persist_memory=lambda **_k: None,
+        record_token_usage=lambda *_a, **_k: None,
+        get_max_tokens=lambda *_a, **_k: 2048,
+        extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+        estimate_tokens_from_chars=lambda n: n // 4,
+    ))
+    result = await kernel.handle(InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="primary", api_key="local", base_url=None),
+        fallback_model=SimpleNamespace(provider="anthropic", model="fallback", api_key="local", base_url=None),
+        messages=[{"role": "user", "content": "继续处理"}],
+        agent_name="Agent", role_description="", agent_id=uuid4(), user_id=uuid4(),
+        model_request_prepare=lambda **_k: "provider-request:r18a-2",
+        model_request_fail=fail_settled_failed,
+    ))
+
+    assert len(primary.calls) == 1
+    assert fallback_client.calls == []  # no fallback activation, no second prepare
+    assert result.terminal_reason is TerminalReason.PROVIDER_ERROR
+    assert result.failure_code == "timeout"
+    assert result.failure_delivery_state == "unknown"

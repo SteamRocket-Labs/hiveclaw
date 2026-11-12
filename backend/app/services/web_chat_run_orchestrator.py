@@ -1448,7 +1448,7 @@ async def _commit_session_model_response(state: _WebChatRunState, **payload: Any
     return seal
 
 
-async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -> None:
+async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -> str | None:
     from app.services.session_model_round import fail_model_request
 
     if state.cancel_event.is_set():

@@ -2397,16 +2397,30 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             provider_request_id,
                             failure_detail,
                         )
-                        if provider_request_id is not None and not retry_safe and model_fail_state != "failed":
-                            # R18a: the round ledger may settle an unknown
-                            # delivery as a plain "failed" when the wire request
-                            # held no provider-side effect; only a decision the
-                            # ledger could not make (or could not reach) fences
-                            # the run for operator reconciliation.
-                            raise ProviderRequestNeedsReconciliation(
-                                provider_request_id=provider_request_id,
-                                error_class=error_classification.kind,
-                            ) from exc
+                        if provider_request_id is not None and not retry_safe:
+                            if model_fail_state != "failed":
+                                # R18a: the round ledger may settle an unknown
+                                # delivery as a plain "failed" when the wire request
+                                # held no provider-side effect; only a decision the
+                                # ledger could not make (or could not reach) fences
+                                # the run for operator reconciliation.
+                                raise ProviderRequestNeedsReconciliation(
+                                    provider_request_id=provider_request_id,
+                                    error_class=error_classification.kind,
+                                ) from exc
+                            # R18a round 2 (reviewer blocker 1): the ledger settled
+                            # this unknown delivery as an effect-free failure. The
+                            # fallback retry would re-prepare the same logical
+                            # round and hit prepare's failed-not-retry-safe fence,
+                            # turning the run back into needs_reconciliation. Exit
+                            # now with the classified provider failure, skipping
+                            # PTL and the fallback model.
+                            await _record_new_token_usage()
+                            user_msg = _humanize_llm_error(exc)
+                            await self._persist_before_exit(request, runtime_config, f"[LLM Error] {exc}", api_messages)
+                            return _classified_llm_error_result(
+                                _build_error_result, user_msg, accumulated_tokens, error_classification, delivery_state
+                            )
                         # ── PTL reactive retry: full compress first → mechanical round-group fallback ──
                         if _is_prompt_too_long(exc) and ptl_retries < _PTL_MAX_RETRIES:
                             if ptl_retries == 0 and len(api_messages) > 4:
@@ -3609,15 +3623,23 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             final_tools=tools_for_llm, parts=collected_parts + build_done_event(message)["parts"],
                             terminal_reason=TerminalReason.TURN_STOP)
                     if _loop_guard_terminal_decision.reason == "repeated_empty_search":
-                        # R18a: the searches were side-effect-free and every one
-                        # came back typed empty; the truthful answer to the member
-                        # is the plain stop sentence, not another model round.
+                        # R18a round 2 (reviewer blocker 2): end through the same
+                        # failure shape as identical_terminal_task_read so every
+                        # lane settles — a TURN_STOP without a model receipt left
+                        # delegated children and business tasks fenced for
+                        # operator reconciliation. Web chat fails the run (the
+                        # member card carries the sentence via failure_code);
+                        # delegation and business readers map the same code to
+                        # the plain sentence through runtime_display_status.
                         message = _loop_guard_terminal_decision.message
                         await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, message, api_messages)
-                        return InvocationResult(content=message, tokens_used=accumulated_tokens,
-                            final_tools=tools_for_llm, parts=collected_parts + build_done_event(message)["parts"],
-                            terminal_reason=TerminalReason.TURN_STOP)
+                        result = _build_error_result(
+                            message, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
+                            terminal_reason=TerminalReason.LOOP_GUARD, failure_code="repeated_empty_search",
+                        )
+                        result.parts = collected_parts + result.parts
+                        return result
                     if _loop_guard_terminal_decision.reason == "identical_terminal_task_read":
                         message = _loop_guard_terminal_decision.message
                         await _record_new_token_usage()

@@ -29,6 +29,10 @@ _FAILURE_MESSAGES = {
 }
 _TERMINAL_READ_MESSAGES = frozenset(TERMINAL_TASK_READ_PREFIX + reason for reason in _FAILURE_MESSAGES.values())
 _FAILURE_MESSAGES["identical_terminal_task_read"] = IDENTICAL_TERMINAL_READ_MESSAGE
+# R18a round 2: every reader of a run stopped by the empty-search guard (web
+# card readers, the parent of a delegated colleague, business-task outcomes)
+# maps this failure code to the same plain sentence.
+_FAILURE_MESSAGES["repeated_empty_search"] = EMPTY_SEARCH_FINAL_MESSAGE
 # Every fixed sentence the plain delegation result page may legally carry.
 _FIXED_RESULT_SENTENCES = frozenset(_FAILURE_MESSAGES.values()) | _TERMINAL_READ_MESSAGES
 

@@ -77,19 +77,38 @@ function failureCard(payload: Record<string, unknown>, expectedCode: string) {
   return item!;
 }
 
-it.each(['zh', 'en'])('renders the plain provider-failure sentence for a timed-out stream in %s', async language => {
+it.each(['zh', 'en'])('renders the transient timeout sentence without a retry promise for a timed-out stream in %s', async language => {
   await i18n.changeLanguage(language);
   // E2E run 15 round 30: ReadTimeout with delivery_state unknown, classified
-  // failed because the request held only function tools.
+  // failed because the request held only function tools. R18a round 2 ruling 4:
+  // the copy names the real transient cause, not a configuration problem, and
+  // offers no retry action (retry_safe stays false for unknown delivery).
   const item = failureCard({ status: 'failed', terminal_reason: 'provider_error', failure_code: 'timeout',
     delivery_state: 'unknown', retry_safe: false, retryable: true, requires_user_decision: false,
     content: '', message: '' }, 'timeout');
   const expected = language === 'zh'
-    ? '模型服务未能完成本次任务，请联系管理员检查模型配置。'
-    : 'The model service could not finish this task. Ask an administrator to check the model configuration.';
+    ? '模型服务响应超时，这次没有完成，请稍后再试。'
+    : 'The model service timed out and this task did not finish. Please try again later.';
   const { container } = render(<ThreadItemRenderer item={item} />);
   expect(container.textContent).toContain(expected);
+  expect(container.textContent).not.toContain('请联系管理员');
+  expect(container.textContent).not.toContain('Ask an administrator');
   expect(container.textContent).not.toContain('这次请求没有确认完成。');
+});
+
+it.each(['zh', 'en'])('renders the plain nothing-found sentence when the empty-search guard stopped the run in %s', async language => {
+  await i18n.changeLanguage(language);
+  // R18a round 2 ruling 2: the loop guard's stop ends the run failed with
+  // failure_code repeated_empty_search; the member card carries the same plain
+  // sentence the delegation/business readers see.
+  const item = failureCard({ status: 'failed', terminal_reason: 'loop_guard', failure_code: 'repeated_empty_search',
+    retry_safe: false, retryable: false, requires_user_decision: false,
+    content: '', message: '' }, 'repeated_empty_search');
+  const expected = language === 'zh'
+    ? '多次搜索都没有找到相关资料。'
+    : 'Several searches found no matching material.';
+  const { container } = render(<ThreadItemRenderer item={item} />);
+  expect(container.textContent).toContain(expected);
 });
 
 it('still shows the delivery-unknown copy when the failure is not a timeout', async () => {

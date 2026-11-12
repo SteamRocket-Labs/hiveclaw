@@ -360,12 +360,9 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
         // event time is the run's real end; without it the failed block's end
         // clock falls back to the sticky item occurredAt (the queued time) and
         // the duration collapses to seconds.
-        terminalAt: isTerminal(event) || (event.item_kind === 'run' && event.lifecycle === 'needs_reconciliation')
-          ? event.occurred_at
-          : undefined,
-        terminalSequence: isTerminal(event) || (event.item_kind === 'run' && event.lifecycle === 'needs_reconciliation')
-          ? event.sequence
-          : undefined,
+        ...(isTerminal(event) || (event.item_kind === 'run' && event.lifecycle === 'needs_reconciliation')
+          ? { terminalAt: event.occurred_at, terminalSequence: event.sequence }
+          : { terminalAt: undefined, terminalSequence: undefined }),
         ...(atRunTerminal ? { atRunTerminal } : {}),
         first_sequence: prior?.first_sequence ?? event.sequence, last_sequence: event.sequence,
         last_ordinal: ordinal ?? prior?.last_ordinal,

@@ -197,6 +197,12 @@ function translateRuntimeFailure(t: TFunction, presentation: RuntimeFailurePrese
       return t('sessionWorkbench.threadItem.failure.retryable', presentation.fallback);
     case 'unavailable':
       return t('sessionWorkbench.threadItem.failure.unavailable', presentation.fallback);
+    case 'timeout':
+      // R18a round 2: a transient stream timeout, not a configuration problem.
+      return t('sessionWorkbench.threadItem.failure.timeout', presentation.fallback);
+    case 'empty_search':
+      // R18a round 2: the loop guard's plain nothing-found answer.
+      return t('sessionWorkbench.threadItem.failure.emptySearch', presentation.fallback);
     default:
       throw new Error(`Unhandled runtime failure presentation: ${String(presentation.kind)}`);
   }

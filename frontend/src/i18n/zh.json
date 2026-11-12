@@ -158,7 +158,9 @@
         "rateLimited": "模型服务当前繁忙，请稍后重试，或切换模型后再试。",
         "retryable": "模型服务暂时不可用，本次任务可以安全重试。",
         "unavailable": "模型服务未能完成本次任务，请联系管理员检查模型配置。",
-        "persistenceError": "这次没有完成，请稍后再试。"
+        "persistenceError": "这次没有完成，请稍后再试。",
+        "timeout": "模型服务响应超时，这次没有完成，请稍后再试。",
+        "emptySearch": "多次搜索都没有找到相关资料。"
       },
       "permissionNeeded": "需要你确认：{{tool}}。",
       "thisTool": "该工具",

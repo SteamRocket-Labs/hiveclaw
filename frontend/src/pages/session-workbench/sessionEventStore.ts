@@ -355,8 +355,14 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
         summary: sourceHeld ? undefined : event.display?.summary ?? prior?.summary,
         source_blocks: sourceBlocks,
         occurredAt: prior?.occurredAt ?? event.occurred_at,
-        terminalAt: isTerminal(event) ? event.occurred_at : undefined,
-        terminalSequence: isTerminal(event) ? event.sequence : undefined,
+        // R18a: `run.needs_reconciliation` is outside the contract's terminal
+        // set but the timeline treats it as the run's canonical terminal. Its
+        // event time is the run's real end; without it the failed block's end
+        // clock falls back to the sticky item occurredAt (the queued time) and
+        // the duration collapses to seconds.
+        ...(isTerminal(event) || (event.item_kind === 'run' && event.lifecycle === 'needs_reconciliation')
+          ? { terminalAt: event.occurred_at, terminalSequence: event.sequence }
+          : { terminalAt: undefined, terminalSequence: undefined }),
         ...(atRunTerminal ? { atRunTerminal } : {}),
         first_sequence: prior?.first_sequence ?? event.sequence, last_sequence: event.sequence,
         last_ordinal: ordinal ?? prior?.last_ordinal,

@@ -463,7 +463,7 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-it.each(['live', 'history'] as const)('renders delivery-safe retry actions with transient copy on %s cards', (source) => {
+it.each(['live', 'history'] as const)('renders delivery-safe retry actions and the transient timeout copy on %s cards', (source) => {
   const payloads = [
     { failure_code: 'provider_bad_request', delivery_state: 'rejected', retry_safe: true, retryable: false },
     { failure_code: 'timeout', delivery_state: 'unknown', retry_safe: false, retryable: true },
@@ -492,12 +492,20 @@ it.each(['live', 'history'] as const)('renders delivery-safe retry actions with 
     activeSession={{ ...base.activeSession, user_id: 'member', read_only: false, is_current_user_session: true, operator_view: false }}
     historyMsgs={[]} chatMessages={messages}
     chatMessagesSessionId="retry-session" onBranchMessage={branch} />);
-  const [rejected, unknown, legacy] = cards.map(card => screen.getByText(card.content)
-    .closest('.session-tui-render-cell') as HTMLElement);
+  // R18a round 2 (ruling 4): the timed-out unknown-delivery card names the
+  // real transient cause and offers no retry action; each card is located by
+  // its own distinct copy.
+  const rejected = screen.getByText('The model service could not finish this task. Ask an administrator to check the model configuration.')
+    .closest('.session-tui-render-cell') as HTMLElement;
+  const timedOut = screen.getByText('The model service timed out and this task did not finish. Please try again later.')
+    .closest('.session-tui-render-cell') as HTMLElement;
+  const legacy = screen.getByText('The model service is temporarily unavailable. This task can be retried safely.')
+    .closest('.session-tui-render-cell') as HTMLElement;
   expect(within(rejected).queryByTestId('thread-item-retry-turn')).not.toBeNull();
-  expect(rejected.textContent).toContain('The model service could not finish this task. Ask an administrator to check the model configuration.');
   expect(rejected.textContent).not.toContain('can be retried safely');
-  expect(within(unknown).queryByTestId('thread-item-retry-turn')).toBeNull();
+  expect(within(timedOut).queryByTestId('thread-item-retry-turn')).toBeNull();
+  expect(timedOut.textContent).not.toContain('administrator');
+  expect(timedOut.textContent).not.toContain('can be retried safely');
   expect(within(legacy).queryByTestId('thread-item-retry-turn')).not.toBeNull();
   expect(legacy.textContent).toContain('can be retried safely');
   fireEvent.click(within(rejected).getByTestId('thread-item-retry-turn'));

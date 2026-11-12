@@ -1,5 +1,5 @@
 export type RuntimeFailurePresentation = {
-  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error';
+  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error' | 'timeout' | 'empty_search';
   fallback: string;
 };
 
@@ -13,6 +13,25 @@ export function runtimeFailurePresentation(
     return {
       kind: 'persistence_error',
       fallback: 'This task did not finish. Please try again later.',
+    };
+  }
+  if (failureCode === 'repeated_empty_search') {
+    // R18a round 2: the loop guard stopped the turn after several consecutive
+    // typed-empty searches; the plain sentence is the member's answer, and no
+    // retry action is offered (retry_safe is false for this failure).
+    return {
+      kind: 'empty_search',
+      fallback: 'Several searches found no matching material.',
+    };
+  }
+  if (failureCode === 'timeout' && deliveryState === 'unknown') {
+    // R18a round 2 (ruling 4): a timed-out stream that ends as a visible
+    // failure is transient — the request was authenticated and streaming, so
+    // naming a configuration problem would be untrue, and retrying the whole
+    // turn is not offered because earlier rounds may have committed effects.
+    return {
+      kind: 'timeout',
+      fallback: 'The model service timed out and this task did not finish. Please try again later.',
     };
   }
   if (deliveryState === 'unknown') {

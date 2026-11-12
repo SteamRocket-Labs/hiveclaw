@@ -1728,19 +1728,36 @@ async def fail_model_request(
         or result.state not in {"prepared", "streaming"}
     ):
         return
-    provider_effect = provider_request_has_effect(dict((result.model_request_snapshot_json or {}).get("wire_request") or {}))
+    snapshot = result.model_request_snapshot_json if isinstance(result.model_request_snapshot_json, dict) else {}
+    wire_request = snapshot.get("wire_request")
+    # R18a round 2/3: a snapshot without its exact wire request cannot prove
+    # the send was effect-free, so it fails closed into reconciliation. This
+    # changes both callers of this fact: an unknown delivery AND a
+    # cancellation, which on a snapshot-less row now fences
+    # (needs_reconciliation) instead of ending killed. Neither is reachable on
+    # a live path — prepare writes the full wire before the kernel ever holds
+    # the request id — but the boundary itself stays fail-closed.
+    provider_effect = (
+        True if not isinstance(wire_request, dict) else provider_request_has_effect(dict(wire_request))
+    )
     if error_class == "cancelled" or (run_task is not None and
         (run_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}):
         error_class = "cancelled"
         retry_safe = False
     cancelled = error_class == "cancelled" and not provider_effect
-    result.state = "failed" if retry_safe or cancelled else "needs_reconciliation"
+    # R18a: an unknown delivery only needs operator reconciliation when the
+    # wire request itself could have executed a provider-side effect
+    # (mcp_servers or non-function tools). A function-tools-only completion
+    # has no effect whatever the provider did with it, so it ends as a plain
+    # failure and the run fails through the normal provider-failure path.
+    ambiguous_send = not retry_safe and not cancelled and provider_effect
+    result.state = "needs_reconciliation" if ambiguous_send else "failed"
     result.seal_json = {
         "delivery_state": str(delivery_state),
         "error_class": str(error_class),
         "retry_safe": bool(retry_safe),
     }
-    result.reconciliation_owner = None if retry_safe or cancelled else "session_model_round:ambiguous_failure"
+    result.reconciliation_owner = "session_model_round:ambiguous_failure" if ambiguous_send else None
     result.version = int(result.version) + 1
     failure = {
         "reason": "user_cancel" if cancelled else "ambiguous_provider_send",
@@ -1757,7 +1774,7 @@ async def fail_model_request(
             result.state = "needs_reconciliation" if provider_effect else "failed"
             result.reconciliation_owner = "session_model_round:ambiguous_failure" if provider_effect else None
             return result.state
-        if run_task is not None:
+        if run_task is not None and (cancelled or provider_effect):
             assert_runtime_task_fence(run_task)
             metadata = dict(run_task.metadata_json or {})
             if cancelled:
@@ -1769,6 +1786,8 @@ async def fail_model_request(
             run_task.metadata_json = metadata
             run_task.completed_at = datetime.now(timezone.utc)
             run_task.claim_version = int(run_task.claim_version or 0) + 1
+        else:
+            run_task = None
     else:
         run_task = None
     if not retry_safe and not cancelled:

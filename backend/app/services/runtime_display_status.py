@@ -8,6 +8,9 @@ RUNTIME_LIMIT_MESSAGES = {
 }
 TERMINAL_TASK_READ_PREFIX = "任务结果未变化，已停止本次处理："
 DELEGATED_TASK_RUNNING_MESSAGE = "同事正在处理，结果回来后会在这里继续。"
+# R18a: the loop guard's empty-search stop. True for the only input that
+# produces it — several searches in one turn all returned nothing.
+EMPTY_SEARCH_FINAL_MESSAGE = "多次搜索都没有找到相关资料。"
 # Frozen sentences: stored result summaries and stored failure pages are compared
 # against these exact bytes, so a wording change desynchronizes old records.
 DELEGATION_TIMEOUT_MESSAGE = "没在时限内完成这项任务。"
@@ -26,6 +29,15 @@ _FAILURE_MESSAGES = {
 }
 _TERMINAL_READ_MESSAGES = frozenset(TERMINAL_TASK_READ_PREFIX + reason for reason in _FAILURE_MESSAGES.values())
 _FAILURE_MESSAGES["identical_terminal_task_read"] = IDENTICAL_TERMINAL_READ_MESSAGE
+# R18a round 2/3: readers of a run stopped by the empty-search guard map this
+# failure code to the plain sentence — the web member card via the frontend
+# failure-code mapping, the parent of a delegated colleague through
+# runtime_failure_observation on the child task's top-level metadata, and the
+# business member projection through the task-executor outcome summary. A
+# parent reading a business RuntimeTask through runtime_failure_observation
+# still gets the generic sentence: its error_code sits under
+# metadata.outcome, not at the top level (pre-existing, report-only).
+_FAILURE_MESSAGES["repeated_empty_search"] = EMPTY_SEARCH_FINAL_MESSAGE
 # Every fixed sentence the plain delegation result page may legally carry.
 _FIXED_RESULT_SENTENCES = frozenset(_FAILURE_MESSAGES.values()) | _TERMINAL_READ_MESSAGES
 

@@ -24,7 +24,10 @@ RoundInputBind = Callable[[int], Awaitable[list[dict]] | list[dict]]
 # instead of reissuing the provider generation (worker-restart recovery).
 ModelRequestPrepare = Callable[..., Awaitable[str | dict[str, Any]] | str | dict[str, Any]]
 ModelResponseCommit = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
-ModelRequestFail = Callable[..., Awaitable[None] | None]
+# The fail callback returns the round ledger's settlement decision for the
+# failed request — "failed", "needs_reconciliation", or None when no sealed
+# round could decide (the caller must then stay conservative).
+ModelRequestFail = Callable[..., Awaitable[str | None] | str | None]
 MessagePart = dict[str, Any]
 
 

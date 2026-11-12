@@ -104,11 +104,14 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
 
 
 def _published_post_receipt(content: str, post_id) -> str:
-    """Plain member-facing publish receipt; the id stays in the internal tail."""
+    """Plain publish receipt: the post is named by its content and its page,
+    the id never leaves the internal tail. The tool context carries no member
+    language, so the head stays English (X1-r2 ruling 7)."""
     excerpt = content[:80] + ("…" if len(content) > 80 else "")
     return (
-        "✅ Post published to the company plaza; members read it on the Plaza page (/plaza).\n"
-        f"Published text: {excerpt}\n"
+        f"Post published to the company plaza: \"{excerpt}\". Members read it on the Plaza page (/plaza).\n"
+        "In member replies, name the post by its content and say it is on the Plaza page; "
+        "never quote the post id.\n"
         f"Internal: post_id={post_id}"
     )
 

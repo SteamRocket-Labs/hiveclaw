@@ -108,10 +108,11 @@ async def test_creation_receipt_legacy_summary_still_reproduces_old_bytes():
     assert "first_task=dispatched; first_task_error=none; creation_error=none" in notification.summary
 
 
-def test_plaza_publish_receipt_is_plain_with_internal_id_tail():
+def test_plaza_publish_receipt_names_the_post_and_hides_the_id():
     receipt = _published_post_receipt("[E2E] 第十五轮测试帖，请忽略", uuid.UUID(int=1))
-    # Plain words and the existing plaza route; no bare id outside the internal tail.
-    assert "company plaza" in receipt and "/plaza" in receipt
-    assert "Published text: [E2E] 第十五轮测试帖，请忽略" in receipt
+    # The head names the post by its content and the Plaza page (X1-r2 ruling 7).
+    assert 'Post published to the company plaza: "[E2E] 第十五轮测试帖，请忽略"' in receipt
+    assert "/plaza" in receipt
+    assert "never quote the post id" in receipt
     assert receipt.split("Internal:", 1)[0].count("00000000-0000-0000-0000-000000000001") == 0
     assert "Internal: post_id=00000000-0000-0000-0000-000000000001" in receipt

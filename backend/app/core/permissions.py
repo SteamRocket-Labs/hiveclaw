@@ -388,7 +388,22 @@ async def check_agent_access(
     return await _agent_access_for_loaded(db, user, agent)
 
 
-async def _agent_access_for_loaded(db, user, agent) -> Tuple[Agent, str]:
+async def agent_access_from_facts(db, user, facts) -> Tuple[Agent, str]:
+    """Apply the canonical ACL to facts read at this explicit check point."""
+    from app.services.source_read_queries import permission_rows
+
+    agent, active, permissions, teams, resources = facts[:5] if facts is not None else (None,) * 5
+    # A source reader may become global when its live User row is refreshed.
+    if agent is not None and user.role == "platform_admin":
+        return await check_agent_access(db, user, agent.id)
+    agent = await _validate_loaded_agent_for_user(db, user, agent if active is True else None)
+    team_ids = [uuid.UUID(value) for value in teams or []] if (
+        getattr(user, "is_active", True) is True and user.tenant_id == agent.tenant_id) else []
+    return await _agent_access_for_loaded(db, user, agent,
+        facts=(permission_rows(permissions), team_ids, permission_rows(resources)))
+
+
+async def _agent_access_for_loaded(db, user, agent, *, facts=None) -> Tuple[Agent, str]:
     """Apply the shared ACL to an employee loaded and validated by this module."""
     agent_id = agent.id
     # Scoped administrators (PDEC-013): organization administrators manage
@@ -408,10 +423,13 @@ async def _agent_access_for_loaded(db, user, agent) -> Tuple[Agent, str]:
         return agent, "manage"
 
     # Check permission scopes
-    perms = await db.execute(
-        select(AgentPermission).where(AgentPermission.agent_id == agent_id).execution_options(populate_existing=True)
-    )
-    permissions = perms.scalars().all()
+    if facts is None:
+        perms = await db.execute(
+            select(AgentPermission).where(AgentPermission.agent_id == agent_id).execution_options(populate_existing=True)
+        )
+        permissions = perms.scalars().all()
+    else:
+        permissions = facts[0]
 
     for perm in permissions:
         if user.role == "platform_admin" and perm.scope_type != "user":
@@ -435,12 +453,16 @@ async def _agent_access_for_loaded(db, user, agent) -> Tuple[Agent, str]:
     if user.role != "platform_admin" and user.department_id:
         base_principals.append(("department", user.department_id))
     team_principals = [
-        ("business_team", team_id) for team_id in await load_effective_business_team_ids(db, user, agent.tenant_id)
+        ("business_team", team_id) for team_id in (await load_effective_business_team_ids(db, user, agent.tenant_id) if facts is None else facts[1])
     ]
     use_principals = [*base_principals, *team_principals]
     context = {"tenant_id": str(agent.tenant_id)} if agent.tenant_id else None
 
     async def _allowed(principals: list[tuple[str, uuid.UUID]], action: str) -> bool:
+        if facts is not None:
+            from app.core.policy import classify_loaded_permissions
+
+            return classify_loaded_permissions(facts[2], principals=principals, action=action, context=context) == "allow"
         primary, *additional = principals
         try:
             return await check_permission(
@@ -457,6 +479,10 @@ async def _agent_access_for_loaded(db, user, agent) -> Tuple[Agent, str]:
             return False
 
     async def _execute_decision() -> str:
+        if facts is not None:
+            from app.core.policy import classify_loaded_permissions
+
+            return classify_loaded_permissions(facts[2], principals=use_principals, action="execute", context=context)
         primary, *additional = use_principals
         try:
             return await classify_permission(

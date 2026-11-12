@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from sqlalchemy import select, text
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only, selectinload
 
 from app.models.ai_asset import AIAssetRecord
 from app.models.config_revision import ConfigRevision
@@ -241,9 +241,10 @@ async def record_original_platform_skill_sources(db, *, agent, workspace):
 async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
     from app.config import get_settings
     from app.models.agent import Agent
-    from app.services.content_input_receipts import _preflight_inputs
+    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS, _preflight_inputs
 
-    rows = _preflight_inputs(db)
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    rows = _preflight_inputs(db, authority=scope is not None and scope.source_catalog)
     key = ("platform_skill_sources", tenant_id, agent_id)
     if rows is not None and key in rows:
         sources = rows[key]
@@ -254,12 +255,22 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
     if rows is not None:
         source_path = None
 
-    row = (await db.execute(select(ConfigRevision, Agent).select_from(Agent)
+    lineage = None
+    statement = (select(ConfigRevision, Agent).select_from(Agent)
         .outerjoin(ConfigRevision, (ConfigRevision.tenant_id == tenant_id)
             & (ConfigRevision.entity_type == "agent_bootstrap") & (ConfigRevision.entity_id == Agent.id)
             & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
-        .where(Agent.id == agent_id).execution_options(populate_existing=True))).first()
-    revision, agent = row if row is not None else (None, None)
+        .where(Agent.id == agent_id).options(load_only(Agent.id, Agent.tenant_id, Agent.creator_id))
+        .execution_options(populate_existing=True))
+    if source_path is not None and len(Path(source_path).parts) >= 3:
+        from sqlalchemy.orm import aliased
+
+        installation = aliased(ConfigRevision)
+        lineage = _installation_id(agent_id, Path(source_path).parts[1])
+        statement = statement.add_columns(select(installation.id).where(installation.tenant_id == tenant_id,
+            installation.entity_type == "agent_skill_install", installation.entity_id == lineage).exists())
+    row = (await db.execute(statement)).first()
+    revision, agent = row[:2] if row is not None else (None, None)
     content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
     if agent is None or agent.tenant_id != tenant_id:
         return {}
@@ -340,7 +351,7 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
         candidates[path] = (parts[1], digest)
     installation_ids = {_installation_id(agent_id, folder) for folder, _digest in candidates.values()}
     # Read every folder's current lineage together, anew for each source read.
-    superseded = (
+    superseded = ({lineage} if row[2] else set()) if lineage is not None and row is not None else (
         set(
             await db.scalars(
                 select(ConfigRevision.entity_id).where(
@@ -616,7 +627,16 @@ async def validate_skill_file_dependency(db, tenant_id, dependency, *, user, run
                 if agent.tenant_id != tenant_id:
                     raise ValueError("skill_source_tenant_mismatch")
         else:
-            agent, _level = await check_agent_access(db, user, agent_id)
+            from app.services.content_input_receipts import _batch_browser_point
+
+            if _batch_browser_point(db, user):
+                from app.core.permissions import agent_access_from_facts
+                from app.services.source_read_queries import source_reader_statement
+
+                facts = (await db.execute(source_reader_statement(user, agent_id))).first()
+                agent, _level = await agent_access_from_facts(db, user, facts)
+            else:
+                agent, _level = await check_agent_access(db, user, agent_id)
             if agent.tenant_id != tenant_id:
                 raise ValueError("skill_source_tenant_mismatch")
     except (ValueError, HTTPException) as exc:

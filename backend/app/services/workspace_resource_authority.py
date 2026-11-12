@@ -776,6 +776,7 @@ async def authorize_workspace_path(
     for_update: bool = False,
     agent_access: tuple[object, str] | None = None,
     runtime_principal: Any | None = None,
+    source_facts=None,
 ) -> WorkspacePathDecision:
     normalized = normalize_workspace_resource_path(path)
     if not normalized.startswith("workspace/"):
@@ -796,7 +797,8 @@ async def authorize_workspace_path(
     from app.config import get_settings
 
     resolve_workspace_storage_path(Path(get_settings().AGENT_DATA_DIR) / str(agent_id), normalized)
-    manifest = await _load_manifest(db, agent_id=agent_id, path=normalized, for_update=for_update)
+    manifest = (await _load_manifest(db, agent_id=agent_id, path=normalized, for_update=for_update)
+        if source_facts is None else source_facts[0])
     root_session_id = await _canonical_root_session(
         db,
         agent_id=agent_id,
@@ -862,6 +864,7 @@ async def authorize_workspace_path(
             manager_override_reason=manager_override_reason,
             agent_access=(agent, access_level),
             runtime_principal=runtime_principal,
+            resource_facts=source_facts[1:] if source_facts is not None else None,
         )
     except HTTPException as exc:
         raise WorkspaceAuthorityError("workspace_resource_forbidden", str(exc.detail)) from exc

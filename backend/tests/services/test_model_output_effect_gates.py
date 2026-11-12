@@ -212,8 +212,11 @@ async def test_artifact_delivery_rechecks_selection_permission(model, monkeypatc
     receipt = NS(tenant_id=model.tenant_id, carrier_kind="workspace_artifact", content_sha256="a" * 64,
         carrier_ref=receipts.workspace_artifact_ref(agent, artifact.path), id=receipt_id)
     session = NS(id=model.session_id, tenant_id=model.tenant_id, agent_id=agent, audience_kind="group")
-    db = NS(scalar=AsyncMock(return_value=artifact), get=AsyncMock(side_effect=lambda kind, *_args, **_kwargs:
+    db = NS(get_transaction=lambda: None, scalar=AsyncMock(return_value=artifact), get=AsyncMock(side_effect=lambda kind, *_args, **_kwargs:
         receipt if kind is ContentInputReceipt else session if kind is ChatSession else model))
+    # This unit test isolates selection permission; PostgreSQL graph tests
+    # cover the immutable catalog query and its real row projections.
+    monkeypatch.setattr(receipts, "_preload_execution_sources", AsyncMock())
     monkeypatch.setattr(receipts, "_validate_workspace_receipt_inputs", AsyncMock())
     monkeypatch.setattr(receipts, "_validate_input_dependencies", AsyncMock())
     monkeypatch.setattr("app.services.shared_group_authority.load_current_group_recipient_users",

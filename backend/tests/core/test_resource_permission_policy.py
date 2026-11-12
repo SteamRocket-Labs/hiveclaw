@@ -23,8 +23,10 @@ class _DB:
         return _Result(self.permissions)
 
 
-def _permission(*, effect="allow", expires_at=None, revoked_at=None, conditions=None):
+def _permission(*, effect="allow", expires_at=None, revoked_at=None, conditions=None, principal_id=None):
     return SimpleNamespace(
+        principal_type="user",
+        principal_id=principal_id,
         actions=["read"],
         conditions={} if conditions is None else conditions,
         effect=effect,
@@ -41,10 +43,10 @@ async def test_resource_permission_deny_precedes_live_allow_and_ignores_inactive
     principal_id = uuid4()
     db = _DB(
         [
-            _permission(effect="allow"),
-            _permission(effect="deny"),
-            _permission(effect="deny", expires_at=now - timedelta(seconds=1)),
-            _permission(effect="deny", revoked_at=now),
+            _permission(effect="allow", principal_id=principal_id),
+            _permission(effect="deny", principal_id=principal_id),
+            _permission(effect="deny", expires_at=now - timedelta(seconds=1), principal_id=principal_id),
+            _permission(effect="deny", revoked_at=now, principal_id=principal_id),
         ]
     )
 

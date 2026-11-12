@@ -25,7 +25,7 @@ def _error(code="content_source_access_denied"):
 
 
 async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, external_principal_id=None):
-    from app.core.permissions import check_agent_access
+    from app.core.permissions import agent_access_from_facts, check_agent_access
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.runtime_task import RuntimeTask
@@ -48,12 +48,36 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
         ):
             raise _error()
         return actor, agent
-    user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
-    row = (await db.execute(select(Agent, ChatSession, RuntimeTask).select_from(Agent)
-        .outerjoin(ChatSession, ChatSession.id == session_id)
-        .outerjoin(RuntimeTask, (RuntimeTask.id == run_id) & (RuntimeTask.tenant_id == tenant_id))
-        .where(Agent.id == agent_id).execution_options(populate_existing=True))).first()
-    agent, session, task = row if row is not None else (None, None, None)
+    from app.services.content_input_receipts import _batch_browser_point
+    from app.database import get_current_tenant_id
+
+    if str(get_current_tenant_id()) != str(tenant_id):
+        raise _error()
+
+    facts = None
+    if _batch_browser_point(db):
+        from types import SimpleNamespace
+        from app.models.user import User
+        from app.services.source_read_queries import source_reader_statement, reader_columns
+
+        facts = (await db.execute(source_reader_statement(SimpleNamespace(id=user_id), agent_id)
+            .add_columns(User, ChatSession, RuntimeTask).outerjoin(User, User.id == user_id)
+            .outerjoin(ChatSession, ChatSession.id == session_id)
+            .outerjoin(RuntimeTask, (RuntimeTask.id == run_id) & (RuntimeTask.tenant_id == tenant_id))
+            .options(*reader_columns(User, ChatSession, RuntimeTask)))).first()
+        agent, user, session, task = (facts[0], facts[5], facts[6], facts[7]) if facts is not None else (None,) * 4
+        if user is None or user.role == "platform_admin":
+            user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
+            facts = None
+        elif not user.is_active or user.tenant_id != tenant_id:
+            user = None
+    else:
+        user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
+        row = (await db.execute(select(Agent, ChatSession, RuntimeTask).select_from(Agent)
+            .outerjoin(ChatSession, ChatSession.id == session_id)
+            .outerjoin(RuntimeTask, (RuntimeTask.id == run_id) & (RuntimeTask.tenant_id == tenant_id))
+            .where(Agent.id == agent_id).execution_options(populate_existing=True))).first()
+        agent, session, task = row if row is not None else (None, None, None)
     try:
         task_sessions = {
             uuid.UUID(value) for value in (task.parent_session_id, task.child_session_id) if value
@@ -80,7 +104,10 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
     from fastapi import HTTPException
 
     try:
-        await check_agent_access(db, user, agent_id)
+        if facts is None:
+            await check_agent_access(db, user, agent_id)
+        else:
+            await agent_access_from_facts(db, user, facts)
     except HTTPException as exc:
         raise _error() from exc
     return user, agent
@@ -160,7 +187,9 @@ async def observe_directory(db, *, tenant_id, agent_id, runtime_request):
 async def _load(db, *, tenant_id, dependency):
     try:
         source_id = uuid.UUID(dependency["source_id"])
-        row = await db.get(InvocationSpan, source_id, populate_existing=True)
+        from app.services.content_input_receipts import _input_row
+
+        row = await _input_row(db, InvocationSpan, source_id)
         proof = row.metadata_json.get(KIND) if row is not None and isinstance(row.metadata_json, dict) else None
         external = isinstance(proof, dict) and proof.get("schema") == EXTERNAL_SCHEMA
         if (

@@ -404,12 +404,29 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
         return business_inspection_allowed() and is_scoped_business_admin(reader, resource_tenant_id=tenant_id)
 
     try:
-        receipt = await db.get(ContentInputReceipt, uuid.UUID(dependency["source_id"]), populate_existing=True)
+        from app.services.content_input_receipts import _batch_browser_point
+        from app.services.source_read_queries import source_reader_statement, source_uuid, reader_columns
+        from sqlalchemy import func
+
+        joined = _batch_browser_point(db, user)
+        facts = None
+        if joined:
+            agent_binding = source_uuid(func.split_part(ContentInputReceipt.carrier_ref, "\n", 1))
+            facts = (await db.execute(source_reader_statement(user, agent_binding, source=ContentInputReceipt)
+                .add_columns(ContentInputReceipt, User, ChatSession)
+                .outerjoin(User, User.id == user.id)
+                .outerjoin(ChatSession, ChatSession.id == source_uuid(ContentInputReceipt.authority_json["source_session_id"].astext))
+                .where(ContentInputReceipt.id == uuid.UUID(dependency["source_id"]))
+                .options(*reader_columns(User, ChatSession)))).first()
+            receipt, requester, session = (facts[5], facts[6], facts[7]) if facts is not None else (None,) * 3
+        else:
+            receipt = await db.get(ContentInputReceipt, uuid.UUID(dependency["source_id"]), populate_existing=True)
         a = receipt.authority_json
         raw_agent, entry_id = receipt.carrier_ref.split("\n", 1)
         agent_id = uuid.UUID(raw_agent)
-        requester = await db.get(User, user.id, populate_existing=True)
-        session = await db.get(ChatSession, uuid.UUID(a["source_session_id"]), populate_existing=True)
+        if not joined:
+            requester = await db.get(User, user.id, populate_existing=True)
+            session = await db.get(ChatSession, uuid.UUID(a["source_session_id"]), populate_existing=True)
         if (receipt.tenant_id != tenant_id or receipt.carrier_kind != "explicit_memory"
             or receipt.content_sha256 != dependency["source_version"] or a.get("schema") != AUTHORITY_SCHEMA
             or a.get("state") not in {"active", "retired"} or a.get("audience_kind") not in {"private", "group"}
@@ -426,19 +443,36 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
         raise ContentInputReceiptError("explicit_memory_source_cycle", "The memory source chain is cyclic.")
     path = Path(str(agent_id)) / f"memory/explicit/entries/{entry_id}.md"
     _validate_source_bytes(path, receipt.content_sha256)
-    await _authorize_session_input_source(db, tenant_id, session, user=requester, runtime_request=None)
+    await _authorize_session_input_source(db, tenant_id, session, user=requester, runtime_request=None, reader_facts=facts)
     await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, user=requester,
         active_workspace_receipts=active_receipts | {receipt.id})
-    requester = await db.get(User, user.id, populate_existing=True)
+    latest = None
+    if joined:
+        from sqlalchemy import outerjoin
+        from sqlalchemy.orm import aliased, load_only
+
+        current = aliased(ContentInputReceipt)
+        latest_id = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
+            ContentInputReceipt.carrier_kind == "explicit_memory", ContentInputReceipt.carrier_ref == receipt.carrier_ref
+            ).order_by(ContentInputReceipt.revision.desc()).limit(1).scalar_subquery()
+        source = outerjoin(User, ChatSession, ChatSession.id == session.id)
+        facts = (await db.execute(source_reader_statement(user, ChatSession.agent_id, source=source)
+            .add_columns(User, ChatSession, current).where(User.id == user.id)
+            .outerjoin(current, current.id == latest_id).options(*reader_columns(User, ChatSession),
+                load_only(current.id, current.authority_json)))).first()
+        requester, current_session, latest = (facts[5], facts[6], facts[7]) if facts is not None else (None,) * 3
+    else:
+        requester = await db.get(User, user.id, populate_existing=True)
     if (requester is None or not requester.is_active
         or (a.get("audience_kind") == "private" and a.get("owner_user_id") != str(requester.id)
             and not can_inspect(requester))):
         raise ContentInputReceiptError("explicit_memory_browser_denied", "The browser source reader changed.", 403)
-    session = await db.get(ChatSession, session.id, populate_existing=True)
+    session = current_session if joined else await db.get(ChatSession, session.id, populate_existing=True)
     if a.get("audience_kind") == "group" and (session is None or not _same_group(a, session)):
         raise ContentInputReceiptError("explicit_memory_group_source_changed", "The original group binding changed.", 403)
-    await _authorize_session_input_source(db, tenant_id, session, user=requester, runtime_request=None)
-    latest = await latest_memory_receipt(db, tenant_id, agent_id, entry_id)
+    await _authorize_session_input_source(db, tenant_id, session, user=requester, runtime_request=None, reader_facts=facts)
+    if not joined:
+        latest = await latest_memory_receipt(db, tenant_id, agent_id, entry_id)
     if (latest is None or latest.authority_json.get("state") == "revoked"
         or latest.authority_json.get("planned_state") == "revoked"):
         raise ContentInputReceiptError("explicit_memory_source_revoked", "The memory source was withdrawn for privacy.", 403)

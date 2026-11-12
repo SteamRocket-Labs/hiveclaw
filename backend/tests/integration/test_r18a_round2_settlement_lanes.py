@@ -165,7 +165,8 @@ async def _admit_and_run_next_message(owner_sessionmaker, monkeypatch, seed: dic
     from app.services.session_input_admission import run_user_prompt_admission
     from app.services.session_v2_persistence import accept_human_input, resolve_session_mutation_authority
 
-    next_run_id = uuid4()
+    from app.services.session_input_dispatch import dispatch_admitted_input_fast_path
+
     async with owner_sessionmaker() as db:
         from app.models.user import User
 
@@ -188,53 +189,54 @@ async def _admit_and_run_next_message(owner_sessionmaker, monkeypatch, seed: dic
                 "terminal_fallback": "queue_next_turn",
             },
         )
-        await run_user_prompt_admission(db, authority=authority, input_id=input_id, worker_id="r18a-worker-2")
-        await queue_admitted_human_input(db, authority=authority, input_id=input_id)
-        db.add(
-            RuntimeTask(
-                id=next_run_id,
-                task_type="web_chat_turn",
-                status="running",
-                parent_agent_id=seed["agent_id"],
-                child_agent_id=seed["agent_id"],
-                tenant_id=seed["tenant_id"],
-                parent_session_id=str(seed["session_id"]),
-                child_session_id=str(seed["session_id"]),
-                root_user_id=seed["user_id"],
-                root_session_id=str(seed["session_id"]),
-                root_runtime_task_id=next_run_id,
-                prompt="那就帮我总结一下今天做了什么",
-                claimed_by="r18a-worker-2",
-                claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-                claim_version=1,
-                attempt_count=1,
-                metadata_json={
-                    "turn_id": f"turn-{next_run_id.hex}",
-                    "user_id": str(seed["user_id"]),
-                    "runtime_budget": {"schema": "hive.runtime_budget_binding.v1", "status": "active",
-                                       "interactive": True},
-                },
-            )
+        outcome = await run_user_prompt_admission(
+            db, authority=authority, input_id=input_id, worker_id="r18a-worker-2"
         )
-        await db.flush()
-        from app.services.runtime_root_ledger import register_runtime_root_item
-
-        await register_runtime_root_item(
-            db,
-            tenant_id=seed["tenant_id"],
-            root_runtime_task_id=next_run_id,
-            source_agent_id=seed["agent_id"],
-            intent_key=f"web-chat-turn:{next_run_id.hex}",
-            work_type="web_chat_turn",
-            target_ref=str(seed["session_id"]),
-            runtime_task_id=next_run_id,
-            root_user_id=seed["user_id"],
-            root_session_id=str(seed["session_id"]),
-            state="running",
+        # R18a round 3 (Grok nit 3): the next input is genuinely admitted…
+        assert outcome.state == "admitted", outcome
+        await queue_admitted_human_input(db, authority=authority, input_id=input_id)
+        # …and the real dispatch lane creates the successor run for it.
+        dispatch = await dispatch_admitted_input_fast_path(
+            db, admission_id=outcome.admission_id, worker_id="r18a-worker-2"
         )
         await db.commit()
+    if dispatch.state == "pending":
+        # The durable dispatch lane correctly waits until the failed run's
+        # terminal boundary has been delivered; drain the real outbox lane and
+        # let the dispatch run again.
+        from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+        from app.services.web_terminal_boundary_processor import validate_web_terminal_boundary
+
+        service = RuntimeTerminalBoundaryOutboxService(session_factory=owner_sessionmaker)
+
+        async def _deliver(item):
+            return {"source_ref": f"runtime-terminal-boundary://{item.id}"}
+
+        await service.drain_once(
+            tenant_id=seed["tenant_id"], worker_id="r18a-worker-2",
+            canonical_validator=validate_web_terminal_boundary, process_callback=_deliver,
+        )
+        async with owner_sessionmaker() as db:
+            dispatch = await dispatch_admitted_input_fast_path(
+                db, admission_id=outcome.admission_id, worker_id="r18a-worker-2"
+            )
+            await db.commit()
+    assert dispatch.state == "dispatched", dispatch
+    from sqlalchemy import or_
+
+    async with owner_sessionmaker() as db:
+        runs = (await db.execute(
+            select(RuntimeTask).where(
+                RuntimeTask.parent_session_id == str(seed["session_id"]),
+                or_(
+                    RuntimeTask.metadata_json["session_v2_input_id"].as_string() == str(input_id),
+                    RuntimeTask.metadata_json["session_v2_rolled_over_input_id"].as_string() == str(input_id),
+                ),
+            ))).scalars().all()
+    assert len(runs) == 1, [str(run.id) for run in runs]
+    next_run_id = runs[0].id
     next_seed = {**seed, "run_id": next_run_id}
-    await _execute_claimed_run(owner_sessionmaker, next_seed, claim_version=1)
+    await _execute_claimed_run(owner_sessionmaker, next_seed, claim_version=0)
     return str(next_run_id)
 
 
@@ -370,16 +372,26 @@ async def test_ruling1_effect_free_timeout_never_reaches_the_fallback_model(
     fallback_client = ScriptedLLMClient([])
 
     import app.runtime.invoker as invoker
+    import app.services.web_chat_runtime as runtime
+
     _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, primary)
 
     def _client_factory(**kwargs):
         return primary if kwargs.get("provider") == "openai" else fallback_client
 
     monkeypatch.setattr(invoker, "create_llm_client", _client_factory, raising=False)
+    broadcasts: list[dict] = []
+
+    async def _record_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(dict(event))
+
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", _record_broadcast)
     await _execute_claimed_run(owner_sessionmaker, seed)
 
     assert len(primary.requests) == 1
     assert fallback_client.requests == []  # no fallback activation
+    # R18a round 3 (reviewer nit c): no "Fallback Model Activated" event either.
+    assert all(event.get("type") != "runtime_fallback" for event in broadcasts)
     status, metadata = await _run_status(owner_sessionmaker, seed["run_id"])
     assert status == "failed"
     assert metadata.get("error_code") == "timeout"

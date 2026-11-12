@@ -3614,6 +3614,18 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 if _session_permission_pause_pending:
                     return await _pause_for_user_clarification()
 
+                # R18a round 3 (Grok should-fix 2, input B): results are observed
+                # in call order, so a fruitful result later in this round cannot
+                # withdraw an abort recorded on the fifth empty. All of the
+                # round's results are observed by now; if any search tool found
+                # material, the "nothing found" stop is not true — drop it.
+                if (
+                    _loop_guard_terminal_decision is not None
+                    and _loop_guard_terminal_decision.reason == "repeated_empty_search"
+                    and loop_guard.empty_search_material_found
+                ):
+                    _loop_guard_terminal_decision = None
+
                 if _loop_guard_terminal_decision is not None:
                     if _loop_guard_terminal_decision.reason == "identical_running_task_read":
                         message = _loop_guard_terminal_decision.message
@@ -3622,31 +3634,24 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         return InvocationResult(content=message, tokens_used=accumulated_tokens,
                             final_tools=tools_for_llm, parts=collected_parts + build_done_event(message)["parts"],
                             terminal_reason=TerminalReason.TURN_STOP)
-                    if _loop_guard_terminal_decision.reason == "repeated_empty_search":
+                    if _loop_guard_terminal_decision.reason in {
+                        "repeated_empty_search", "identical_terminal_task_read",
+                    }:
                         # R18a round 2 (reviewer blocker 2): end through the same
                         # failure shape as identical_terminal_task_read so every
                         # lane settles — a TURN_STOP without a model receipt left
                         # delegated children and business tasks fenced for
                         # operator reconciliation. Web chat fails the run (the
                         # member card carries the sentence via failure_code);
-                        # delegation and business readers map the same code to
-                        # the plain sentence through runtime_display_status.
+                        # the delegation parent and the business member projection
+                        # map the same code to the plain sentence.
                         message = _loop_guard_terminal_decision.message
                         await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, message, api_messages)
                         result = _build_error_result(
                             message, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
-                            terminal_reason=TerminalReason.LOOP_GUARD, failure_code="repeated_empty_search",
-                        )
-                        result.parts = collected_parts + result.parts
-                        return result
-                    if _loop_guard_terminal_decision.reason == "identical_terminal_task_read":
-                        message = _loop_guard_terminal_decision.message
-                        await _record_new_token_usage()
-                        await self._persist_before_exit(request, runtime_config, message, api_messages)
-                        result = _build_error_result(
-                            message, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
-                            terminal_reason=TerminalReason.LOOP_GUARD, failure_code="identical_terminal_task_read",
+                            terminal_reason=TerminalReason.LOOP_GUARD,
+                            failure_code=_loop_guard_terminal_decision.reason,
                         )
                         result.parts = collected_parts + result.parts
                         return result

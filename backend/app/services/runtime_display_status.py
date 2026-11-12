@@ -29,9 +29,14 @@ _FAILURE_MESSAGES = {
 }
 _TERMINAL_READ_MESSAGES = frozenset(TERMINAL_TASK_READ_PREFIX + reason for reason in _FAILURE_MESSAGES.values())
 _FAILURE_MESSAGES["identical_terminal_task_read"] = IDENTICAL_TERMINAL_READ_MESSAGE
-# R18a round 2: every reader of a run stopped by the empty-search guard (web
-# card readers, the parent of a delegated colleague, business-task outcomes)
-# maps this failure code to the same plain sentence.
+# R18a round 2/3: readers of a run stopped by the empty-search guard map this
+# failure code to the plain sentence — the web member card via the frontend
+# failure-code mapping, the parent of a delegated colleague through
+# runtime_failure_observation on the child task's top-level metadata, and the
+# business member projection through the task-executor outcome summary. A
+# parent reading a business RuntimeTask through runtime_failure_observation
+# still gets the generic sentence: its error_code sits under
+# metadata.outcome, not at the top level (pre-existing, report-only).
 _FAILURE_MESSAGES["repeated_empty_search"] = EMPTY_SEARCH_FINAL_MESSAGE
 # Every fixed sentence the plain delegation result page may legally carry.
 _FIXED_RESULT_SENTENCES = frozenset(_FAILURE_MESSAGES.values()) | _TERMINAL_READ_MESSAGES

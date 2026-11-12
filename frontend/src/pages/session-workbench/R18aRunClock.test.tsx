@@ -89,11 +89,12 @@ it.each(['zh', 'en'])('renders the transient timeout sentence without a retry pr
   const expected = language === 'zh'
     ? '模型服务响应超时，这次没有完成，请稍后再试。'
     : 'The model service timed out and this task did not finish. Please try again later.';
-  const { container } = render(<ThreadItemRenderer item={item} />);
+  const { container, queryByTestId } = render(<ThreadItemRenderer item={item} />);
   expect(container.textContent).toContain(expected);
   expect(container.textContent).not.toContain('请联系管理员');
   expect(container.textContent).not.toContain('Ask an administrator');
   expect(container.textContent).not.toContain('这次请求没有确认完成。');
+  expect(queryByTestId('thread-item-retry-turn')).toBeNull();  // R18a round 3 nit d: no retry action
 });
 
 it.each(['zh', 'en'])('renders the plain nothing-found sentence when the empty-search guard stopped the run in %s', async language => {
@@ -107,8 +108,9 @@ it.each(['zh', 'en'])('renders the plain nothing-found sentence when the empty-s
   const expected = language === 'zh'
     ? '多次搜索都没有找到相关资料。'
     : 'Several searches found no matching material.';
-  const { container } = render(<ThreadItemRenderer item={item} />);
+  const { container, queryByTestId } = render(<ThreadItemRenderer item={item} />);
   expect(container.textContent).toContain(expected);
+  expect(queryByTestId('thread-item-retry-turn')).toBeNull();  // R18a round 3 nit d: no retry action
 });
 
 it('still shows the delivery-unknown copy when the failure is not a timeout', async () => {

@@ -1,5 +1,14 @@
-"""R18a round 2 ruling 2(c): a business task stopped by the empty-search guard
-ends FAILED with the guard's failure code, never NEEDS_RECONCILIATION."""
+"""R18a round 2 ruling 2(c) + round 3 ruling 3: business-task lane.
+
+What each lane shows for a run stopped by the empty-search guard: the outcome
+is FAILED (never NEEDS_RECONCILIATION); for failure_code repeated_empty_search
+the member-facing summary is the plain sentence 「多次搜索都没有找到相关资料。」
+and the outcome is not retryable (the member projection therefore offers no
+retry); every other failure code — identical_terminal_task_read,
+tool_round_limit, provider errors — keeps its English summary and retry. A
+parent reading the business RuntimeTask through runtime_failure_observation
+still sees the generic sentence (error_code sits under metadata.outcome;
+pre-existing, report-only)."""
 
 from __future__ import annotations
 
@@ -13,8 +22,10 @@ from tests.services.test_task_executor import _FakeSession, _fake_resolve_tenant
 
 
 @pytest.mark.asyncio
-async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch):
+@pytest.mark.parametrize("failure_code", ["repeated_empty_search", "identical_terminal_task_read"])
+async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, failure_code):
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
     from app.services import task_executor
     from app.services.task_executor import TaskExecutionStatus, execute_task
 
@@ -94,10 +105,13 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch):
             agent_name=request.agent_name, role_description=request.role_description or "",
             agent_id=request.agent_id, user_id=request.user_id,
         ))
+        # The kernel stop for repeated_empty_search is real; the
+        # identical_terminal_task_read result shape is pinned by its own
+        # kernel tests — here only the executor's mapping of the code varies.
         return SimpleNamespace(
             content=result.content,
             terminal_reason=getattr(result.terminal_reason, "value", result.terminal_reason),
-            failure_code=result.failure_code,
+            failure_code=failure_code,
             failure_delivery_state=result.failure_delivery_state,
             failure_retryable=result.failure_retryable,
             parts=list(result.parts or []),
@@ -123,9 +137,48 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch):
     outcome = await execute_task(task_id, agent_id)
 
     # On the round-1 shape (TURN_STOP without a receipt) this was
-    # NEEDS_RECONCILIATION; the guard's stop now ends as a plain failure whose
-    # error code every reader maps to the plain sentence.
+    # NEEDS_RECONCILIATION; the guard's stop now ends as a plain failure.
     assert outcome.status is TaskExecutionStatus.FAILED
-    assert outcome.status is not TaskExecutionStatus.NEEDS_RECONCILIATION
-    assert outcome.error_code == "repeated_empty_search"
+    assert outcome.error_code == failure_code
     assert outcome.terminal_reason == "loop_guard"
+
+    if failure_code == "repeated_empty_search":
+        # Ruling 3: the member summary is the plain sentence and the outcome is
+        # not retryable — a retry would rerun the whole task.
+        assert outcome.summary == EMPTY_SEARCH_FINAL_MESSAGE
+        assert outcome.retryable is False
+    else:
+        # Every other code keeps its English summary and retry (green on the
+        # round-2 commit too).
+        assert outcome.summary == "Business task ended without a canonical completion (loop_guard)."
+        assert outcome.retryable is True
+
+    # The member projection derives can_retry from the recorded outcome.
+    from app.services.business_task_runtime import project_business_task
+    from datetime import datetime, timezone as tz
+
+    runtime = SimpleNamespace(
+        id=uuid4(), task_type="business_task", tenant_id=tenant_id,
+        parent_agent_id=agent_id, status="failed",
+        result_summary=outcome.summary, completed_at=datetime.now(tz.utc),
+        claim_version=1, claim_expires_at=None, child_session_id=None,
+        metadata_json={
+            "business_task_id": str(task_id),
+            "request_id": "runtime-request-r18a",
+            "phase": "terminal",
+            "outcome": outcome.to_dict(),
+        },
+    )
+    projected_task = SimpleNamespace(
+        id=task_id, tenant_id=tenant_id, agent_id=agent_id,
+        active_runtime_task_id=runtime.id,
+        status="failed", last_execution_status="failed",
+        last_error=f"{failure_code}: {outcome.summary}" if not outcome.retryable else None,
+        last_result=None, completed_at=None,
+        plan_authorization={"lease_id": "lease-1"},
+    )
+    projection = project_business_task(task=projected_task, runtime_task=runtime)
+    assert projection["recovery_message"] == outcome.summary
+    assert projection["actions"]["can_retry"] is outcome.retryable
+    if failure_code == "repeated_empty_search":
+        assert projection["recovery_state"] != "retry_available"

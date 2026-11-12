@@ -128,8 +128,9 @@ class LoopGuard:
         self._terminal_read_counts: dict[tuple[str, str], int] = {}
         self._empty_search_counts: dict[str, int] = {}
         self._empty_search_material_found = False
-        self._empty_search_warned = False
-        self._empty_search_post_warning_round = False
+        # Per-tool warnings whose warned model round has already run: a tool's
+        # stop is only authorized by that same tool's delivered warning.
+        self._empty_search_armed: set[str] = set()
         self._assistant_text_counts: dict[str, int] = {}
         self._warned: set[str] = set()
 
@@ -137,11 +138,14 @@ class LoopGuard:
 
     def observe_tool_call(self, tool_name: str, args: dict[str, Any] | None) -> LoopGuardDecision | None:
         self.total_tool_calls += 1
-        # All of a round's tool calls are observed before any of its results;
-        # a call observed after the empty-search warning therefore proves the
-        # model saw the warning and searched again in a later round.
-        if self._empty_search_warned:
-            self._empty_search_post_warning_round = True
+        # All of a round's tool calls are observed before any of its results,
+        # so calls observed now prove the warned model rounds already ran.
+        # Arming is per tool: only a warning this tool received authorizes
+        # this tool's stop in a later round.
+        if self._warned:
+            self._empty_search_armed.update(
+                key for key in self._warned if key.startswith("empty_search:")
+            )
         canonical = _canonical_args(args)
         key = (tool_name, canonical)
         self._tool_arg_counts[key] = self._tool_arg_counts.get(key, 0) + 1
@@ -248,6 +252,16 @@ class LoopGuard:
             )
         return None
 
+    @property
+    def empty_search_material_found(self) -> bool:
+        """Whether any search tool produced material in this turn (read-only).
+
+        The orchestrator consults this after a round's results are all
+        observed, so a fruitful result later in the same round can cancel a
+        stop recorded on the round's fifth empty result.
+        """
+        return self._empty_search_material_found
+
     def _observe_empty_search(self, tool_name: str, result: str) -> LoopGuardDecision | None:
         """Repeated empty results from one side-effect-free search tool.
 
@@ -263,6 +277,13 @@ class LoopGuard:
         rule only warns for the rest of the turn; and the turn may only be
         stopped by an empty result observed in a model round that began after
         the warning was delivered — same-round parallel empties only warn.
+
+        R18a round 3: material is a prose result (search_memory/search_clawhub
+        return hits as plain text) or a typed ``ok``/``partial`` result; typed
+        error statuses are not material, so one malformed call cannot re-arm
+        the loop (they still reset this tool's consecutive count). The armed
+        set is per tool: another tool's warning does not authorize this tool's
+        stop.
         """
         if not tool_name.startswith("search_"):
             return None
@@ -271,19 +292,24 @@ class LoopGuard:
         except (TypeError, ValueError):
             body = None
         typed = isinstance(body, dict) and isinstance(body.get("status"), str)
-        if typed and body.get("status") != "empty":
+        if not typed or body.get("status") in {"ok", "partial"}:
             self._empty_search_material_found = True
         if not (typed and body.get("status") == "empty"):
             self._empty_search_counts[tool_name] = 0
             return None
         count = self._empty_search_counts.get(tool_name, 0) + 1
         self._empty_search_counts[tool_name] = count
+        instruction = (
+            # No trailing period: the warn wrapper appends one (round-3 nit e).
+            "Stop searching and answer with the material already found"
+            if self._empty_search_material_found
+            else "Stop searching and tell the member nothing was found"
+        )
         check = _PatternCheck(
             reason="repeated_empty_search",
             detail=(
                 f"{tool_name} returned {count} consecutive empty results in this turn; "
-                "rewording will not find material that is not there. Stop searching and "
-                "tell the member nothing was found."
+                f"rewording will not find material that is not there. {instruction}"
             ),
             warn_key=f"empty_search:{tool_name}",
             count=count,
@@ -291,7 +317,7 @@ class LoopGuard:
         )
         if (
             count >= _abort_threshold(self.empty_search_warn_threshold)
-            and self._empty_search_post_warning_round
+            and check.warn_key in self._empty_search_armed
             and not self._empty_search_material_found
         ):
             # The stop sentence is the member-facing detail, exactly like the
@@ -310,10 +336,7 @@ class LoopGuard:
                 args_digest=None,
                 extra_trace={"empty_search_count": count},
             )
-        warn = self._escalate(check, tool_name=tool_name)
-        if warn is not None:
-            self._empty_search_warned = True
-        return warn
+        return self._escalate(check, tool_name=tool_name)
 
     def _observe_terminal_task_read(self, tool_name, args, result) -> LoopGuardDecision | None:
         if tool_name not in {"check_async_task", "task_output", "read_runtime_result", "list_async_tasks"}:

@@ -48,7 +48,12 @@ def _answer(text: str) -> SimpleNamespace:
     return SimpleNamespace(content=text, tool_calls=[], reasoning_content=None, usage={"total_tokens": 5})
 
 
-def _kernel(client: _FakeClient, execute_tool, *, max_tool_rounds: int = 50):
+def _search_tool_def(name: str) -> dict:
+    return {"type": "function", "function": {"name": name, "description": "",
+                                             "parameters": {"type": "object"}}}
+
+
+def _kernel(client: _FakeClient, execute_tool, *, max_tool_rounds: int = 50, tools=("search_company_kb",)):
     from app.kernel import AgentKernel, KernelDependencies, RuntimeConfig
 
     return AgentKernel(KernelDependencies(
@@ -56,10 +61,7 @@ def _kernel(client: _FakeClient, execute_tool, *, max_tool_rounds: int = 50):
         resolve_current_user_name=lambda *_a, **_k: "Member",
         build_system_prompt=lambda *_a, **_k: "PROMPT",
         resolve_memory_context=lambda *_a, **_k: "",
-        get_tools=lambda *_a, **_k: [
-            {"type": "function", "function": {"name": "search_company_kb", "description": "",
-                                              "parameters": {"type": "object"}}}
-        ],
+        get_tools=lambda *_a, **_k: [_search_tool_def(name) for name in tools],
         maybe_compress_messages=lambda messages, **_k: messages,
         create_client=lambda _m: client,
         execute_tool=execute_tool,
@@ -186,6 +188,7 @@ def test_guard_unit_warns_once_then_stops_with_the_plain_sentence():
     assert warn is not None and warn.severity == "warn"
     assert "tell the member" in warn.message
     assert "with different arguments" not in warn.message  # identical calls also warn truthfully
+    assert ".." not in warn.message  # R18a round 3 nit e: the wrapper adds the period
     # A later model round (its tool calls) proves the warning was delivered.
     guard.observe_tool_call("search_company_kb", {"query": "d"})
     assert guard.observe_tool_result("search_company_kb", {"query": "d"}, EMPTY_RESULT,
@@ -306,11 +309,15 @@ async def test_found_material_then_empties_never_stops_with_the_sentence():
         executed.append({"tool": tool_name, "args": args})
         return OK_RESULT if len(executed) <= 2 else EMPTY_RESULT
 
+    # R18a round 3 (reviewer nit b): one empty per round, so the test fails if
+    # the material gate is removed (the count then reaches the abort threshold
+    # in a warned later round).
     responses = [
         SimpleNamespace(content="", tool_calls=_parallel_search_calls(1, 2),
                         reasoning_content=None, usage={"total_tokens": 5}),
-        SimpleNamespace(content="", tool_calls=_parallel_search_calls(3, 5),
-                        reasoning_content=None, usage={"total_tokens": 5}),
+        *[SimpleNamespace(content="", tool_calls=_parallel_search_calls(3 + offset, 1),
+                          reasoning_content=None, usage={"total_tokens": 5})
+          for offset in range(5)],
         _answer("找到了一些资料，没有「白鹭计划」专档。"),
     ]
     client = _FakeClient(responses)
@@ -358,3 +365,140 @@ async def test_run15_shape_with_earlier_tool_search_still_stops():
     assert executed[0]["tool"] == "tool_search"
     assert [call["tool"] for call in executed[1:]] == ["search_company_kb"] * 5
     assert result.content == EMPTY_SEARCH_FINAL_MESSAGE
+
+
+def _call(name: str, index: int) -> dict:
+    return {"id": f"{name}-{index}", "type": "function",
+            "function": {"name": name, "arguments": json.dumps({"query": f"白鹭计划 第{index}种说法"})}}
+
+
+def _round(calls: list[dict]) -> SimpleNamespace:
+    return SimpleNamespace(content="", tool_calls=calls, reasoning_content=None, usage={"total_tokens": 5})
+
+
+@pytest.mark.asyncio
+async def test_prose_hit_then_empties_never_stops_with_the_sentence():
+    """R18a round 3 ruling 1: a search_memory hit is plain text, not typed —
+    it is material, so a later company-KB empty streak cannot end with the
+    nothing-found sentence."""
+
+    executed: list[dict] = []
+
+    async def execute_tool(tool_name, args, *_a, **_k):
+        executed.append({"tool": tool_name})
+        if tool_name == "search_memory":
+            return "找到一条记忆：白鹭计划是 3 月启动的内部项目。"
+        return EMPTY_RESULT
+
+    responses = [
+        _round([_call("search_memory", 1)]),
+        *[_round([_call("search_company_kb", index)]) for index in range(2, 7)],
+        _answer("记忆里有一条「白鹭计划」的记录，公司知识库里没有更多资料。"),
+    ]
+    client = _FakeClient(responses)
+    kernel = _kernel(client, execute_tool, tools=("search_company_kb", "search_memory"))
+    result = await kernel.handle(_request())
+
+    assert [call["tool"] for call in executed] == ["search_memory"] + ["search_company_kb"] * 5
+    assert result.content == "记忆里有一条「白鹭计划」的记录，公司知识库里没有更多资料。"
+
+
+@pytest.mark.asyncio
+async def test_typed_error_then_empties_still_stops():
+    """R18a round 3 ruling 1: a typed invalid_request is not material — one
+    malformed call must not re-arm the run-15 loop."""
+
+    executed: list[dict] = []
+
+    async def execute_tool(tool_name, args, *_a, **_k):
+        executed.append({"tool": tool_name})
+        if len(executed) == 1:
+            return json.dumps({"status": "invalid_request", "warning": "query is required"}, ensure_ascii=False)
+        return EMPTY_RESULT
+
+    responses = [
+        _round([_call("search_company_kb", 1)]),
+        *[_round([_call("search_company_kb", index)]) for index in range(2, 20)],
+    ]
+    client = _FakeClient(responses)
+    kernel = _kernel(client, execute_tool)
+    result = await kernel.handle(_request())
+
+    assert executed[0]["tool"] == "search_company_kb"
+    assert len(executed) == 6  # one malformed call, then the abort threshold of empties
+    assert result.content == EMPTY_SEARCH_FINAL_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_warning_after_material_says_answer_with_what_was_found():
+    """R18a round 3 ruling 2: once material exists, the warning must not tell
+    the model to report nothing."""
+
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard()
+    guard.observe_tool_result("search_company_kb", {"query": "hit"}, OK_RESULT,
+        machine_outcome="succeeded", side_effect_free=True)
+    guard.observe_tool_call("search_company_kb", {"query": "a"})
+    assert guard.observe_tool_result("search_company_kb", {"query": "a"}, EMPTY_RESULT,
+        machine_outcome="succeeded", side_effect_free=True) is None
+    guard.observe_tool_call("search_company_kb", {"query": "b"})
+    assert guard.observe_tool_result("search_company_kb", {"query": "b"}, EMPTY_RESULT,
+        machine_outcome="succeeded", side_effect_free=True) is None
+    guard.observe_tool_call("search_company_kb", {"query": "c"})
+    warn = guard.observe_tool_result("search_company_kb", {"query": "c"}, EMPTY_RESULT,
+        machine_outcome="succeeded", side_effect_free=True)
+    assert warn is not None and warn.severity == "warn"
+    assert "answer with the material already found" in warn.message
+    assert "nothing was found" not in warn.message
+
+
+@pytest.mark.asyncio
+async def test_fruitful_result_after_fifth_empty_in_same_round_cancels_the_stop():
+    """R18a round 3 ruling 3b: results arrive in call order; an ok observed
+    after the fifth empty of the same round cancels the stop at the exit."""
+
+    executed: list[dict] = []
+
+    async def execute_tool(tool_name, args, *_a, **_k):
+        executed.append({"tool": tool_name, "args": args})
+        if len(executed) <= 3:
+            return EMPTY_RESULT  # three warned rounds, one search each
+        return OK_RESULT if len(executed) == 9 else EMPTY_RESULT
+
+    responses = [
+        *[_round([_call("search_company_kb", index)]) for index in (1, 2, 3)],  # warn on the third
+        _round([_call("search_company_kb", index) for index in (4, 5, 6, 7, 8)] + [_call("search_company_kb", 9)]),
+        _answer("找到了「白鹭计划」的一条资料。"),
+    ]
+    client = _FakeClient(responses)
+    kernel = _kernel(client, execute_tool)
+    result = await kernel.handle(_request())
+
+    assert len(executed) == 9  # the whole round ran, including the fruitful call
+    assert len(client.calls) == 5  # the model was called again after the cancelled stop
+    assert result.content == "找到了「白鹭计划」的一条资料。"
+
+
+@pytest.mark.asyncio
+async def test_other_tools_warning_does_not_authorize_this_tools_stop():
+    """R18a round 3 ruling 4: the armed set is per tool — a personal-KB
+    warning does not authorize a company-KB stop in the next round."""
+
+    executed: list[dict] = []
+
+    async def execute_tool(tool_name, args, *_a, **_k):
+        executed.append({"tool": tool_name})
+        return EMPTY_RESULT
+
+    responses = [
+        *[_round([_call("search_personal_kb", index)]) for index in (1, 2, 3)],  # warns on the third
+        _round([_call("search_company_kb", index) for index in (4, 5, 6, 7, 8)]),  # five parallel empties
+        _answer("个人知识库和公司知识库都没有相关资料。"),
+    ]
+    client = _FakeClient(responses)
+    kernel = _kernel(client, execute_tool, tools=("search_company_kb", "search_personal_kb"))
+    result = await kernel.handle(_request())
+
+    assert len(client.calls) == 5  # warned for personal KB, company KB only warned
+    assert result.content == "个人知识库和公司知识库都没有相关资料。"

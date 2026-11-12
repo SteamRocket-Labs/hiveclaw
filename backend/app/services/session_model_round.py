@@ -1730,10 +1730,13 @@ async def fail_model_request(
         return
     snapshot = result.model_request_snapshot_json if isinstance(result.model_request_snapshot_json, dict) else {}
     wire_request = snapshot.get("wire_request")
-    # R18a round 2: a snapshot without its exact wire request cannot prove the
-    # send was effect-free, so it fails closed into reconciliation. (Placeholder
-    # snapshots never reach the kernel's fail callback on a live path; this
-    # keeps the boundary itself honest.)
+    # R18a round 2/3: a snapshot without its exact wire request cannot prove
+    # the send was effect-free, so it fails closed into reconciliation. This
+    # changes both callers of this fact: an unknown delivery AND a
+    # cancellation, which on a snapshot-less row now fences
+    # (needs_reconciliation) instead of ending killed. Neither is reachable on
+    # a live path — prepare writes the full wire before the kernel ever holds
+    # the request id — but the boundary itself stays fail-closed.
     provider_effect = (
         True if not isinstance(wire_request, dict) else provider_request_has_effect(dict(wire_request))
     )

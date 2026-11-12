@@ -44,6 +44,7 @@ class _StubDraft:
         self.requested_by_user_id = uuid.uuid4()
         self.status = "completed"
         self.blueprint_hash = "hash"
+        self.blueprint_json = {"name": "陈小满"}
         self.created_agent_id = uuid.uuid4() if created_agent_name is not None else None
         self.failure_code = failure_code
         first_task = {"status": first_status} if first_status != "not_requested" else {}
@@ -81,15 +82,16 @@ async def test_creation_receipt_names_the_employee_and_marks_ids_internal():
     draft, task = _StubDraft(), _StubTask()
     notification = await _creation_receipt_notification(_StubDB(_StubAgent("陈小满")), draft, task)
     summary = notification.summary
-    # The member-facing name and the existing route lead.
+    # The name comes from the hash-pinned blueprint, not the mutable agent row.
     assert '"陈小满"' in summary and f"/agents/{draft.created_agent_id}" in summary
     # Ids appear only inside the internal-marked tail.
     assert "employee_id=" in summary.split("Internal:", 1)[1]
     assert "employee_id=" not in summary.split("Internal:", 1)[0]
     assert "draft_id=" not in summary.split("Internal:", 1)[0]
     # No error-code fields when nothing failed (the member previously read
-    # 「无创建错误、无首个任务错误」 copied from them).
+    # 「无创建错误、无首个任务错误」 copied from them), and the route rule is stated.
     assert "creation_error=none" not in summary and "first_task_error=none" not in summary
+    assert "Markdown link target only and is never quoted" in summary
 
 
 async def test_creation_receipt_keeps_error_codes_when_they_are_real():

@@ -520,18 +520,20 @@ async def creation_receipt_notification(db, draft, task, *, legacy_summary: bool
         return
     first = (draft.provisioning_json or {}).get("first_task") or {}
     first_status = first.get("status", "not_requested")
-    target = await db.get(Agent, draft.created_agent_id) if draft.created_agent_id else None
     if legacy_summary:
         summary = (f"Employee creation: {draft.status}; employee_id={draft.created_agent_id or 'none'}; "
                    f"first_task={first_status}; first_task_error={first.get('error', 'none')}; "
                    f"creation_error={draft.failure_code or 'none'}; draft_id={draft.id}. "
                    "Creation readiness is not evidence of task completion. Continue this original work from these facts.")
     else:
-        employee_name = target.name if target else None
+        # The verifiable bytes must not read a mutable display name: the name
+        # is pinned by the draft's blueprint hash (X1-r2 ruling 5).
+        blueprint = draft.blueprint_json if isinstance(draft.blueprint_json, dict) else {}
+        employee_name = str(blueprint.get("name") or "").strip() or None
         route = f"/agents/{draft.created_agent_id}" if draft.created_agent_id else None
         if employee_name and route:
             head = (f'Employee creation: {draft.status}. The new employee "{employee_name}" is ready; '
-                    f"the member opens it at {route}. ")
+                    f"link it at {route}. ")
         elif draft.created_agent_id:
             head = f"Employee creation: {draft.status}. The new employee was created. "
         else:
@@ -545,9 +547,11 @@ async def creation_receipt_notification(db, draft, task, *, legacy_summary: bool
             internal.append(f"first_task_error={first['error']}")
         summary = (head + tail
                    + " Creation readiness is not evidence of task completion. Continue this original work from these facts. "
-                     "In member replies, name the employee; never quote internal ids. "
+                     "In member replies, name the employee in plain words; the /agents/<id> route is a Markdown "
+                     "link target only and is never quoted; never mention any internal id. "
                    + "Internal: " + "; ".join(internal) + ".")
     if draft.created_agent_id and first.get("status") in {"blocked", "unknown"}:
+        target = await db.get(Agent, draft.created_agent_id)
         summary += "\nRecorded first-task recovery request: " + json.dumps({
             "tool_name": "delegate_to_agent", "arguments": {
                 "first_task_draft_id": str(draft.id), "agent_name": target.name if target else None,

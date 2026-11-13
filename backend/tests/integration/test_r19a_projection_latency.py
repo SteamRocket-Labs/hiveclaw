@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
@@ -18,8 +18,12 @@ from app.models.user import User
 from tests.integration.test_failed_delegation_continuation import _execute, _failed_child
 from tests.integration.test_r19a_consumed_result import auxiliary_models
 from tests.integration.test_r19a_terminal_boundary_race import _route_lanes
-from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient, SimulatedWorkerCrash
-from tests.services.test_runtime_terminal_boundary_outbox import _seed_terminal_task
+from tests.integration.test_web_chat_worker_restart_kernel_recovery import (
+    ScriptedLLMClient,
+    SimulatedWorkerCrash,
+    _seed_run,
+)
+from tests.services.test_runtime_terminal_boundary_outbox import _binding, _enqueue, _seed_terminal_task
 
 
 async def _history(owner):
@@ -75,6 +79,64 @@ async def _history(owner):
 async def _stop(task):
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
+
+
+async def _settle_foreign_work(owner):
+    """Make the shared database hold no claimable or undelivered foreign work.
+
+    The production runtime-task worker claims any tenant's work, so leftovers
+    from earlier tests in this shared database (pending/resumable tasks,
+    running tasks of lease-reclaimable types whose lease is expired or will
+    expire while this test measures, and undelivered boundary/notification
+    rows) are claimed and dispatched by this test's worker and then run
+    through its monkeypatched scripted clients. Called before either test
+    seeds anything, so every row it touches predates the test: it can only
+    settle foreign leftovers, never this test's own chain. The enqueued and
+    settled stamps mirror the shape `_history` writes for its settled rows,
+    so no reconcile lane re-enqueues work for the settled tasks.
+    """
+    from app.services.runtime_task_claim_service import (
+        CLAIMABLE_RUNTIME_TASK_STATUSES,
+        LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES,
+    )
+
+    async with owner() as db:
+        # Claimable runtime tasks — pending/resumable, or a lease-reclaimable
+        # type still marked running — move to a terminal state.
+        settled_tasks = (await db.execute(text("""
+            UPDATE runtime_tasks SET status='skipped', completed_at=now(),
+                terminal_boundary_enqueued_at=coalesce(terminal_boundary_enqueued_at, now()),
+                completion_outbox_settled_at=coalesce(completion_outbox_settled_at, now())
+            WHERE status = ANY(CAST(:claimable AS text[]))
+                OR (status = 'running' AND task_type = ANY(CAST(:reclaimable AS text[])))
+        """), {"claimable": list(CLAIMABLE_RUNTIME_TASK_STATUSES),
+            "reclaimable": list(LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES)})).rowcount
+        # Undelivered boundary and notification rows are marked delivered, so
+        # the measured lanes only ever carry this test's own chain.
+        settled_boundaries = (await db.execute(text("""
+            UPDATE runtime_terminal_boundary_outbox SET status='delivered',
+                delivered_at=coalesce(delivered_at, now())
+            WHERE status = ANY(CAST(:undelivered AS text[]))
+        """), {"undelivered": ["pending", "processing"]})).rowcount
+        settled_notifications = (await db.execute(text("""
+            UPDATE runtime_notification_outbox SET status='delivered',
+                delivered_at=coalesce(delivered_at, now())
+            WHERE status = ANY(CAST(:undelivered AS text[]))
+        """), {"undelivered": ["pending", "processing"]})).rowcount
+        await db.commit()
+    # Stated precondition for the measurement, in the claim service's own
+    # terms: nothing claimable or undelivered remains in the shared database.
+    async with owner() as db:
+        assert await db.scalar(select(func.count()).select_from(RuntimeTask).where(or_(
+            RuntimeTask.status.in_(CLAIMABLE_RUNTIME_TASK_STATUSES),
+            and_(RuntimeTask.status == "running",
+                RuntimeTask.task_type.in_(LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES)),
+        ))) == 0
+        for model in (RuntimeTerminalBoundaryOutbox, RuntimeNotificationOutbox):
+            assert await db.scalar(select(func.count()).select_from(model).where(
+                model.status.in_(("pending", "processing")))) == 0
+    return {"runtime_tasks": settled_tasks, "boundaries": settled_boundaries,
+        "notifications": settled_notifications}
 
 
 async def _settle_origin(owner, app_factory, monkeypatch, seed):
@@ -178,6 +240,10 @@ async def test_parent_starts_before_memory_and_web_joins_both_projections(
     from app.config import get_settings
     from app.services.web_chat_runtime import start_web_chat_run
 
+    # Before any of this test's rows exist, every claimable or undelivered
+    # row still in the shared database is foreign; settle it so the worker
+    # loop below only ever carries this test's own chain.
+    await _settle_foreign_work(owner_sessionmaker)
     counts = await _history(owner_sessionmaker)
     seed = await _seed(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
     web_session_id = uuid4()
@@ -239,6 +305,66 @@ async def test_parent_starts_before_memory_and_web_joins_both_projections(
         await _stop(running)
 
 
+async def _plant_foreign_leftovers(owner, tmp_path):
+    """Plant the leftover shapes earlier tests leave in a shared database.
+
+    Three shapes, each in its own foreign tenant so none of them can belong
+    to the measured chain: a web_chat_turn a dead worker left ``running``
+    with an expired lease (the claim lane reclaims and dispatches it), a
+    queued claimable web turn no worker ever claimed, and a completed web
+    turn whose terminal boundary row was never delivered. The two web turns
+    are seeded as mid-run leftovers: their input was already applied to the
+    session and dispatched to the run, exactly what a dead worker leaves,
+    so the leftover itself cannot spawn further turns.
+    """
+    seeded = await _seed_terminal_task(owner, tenant_name="R19a iso foreign boundary",
+        task_type="web_chat_turn")
+    await _enqueue(owner, seeded, event_kind="turn_stop", binding=_binding())
+    expired = await _seed_run(owner, tmp_path / "foreign-expired-lease",
+        prompt="Foreign leftover turn the dead worker never finished.")
+    queued = await _seed_run(owner, tmp_path / "foreign-queued",
+        prompt="Foreign queued turn no worker ever claimed.")
+    async with owner() as db:
+        await db.execute(text("""
+            UPDATE runtime_tasks SET claim_expires_at = now() - interval '5 minutes'
+                WHERE id = :expired
+        """), {"expired": expired["run_id"]})
+        await db.execute(text("""
+            UPDATE runtime_tasks SET status='pending', claimed_by=NULL, claim_version=0,
+                attempt_count=0, claim_expires_at=NULL WHERE id = :queued
+        """), {"queued": queued["run_id"]})
+        for run in (expired, queued):
+            await db.execute(text("""
+                UPDATE session_input_admissions SET dispatch_state='dispatched'
+                    WHERE session_id = :session
+            """), {"session": run["session_id"]})
+            await db.execute(text("""
+                UPDATE session_turn_inputs SET status='applied'
+                    WHERE session_id = :session AND status <> 'applied'
+            """), {"session": run["session_id"]})
+        await db.commit()
+    return expired, queued, seeded
+
+
+async def test_foreign_leftover_work_never_joins_the_measured_chain(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, auxiliary_models,
+):
+    """Reproduction for the shared-database failure, independent of suite order.
+
+    The measured test's worker claims any tenant's work, so without settling
+    first it reclaims the foreign expired-lease web turn, claims the foreign
+    queued web turn, and serves them through this test's scripted parent
+    client (a second request) and delayed auxiliary clients. Planting the
+    leftovers here and running the unchanged measurement keeps that failure
+    reproducible in one pytest process on a fresh database.
+    """
+    await _plant_foreign_leftovers(owner_sessionmaker, tmp_path)
+    await test_parent_starts_before_memory_and_web_joins_both_projections(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        auxiliary_models, 0,
+    )
+
+
 async def test_crash_after_parent_projection_replays_without_duplicate_outputs(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, auxiliary_models,
 ):
@@ -246,6 +372,9 @@ async def test_crash_after_parent_projection_replays_without_duplicate_outputs(
     from app.config import get_settings
     from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
 
+    # Same shared-database precondition as the latency test: settle foreign
+    # claimable work before the first real worker loop starts.
+    await _settle_foreign_work(owner_sessionmaker)
     seed = await _seed(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
     observations = _auxiliary(monkeypatch, set(), 0)
     client = ScriptedLLMClient([{"content": "The colleague's result is ready."}])

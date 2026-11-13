@@ -45,8 +45,8 @@ function projectBoth(events: Event[]): AgentChatMessage[][] {
   return [live, hydrateSessionTranscriptEvents(events as ChatTranscriptEventPayload[], 0).messages];
 }
 
-function renderMessages(messages: AgentChatMessage[]) {
-  const model = buildThreadTimeline({ messages, activeSession: { id: 'session' } as never,
+function renderMessages(messages: AgentChatMessage[], activeSession: Record<string, unknown> = { id: 'session' }) {
+  const model = buildThreadTimeline({ messages, activeSession: activeSession as never,
     isWaiting: false, isStreaming: false, activeRunStatus: null });
   const view = render(<>{model.cells.map(cell => cell.kind === 'active_run'
     ? <RunDisclosureBlock key={cell.id} timeline={cell.timeline} /> : null)}</>);
@@ -54,7 +54,7 @@ function renderMessages(messages: AgentChatMessage[]) {
     view.container.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]').forEach(button => fireEvent.click(button));
     view.container.querySelectorAll('details').forEach(details => { details.open = true; });
   }
-  return view;
+  return { ...view, model };
 }
 
 function memberRow(container: HTMLElement, sentence: string) {
@@ -169,7 +169,8 @@ it.each([
   [null, 'not_found', '没有找到要读取的文件。'],
   ['content_source_changed', 'auth_or_permission', '文件或其来源已变化，这次没有读取。'],
   ['workspace_input_revision_changed', 'operation_failed', '文件或其来源已变化，这次没有读取。'],
-  [null, 'provider_unavailable', '这次未能取得可读取的文件内容。'],
+  // X3d r2-1: a service failure is not unavailable file content.
+  [null, 'provider_unavailable', '所需服务暂时不可用，操作未完成。'],
   ['unknown_read_reason', 'auth_or_permission', '这次没有读取文件'],
 ] as const)('X3d-4 uses typed read reason %s / class %s through the canonical consumer and live/reload render', (reason, errorClass, sentence) => {
   const events = copy(rows.refusedRead);
@@ -189,6 +190,188 @@ it.each([
     expect(row?.querySelector('[role="img"][aria-label="未完成"]')).toBeTruthy();
     if (reason === 'workspace_input_capture_unavailable') expect(container.textContent).not.toContain('没有权限');
     expect(container.textContent).not.toContain('workspace_input_');
+    unmount();
+  }
+});
+
+
+// Round 2: the file-specific table must not replace existing typed failures.
+const existingReadFailures = [
+  ['timeout', '操作等待超时，结果未知。'],
+  ['rate_limited', '请求过于频繁，操作未完成。'],
+  ['cancelled', '操作已停止。'],
+  ['quota_or_billing', '可用额度不足，操作未完成。'],
+  ['bad_arguments', '这次操作缺少必要信息，或提供的信息不正确。'],
+  ['provider_unavailable', '所需服务暂时不可用，操作未完成。'],
+] as const;
+
+it.each(existingReadFailures)('X3d r2-1 preserves the summarized read failure %s live and after reload', (errorClass, sentence) => {
+  const events = copy(rows.refusedRead);
+  const result = events.at(-1)!;
+  delete result.payload.metadata.workspace_input_receipt;
+  result.payload.member_summary.error_class = errorClass;
+  for (const messages of projectBoth(events)) {
+    const { container, unmount } = renderMessages(messages);
+    expect(memberRow(container, sentence), sentence).toBeTruthy();
+    unmount();
+  }
+});
+
+it.each(existingReadFailures)('X3d r2-1 preserves native read failure %s without a member summary', (errorClass, sentence) => {
+  const events = copy(rows.refusedRead);
+  const result = events.at(-1)!;
+  delete result.payload.member_summary;
+  delete result.payload.metadata.workspace_input_receipt;
+  result.payload.content = result.payload.result = `<tool_error>${JSON.stringify({ ok: false, tool_name: 'read_file', error_class: errorClass })}</tool_error>`;
+  for (const messages of projectBoth(events)) {
+    const { container, unmount } = renderMessages(messages);
+    expect(memberRow(container, sentence), sentence).toBeTruthy();
+    unmount();
+  }
+});
+
+it('X3d r2-1 retains the native 120-second read timeout without a member summary through both consumers', () => {
+  const events = copy(rows.refusedRead);
+  const result = events.at(-1)!;
+  delete result.payload.member_summary;
+  delete result.payload.metadata.workspace_input_receipt;
+  result.payload.content = result.payload.result = `<tool_error>${JSON.stringify({ ok: false, tool_name: 'read_file', error_class: 'timeout', timeout_seconds: 120 })}</tool_error>`;
+  for (const messages of projectBoth(events)) {
+    const { container, unmount } = renderMessages(messages);
+    expect(memberRow(container, '操作超过 120 秒没有完成，结果未知。')).toBeTruthy();
+    unmount();
+  }
+});
+
+// Include the parent's final answer as well as run.completed: X2 otherwise
+// correctly keeps the header pending while the answer has not been delivered.
+function answeredParentDelegation() {
+  const events = copy(rows.delegation).filter(e => !e.legacy_event_type);
+  const terminal = events.at(-1)!;
+  // Run 19 step 5 seq 80/81/89: snapshot, empty completion, zero-copy final.
+  const text = { ...structuredClone(terminal), event_id: 'parent-text-event', item_id: 'parent-text',
+    item_kind: 'assistant_text', kind: 'assistant_text.snapshot', lifecycle: 'snapshot',
+    payload_schema: 'hive.session.payload.assistant_text.snapshot.v2', actor: { type: 'assistant' },
+    scope: { ...terminal.scope, level: 'round', round_id: `${terminal.scope.run_id}:round:3` },
+    payload: { phase: 'unknown', block_index: 0, content: '已交给同事处理。' } };
+  const completed = { ...structuredClone(text), event_id: 'parent-text-completed',
+    kind: 'assistant_text.completed', lifecycle: 'completed',
+    payload_schema: 'hive.session.payload.assistant_text.completed.v2', payload: { ...text.payload, content: '' } };
+  const final = { ...structuredClone(text), event_id: 'parent-final-event', item_id: 'parent-final',
+    item_kind: 'assistant_final', kind: 'assistant_final.completed', lifecycle: 'completed',
+    payload_schema: 'hive.session.payload.assistant_final.completed.v2',
+    payload: { zero_copy: true, source_blocks: [{ item_id: text.item_id, block_index: 0 }], render_owner_id: 'parent-final' } };
+  events.splice(events.length - 1, 0, text, completed, final);
+  events.forEach((event, index) => { event.sequence = index + 1; });
+  return events;
+}
+
+it.each([undefined, ''])('X3d r2-2 keeps the old returned-call state without taskId=%s after parent completion and reload', taskId => {
+  const events = answeredParentDelegation();
+  events.find(e => e.item_kind === 'tool_result')!.payload.member_summary.task_id = taskId;
+  for (const messages of projectBoth(events)) {
+    const { container, model, unmount } = renderMessages(messages);
+    const row = memberRow(container, '同事正在处理，结果回来后会在这里继续。');
+    expect(row).toBeTruthy();
+    expect(row?.getAttribute('data-status')).toBe('done');
+    expect(row?.querySelector('.tabler-icon-loader-2')).toBeNull();
+    expect(model.header.status).toBe('complete');
+    unmount();
+  }
+});
+
+it('X3d r2-2 keeps a group-session returned call done even with a task id, live and after reload', () => {
+  const events = answeredParentDelegation();
+  for (const messages of projectBoth(events)) {
+    const { container, model, unmount } = renderMessages(messages, { id: 'session', audience_kind: 'group' });
+    const row = memberRow(container, '同事正在处理，结果回来后会在这里继续。');
+    expect(row).toBeTruthy();
+    expect(row?.getAttribute('data-status')).toBe('done');
+    expect(row?.querySelector('.tabler-icon-loader-2')).toBeNull();
+    expect(model.header.status).toBe('complete');
+    unmount();
+  }
+});
+
+it('X3d r2-3 retains a new same-session start after task A completed, live and after reload', () => {
+  const events = copy(rows.delegation);
+  const next = structuredClone(events.find(e => e.legacy_event_type === 'runtime_action_started')!);
+  next.event_id = 'start-task-b';
+  next.sequence = events.length + 1;
+  next.payload.metadata.runtime_task_id = 'another-parent-run';
+  next.payload.parts[0].runtime_task_id = 'another-parent-run';
+  events.push(next);
+  for (const messages of projectBoth(events)) {
+    const starts = messages.filter(m => m.eventType === 'runtime_action_started');
+    expect(starts.some(m => m.threadItem?.metadata?.runtime_task_id === 'another-parent-run')).toBe(true);
+    const { container, unmount } = renderMessages(messages);
+    expect(container.textContent).toContain('后台执行中');
+    unmount();
+  }
+});
+
+it('X3d r2-3 keeps a later same-session start uncovered when only task A has a terminal', () => {
+  const events = copy(rows.delegation);
+  const original = events.findIndex(e => e.legacy_event_type === 'runtime_action_started');
+  const next = structuredClone(events[original]);
+  next.event_id = 'start-task-b-before-terminal';
+  next.payload.metadata.runtime_task_id = 'parent-b-before-terminal';
+  next.payload.parts[0].runtime_task_id = 'parent-b-before-terminal';
+  events.splice(original + 1, 0, next);
+  events.forEach((event, index) => { event.sequence = index + 1; });
+  for (const messages of projectBoth(events)) {
+    expect(messages.filter(m => m.eventType === 'runtime_action_started')
+      .some(m => m.threadItem?.metadata?.runtime_task_id === 'parent-b-before-terminal')).toBe(true);
+  }
+});
+
+it('X3d r2-3 never rewrites task A’s completed child row from task B’s same-session cancellation', () => {
+  const events = copy(rows.delegation);
+  const original = events.find(e => e.legacy_event_type === 'child_session')!;
+  const next = structuredClone(original);
+  next.event_id = 'child-task-b-cancelled';
+  next.sequence = events.length + 1;
+  next.payload.content = '已停止，同事没有完成这项工作。';
+  next.payload.metadata.runtime_task_id = 'task-b';
+  next.payload.metadata.status = 'killed';
+  next.payload.parts.forEach((part: Event) => { part.runtime_task_id = 'task-b'; part.status = 'killed'; part.text = next.payload.content; });
+  events.push(next);
+  for (const messages of projectBoth(events)) {
+    const taskA = messages.find(m => m.eventType === 'child_session'
+      && m.threadItem?.metadata?.runtime_task_id === original.payload.metadata.runtime_task_id);
+    expect(taskA).toBeTruthy();
+    expect(taskA?.eventStatus).toBe('completed');
+  }
+});
+
+function singleLCancellation() {
+  const events = copy(rows.stopped);
+  for (const event of events) {
+    const metadata = event.payload.metadata;
+    if (metadata && ['killed', 'cancelled'].includes(metadata.status)) metadata.status = 'canceled';
+    event.payload.parts?.forEach((part: Event) => { if (['killed', 'cancelled'].includes(part.status)) part.status = 'canceled'; });
+    for (const item of metadata?.result_manifest?.items || []) item.terminal_status = 'canceled';
+  }
+  return events;
+}
+
+it('X3d r2-4 accepts canceled terminal events when folding starts and stopping delegation rows', () => {
+  for (const messages of projectBoth(singleLCancellation())) {
+    expect(messages.filter(m => m.eventType === 'runtime_action_started')).toHaveLength(0);
+    const { container, unmount } = renderMessages(messages);
+    const row = memberRow(container, '已停止，同事没有完成这项工作。');
+    expect(row?.getAttribute('data-status')).toBe('cancelled');
+    expect(row?.querySelector('[role="img"][aria-label="已停止"]')).toBeTruthy();
+    unmount();
+  }
+});
+
+it('X3d r2-4 marks an all-canceled integration manifest with the existing stopped marker', () => {
+  for (const messages of projectBoth(singleLCancellation())) {
+    const { container, unmount } = renderMessages(messages);
+    const row = memberRow(container, '同事任务已结束');
+    expect(row?.getAttribute('data-status')).toBe('cancelled');
+    expect(row?.querySelector('[role="img"][aria-label="已停止"]')).toBeTruthy();
     unmount();
   }
 });

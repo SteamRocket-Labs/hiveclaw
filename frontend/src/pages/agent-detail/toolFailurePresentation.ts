@@ -20,16 +20,16 @@ const READ_FAILURE_KIND: Record<string, string> = {
   auth_or_permission: 'permission', auth_required: 'permission', forbidden: 'permission',
   authz_policy_violation: 'permission', content_source_access_denied: 'permission',
   not_found: 'readMissing',
-  workspace_input_capture_unavailable: 'readInputUnavailable', provider_unavailable: 'readInputUnavailable',
+  workspace_input_capture_unavailable: 'readInputUnavailable',
   content_source_changed: 'readChanged', workspace_input_revision_changed: 'readChanged',
 };
 
 /** Only typed refusal reasons/classes decide the sentence; never error prose. */
-export function fileReadFailureForDisplay(reason: unknown, t: TFunction): string {
+export function fileReadFailureForDisplay(reason: unknown, t: TFunction): string | null {
   const kind = typeof reason === 'string' && Object.prototype.hasOwnProperty.call(READ_FAILURE_KIND, reason)
     ? READ_FAILURE_KIND[reason] : undefined;
   return kind ? t(`agent.chat.disclosure.failure.${kind}`, 'The file could not be read this time.')
-    : t('agent.chat.toolResults.memberSummary.fileReadFailed', 'The file was not read this time.');
+    : null;
 }
 
 /** Only tool failure envelopes are projected; assistant prose is never scanned. */
@@ -57,14 +57,17 @@ export function toolFailureForDisplay(details: unknown, t: TFunction, status: Ru
     return null;
   }
   const errorClass = String(error?.error_class);
-  if (['read_file', 'fs_read', 'read_document'].includes(String(error.tool_name || record.toolName))) {
-    return fileReadFailureForDisplay(error.reason_code || error.error_class, t);
+  const fileRead = ['read_file', 'fs_read', 'read_document'].includes(String(error.tool_name || record.toolName));
+  if (fileRead) {
+    const refusal = fileReadFailureForDisplay(error.reason_code, t) || fileReadFailureForDisplay(errorClass, t);
+    if (refusal) return refusal;
   }
   if (error.provider === 'mcp' && ['auth_required', 'configuration_required'].includes(errorClass)
     && error.diagnostic_hint === '请管理员检查应用连接地址。') {
     return t('agent.chat.disclosure.failure.connectionAdmin', 'The app connection is unavailable. Ask an administrator to check its settings.');
   }
   const kind = Object.prototype.hasOwnProperty.call(FAILURE_KIND, errorClass) ? FAILURE_KIND[errorClass] : 'generic';
+  if (fileRead && kind === 'generic') return t('agent.chat.toolResults.memberSummary.fileReadFailed', 'The file was not read this time.');
   if (kind === 'timeout') {
     // Read the exact historical native timeout format to preserve its duration.
     const legacySeconds = typeof error.message === 'string'

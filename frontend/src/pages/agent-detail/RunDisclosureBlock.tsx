@@ -24,7 +24,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { assistantReplyForDisplay } from './CanonicalCardAssistantSupplement';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
-import { fileReadFailureForDisplay, toolOutputForDisplay } from './toolFailurePresentation';
+import { fileReadFailureForDisplay, toolFailureForDisplay, toolOutputForDisplay } from './toolFailurePresentation';
 import { memberFilename, memberToolSummaryFromRecord, memberToolSummarySentence, memberSummaryWithArgs } from './memberToolSummary';
 import { useAuthStore } from '../../stores';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
@@ -262,7 +262,10 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
     );
     if (memberSummary) {
       if (memberSummary.kind === 'file_read' && memberSummary.state === 'not_done') {
-        return <p>{fileReadFailureForDisplay(memberSummary.errorClass, t)}</p>;
+        const failure = fileReadFailureForDisplay(memberSummary.errorClass, t)
+          || toolFailureForDisplay(step.details, t, step.status)
+          || toolFailureForDisplay({ ok: false, tool_name: toolName, error_class: memberSummary.errorClass || '' }, t, 'failed');
+        if (failure) return <p>{failure}</p>;
       }
       const args = (step.details as { args?: Record<string, unknown> } | null)?.args;
       const memberSentence = memberToolSummarySentence(memberSummaryWithArgs(memberSummary, args), t);

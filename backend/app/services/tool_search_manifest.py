@@ -16,6 +16,46 @@ def _matches_query(query: str, *values: Any) -> bool:
     return any(normalized in _as_text(value).lower() for value in values)
 
 
+def company_application_needs_member_connection(
+    status: Any, auth_status: Any, has_oauth: Any, has_member_account: Any
+) -> bool:
+    """Whether a company application row should tell the member to connect an
+    account (G4c). ``auth_status`` alone cannot decide it: "none" on a connected
+    server means NO sign-in is needed (a public MCP such as DeepWiki), while
+    "none" on a needs_auth server means the per-member credential is missing.
+
+    Mapping (mirrors the writers in mcp_server_service / mcp_accounts / the
+    mcp_servers API):
+    - auth_status "configured": a usable credential already exists → no.
+    - status "connected" + auth_status "none" + no OAuth block + no member
+      child account: the service needs no sign-in at all → no.
+    - otherwise (status "needs_auth"/"failed"/"disabled", OAuth configured with
+      auth_status none/expired/error, or member child accounts exist under the
+      server) → yes. For needs_auth/OAuth/member-account rows the member can
+      act through the card; "failed"/"disabled" rows merely keep the pre-G4c
+      marker — those states are an administrator's to fix, not the member's.
+
+    Known limit (G4c r4): a token-paste parent server whose FIRST member has
+    not connected yet (no child account, no company key) is column-identical
+    to a no-sign-in service, so it gets no marker here. At call time a remote
+    401/403 with no credentials tells the model the member can connect their
+    own account — rendered on the runtime fallback path the model actually
+    calls (web_mcp._execute_mcp_tool, shared with tools/handlers/mcp.py) —
+    that is the honest fallback for the first member.
+    """
+    auth = str(auth_status or "")
+    if auth == "configured":
+        return False
+    if (
+        str(status or "") == "connected"
+        and auth == "none"
+        and not has_oauth
+        and not has_member_account
+    ):
+        return False
+    return True
+
+
 def _loaded_tool_schema_entries(tool_names: Iterable[str]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -122,7 +162,10 @@ def render_tool_search_manifest_sections(manifest: dict[str, Any]) -> str:
             detail = _as_text(row.get("description") or row.get("source") or row.get("activation"))
             if section_name == "company_applications":
                 detail = f"mcp_server_id: {row['mcp_server_id']}"
-                if row["auth_status"] != "configured":
+                # G4c: the row's own flag decides; auth_status alone mislabels a
+                # connected no-sign-in server as account-needed. The single
+                # producer (workspace._tool_search) always writes the flag.
+                if row["connect_if_account_needed"]:
                     detail += " | connect_if_account_needed"
             suffix = f" | {detail}" if detail else ""
             lines.append(f"- {label}{suffix}")

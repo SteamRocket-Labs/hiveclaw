@@ -116,7 +116,7 @@ async def test_available_deferred_tool_names_never_applies_platform_top_n(monkey
 
     names = [f"deferred_tool_{index:03d}" for index in range(125)]
 
-    async def fake_discoverable(_agent_id, _query):
+    async def fake_discoverable(_agent_id, _query, **_kwargs):
         return names
 
     monkeypatch.setattr(agent_tools, "discoverable_tool_names_for_query", fake_discoverable)
@@ -130,7 +130,7 @@ async def test_available_deferred_tool_names_never_applies_platform_top_n(monkey
 async def test_deferred_tool_candidates_project_activation_keys(monkeypatch):
     from app.services.agent_tools import available_deferred_tool_candidates_for_agent
 
-    async def fake_available_deferred_tool_names_for_agent(_agent_id, *, limit=80):
+    async def fake_available_deferred_tool_names_for_agent(_agent_id, *, limit=80, **_kwargs):
         assert limit == 80
         return ["team_create"]
 
@@ -173,7 +173,7 @@ async def test_deferred_external_names_remain_visible_and_require_their_own_sour
 async def test_deferred_tool_gatherer_outputs_activation_candidates(monkeypatch):
     from app.services.agent_tools import gather_deferred_tool_candidates_for_agent
 
-    async def fake_available_deferred_tool_names_for_agent(_agent_id, *, limit=80):
+    async def fake_available_deferred_tool_names_for_agent(_agent_id, *, limit=80, **_kwargs):
         assert limit == 80
         return ["team_create"]
 

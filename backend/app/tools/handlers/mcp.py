@@ -480,13 +480,26 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
     except MCPAuthzError as exc:
         return _render_mcp_authz_error("call_mcp_tool", exc)
     except Exception as exc:
+        error_class, retryable = "operation_failed", True
+        hint = "Check the MCP server is reachable and the API key is valid."
+        # G4c r4 (S-A): shared decision + wording with the runtime fallback
+        # path (web_mcp._execute_mcp_tool), which is what the model actually
+        # calls after tool_search loads a schema.
+        from app.services.agent_tool_domains.web_mcp import (
+            _NO_CREDENTIAL_AUTH_HINT,
+            _is_no_credential_auth_rejection,
+        )
+
+        if _is_no_credential_auth_rejection(bearer, api_key, exc):
+            error_class, retryable = "auth_required", False
+            hint = _NO_CREDENTIAL_AUTH_HINT
         return render_tool_error(
             tool_name="call_mcp_tool",
-            error_class="operation_failed",
+            error_class=error_class,
             message=f"MCP call failed: {type(exc).__name__}: {str(exc)}",
             provider="mcp",
-            retryable=True,
-            actionable_hint="Check the MCP server is reachable and the API key is valid.",
+            retryable=retryable,
+            actionable_hint=hint,
         )
 
 

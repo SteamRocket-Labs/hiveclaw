@@ -2276,6 +2276,28 @@ async def _search_bing(query: str, api_key: str, max_results: int, language: str
     return f'🔍 Bing search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
 
 
+_NO_CREDENTIAL_AUTH_HINT = (
+    "The member can connect their account through the card in this conversation "
+    "(ask_user_question with configuration.mcp_server_id from list_mcp_tools). "
+    "Explain the application and purpose; never ask for credentials in chat."
+)
+
+
+def _is_no_credential_auth_rejection(bearer: "str | None", api_key: "str | None", exc: BaseException) -> bool:
+    """G4c r4 (S-A): a remote 401/403 answering a call that carried NO member
+    bearer and no company key — the token-paste shape whose row is column-
+    identical to a no-sign-in service, so the connect marker could not say it
+    upfront. Shared by the direct-call handler (tools/handlers/mcp.py) and the
+    runtime fallback path (_execute_mcp_tool) the model actually calls."""
+    import re as _re
+
+    return (
+        bearer is None
+        and not api_key
+        and bool(_re.search(r"HTTP 40[13]", str(exc)))
+    )
+
+
 async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUID | None" = None, *, execution_context=None) -> str:
     try:
         from app.models.agent import Agent
@@ -2459,6 +2481,20 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         from app.tools.handlers.mcp import _render_mcp_authz_error
         return _render_mcp_authz_error(tool_name, exc)
     except Exception as e:
+        # G4c r4 (S-A): the model calls imported MCP tools through THIS path
+        # (fallback dispatch), so the no-credential 401/403 fallback must live
+        # here too — a generic retryable-looking error hides the one member
+        # action that fixes it. The message keeps only the local exception;
+        # MCPClient raises bare "HTTP <status>" strings, never the remote body.
+        if _is_no_credential_auth_rejection(oauth_bearer, scoped_api_key, e):
+            return render_tool_error(
+                tool_name=tool_name,
+                error_class="auth_required",
+                message=f"MCP call failed: {type(e).__name__}: {str(e)}",
+                provider="mcp",
+                retryable=False,
+                actionable_hint=_NO_CREDENTIAL_AUTH_HINT,
+            )
         return f"❌ MCP tool execution error: {str(e)}"
 
 

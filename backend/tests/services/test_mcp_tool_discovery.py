@@ -410,7 +410,7 @@ async def test_tool_search_text_and_schema_agree_on_mcp(monkeypatch, tmp_path):
 
     agent_id = uuid4()
 
-    async def fake_enumerator(_agent_id, _query):
+    async def fake_enumerator(_agent_id, _query, **_kwargs):
         # G4b r2: the single source now returns (name, connection label) pairs;
         # a faked entry carries no label, like a non-MCP tool.
         return [("mcp_github_issue_search", "")]
@@ -433,7 +433,7 @@ async def test_select_syntax_directly_discovers_one_deferred_tool(monkeypatch):
     """CC-style select:<tool> should directly load one reachable deferred schema."""
     from app.services import agent_tools as module
 
-    async def no_mcp(_agent_id, _query):
+    async def no_mcp(_agent_id, _query, **_kwargs):
         return []
 
     monkeypatch.setattr(module, "list_agent_mcp_deferred_tools_with_labels", no_mcp)

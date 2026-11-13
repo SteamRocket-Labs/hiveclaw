@@ -201,6 +201,7 @@ def _build_turn_route_span_metadata(request: Any) -> dict[str, Any]:
     }
 
 
+
 def _bind_system_prompt_suffix_sections(
     protected_sections: list[str],
     request: Any,
@@ -1458,17 +1459,22 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         latest_user_query = _latest_user_query(request.messages)
         available_deferred_tools: list[dict[str, Any]] = []
         deferred_source_unbound = ["deferred_catalog_source_inventory_missing"]
+        # G4c r3: the (trusted label, host) pairs for the Company Applications
+        # section ride the SAME per-turn enumeration as the deferred catalog
+        # (zero additional statements) and share its approval gating.
+        company_mcp_connections: list[tuple[str, str]] = []
         if request.agent_id:
             try:
                 from app.services.agent_tools import available_deferred_tool_candidates_for_agent
                 from app.runtime.context import ensure_runtime_assembly_state
                 import inspect
 
-                deferred_kwargs = {}
-                if "source_unbound" in inspect.signature(available_deferred_tool_candidates_for_agent).parameters:
+                deferred_kwargs = {"company_connections": company_mcp_connections}
+                deferred_signature = inspect.signature(available_deferred_tool_candidates_for_agent)
+                if "source_unbound" in deferred_signature.parameters:
                     deferred_source_unbound = []
                     deferred_kwargs["source_unbound"] = deferred_source_unbound
-                if "bound_only" in inspect.signature(available_deferred_tool_candidates_for_agent).parameters:
+                if "bound_only" in deferred_signature.parameters:
                     deferred_kwargs["bound_only"] = True
                 available_deferred_tools = await available_deferred_tool_candidates_for_agent(
                     request.agent_id, **deferred_kwargs
@@ -1476,7 +1482,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 if session_ctx is not None:
                     ensure_runtime_assembly_state(session_ctx).record_deferred_tools(available_deferred_tools)
             except Exception as exc:
-                logger.debug("[Kernel] available deferred tool list unavailable: %s", exc)
+                logger.warning("[Kernel] available deferred tool list unavailable: %s", exc)
         # SA-09: rebuild the frozen prefix once per turn before considering
         # reuse. The rendered bytes are the only complete dependency
         # closure across workspace files and DB-backed company/channel/A2A
@@ -1536,6 +1542,20 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         }
         dynamic_sources["available_deferred_tools"] = ()
         dynamic_unbound["available_deferred_tools"] = tuple(deferred_source_unbound)
+        # G4c r4 (provenance — controller-ruled KNOWN EXCEPTION): this section
+        # renders admin-approved tenant labels and validated hosts, yet Session
+        # V2 records a sources/unbound-empty section as a compiler-bound
+        # platform constant. Accepted because: the label and host are both
+        # inside the runtime approval fingerprint (a rename or URL change
+        # unlists the tool on the next turn); revocation removes the name on
+        # the next turn; the same label already reaches the model unbound
+        # inside the approved description (_neutral_description); and the
+        # alternatives fail — an unbound marker censors the section off the
+        # wire (measured in r3), and no existing source kind covers
+        # mcp_servers/tools rows without roughly six more statements per model
+        # request, breaking the 413 ceiling.
+        dynamic_sources["company_connections"] = ()
+        dynamic_unbound["company_connections"] = ()
         permissions_platform_constant = not dynamic_sources["permissions_context"] and not dynamic_unbound["permissions_context"]
 
         def _dynamic_source_refs():
@@ -1631,6 +1651,14 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             resolve_tool_expansion=self._deps.resolve_tool_expansion,
         )
 
+        # N10 (G4c r3): the section routes through tool_search. Name the
+        # connections only when tool_search survived the allowed/excluded and
+        # coordinator filters on this round's callable surface.
+        if company_mcp_connections and not any(
+            str(tool.get("function", {}).get("name") or "") == "tool_search" for tool in tools_for_llm
+        ):
+            company_mcp_connections = []
+
         _system_prompt_suffix_sections = _bind_system_prompt_suffix_sections(
             _protected_system_prompt_suffixes,
             request,
@@ -1668,6 +1696,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             dynamic_suffix = build_dynamic_prompt_suffix(
                 active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                 available_deferred_tools=available_deferred_tools,
+                company_connections=company_mcp_connections,
                 memory_snapshot=resolved_memory_context,
                 skill_catalog=request.skill_catalog,
                 runtime_metadata_context=resolved_runtime_metadata_context,
@@ -1701,6 +1730,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             dynamic_suffix = build_dynamic_prompt_suffix(
                 active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                 available_deferred_tools=available_deferred_tools,
+                company_connections=company_mcp_connections,
                 memory_snapshot=resolved_memory_context,
                 skill_catalog=request.skill_catalog,
                 runtime_metadata_context=resolved_runtime_metadata_context,
@@ -2545,6 +2575,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     _ptl_dynamic = build_dynamic_prompt_suffix(
                                         active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                         available_deferred_tools=available_deferred_tools,
+                                        company_connections=company_mcp_connections,
                                         memory_snapshot=resolved_memory_context,
                                         skill_catalog=request.skill_catalog,
                                         runtime_metadata_context=resolved_runtime_metadata_context,
@@ -2657,6 +2688,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     _ptl_dynamic = build_dynamic_prompt_suffix(
                                         active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                         available_deferred_tools=available_deferred_tools,
+                                        company_connections=company_mcp_connections,
                                         memory_snapshot=resolved_memory_context,
                                         skill_catalog=request.skill_catalog,
                                         runtime_metadata_context=resolved_runtime_metadata_context,
@@ -2751,6 +2783,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         _ptl_dynamic = build_dynamic_prompt_suffix(
                                             active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                             available_deferred_tools=available_deferred_tools,
+                                            company_connections=company_mcp_connections,
                                             memory_snapshot=resolved_memory_context,
                                             skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,
@@ -3205,6 +3238,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         build_dynamic_prompt_suffix(
                                             active_tool_groups=session_context.active_tool_groups,
                                             available_deferred_tools=available_deferred_tools,
+                                            company_connections=company_mcp_connections,
                                             memory_snapshot=resolved_memory_context,
                                             skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,

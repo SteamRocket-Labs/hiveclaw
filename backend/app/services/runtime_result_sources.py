@@ -24,7 +24,9 @@ from app.services.content_input_receipts import (
 from app.services.session_model_inputs import _model_dependencies, _stored_dependencies
 
 
-async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids=frozenset()):
+async def _published_owned_delegation_input(
+    db, dependency, task, *, receipt_ids=frozenset(), input_receipt_ids=frozenset()
+):
     kind, source_id = dependency["source_kind"], dependency["source_id"]
     if kind == "agent_directory_observation":
         from app.services.agent_directory_sources import _load
@@ -224,7 +226,8 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
                 capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")},
             )
             return bound == pointer and (bound["content_input_receipt_id"] is None
-                or uuid.UUID(bound["content_input_receipt_id"]) in receipt_ids)
+                or uuid.UUID(bound["content_input_receipt_id"]) in receipt_ids
+                or uuid.UUID(bound["content_input_receipt_id"]) in input_receipt_ids)
         except (ContentInputReceiptError, KeyError, TypeError, ValueError):
             return False
     if kind == "session_command":
@@ -915,10 +918,17 @@ async def _validate_runtime_result_sources(db, request, result_object, *, user=N
                 db, result=result_object, agent_id=reader_agent, session_id=reader_session, user_id=requester.id
             )
         )
+    # Native file reads retain their exact carrier in this inventory even when
+    # no file is returned. Its sources still pass the member reader below.
+    input_receipt_ids = frozenset(
+        uuid.UUID(ref["source_id"]) for ref in dependencies if ref["source_kind"] == "workspace_artifact"
+    )
     for dependency in dependencies:
         published = (first_task or published_return) and (
             dependency["source_kind"] == "workspace_artifact"
-            or await _published_owned_delegation_input(db, dependency, task, receipt_ids=receipt_ids)
+            or await _published_owned_delegation_input(
+                db, dependency, task, receipt_ids=receipt_ids, input_receipt_ids=input_receipt_ids
+            )
         )
         with source_recipient_read(session_id=reader_session, user_id=requester.id) if published else nullcontext():
             await _validate_input_dependencies(

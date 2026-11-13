@@ -110,11 +110,13 @@ async def _settle_foreign_work(owner):
     claim_conditions = _runtime_task_claim_conditions(claim_now=guard_horizon)
     # The input-dispatch lane runs once per second and dispatches admitted
     # inputs (state='admitted' with dispatch_state='pending', or 'dispatching'
-    # with an expired lease), spawning runs this test never seeded.
+    # with an expired lease), spawning runs this test never seeded. A
+    # dispatching lease is judged at the same guard horizon as the claim, so a
+    # lease that expires during the measurement is settled too.
     admitted_inputs = and_(SessionInputAdmission.state == "admitted", or_(
         SessionInputAdmission.dispatch_state == "pending",
         and_(SessionInputAdmission.dispatch_state == "dispatching",
-            SessionInputAdmission.lease_expires_at <= func.now())))
+            SessionInputAdmission.lease_expires_at <= guard_horizon)))
 
     async with owner() as db:
         settled_tasks = (await db.execute(update(RuntimeTask).where(*claim_conditions).values(

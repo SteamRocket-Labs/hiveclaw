@@ -976,7 +976,11 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land26 (R20a + R20b + G4c) versus land25: still 794 entries, 3 changed hashes, all in
 # skill_seeder (R20a isolates each agent in push_default_skills_to_existing_agents and
 # counts failures; module source). Still 122 callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "2d80bf1e0d961f99b9c963d6762a84c0f76ca4e143464003bdf40e3da088470d"
+# Land27 (R21a + X3b + r19iso) versus land26: still 794 entries, 1 changed hash, the
+# module source of direct_invocation_terminal_boundary_processor (X3b rebuilds a
+# pre-start delegation stop from the stored conversation messages, so the existing
+# instruction gate holds; no authorization added). Still 122 callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "1ca4938d95a95bf9c90774cad8c4123f6b4dbb6b3be788766ee3a12d0c0c83f7"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -107,8 +107,6 @@ async def test_rewording_forever_model_ends_with_the_plain_sentence():
     class RewordingClient(_FakeClient):
         async def stream(self, **kwargs):
             self.calls.append(kwargs)
-            if not kwargs.get("tools"):
-                return _answer(EMPTY_SEARCH_FINAL_MESSAGE)
             return SimpleNamespace(
                 content="",
                 tool_calls=[_search_call(len(executed) + 1)],
@@ -119,16 +117,17 @@ async def test_rewording_forever_model_ends_with_the_plain_sentence():
     from app.kernel.contracts import TerminalReason
 
     client = RewordingClient([])
-    kernel = _kernel(client, execute_tool, max_tool_rounds=5)
+    kernel = _kernel(client, execute_tool)
     result = await kernel.handle(_request())
 
     assert [call["tool"] for call in executed] == ["search_company_kb"] * 5
     assert result.content == EMPTY_SEARCH_FINAL_MESSAGE
-    # R20b/P2: a normal model answer replaces the failure card; the extra
-    # summary round is available even when the search used the round budget.
-    assert result.terminal_reason is TerminalReason.TURN_STOP
-    assert result.failure_code is None
+    # R20b round 3: the stubborn base fake gets one summary call; its discarded
+    # search cannot execute, so the original failure contract settles the turn.
+    assert result.terminal_reason is TerminalReason.LOOP_GUARD
+    assert result.failure_code == "repeated_empty_search"
     assert result.failure_retryable is False
+    # R20b round 3: five executed searches plus exactly one bounded summary call.
     assert len(client.calls) == 6 and client.calls[-1]["tools"] is None
     # The warning fired after the third empty result: the 4th model round saw
     # it (and it stays in history for the 5th), never before that.
@@ -352,8 +351,6 @@ async def test_run15_shape_with_earlier_tool_search_still_stops():
 
         async def stream(self, **kwargs):
             self.calls.append(kwargs)
-            if not kwargs.get("tools"):
-                return _answer(EMPTY_SEARCH_FINAL_MESSAGE)
             if self._first:
                 self._first = False
                 return SimpleNamespace(content="", tool_calls=[{
@@ -370,6 +367,12 @@ async def test_run15_shape_with_earlier_tool_search_still_stops():
     assert executed[0]["tool"] == "tool_search"
     assert [call["tool"] for call in executed[1:]] == ["search_company_kb"] * 5
     assert result.content == EMPTY_SEARCH_FINAL_MESSAGE
+    from app.kernel.contracts import TerminalReason
+
+    # R20b round 3: discovery plus five searches execute; only one extra model call is allowed.
+    assert len(client.calls) == 7
+    assert result.terminal_reason is TerminalReason.LOOP_GUARD
+    assert result.failure_code == "repeated_empty_search"
 
 
 def _call(name: str, index: int) -> dict:
@@ -423,8 +426,7 @@ async def test_typed_error_then_empties_still_stops():
 
     responses = [
         _round([_call("search_company_kb", 1)]),
-        *[_round([_call("search_company_kb", index)]) for index in range(2, 7)],
-        _answer(EMPTY_SEARCH_FINAL_MESSAGE),
+        *[_round([_call("search_company_kb", index)]) for index in range(2, 20)],
     ]
     client = _FakeClient(responses)
     kernel = _kernel(client, execute_tool)
@@ -433,6 +435,13 @@ async def test_typed_error_then_empties_still_stops():
     assert executed[0]["tool"] == "search_company_kb"
     assert len(executed) == 6  # one malformed call, then the abort threshold of empties
     assert result.content == EMPTY_SEARCH_FINAL_MESSAGE
+
+    from app.kernel.contracts import TerminalReason
+
+    # R20b round 3: the base stubborn script executes six calls and gets one discarded summary.
+    assert len(client.calls) == 7
+    assert result.terminal_reason is TerminalReason.LOOP_GUARD
+    assert result.failure_code == "repeated_empty_search"
 
 
 @pytest.mark.asyncio

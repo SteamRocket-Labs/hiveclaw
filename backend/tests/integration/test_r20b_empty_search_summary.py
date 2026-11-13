@@ -126,7 +126,7 @@ async def test_committed_plaza_post_is_in_the_completed_empty_search_answer(
     import app.runtime.invoker as invoker
     from app.models.plaza import PlazaPost
     from app.models.session_v2 import SessionToolInvocation
-    from app.services.agent_tool_domains.plaza import _plaza_create_post
+    from app.services import agent_tools
     from tests.integration.test_m1g46_native_skill_receipt_postgres import _run_native_skill_task
 
     answer = "帖子已发布到公司广场；关于差旅报销标准，多次搜索都没有找到相关资料。"
@@ -143,12 +143,14 @@ async def test_committed_plaza_post_is_in_the_completed_empty_search_answer(
     async def execute(tool_name, args, *rest, agent_id=None, authority_frame=None,
                       tool_call_id=None, trace_metadata_sink=None,
                       pre_effect_callback=None, **kwargs):
-        await pre_effect_callback({"tool_call_id": tool_call_id, "tool_name": tool_name, "arguments": dict(args)})
         if tool_name == "plaza_create_post":
-            result = await _plaza_create_post(agent_id, args)
-        else:
-            assert tool_name == "search_company_kb"
-            result = json.dumps({"status": "empty", "results": []})
+            return await agent_tools.execute_tool(
+                tool_name, args, *rest, agent_id=agent_id, authority_frame=authority_frame,
+                tool_call_id=tool_call_id, trace_metadata_sink=trace_metadata_sink,
+                pre_effect_callback=pre_effect_callback, **kwargs)
+        assert tool_name == "search_company_kb"
+        await pre_effect_callback({"tool_call_id": tool_call_id, "tool_name": tool_name, "arguments": dict(args)})
+        result = json.dumps({"status": "empty", "results": []})
         _settled_trace(trace_metadata_sink, tool_name=tool_name, args=args, result=result)
         return result
 
@@ -161,6 +163,39 @@ async def test_committed_plaza_post_is_in_the_completed_empty_search_answer(
         owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
         skill_setup=no_skill, client_script=script,
         prompt="发一条广场帖子，并查一下海外差旅报销标准。")
+    from types import SimpleNamespace
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+    from app.services.runtime_task_fence import run_claimed_runtime_task
+    from app.services.web_chat_runtime import execute_web_chat_run
+    from tests.integration.test_session_permission_execution_once import _mounted_client
+
+    async def no_wakeup(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", no_wakeup)
+    async with owner_sessionmaker() as db:
+        paused = await db.get(RuntimeTask, seed["run_id"])
+        publish = await db.scalar(select(SessionToolInvocation).where(
+            SessionToolInvocation.run_id == seed["run_id"], SessionToolInvocation.tool_name == "plaza_create_post"))
+        assert paused.status == "suspended" and publish.effect_state == "prepared_not_started"
+        assert publish.permission_state == "waiting"
+        assert publish.result_event_id is None and publish.permission_item_id
+        permission_id = publish.permission_item_id
+        assert list(await db.scalars(select(PlazaPost).where(PlazaPost.author_id == seed["agent_id"]))) == []
+    assert len(client.requests) == 1
+    path = (f"/api/agents/{seed['agent_id']}/sessions/{seed['session_id']}"
+        f"/permissions/{permission_id}/resolve")
+    async with _mounted_client(app_user_sessionmaker, SimpleNamespace(**seed)) as api:
+        approval = await api.post(path, json={"action": "allow_once"})
+        assert approval.status_code == 200, approval.text
+        assert approval.json()["status"] == "resolved" and approval.json()["run_status"] == "resumable"
+    async with owner_sessionmaker() as db:
+        claimed = await RuntimeTaskClaimService(db=db, worker_id="r20b-publish-resume",
+            task_types=("web_chat_turn",)).claim_available()
+    assert [task.id for task in claimed] == [seed["run_id"]]
+    await run_claimed_runtime_task(execute_web_chat_run(seed["run_id"]), task_id=seed["run_id"],
+        claim_version=claimed[0].claim_version, worker_id="r20b-publish-resume", lease_seconds=180)
     # The database and invocation prove the effect, independently of model prose.
     async with owner_sessionmaker() as db:
         posts = list(await db.scalars(select(PlazaPost).where(PlazaPost.author_id == seed["agent_id"])))
@@ -211,7 +246,8 @@ async def test_summary_model_failure_is_visible_without_operator_reconciliation(
 
 
 async def _run_business_empty_search_summary(
-    owner_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker, monkeypatch, tmp_path, *, summary=None, failure_code="repeated_empty_search",
+    failure_sentence=ANSWER, failure_reason="loop_guard",
 ):
     from app.models.runtime_task import RuntimeTask
     from app.models.task import Task
@@ -225,7 +261,7 @@ async def _run_business_empty_search_summary(
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(seed["data_root"]))
-    client = ScriptedLLMClient([*_search_rounds(), {"content": ANSWER}])
+    client = ScriptedLLMClient([*_search_rounds(), {"content": ANSWER} if summary is None else summary])
     _bind_database(monkeypatch, owner_sessionmaker)
     _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, client)
     async with owner_sessionmaker() as db:
@@ -257,14 +293,29 @@ async def _run_business_empty_search_summary(
         tenant_id=seed["tenant_id"], worker_id="r20b-business-terminal", canonical_validator=processor.validate,
         process_callback=processor, task_types=("business_task",))
     assert boundary["delivered"] == 1, boundary
-    await _assert_final(owner_sessionmaker, run_id, ANSWER, 6)
+    if summary is None:
+        await _assert_final(owner_sessionmaker, run_id, ANSWER, 6)
+    else:
+        await _assert_discarded_summary(owner_sessionmaker, run_id, failure_code=failure_code)
     async with owner_sessionmaker() as db:
         task = await db.get(Task, task_id)
         run = await db.get(RuntimeTask, run_id)
-        assert task.status == "done" and task.last_execution_status == "succeeded"
-        assert task.last_result == ANSWER and task.last_error is None
-        assert run.metadata_json["outcome"]["response_complete_payload"]
-        assert run.metadata_json["outcome"]["error_code"] is None
+        if summary is None:
+            assert task.status == "done" and task.last_execution_status == "succeeded"
+            assert task.last_result == ANSWER and task.last_error is None
+            assert run.metadata_json["outcome"]["response_complete_payload"]
+            assert run.metadata_json["outcome"]["error_code"] is None
+        else:
+            outcome = run.metadata_json["outcome"]
+            assert task.status == "failed" and task.last_execution_status == "failed"
+            assert outcome["error_code"] == failure_code
+            assert outcome["terminal_reason"] == failure_reason
+            if failure_code == "repeated_empty_search":
+                assert outcome["summary"] == ANSWER and outcome["retryable"] is False
+            else:
+                # R20b round 3: preserve the existing R18a business model-error projection.
+                assert outcome["summary"] == "Business task ended without a canonical completion (provider_error)."
+            assert "empty_model_content" not in str(outcome)
     assert len(client.requests) == 6 and client.requests[-1]["tools"] is None
     return {"seed": seed, "client": client, "run": run, "task": task}
 
@@ -276,7 +327,8 @@ async def test_business_task_empty_search_summary_settles_with_its_real_model_re
 
 
 async def _run_delegated_empty_search_summary(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, summary=None,
+    failure_code="repeated_empty_search", failure_sentence=ANSWER, failure_reason="loop_guard",
 ):
     import app.runtime.invoker as invoker
     from app.models.runtime_task import RuntimeTask
@@ -302,13 +354,21 @@ async def _run_delegated_empty_search_summary(
     seed, client, _bindings, _imported = await _run_native_skill_task(
         owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
         delegated=True, settle_delegation=True, skill_setup=no_skill,
-        client_script=[*_search_rounds(), {"content": ANSWER}],
+        client_script=[*_search_rounds(), {"content": ANSWER} if summary is None else summary],
         prompt="查公司知识库有没有海外差旅报销标准。",
     )
     result = seed["delegation_result"]
-    assert not result.failed and result.transcript_committed
-    assert result.terminal_reason == "turn_stop" and not result.failure_metadata
-    assert result.response_complete_payload
+    if summary is None:
+        assert not result.failed and result.transcript_committed
+        assert result.terminal_reason == "turn_stop" and not result.failure_metadata
+        assert result.response_complete_payload
+    else:
+        assert result.failed and result.terminal_reason == failure_reason
+        assert result.failure_metadata["error_code"] == failure_code
+        if failure_code == "repeated_empty_search":
+            assert result.content == ANSWER
+        else:
+            assert failure_sentence in result.content
     assert len(client.requests) == 6 and client.requests[-1]["tools"] is None
 
     processor = DirectInvocationTerminalBoundaryProcessor(
@@ -317,7 +377,10 @@ async def _run_delegated_empty_search_summary(
         tenant_id=seed["tenant_id"], worker_id="r20b-terminal", canonical_validator=processor.validate,
         process_callback=processor, task_types=("delegation",))
     assert boundary["delivered"] == 1, boundary
-    await _assert_final(owner_sessionmaker, seed["run_id"], ANSWER, 6)
+    if summary is None:
+        await _assert_final(owner_sessionmaker, seed["run_id"], ANSWER, 6)
+    else:
+        await _assert_discarded_summary(owner_sessionmaker, seed["run_id"], failure_code=failure_code)
     notices = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
     claimed = await notices.claim_batch(worker_id="r20b-parent", limit=10)
     pages = await notices.prepare_integration_pages(worker_id="r20b-parent",
@@ -333,11 +396,13 @@ async def _run_delegated_empty_search_summary(
         parent_seed = {**seed, "agent_id": continued[0].parent_agent_id,
             "session_id": pages[0].parent_session_id, "run_id": continued[0].id}
     result_ref = pages[0].items[0].result_ref
+    parent_answer = (ANSWER if summary is None or failure_code == "repeated_empty_search"
+        else "这次调用模型失败，没有完成。")
     parent_client = ScriptedLLMClient([
         {"tool_calls": [{"id": "read-child-answer", "type": "function", "function": {
             "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}}],
          "finish_reason": "tool_calls"},
-        {"content": ANSWER},
+        {"content": parent_answer},
     ])
     _patch_r18a_seams(monkeypatch, parent_seed, owner_sessionmaker, parent_client)
     from app.services.agent_tools import execute_tool
@@ -349,8 +414,13 @@ async def _run_delegated_empty_search_summary(
     await _execute_claimed_run(owner_sessionmaker, parent_seed, claim_version=0)
     assert len(parent_client.requests) == 2
     assert result_ref in json.dumps(parent_client.requests[0]["messages"], ensure_ascii=False)
-    assert ANSWER in json.dumps(parent_client.requests[1]["messages"], ensure_ascii=False)
-    await _assert_final(owner_sessionmaker, parent_seed["run_id"], ANSWER, 2)
+    parent_context = json.dumps(parent_client.requests[1]["messages"], ensure_ascii=False)
+    if summary is None or failure_code == "repeated_empty_search":
+        assert parent_answer in parent_context
+    else:
+        # R20b round 3: preserve R18a's source-neutral parent model-failure notice.
+        assert "这次调用模型失败，没有完成。" in parent_context
+    await _assert_final(owner_sessionmaker, parent_seed["run_id"], parent_answer, 2)
     return {"seed": seed, "client": client, "result": result,
         "parent_seed": parent_seed, "parent_client": parent_client}
 
@@ -360,3 +430,158 @@ async def test_delegated_empty_search_answer_reaches_the_parent_continuation(
 ):
     await _run_delegated_empty_search_summary(
         owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+
+
+async def _assert_discarded_summary(owner_sessionmaker, run_id, *, failure_code="repeated_empty_search"):
+    from app.models.plaza import PlazaPost
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.services.session_control_plane import _runtime_task_user_blocker
+
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeTask, run_id)
+        assert run.status == "failed"
+        if run.task_type == "business_task":
+            assert run.metadata_json["outcome"]["error_code"] == failure_code
+        else:
+            assert run.metadata_json["error_code"] == failure_code
+        assert _runtime_task_user_blocker(run) is None
+        assert "session_v2_reconciliation" not in run.metadata_json
+        models = list(await db.scalars(select(SessionModelResult).where(
+            SessionModelResult.run_id == run_id).order_by(SessionModelResult.round_id)))
+        assert len(models) == 6 and all(row.state == "round_committed" for row in models[:5])
+        summary = models[-1]
+        assert summary.state == "failed" and summary.reconciliation_owner is None
+        if failure_code == "repeated_empty_search":
+            assert summary.seal_json == {"delivery_state": "response_received",
+                "error_class": "repeated_empty_search", "retry_safe": True}
+        else:
+            assert summary.seal_json["error_class"] == failure_code
+            assert summary.seal_json["delivery_state"] == ("unknown" if failure_code == "timeout" else "rejected")
+        invocations = list(await db.scalars(select(SessionToolInvocation).where(
+            SessionToolInvocation.run_id == run_id)))
+        assert len(invocations) == 5
+        assert not any(row.provider_request_id == summary.provider_request_id for row in invocations)
+        assert list(await db.scalars(select(PlazaPost).where(PlazaPost.tenant_id == run.tenant_id))) == []
+
+
+@pytest.mark.parametrize("lane", ["web", "delegation", "business"])
+@pytest.mark.parametrize("kind", ["empty", "tool", "text_and_tool"])
+async def test_discarded_summary_settles_the_actual_provider_request_without_tools(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, lane, kind,
+):
+    summary = {} if kind == "empty" else {"tool_calls": [{"id": "must-not-publish",
+        "type": "function", "function": {"name": "plaza_create_post",
+            "arguments": json.dumps({"content": "This must never be published"})}}],
+        "finish_reason": "tool_calls"}
+    if kind == "text_and_tool":
+        summary["content"] = "I will publish it again"
+    if lane == "business":
+        await _run_business_empty_search_summary(owner_sessionmaker, monkeypatch, tmp_path, summary=summary)
+    elif lane == "delegation":
+        await _run_delegated_empty_search_summary(
+            owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, summary=summary)
+    else:
+        import app.runtime.invoker as invoker
+        from app.models.plaza import PlazaPost
+        from app.services.agent_tool_domains.plaza import _plaza_create_post
+
+        seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="公司知识库有没有海外差旅报销标准？")
+        client = ScriptedLLMClient([*_search_rounds(), summary, {"content": "Unexpected extra model round"}])
+        _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, client)
+        search = invoker.execute_tool
+
+        async def execute(tool_name, args, *rest, agent_id=None, tool_call_id=None,
+                          pre_effect_callback=None, trace_metadata_sink=None, **kwargs):
+            if tool_name == "plaza_create_post":
+                await pre_effect_callback({"tool_call_id": tool_call_id, "tool_name": tool_name,
+                    "arguments": dict(args)})
+                result = await _plaza_create_post(agent_id, args)
+                _settled_trace(trace_metadata_sink, tool_name=tool_name, args=args, result=result)
+                return result
+            return await search(tool_name, args, *rest, agent_id=agent_id, tool_call_id=tool_call_id,
+                pre_effect_callback=pre_effect_callback, trace_metadata_sink=trace_metadata_sink, **kwargs)
+
+        monkeypatch.setattr(invoker, "execute_tool", execute)
+        monkeypatch.setattr(invoker, "get_agent_tools_for_llm", lambda *_a, **_k: [SEARCH_TOOL, {
+            "type": "function", "function": {"name": "plaza_create_post", "parameters": {
+                "type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}}}])
+        await _execute_claimed_run(owner_sessionmaker, seed)
+        async with owner_sessionmaker() as db:
+            assert list(await db.scalars(select(PlazaPost).where(PlazaPost.author_id == seed["agent_id"]))) == []
+        await _assert_discarded_summary(owner_sessionmaker, seed["run_id"])
+        failures = await _failure_events(owner_sessionmaker, seed["session_id"])
+        assert len(failures) == 1 and failures[0]["failure_code"] == "repeated_empty_search"
+        assert failures[0]["message"] == ANSWER and failures[0]["retryable"] is False
+        assert len(client.requests) == 6
+
+
+async def test_member_input_arriving_at_the_guard_is_left_for_the_next_turn(
+    owner_sessionmaker, monkeypatch, tmp_path,
+):
+    import app.runtime.invoker as invoker
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionTurnInput
+    from app.models.user import User
+    from app.services.session_human_input import queue_admitted_human_input
+    from app.services.session_input_admission import run_user_prompt_admission
+    from app.services.session_v2_persistence import accept_human_input, resolve_session_mutation_authority
+
+    seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="查公司知识库里的报销标准。")
+    client = ScriptedLLMClient([*_search_rounds(), {"content": ANSWER}])
+    _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, client)
+    execute = invoker.execute_tool
+    input_id = uuid4()
+    new_request = "请处理我刚发来的新问题。"
+
+    async def search(*args, tool_call_id=None, trace_metadata_sink=None, pre_effect_callback=None, **kwargs):
+        result = await execute(*args, tool_call_id=tool_call_id, trace_metadata_sink=trace_metadata_sink,
+            pre_effect_callback=pre_effect_callback, **kwargs)
+        if len(client.requests) == 5:
+            async with owner_sessionmaker() as db:
+                run = await db.get(RuntimeTask, seed["run_id"])
+                user = await db.get(User, seed["user_id"])
+                authority = await resolve_session_mutation_authority(db, user=user,
+                    agent_id=seed["agent_id"], session_id=seed["session_id"], action="mutate_session_input")
+                await accept_human_input(db, authority=authority, intent={
+                    "kind": "steer_current_turn", "input_id": str(input_id),
+                    "idempotency_key": f"r20b-arrival:{input_id}", "session_id": str(seed["session_id"]),
+                    "content_parts": [{"type": "text", "text": new_request}],
+                    "expected_turn_id": run.metadata_json["turn_id"], "expected_run_id": str(run.id),
+                    "terminal_fallback": "queue_next_turn"})
+                admitted = await run_user_prompt_admission(db, authority=authority, input_id=input_id,
+                    worker_id="r20b-arrival")
+                assert admitted.state == "admitted"
+                await queue_admitted_human_input(db, authority=authority, input_id=input_id)
+                await db.commit()
+        return result
+
+    monkeypatch.setattr(invoker, "execute_tool", search)
+    await _execute_claimed_run(owner_sessionmaker, seed)
+    assert len(client.requests) == 6
+    assert new_request not in json.dumps(client.requests[-1]["messages"], ensure_ascii=False)
+    async with owner_sessionmaker() as db:
+        pending = await db.get(SessionTurnInput, input_id)
+        assert pending.status == "queued" and pending.bound_round_id is None
+    await _assert_final(owner_sessionmaker, seed["run_id"], ANSWER, 6)
+
+
+@pytest.mark.parametrize("lane", ["business", "delegation"])
+@pytest.mark.parametrize("kind,code,sentence", [
+    ("error", "provider_bad_request", "AI 模型供应商拒绝了当前请求，请检查模型名称、参数或消息格式。"),
+    ("timeout", "timeout", "AI 模型服务方响应超时，请稍后重试。"),
+])
+async def test_summary_model_failure_settles_non_web_lanes_and_the_parent(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, lane, kind, code, sentence,
+):
+    from app.services.llm_client import LLMError
+
+    error = (LLMError("Provider rejected request: HTTP 400 bad request", delivery_state="rejected")
+        if kind == "error" else LLMError("Provider stream delivery is unknown: ReadTimeout: timed out"))
+    kwargs = {"summary": error, "failure_code": code, "failure_sentence": sentence,
+        "failure_reason": "provider_error"}
+    if lane == "business":
+        await _run_business_empty_search_summary(owner_sessionmaker, monkeypatch, tmp_path, **kwargs)
+    else:
+        await _run_delegated_empty_search_summary(
+            owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, **kwargs)

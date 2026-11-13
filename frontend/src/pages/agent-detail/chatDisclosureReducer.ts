@@ -108,6 +108,8 @@ type TimelineBuildOptions = {
   turnStartedAt?: string;
   /** True only when the authoritative runtime (runs/active poll) reports a live run for this session. */
   activeRun?: boolean;
+  /** Reuse the session's existing group-history terminal-receipt gate. */
+  delegationReceiptExpected?: boolean;
 };
 
 const FILE_TOOL_NAMES = new Set([
@@ -549,7 +551,7 @@ function getEventStepPresentation(
   return 'surface';
 }
 
-function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean): RunStepStatus {
+function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean, delegationReceiptExpected: boolean): RunStepStatus {
   const live = (status: RunStepStatus): RunStepStatus =>
     status === 'running' && !allowLiveRunning ? 'interrupted' : status;
   if (message.role === 'tool_call') {
@@ -565,6 +567,7 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
     if (message.toolMemberSummary?.status === 'cancelled' || ['killed', 'cancelled', 'canceled'].includes(String(envelopeStatus))) return 'cancelled';
     if (['blocked', 'skipped'].includes(message.toolMemberSummary?.status || '')) return 'blocked';
     if (outcome === 'approval_required') return 'blocked';
+    if (message.sessionItem?.lifecycle === 'waiting') return 'blocked';
     const notDone = ['failed', 'error', 'denied', 'unavailable'].includes(outcome)
       || summaryState === 'not_done' || summaryState === 'unknown';
     if (notDone || ['cancelled', 'canceled', 'aborted'].includes(outcome)) {
@@ -575,6 +578,11 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
       // not-done status used here.
       return 'failed';
     }
+    // A returned delegation call can still be waiting for its colleague,
+    // including after the parent run ended. The typed terminal projection
+    // clears this summary when the colleague ends.
+    if (delegationReceiptExpected && message.toolMemberSummary?.taskId && summaryState === 'in_progress'
+      && ['delegation', 'colleague_result'].includes(message.toolMemberSummary.kind)) return 'running';
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking && !message.toolMeta.answered) return 'blocked';
     if (message.toolMeta?.kind === 'runtime_step') {
       const status = String(message.toolMeta.status || '').toLowerCase();
@@ -624,9 +632,12 @@ export function isDisclosureStepMessage(message: AgentChatMessage): boolean {
   return false;
 }
 
-function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: boolean): RunStepSnapshot | null {
+function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: boolean, delegationReceiptExpected: boolean): RunStepSnapshot | null {
   if (!isDisclosureStepMessage(message)) return null;
-  const status = statusForMessage(message, allowLiveRunning);
+  // The approval card already owns the decision. A canonical resolved item
+  // with no sentence otherwise becomes a question-mark "Runtime event" row.
+  if (message.eventType === 'permission_resolved' && !message.content?.trim()) return null;
+  const status = statusForMessage(message, allowLiveRunning, delegationReceiptExpected);
   const summary = getDisclosureStepSummary(message);
   const canonicalKind = message.sessionItem?.kind;
 
@@ -872,14 +883,14 @@ export function buildRunTimelineFromMessages(
       && messages.slice(index + 1).some((later) => later.role === 'tool_call' && later.toolName === message.toolName)
     ))
     .map((message, index) => {
-      const step = buildStep(message, index, allowLiveRunning);
+      const step = buildStep(message, index, allowLiveRunning, options.delegationReceiptExpected !== false);
       const key = workflowEventKey(message);
       const latest = key ? latestWorkflowEvents.get(key) : undefined;
       // A lifecycle transition is not an abandoned turn when the same exact
       // workflow entity has a later terminal receipt. Keep all event details.
       if (step && (step.status === 'running' || step.status === 'interrupted') && latest
         && ['done', 'completed', 'failed', 'error', 'cancelled', 'canceled'].includes(latest.eventStatus || '')) {
-        return { ...step, status: statusForMessage(latest, allowLiveRunning), completedAt: latest.timestamp };
+        return { ...step, status: statusForMessage(latest, allowLiveRunning, options.delegationReceiptExpected !== false), completedAt: latest.timestamp };
       }
       return step;
     })

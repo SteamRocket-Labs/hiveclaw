@@ -2689,6 +2689,9 @@
           "noResultKept": "There is no result to view; this conversation did not continue."
         },
         "failure": {
+          "readMissing": "The file to read was not found.",
+          "readInputUnavailable": "Readable file content was unavailable this time.",
+          "readChanged": "The file or its source has changed; it was not read this time.",
           "tokenBudget": "This turn used up its usage budget and did not finish.",
           "toolRound": "This turn reached its round limit and did not finish. Retry to continue.",
           "arguments": "Required information is missing or incorrect.",

@@ -2689,6 +2689,9 @@
           "noResultKept": "没有可供查看的结果；本次对话未继续。"
         },
         "failure": {
+          "readMissing": "没有找到要读取的文件。",
+          "readInputUnavailable": "这次未能取得可读取的文件内容。",
+          "readChanged": "文件或其来源已变化，这次没有读取。",
           "tokenBudget": "这次用完了用量预算，没有完成。",
           "toolRound": "这次已达到运行轮次上限，没有完成。可以重试继续。",
           "arguments": "这次操作缺少必要信息，或提供的信息不正确。",

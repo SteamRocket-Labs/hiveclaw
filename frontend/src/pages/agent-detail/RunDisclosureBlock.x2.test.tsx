@@ -883,3 +883,19 @@ it('x2f: one stopped sentence without a child_session row, live and after reload
   }
 });
 
+it('X3d r3-1 folds the X2 handoff start without a child session after its task finishes, live and after reload', () => {
+  const events = [...handoffWhileColleagueWorksEvents(),
+    compatibilityEnvelope(11, 'child_session', '同事已完成这项工作。', { reason: 'delegation_terminal', status: 'completed', runtime_task_id: 'live-task', child_session_id: 'colleague-session', to_agent: 'colleague', to_agent_name: '[E2E] 第十五轮助手' }, '2026-11-13T09:46:36Z')];
+  for (const messages of projectBoth(events)) {
+    expect(messages.filter(message => message.eventType === 'runtime_action_started')).toHaveLength(0);
+    const model = timelineFor(messages);
+    const run = model.cells.find(cell => cell.kind === 'active_run');
+    if (run?.kind !== 'active_run') throw new Error('missing X2 handoff run');
+    const { container, unmount } = renderBlock(run.timeline);
+    expect(container.textContent).toContain('委派工作');
+    expect(container.textContent).not.toContain('Delegate work');
+    expect(container.textContent).not.toContain('后台执行中');
+    expect(model.header.status).toBe('complete');
+    unmount();
+  }
+});

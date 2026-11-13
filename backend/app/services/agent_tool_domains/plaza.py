@@ -114,7 +114,7 @@ def _published_post_receipt(content: str, post_id) -> str:
     collapsed = " ".join(content.split())
     excerpt = json.dumps(collapsed[:80] + ("…" if len(collapsed) > 80 else ""), ensure_ascii=False)
     return (
-        f"Post published to the company plaza: {excerpt}. Members read it on the Plaza page (/plaza).\n"
+        f"Post published to the company plaza: {excerpt}. Members read it on the Plaza page.\n"
         "In member replies, name the post by its content and say it is on the Plaza page; "
         "never quote the post id.\n"
         f"Internal: post_id={post_id}"

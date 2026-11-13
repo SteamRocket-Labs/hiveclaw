@@ -462,6 +462,13 @@ function projectCanonicalItem(
       toolMemberSummary: (() => {
         const summary = memberToolSummaryFromRecord(toolEnvelope.member_summary ?? pairedEnvelope?.member_summary);
         if (summary?.kind === 'web_fetch' && !summary.host && typeof toolEnvelope.host === 'string') summary.host = toolEnvelope.host;
+        if (summary?.kind === 'file_read' && summary.state === 'not_done') {
+          const metadata = recordValue(pairedEnvelope?.metadata ?? toolEnvelope.metadata);
+          const reason = recordValue(metadata?.workspace_input_receipt)?.reason_code;
+          // The specific typed refusal outranks a coarse auth_or_permission
+          // class. Preserve it through the existing summary string field.
+          if (typeof reason === 'string' && reason) summary.errorClass = reason;
+        }
         return summary ? memberSummaryWithArgs(summary, toolArgs) : undefined;
       })(),
       artifacts: extractArtifactParts(pairedResult?.payload ?? item.payload),
@@ -605,28 +612,68 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
  * original store, tool results and model history remain untouched. */
 function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatMessage[] {
   const terminals = new Map<string, string>();
+  const terminalSessions = new Map<string, Map<string, number>>();
+  const startsBySession = new Map<string, Array<{ index: number; sequence: number }>>();
   const key = (value: unknown) => typeof value === 'string' ? value.replaceAll('-', '').toLowerCase() : '';
-  const terminal = (value: unknown) => ['completed', 'failed', 'error', 'killed', 'cancelled', 'blocked', 'skipped'].includes(String(value));
+  const terminal = (value: unknown) => ['completed', 'failed', 'error', 'killed', 'cancelled', 'canceled', 'blocked', 'skipped'].includes(String(value));
   const metadataOf = (message: AgentChatMessage) => message.threadItem?.metadata || message.sessionItem?.payload || {};
-  for (const message of messages) {
+  const recordSessionTerminal = (session: string, task: string, sequence: number) => {
+    if (!session || !task) return;
+    const tasks = terminalSessions.get(session) || new Map<string, number>();
+    tasks.set(task, Math.min(tasks.get(task) ?? Infinity, sequence));
+    terminalSessions.set(session, tasks);
+  };
+  messages.forEach((message, index) => {
     const metadata = metadataOf(message);
     const status = metadata.status || message.eventStatus;
+    const sequence = message.sessionItem?.last_sequence ?? message.threadItem?.sequence ?? index;
+    const childSession = key(metadata.child_session_id);
+    if (message.eventType === 'runtime_action_started' && metadata.action_kind === 'a2a_delegation' && childSession) {
+      const starts = startsBySession.get(childSession) || [];
+      starts.push({ index, sequence });
+      startsBySession.set(childSession, starts);
+    }
     if ((metadata.action_kind === 'a2a_delegation' || (message.eventType === 'child_session' && String(metadata.reason || '').startsWith('delegation_'))
       || message.sessionItem?.kind === 'a2a_delegation') && terminal(status)) {
       const task = key(metadata.runtime_task_id || metadata.task_id);
       if (task) terminals.set(task, String(status));
+      recordSessionTerminal(childSession, task, sequence);
     }
     const manifest = recordValue(metadata.result_manifest);
     for (const item of Array.isArray(manifest?.items) ? manifest.items : []) {
-      if (item && ['delegation', 'a2a_delegation'].includes(item.task_type) && terminal(item.terminal_status)) terminals.set(key(item.source_run_id), item.terminal_status);
+      if (item && ['delegation', 'a2a_delegation'].includes(item.task_type) && terminal(item.terminal_status)) {
+        const task = key(item.source_run_id);
+        terminals.set(task, item.terminal_status);
+        recordSessionTerminal(key(item.child_session_id), task, sequence);
+      }
     }
+  });
+  const foldedStarts = new Set<number>();
+  for (const [session, starts] of startsBySession) {
+    const ends = [...(terminalSessions.get(session)?.values() || [])].sort((a, b) => a - b);
+    const covered: Array<{ index: number; terminalSequence: number }> = [];
+    let nextTerminal = 0;
+    // Session-only FIFO cannot identify tasks that finish out of start order.
+    for (const start of starts.sort((a, b) => a.sequence - b.sequence)) {
+      while (nextTerminal < ends.length && ends[nextTerminal] <= start.sequence) nextTerminal++;
+      // Reopen only pairs whose terminal could cover this later start.
+      if (nextTerminal === ends.length) {
+        while (covered.length && covered[covered.length - 1].terminalSequence >= start.sequence) covered.pop();
+        break;
+      }
+      covered.push({ index: start.index, terminalSequence: ends[nextTerminal] });
+      nextTerminal++;
+    }
+    covered.forEach(({ index }) => foldedStarts.add(index));
   }
-  return messages.map(message => {
+  return messages.map((message, index) => {
+    if (foldedStarts.has(index)) return null;
     const metadata = metadataOf(message);
     if (message.role === 'event' && (metadata.action_kind === 'a2a_delegation' || message.eventType === 'child_session')) {
       const status = terminals.get(key(metadata.runtime_task_id || metadata.task_id));
       if (!status) return message;
-      const memberStatus = status === 'killed' ? 'cancelled' : status;
+      if (message.eventType === 'runtime_action_started' && !key(metadata.child_session_id)) return null;
+      const memberStatus = ['killed', 'canceled'].includes(status) ? 'cancelled' : status;
       return { ...message, eventStatus: memberStatus,
         ...(message.threadItem ? { threadItem: { ...message.threadItem, metadata: { ...metadata, status: memberStatus } } } : {}),
         ...(message.sessionItem ? { sessionItem: { ...message.sessionItem, payload: { ...metadata, status: memberStatus } } } : {}) };
@@ -647,8 +694,8 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
     const status = statuses.find(status => ['failed', 'error'].includes(status!))
       || statuses.find(status => status !== 'completed') || 'completed';
     return { ...message, toolMemberSummary: { ...message.toolMemberSummary, kind: 'delegation',
-      state: status === 'completed' ? 'done' : 'not_done', status: status === 'killed' ? 'cancelled' : status } };
-  });
+      state: status === 'completed' ? 'done' : 'not_done', status: ['killed', 'canceled'].includes(status) ? 'cancelled' : status } };
+  }).filter((message): message is AgentChatMessage => message !== null);
 }
 
 export function reconcileCanonicalPermissionReplay(

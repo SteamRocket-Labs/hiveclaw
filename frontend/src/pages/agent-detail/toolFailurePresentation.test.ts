@@ -17,3 +17,12 @@ it('keeps the existing personal-account failure presentation', () => {
   const result = toolFailureForDisplay({ ok: false, provider: 'mcp', error_class: 'auth_required' }, t, 'failed');
   expect(result).toBe(zh.agent.chat.disclosure.failure.permission);
 });
+
+it('X3d-4 uses a native read refusal’s typed reason even when its prose claims permission or a missing file', () => {
+  for (const message of ['Permission denied; file not found.', 'The source changed.', 'No problem.']) {
+    const error = { ok: false, tool_name: 'read_file', error_class: 'auth_or_permission',
+      reason_code: 'workspace_input_capture_unavailable', message };
+    const result = toolFailureForDisplay(`<tool_error>${JSON.stringify(error)}</tool_error>`, t, 'failed');
+    expect(result).toBe('这次未能取得可读取的文件内容。');
+  }
+});

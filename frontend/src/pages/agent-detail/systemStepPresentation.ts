@@ -33,7 +33,7 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
     const sentence = memberToolSummarySentence({ kind: 'delegation', status: status === 'killed' ? 'cancelled' : status,
       state: status === 'completed' ? 'done' : 'not_done' }, t)!;
     return event.type === 'child_session' ? { ...step, summary: sentence, details: sentence }
-      : display(t('agent.chat.disclosure.tools.delegateWork', 'Delegate work'), sentence);
+      : display(t('agent.chat.disclosure.toolTitle.delegateWork', 'Delegate work'), sentence);
   }
   if (step.status === 'failed') {
     const actor = metadata.target_agent_name;
@@ -63,7 +63,9 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
     const review = stopped ? hasKeptResult(metadata)
       ? t('agent.chat.disclosure.system.resultsKept', 'Results are kept for review; this conversation did not continue.')
       : t('agent.chat.disclosure.system.noResultKept', 'There is no result to view; this conversation did not continue.') : undefined;
-    return display(title, review);
+    const items = (metadata.result_manifest as { items?: Array<{ terminal_status?: string }> } | undefined)?.items || [];
+    const cancelled = items.length > 0 && items.every(item => ['killed', 'cancelled', 'canceled'].includes(String(item.terminal_status)));
+    return { ...display(title, review), ...(cancelled ? { status: 'cancelled' as const } : {}) };
   }
   if (event.type === 'team_member' && typeof metadata.member_name === 'string'
     && text === `Team member created: ${metadata.member_name}`) {

@@ -1620,6 +1620,7 @@ function buildRunCell(
   answer?: { message: AgentChatMessage; index: number },
   activeRun = false,
   turnStartedAt?: string,
+  delegationReceiptExpected = true,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> {
   const sources = [...sourceMessages];
   for (const message of answer?.message.runSourceMessages || []) {
@@ -1637,7 +1638,7 @@ function buildRunCell(
     : sourceMessages;
   const timeline = buildRunTimelineFromMessages(
     visibleSourceMessages.map((entry) => entry.message),
-    { answer: answer?.message, activeRun, turnStartedAt },
+    { answer: answer?.message, activeRun, turnStartedAt, delegationReceiptExpected },
   );
   const runId = messageRunId(answer?.message)
     ?? visibleSourceMessages.map((entry) => messageRunId(entry.message)).find((value): value is string => Boolean(value));
@@ -1768,6 +1769,7 @@ function keepLatestProcessRunActive(
   input: BuildThreadTimelineInput,
   activeRunStatus: string | null,
   terminalDeliveryPending: boolean,
+  delegationReceiptExpected: boolean,
 ): boolean {
   const phase = liveRunPhase(input);
   if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase && !terminalDeliveryPending) return false;
@@ -1786,7 +1788,7 @@ function keepLatestProcessRunActive(
   // (frozen duration, no live stopwatch) is preserved.
   const rebuilt = buildRunTimelineFromMessages(
     cell.sourceMessages.map((entry) => entry.message),
-    { activeRun: true, turnStartedAt: cell.timeline.startedAt },
+    { activeRun: true, turnStartedAt: cell.timeline.startedAt, delegationReceiptExpected },
   );
   const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed'
     ? 'failed'
@@ -1846,7 +1848,7 @@ function ensureOpenRunDisclosureContinuity(
   }
 }
 
-function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
+function buildCells(messages: AgentChatMessage[], delegationReceiptExpected: boolean): ThreadTimelineCell[] {
   const cells: ThreadTimelineCell[] = [];
   const pendingRun: Array<{ message: AgentChatMessage; index: number }> = [];
   const answeredRuns = new Map<string, Extract<ThreadTimelineCell, { kind: 'active_run' }>>();
@@ -1865,7 +1867,7 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
 
   const flushRun = () => {
     if (pendingRun.length === 0) return;
-    cells.push(buildRunCell(runIndex, [...pendingRun], undefined, false, turnHasRun ? undefined : turnStartedAt));
+    cells.push(buildRunCell(runIndex, [...pendingRun], undefined, false, turnHasRun ? undefined : turnStartedAt, delegationReceiptExpected));
     turnHasRun = true;
     runIndex += 1;
     pendingRun.length = 0;
@@ -1875,7 +1877,7 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
     sourceMessages: Array<{ message: AgentChatMessage; index: number }>,
     answer: { message: AgentChatMessage; index: number },
   ) => {
-    const runCell = buildRunCell(runIndex, sourceMessages, answer, false, turnHasRun ? undefined : turnStartedAt);
+    const runCell = buildRunCell(runIndex, sourceMessages, answer, false, turnHasRun ? undefined : turnStartedAt, delegationReceiptExpected);
     turnHasRun = true;
     cells.push(runCell, {
       kind: 'assistant_final',
@@ -1893,7 +1895,7 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
     const runCell = runId ? answeredRuns.get(runId) : undefined;
     if (!runCell) return false;
     runCell.sourceMessages.push({ message, index });
-    runCell.timeline.steps.push(...buildRunTimelineFromMessages([message]).steps);
+    runCell.timeline.steps.push(...buildRunTimelineFromMessages([message], { delegationReceiptExpected }).steps);
     if (runCell.timeline.answerMessageId) {
       const answered = messages
         .map((source, index) => ({ message: source, index }))
@@ -1976,7 +1978,7 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
       if (message.sessionItem?.kind === 'run' || isCanonicalRunTerminal(message)) turnTerminalSequence = terminalSequences.get(runId!);
       if (isCanonicalRunTerminal(message)
         && !cells.some(cell => cell.kind === 'active_run' && isSameSessionRunId(cell.runId, messageRunId(message)))) {
-        cells.push(buildRunCell(runIndex++, [{ message, index }], undefined, false, turnStartedAt));
+        cells.push(buildRunCell(runIndex++, [{ message, index }], undefined, false, turnStartedAt, delegationReceiptExpected));
       }
       cells.push({
         kind: 'boundary',
@@ -2021,6 +2023,7 @@ function mergeProcessCells(
   next: Extract<ThreadTimelineCell, { kind: 'active_run' }>,
   messages: AgentChatMessage[],
   turnStartedAt?: string,
+  delegationReceiptExpected = true,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> {
   const sources = new Map<string | number, { message: AgentChatMessage; index: number }>();
   const toolContentSize = (message: AgentChatMessage) => JSON.stringify([
@@ -2041,7 +2044,7 @@ function mergeProcessCells(
           && messageId(message, `assistant-${index}`) === answerMessageId
         ))
     : undefined;
-  const merged = buildRunCell(0, sourceMessages, answer, false, turnStartedAt);
+  const merged = buildRunCell(0, sourceMessages, answer, false, turnStartedAt, delegationReceiptExpected);
   return {
     ...merged,
     id: current.id,
@@ -2051,6 +2054,7 @@ function mergeProcessCells(
 function coalesceProcessCellsByUserTurn(
   cells: ThreadTimelineCell[],
   messages: AgentChatMessage[],
+  delegationReceiptExpected: boolean,
 ): ThreadTimelineCell[] {
   const coalesced: ThreadTimelineCell[] = [];
   const processIndexByRunId = new Map<string, number>();
@@ -2083,7 +2087,7 @@ function coalesceProcessCellsByUserTurn(
     if (existingIndex != null) {
       const existing = coalesced[existingIndex];
       if (existing.kind === 'active_run') {
-        coalesced[existingIndex] = mergeProcessCells(existing, cell, messages, existing.timeline.startedAt);
+        coalesced[existingIndex] = mergeProcessCells(existing, cell, messages, existing.timeline.startedAt, delegationReceiptExpected);
         return;
       }
     }
@@ -2108,7 +2112,7 @@ function coalesceProcessCellsByUserTurn(
     // Canonical lifecycle boundaries remain independently available, but they
     // cannot split one accepted user turn into multiple process disclosures.
     if (cell.runId) processIndexByRunId.set(cell.runId, currentProcessIndex);
-    coalesced[currentProcessIndex] = mergeProcessCells(current, cell, messages, turnStartedAt);
+    coalesced[currentProcessIndex] = mergeProcessCells(current, cell, messages, turnStartedAt, delegationReceiptExpected);
   });
 
   return coalesced;
@@ -2354,12 +2358,13 @@ export function createThreadTimelineCache(): ThreadTimelineCache {
 }
 
 export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTimelineModel {
+  const delegationReceiptExpected = String(input.activeSession?.audience_kind || '') !== 'group';
   const sessionRunId = input.activeSession?.read_only === true
     && input.activeSession?.session_kind === 'delegation_run'
     && !input.messages.some(message => messageRunId(message))
     ? readString(input.activeSession ?? {}, ['runtime_task_id'], '') : null;
   const cells = applyCanonicalRunTerminalEvidence(
-    coalesceProcessCellsByUserTurn(buildCells(input.messages), input.messages),
+    coalesceProcessCellsByUserTurn(buildCells(input.messages, delegationReceiptExpected), input.messages, delegationReceiptExpected),
     input.messages,
     null, null, input.sessionWorkbench?.runtime_tasks, sessionRunId,
   );
@@ -2402,7 +2407,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     || runtimeStatusKey(currentRun?.lifecycle || activeRunStatus || '') === 'done')
     && latestUserMessageIndex(input.messages) >= 0
     && !latestTurnAnswered;
-  const retainedProcessRun = !pendingSendState && keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending);
+  const retainedProcessRun = !pendingSendState && keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending, delegationReceiptExpected);
   const trailingUserTurn = Boolean(pendingSendState) || cells.at(-1)?.kind === 'user_turn';
   const acceptedUserTurnPending = trailingUserTurn && (latestUser?.sendState === 'sending'
     || latestUser?.sendState === 'queued'
@@ -2475,7 +2480,6 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   // they are. Group sessions never receive the colleague's terminal receipt
   // for local V1 rows (shared_group_history), so the label must not apply
   // there or a finished block would read 运行中 for good.
-  const delegationReceiptExpected = String(input.activeSession?.audience_kind || '') !== 'group';
   const settledCells = applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle, sessionWorkbench?.runtime_tasks,
       sessionRunId)
       .map(cell => terminalStatePending && cell.kind === 'active_run'

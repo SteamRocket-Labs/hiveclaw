@@ -1463,8 +1463,10 @@ def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[
     result_obj: Any = None
     result = payload.get("result")
     if not isinstance(result, str):
-        # Native V2 payloads put the result itself in content.
-        result = content if isinstance(content, str) else envelope.get("result")
+        # The embedded legacy envelope carries its result under "result";
+        # native V2 payloads put the result itself in content.
+        embedded_result = envelope.get("result")
+        result = embedded_result if isinstance(embedded_result, str) else content
     if isinstance(result, str) and result.strip():
         try:
             parsed = json.loads(result)
@@ -1487,6 +1489,17 @@ def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[
     if host:
         summary["host"] = host
     return summary
+
+
+def member_tool_summary_applicable(payload: Any) -> bool:
+    """Whether this tool_result payload belongs to a member-summarized tool.
+
+    Narrow gate for delivery boundaries that otherwise forward committed
+    envelope bytes untouched: only a summarized tool result needs the user
+    projection before it reaches a direct-user surface.
+    """
+
+    return _member_tool_summary(payload if isinstance(payload, Mapping) else {}, item_kind="tool_result") is not None
 
 
 def _apply_member_tool_summary(payload: dict[str, Any], *, item_kind: str) -> dict[str, Any]:

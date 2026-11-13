@@ -101,8 +101,11 @@ async def _assert_final(owner, run_id, answer, rounds):
         assert _runtime_task_user_blocker(run) is None
         models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id)
             .order_by(SessionModelResult.round_id)))
-        # R21a's alternating script exceeds nine rounds; round IDs sort numerically.
-        models.sort(key=lambda row: int(row.round_id.rsplit(":", 1)[1]))
+        # R21a r2 N2: preserve both the logical round and physical continuation order.
+        def round_order(row):
+            number, _, continuation = row.round_id.split(":round:", 1)[1].partition(":output-continuation:")
+            return int(number), int(continuation or 0)
+        models.sort(key=round_order)
         assert len(models) == rounds and all(row.state == "round_committed" for row in models)
         replies = list(await db.scalars(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.run_id == run_id, ChatTranscriptEvent.event_type == "assistant_text.snapshot")))
@@ -179,6 +182,69 @@ async def test_run18_material_then_alternating_empties_persists_the_web_summary(
             return [{key: value for key, value in message.items() if value is not None} for message in messages]
         assert normalize(summary.model_request_snapshot_json["wire_request"]["messages"]) == normalize(
             client.requests[-1]["messages"])
+
+
+@pytest.mark.parametrize("material", [None,
+    json.dumps({"status": "partial", "results": [{"text": "未核实的周报线索"}]}),
+    "没有找到与周报匹配的记忆",
+], ids=["no_material", "partial", "prose_miss"])
+async def test_discarded_summary_failure_message_is_identical_live_and_on_member_reload(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, material,
+):
+    """R21a r2 B1: real Web settlement and member transcript GET keep fixed copy."""
+    from types import SimpleNamespace
+
+    import app.runtime.invoker as invoker
+    from app.services import web_chat_runtime
+    from tests.integration.test_session_permission_execution_once import _mounted_client
+
+    seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="按我平常的格式写本周周报。")
+    names = (["search_memory"] if material is not None else []) + ["search_company_kb"] * 5
+    script = [{"tool_calls": [{"id": f"search-{i}", "type": "function", "function": {
+        "name": name, "arguments": json.dumps({"query": f"周报 第{i}种说法"})}}],
+        "finish_reason": "tool_calls"} for i, name in enumerate(names)] + [{"content": ""}]
+    client = ScriptedLLMClient(script)
+    _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, client)
+    broadcasts, metadata_fallback_calls = [], []
+
+    async def execute(name, args, *_a, tool_call_id=None, trace_metadata_sink=None,
+                      pre_effect_callback=None, **_k):
+        await pre_effect_callback({"tool_call_id": tool_call_id, "tool_name": name, "arguments": dict(args)})
+        result = material if name == "search_memory" else json.dumps({"status": "empty", "results": []})
+        _settled_trace(trace_metadata_sink, tool_name=name, args=args, result=result)
+        return result
+
+    async def broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    def metadata_fallback(*args, **kwargs):
+        metadata_fallback_calls.append(True)
+        raise AssertionError("Kernel failure and transcript reload must not use metadata-only fallback")
+
+    monkeypatch.setattr(invoker, "execute_tool", execute)
+    monkeypatch.setattr(invoker, "get_agent_tools_for_llm", lambda *_a, **_k: [
+        {**SEARCH_TOOL, "function": {**SEARCH_TOOL["function"], "name": name}}
+        for name in ("search_memory", "search_company_kb")])
+    monkeypatch.setattr(web_chat_runtime, "broadcast_web_chat_event", broadcast)
+    monkeypatch.setattr(web_chat_runtime, "_runtime_failure_payload_from_terminal_metadata", metadata_fallback)
+    await _execute_claimed_run(owner_sessionmaker, seed)
+    status, metadata = await _run_status(owner_sessionmaker, seed["run_id"])
+    assert status == "failed" and metadata["error_code"] == "repeated_empty_search"
+    assert len(client.requests) == len(names) + 1 and client.requests[-1]["tools"] is None
+    live = [event for event in broadcasts if event.get("kind") == "runtime_failure.recorded"]
+    assert len(live) == 1
+    async with _mounted_client(app_user_sessionmaker, SimpleNamespace(**seed)) as api:
+        response = await api.get(f"/api/agents/{seed['agent_id']}/sessions/{seed['session_id']}/transcript",
+            params={"schema_version": 2, "limit": 1000})
+        assert response.status_code == 200, response.text
+    reloaded = [event for event in response.json() if event.get("kind") == "runtime_failure.recorded"]
+    assert len(reloaded) == 1
+    assert reloaded[0]["payload"] == live[0]["payload"]
+    assert metadata_fallback_calls == []
+    expected = ("已停止继续搜索，但没能整理出答复。你可以让我根据目前的结果直接作答。"
+        if material is not None else ANSWER)
+    assert live[0]["payload"]["message"] == expected
+    assert live[0]["payload"]["retry_safe"] is False and live[0]["payload"]["retryable"] is False
 
 
 async def test_committed_plaza_post_is_in_the_completed_empty_search_answer(

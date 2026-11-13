@@ -408,7 +408,7 @@ async def test_prose_hit_then_empties_gets_a_summary_with_the_material():
     assert client.calls[-1]["tools"] is None
 
 
-MATERIAL_FALLBACK = "已停止继续搜索，但没能整理出答复。你可以让我按已经找到的资料直接作答。"
+MATERIAL_FALLBACK = "已停止继续搜索，但没能整理出答复。你可以让我根据目前的结果直接作答。"
 
 
 @pytest.mark.asyncio
@@ -529,15 +529,16 @@ async def test_no_material_summary_instruction_and_fact_are_byte_identical():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hit_first", [False, True])
-async def test_same_round_material_withdraws_abort_even_after_an_earlier_hit(hit_first):
-    """R21a preserves withdrawal for fresh material before or after the abort."""
+async def test_same_round_material_reaches_summary_even_after_an_earlier_hit(hit_first):
+    """Controller ruling R21a r2 item 1: withdrawal removed, the summary round reads the material."""
     from app.kernel.contracts import TerminalReason
 
     executed = []
 
-    async def execute(name, *_a, **_k):
+    async def execute(name, args, *_a, **_k):
         executed.append(name)
-        return OK_RESULT if name == "search_memory" else EMPTY_RESULT
+        return json.dumps({"status": "ok", "results": [{"id": f"hit-{args['query']}"}]}, ensure_ascii=False) if (
+            name == "search_memory") else EMPTY_RESULT
 
     empties = [_call("search_company_kb", i) for i in range(4, 9)]
     hit = _call("search_memory", 9)
@@ -547,7 +548,8 @@ async def test_same_round_material_withdraws_abort_even_after_an_earlier_hit(hit
         _answer("已经找到新的资料。")])
     result = await _kernel(client, execute, tools=("search_memory", "search_company_kb")).handle(_request())
     assert len(executed) == 10 and len(client.calls) == 6
-    assert client.calls[-1]["tools"]  # normal continuation, not the final summary
+    assert client.calls[-1]["tools"] is None
+    assert "hit-白鹭计划 第9种说法" in _message_texts(client.calls[-1])
     assert result.terminal_reason is TerminalReason.TURN_STOP and result.content == "已经找到新的资料。"
 
 
@@ -609,9 +611,8 @@ async def test_warning_after_material_says_answer_with_what_was_found():
 
 
 @pytest.mark.asyncio
-async def test_fruitful_result_after_fifth_empty_in_same_round_cancels_the_stop():
-    """R18a round 3 ruling 3b: results arrive in call order; an ok observed
-    after the fifth empty of the same round cancels the stop at the exit."""
+async def test_fruitful_result_after_fifth_empty_in_same_round_reaches_summary():
+    """Controller ruling R21a r2 item 1: withdrawal removed, the summary round reads the material."""
 
     executed: list[dict] = []
 
@@ -631,8 +632,76 @@ async def test_fruitful_result_after_fifth_empty_in_same_round_cancels_the_stop(
     result = await kernel.handle(_request())
 
     assert len(executed) == 9  # the whole round ran, including the fruitful call
-    assert len(client.calls) == 5  # the model was called again after the cancelled stop
+    assert len(client.calls) == 5  # the model now receives the bounded summary round
+    assert client.calls[-1]["tools"] is None
+    assert "hit-1" in _message_texts(client.calls[-1])
     assert result.content == "找到了「白鹭计划」的一条资料。"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("memory", ["没有找到与周报匹配的记忆", "周报包含进展、风险和下周计划。"], ids=["miss", "hit"])
+@pytest.mark.parametrize("summary_kind", ["answer", "empty"])
+async def test_every_round_prose_memory_and_empty_company_search_reaches_summary(memory, summary_kind):
+    """Reviewer probe B: fresh prose in every round cannot withdraw the bound."""
+    from app.kernel.contracts import TerminalReason
+
+    executed = []
+    answer = "目前的搜索结果不足以确认你的周报格式。"
+
+    class Client(_FakeClient):
+        async def stream(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["tools"] is None:
+                return _answer(answer if summary_kind == "answer" else "")
+            index = len(self.calls)
+            return _round([_call("search_memory", index), _call("search_company_kb", index)])
+
+    async def execute(name, *_a, **_k):
+        executed.append(name)
+        return memory if name == "search_memory" else EMPTY_RESULT
+
+    client = Client([])
+    result = await _kernel(client, execute, max_tool_rounds=12,
+        tools=("search_memory", "search_company_kb")).handle(_request())
+    assert len(client.calls) == 6
+    assert len(executed) == 10
+    assert executed.count("search_memory") == executed.count("search_company_kb") == 5
+    assert client.calls[-1]["tools"] is None
+    assert memory in _message_texts(client.calls[-1])
+    assert "material already found in this turn" in _message_texts(client.calls[-1])
+    if summary_kind == "answer":
+        assert result.terminal_reason is TerminalReason.TURN_STOP and result.content == answer
+    else:
+        assert result.terminal_reason is TerminalReason.LOOP_GUARD
+        assert result.failure_code == "repeated_empty_search" and not result.failure_retryable
+        assert result.content == MATERIAL_FALLBACK
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("memory", [OK_RESULT, "周报格式：进展、风险、下周计划。"], ids=["typed_hit", "prose"])
+@pytest.mark.parametrize("first_tool", ["search_personal_kb", "search_company_kb"])
+async def test_run18_paired_parallel_empty_kb_searches_reach_summary(memory, first_tool):
+    """N1: the production paired shape retains separate counts and one summary."""
+    from app.kernel.contracts import TerminalReason
+
+    second_tool = "search_company_kb" if first_tool == "search_personal_kb" else "search_personal_kb"
+    executed = []
+
+    async def execute(name, *_a, **_k):
+        executed.append(name)
+        return memory if name == "search_memory" else EMPTY_RESULT
+
+    answer = "已根据现有结果整理周报，未确认的部分已注明。"
+    client = _FakeClient([_round([_call("search_memory", 0)]),
+        *[_round([_call(first_tool, i), _call(second_tool, i)]) for i in range(1, 6)], _answer(answer)])
+    result = await _kernel(client, execute, tools=("search_memory", first_tool, second_tool)).handle(_request())
+    assert len(client.calls) == 7
+    assert len(executed) == 11 and executed[0] == "search_memory"
+    assert executed.count(first_tool) == executed.count(second_tool) == 5
+    assert client.calls[-1]["tools"] is None
+    assert "[Loop Guard Warning]" not in _message_texts(client.calls[3])
+    assert "[Loop Guard Warning]" in _message_texts(client.calls[4])
+    assert result.terminal_reason is TerminalReason.TURN_STOP and result.content == answer
 
 
 @pytest.mark.asyncio

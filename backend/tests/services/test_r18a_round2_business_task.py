@@ -215,7 +215,8 @@ async def test_read_loop_guard_stop_is_a_plain_business_failure(monkeypatch, fai
 
     if failure_code == "repeated_empty_search":
         # R21a: the executor preserves the new frozen fallback when earlier material exists.
-        assert outcome.summary == "已停止继续搜索，但没能整理出答复。你可以让我按已经找到的资料直接作答。"
+        # Controller ruling R21a r2 item 2: prose misses must not imply found material.
+        assert outcome.summary == "已停止继续搜索，但没能整理出答复。你可以让我根据目前的结果直接作答。"
         assert outcome.retryable is False
     elif failure_code == "identical_refused_result_read":
         # Approval, remote, subagent and creation results are also refused; the

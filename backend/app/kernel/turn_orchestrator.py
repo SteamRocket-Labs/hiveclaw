@@ -3738,19 +3738,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 if _session_permission_pause_pending:
                     return await _pause_for_user_clarification()
 
-                # R18a round 3 (Grok should-fix 2, input B): results are observed
-                # in call order, so a fruitful result later in this round cannot
-                # withdraw an abort recorded on the fifth empty. All of the
-                # round's results are observed by now; if any search tool found
-                # new material, withdraw this round's abort. Earlier material
-                # changes the final reply's copy, not the empty-search bound.
-                if (
-                    _loop_guard_terminal_decision is not None
-                    and _loop_guard_terminal_decision.reason == "repeated_empty_search"
-                    and loop_guard.empty_search_material_found_in_round
-                ):
-                    _loop_guard_terminal_decision = None
-
                 if _loop_guard_terminal_decision is not None:
                     if _loop_guard_terminal_decision.reason in {
                         "identical_terminal_task_read",

@@ -8,13 +8,11 @@ advance. Native task-status reads may also stop at the existing identical-call
 threshold when the same task's fixed terminal reason is unchanged across readers,
 or when a delegated colleague is still running. Repeated fixed non-retryable
 result refusals use that same read threshold regardless of paging arguments.
-A side-effect-free search tool
-that keeps returning typed empty results across reworded arguments may also be
-stopped after a fixed count: no external effect exists and the member's
-question has a truthful answer ("nothing found") that more searching cannot
-change — but only while the empties are consecutive, no search tool in the turn
-has produced a typed non-empty result, and the model has already been warned in
-an earlier round (same-round parallel empties only warn).
+A side-effect-free search tool that keeps returning typed empty results across
+reworded arguments may also stop at a fixed count of consecutive empties after
+the model was warned in an earlier round (same-round parallel empties only warn).
+Earlier material only changes the final texts and never removes this bound;
+the final summary reads all material, including results from the stopping round.
 """
 
 from __future__ import annotations
@@ -133,7 +131,6 @@ class LoopGuard:
         self._refused_result_read_rounds: dict[str, int] = {}
         self._empty_search_counts: dict[str, int] = {}
         self._empty_search_material_found = False
-        self._empty_search_material_found_in_round = False
         # Per-tool warnings whose warned model round has already run: a tool's
         # stop is only authorized by that same tool's delivered warning.
         self._empty_search_armed: set[str] = set()
@@ -144,8 +141,6 @@ class LoopGuard:
 
     def observe_tool_call(self, tool_name: str, args: dict[str, Any] | None) -> LoopGuardDecision | None:
         self.total_tool_calls += 1
-        # Calls are observed before results; retain only this round's material for withdrawal.
-        self._empty_search_material_found_in_round = False
         # All of a round's tool calls are observed before any of its results,
         # so calls observed now prove the warned model rounds already ran.
         # Arming is per tool: only a warning this tool received authorizes
@@ -265,11 +260,6 @@ class LoopGuard:
         """Whether any search tool produced material in this turn (read-only)."""
         return self._empty_search_material_found
 
-    @property
-    def empty_search_material_found_in_round(self) -> bool:
-        """Only newly arrived material can withdraw this round's empty-search abort."""
-        return self._empty_search_material_found_in_round
-
     def _observe_empty_search(self, tool_name: str, result: str) -> LoopGuardDecision | None:
         """Repeated empty results from one side-effect-free search tool.
 
@@ -301,7 +291,6 @@ class LoopGuard:
         typed = isinstance(body, dict) and isinstance(body.get("status"), str)
         if not typed or body.get("status") in {"ok", "partial"}:
             self._empty_search_material_found = True
-            self._empty_search_material_found_in_round = True
         if not (typed and body.get("status") == "empty"):
             self._empty_search_counts[tool_name] = 0
             return None

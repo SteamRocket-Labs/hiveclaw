@@ -2125,6 +2125,45 @@ function runAwaitsApproval(messages: AgentChatMessage[], runId?: string | null):
     && terminalRuntimePhaseForSessionEvent('run', message.sessionItem.lifecycle, message.sessionItem.payload) === 'awaiting_approval'));
 }
 
+/** X2 D/E: a delegated task with no terminal receipt yet — the colleague may
+ * still be working. The typed terminal rewrite in the projection
+ * (`projectMemberDelegationStates`) clears both signals once the child's
+ * terminal arrives, so this can never latch a resolved delegation. */
+function delegatedWorkStillInProgress(message: AgentChatMessage): boolean {
+  const summary = (message as { toolMemberSummary?: { kind?: string; state?: string } }).toolMemberSummary;
+  if (summary?.kind === 'delegation' && summary.state === 'in_progress') return true;
+  if (message.role !== 'event') return false;
+  const metadata = message.threadItem?.metadata || message.sessionItem?.payload || {};
+  const delegation = metadata.action_kind === 'a2a_delegation'
+    || (message.eventType === 'child_session' && String(metadata.reason || '').startsWith('delegation_'));
+  if (!delegation) return false;
+  // The compatibility-plane projection stamps eventStatus with the thread
+  // item's generic status ('succeeded'); the delegation's typed status lives
+  // in the metadata until the terminal rewrite carries it into eventStatus —
+  // so a terminal eventStatus decides, and otherwise the metadata does.
+  const eventStatus = String(message.eventStatus || '');
+  const status = ['completed', 'failed', 'error', 'killed', 'cancelled', 'canceled', 'denied', 'unavailable'].includes(eventStatus)
+    ? eventStatus
+    : String(metadata.status || eventStatus || '');
+  return ['running', 'in_progress', 'pending', 'queued'].includes(status);
+}
+
+/** X2 D: a delegated task whose receipt says it ended without success. While
+ * the parent run's own terminal is not loaded, a step-derived done would be a
+ * provisional done that the parent terminal overturns. */
+function delegatedWorkEndedWithoutSuccess(message: AgentChatMessage): boolean {
+  const summary = (message as { toolMemberSummary?: { kind?: string; state?: string; status?: string } }).toolMemberSummary;
+  if (summary?.kind === 'delegation' && summary.state === 'not_done') return true;
+  if (message.role !== 'event') return false;
+  const metadata = message.threadItem?.metadata || message.sessionItem?.payload || {};
+  const delegation = metadata.action_kind === 'a2a_delegation'
+    || (message.eventType === 'child_session' && String(metadata.reason || '').startsWith('delegation_'));
+  if (!delegation) return false;
+  const status = String(metadata.status || message.eventStatus || '');
+  return ['killed', 'cancelled', 'canceled', 'failed', 'error', 'denied', 'unavailable'].includes(status);
+}
+
+
 function applyCanonicalRunTerminalEvidence(
   cells: ThreadTimelineCell[],
   messages: AgentChatMessage[],
@@ -2161,7 +2200,17 @@ function applyCanonicalRunTerminalEvidence(
   return cells.map((cell, index) => {
     if (cell.kind !== 'active_run') return cell;
     const runId = cell.runId || (cell.sourceMessages.length > 0 ? normalizeSessionRunId(sessionRunId) : null);
-    if (!runId) return cell;
+    if (!runId) {
+      // X2 D: an unbound process cell (compatibility-plane delegation rows)
+      // must not paint a done that a later terminal in the same load
+      // overturns; keep it live while its delegated work is unresolved.
+      if (cell.timeline.status === 'done'
+        && cell.sourceMessages.some(entry => delegatedWorkStillInProgress(entry.message)
+          || delegatedWorkEndedWithoutSuccess(entry.message))) {
+        return { ...cell, timeline: { ...cell.timeline, status: 'running', completedAt: undefined, durationIsFinal: false } };
+      }
+      return cell;
+    }
     const terminal = terminalByRunId.get(runId);
     const nativeReplyPendingTerminal = !terminal && messages.some(message => message.sessionItem?.kind === 'assistant_final'
       && message.sessionItem.completedEventId && message.sessionItem.payload?.legacy !== true
@@ -2172,17 +2221,39 @@ function applyCanonicalRunTerminalEvidence(
     const task = runtimeTasks.find(task => isSameSessionRunId(readString(task, ['runtime_task_id', 'id'], ''), runId));
     const taskStatus = task && runtimeStatusKey(readString(task, ['status'], ''));
     const canonicalStatus = terminal?.status || (awaitingApproval ? 'waiting' : taskStatus || liveStatus);
-    const status = canonicalStatus ? (canonicalStatus === 'waiting' ? 'blocked' : canonicalStatus === 'stopped' ? 'cancelled'
-      : canonicalStatus === 'done' ? 'done' : canonicalStatus) : terminal?.status;
+    // X2 D/E: while a delegated colleague is still working, a block that
+    // would otherwise read 完成 claims work that is not done. The platform's
+    // own vocabulary maps the delegated turn (waiting_for_child) to 运行中,
+    // so the block presents running until the colleague's terminal receipt
+    // lands — which also keeps an incremental newest-first reload from
+    // painting a provisional done that a later page overturns ( run 18).
+    const delegatedWorkInFlight = cell.sourceMessages.some(entry => delegatedWorkStillInProgress(entry.message));
+    const status = canonicalStatus === 'done' && delegatedWorkInFlight ? 'running'
+      : canonicalStatus ? (canonicalStatus === 'waiting' ? 'blocked' : canonicalStatus === 'stopped' ? 'cancelled'
+        : canonicalStatus === 'done' ? 'done' : canonicalStatus) : terminal?.status;
     if (nativeReplyPendingTerminal && (!canonicalStatus || canonicalStatus === 'done')) return { ...cell, runId,
       timeline: { ...cell.timeline, status: 'running', completedAt: undefined, durationIsFinal: false } };
-    if (!status) return cell;
-    // Keep the accepted input / queued clock when a later task-row start
-    // appears. Terminal events alone freeze the completed run's clock.
-    const startedAt = terminal?.runtimeStartedAt || [terminal?.startedAt, cell.timeline.startedAt,
-      ...(!terminal ? [readString(task ?? {}, ['started_at', 'created_at'], '')] : [])]
-      .filter((value): value is string => Boolean(value && Number.isFinite(Date.parse(value))))
-      .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
+    if (!status) {
+      // X2 D: no authoritative status source yet — a step-derived done is a
+      // provisional done while the delegated work is unresolved or ended
+      // without success (run 18 step 6: done → cancelled within one load).
+      if (cell.timeline.status === 'done'
+        && cell.sourceMessages.some(entry => delegatedWorkStillInProgress(entry.message)
+          || delegatedWorkEndedWithoutSuccess(entry.message))) {
+        return { ...cell, runId, timeline: { ...cell.timeline, status: 'running', completedAt: undefined, durationIsFinal: false } };
+      }
+      return cell;
+    }
+    // X2 B: a terminal run's duration comes from the run's own typed start
+    // (payload started_at, else the run item's first event) to its typed
+    // terminal time — computed the same way live and after reload. The
+    // accepted-input/queued clock may only anchor a run with no typed start.
+    const runTypedStartedAt = terminal?.runtimeStartedAt || terminal?.startedAt || '';
+    const startedAt = (runTypedStartedAt && Number.isFinite(Date.parse(runTypedStartedAt)) ? runTypedStartedAt : undefined)
+      || [cell.timeline.startedAt,
+        ...(!terminal ? [readString(task ?? {}, ['started_at', 'created_at'], '')] : [])]
+        .filter((value): value is string => Boolean(value && Number.isFinite(Date.parse(value))))
+        .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
     if (status === 'running' || status === 'blocked') return { ...cell, runId, timeline: { ...cell.timeline, status, startedAt,
       ...(awaitingApproval ? { durationIsFinal: false, completedAt: undefined } : {}),
     } };

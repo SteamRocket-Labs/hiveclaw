@@ -902,8 +902,22 @@ export function mergeCanonicalTerminalMessages(
     ))
     : canonical;
   const canonicalFinal = [...canonicalRun].reverse().find(isRenderedAssistantAnswer);
-  const liveFinal = [...liveTail].reverse().find(isRenderedAssistantAnswer);
-  const process = liveTail.filter((message) => !isRenderedAssistantAnswer(message));
+  // X2 C: only the terminal run's own answer may move to the tail. An earlier
+  // run's answer inside the retained live tail keeps its event-sequence
+  // position — re-appending it below the newer run's content would reorder a
+  // finished paragraph under a later failure card and duplicate its bytes.
+  const answerBelongsToTerminalRun = (message: AgentChatMessage): boolean => {
+    if (!terminalRunId) return true;
+    const runId = canonicalMessageRunId(message);
+    return runId == null || runId === terminalRunId;
+  };
+  const liveFinal = [...liveTail].reverse().find((message) => isRenderedAssistantAnswer(message) && answerBelongsToTerminalRun(message));
+  const terminalAnswer = [canonicalFinal, liveFinal].find((candidate) => (
+    candidate && !prefix.some((existing) => messagesShareIdentity(existing, candidate))
+  ));
+  const process = liveTail.filter((message) => !isRenderedAssistantAnswer(message)
+    || !terminalAnswer
+    || (!answerBelongsToTerminalRun(message) && !messagesShareIdentity(message, terminalAnswer)));
 
   for (const message of canonicalRun) {
     if (isRenderedAssistantAnswer(message) || message.role === 'user') continue;
@@ -915,9 +929,6 @@ export function mergeCanonicalTerminalMessages(
     process.push(message);
   }
 
-  const terminalAnswer = [canonicalFinal, liveFinal].find((candidate) => (
-    candidate && !prefix.some((existing) => messagesShareIdentity(existing, candidate))
-  ));
   return terminalAnswer ? [...prefix, ...process, terminalAnswer] : [...prefix, ...process];
 }
 
@@ -1063,6 +1074,13 @@ function transitionApplicationOf(
 export function compatibilityProjectionEvent(event: SessionCompatibilityEvent): ChatTranscriptEventPayload {
   const envelope = event as unknown as Record<string, unknown>;
   const payload = recordValue(envelope.payload) || {};
+  // The envelope's transport `reason` (e.g. 'unmapped_legacy_kind') is
+  // delivery bookkeeping, never the event's own reason. The legacy projector
+  // flattens the frame into thread-item metadata, so keeping it would shadow
+  // the payload's real reason (e.g. 'delegation_terminal') and break the
+  // typed delegation terminal detection for every compatibility event.
+  const { reason: _transportReason, ...envelopeFields } = envelope;
+  void _transportReason;
   const sourceAccess = sourceAccessHold(payload);
   if (sourceAccess) {
     const operational = ['compaction_skipped', 'model_route', 'context_window_status', 'provider_call_ledger']
@@ -1078,7 +1096,7 @@ export function compatibilityProjectionEvent(event: SessionCompatibilityEvent): 
       ? envelope.created_at.trim()
       : undefined;
   return {
-    ...(event as unknown as ChatTranscriptEventPayload),
+    ...(envelopeFields as unknown as ChatTranscriptEventPayload),
     id: String(envelope.event_id || ''),
     event_type: String(envelope.legacy_event_type || ''),
     // Compatibility envelopes use the Session V2 `occurred_at` clock while

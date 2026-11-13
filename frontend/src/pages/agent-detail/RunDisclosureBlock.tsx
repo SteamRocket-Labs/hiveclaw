@@ -152,9 +152,19 @@ function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string |
         readObservedRunDuration(presentationKey),
       );
   React.useEffect(() => {
-    if (!timeline.durationIsFinal) persistObservedRunDuration(presentationKey, observedDurationMs);
-  }, [observedDurationMs, presentationKey, timeline.durationIsFinal]);
+    // Only a live clock is worth remembering; a terminal duration is typed
+    // server evidence and must never be inflated by client observation (X2 B).
+    if (running && !timeline.durationIsFinal) persistObservedRunDuration(presentationKey, observedDurationMs);
+  }, [observedDurationMs, presentationKey, running, timeline.durationIsFinal]);
   if (timeline.durationIsFinal) return formatDuration(timeline.durationMs);
+  // X2 B: once a block reached a terminal status its duration is typed server
+  // evidence computed the same way live and after reload. The observed client
+  // clock may only serve live work (run 18: 44 s at the failed status settled
+  // to the typed 35 s); a delayed terminal projection never re-inflates it.
+  // `blocked` keeps the live elapsed clock while the member waits.
+  if (timeline.status !== 'running' && timeline.status !== 'blocked' && timeline.status !== 'idle') {
+    return formatDuration(timeline.durationMs);
+  }
   const duration = formatDuration(Math.max(observedDurationMs, timeline.durationMs ?? 0));
   if (duration) return duration;
   return running && !Number.isNaN(parsed) ? i18n.t('agent.chat.disclosure.elapsedSeconds', '{{seconds}}s', { seconds: 0 }) : '';
@@ -581,6 +591,14 @@ export default function RunDisclosureBlock({
     'agent.chat.disclosure.interruptedHint',
     'This turn has no completion record; send a new message to continue.',
   );
+  const stoppedDelegationTasks = new Set<string>();
+  // X2 F: a stopped child_session row owns the delegation's stopped sentence
+  // (and the authorized colleague conversation link — X3b r2); tool rows the
+  // terminal rewrite collapsed onto the same sentence fold into it.
+  const childStoppedTasks = new Set(timeline.steps
+    .filter(step => step.systemEvent?.type === 'child_session' && step.status === 'cancelled')
+    .map(step => String(step.systemEvent?.metadata.runtime_task_id || '' ))
+    .filter(Boolean));
   const visibleSteps = timeline.steps
     .filter((step) => getRunStepPresentation(step) !== 'external')
     .filter((step, _index, steps) => {
@@ -602,7 +620,23 @@ export default function RunDisclosureBlock({
           && other.details === `${source.metadata.target_agent_name} 的委派任务失败：${step.details}`;
       });
     })
-    .map((step) => presentSystemStep(step, t));
+    .map((step) => presentSystemStep(step, t))
+    .filter((step) => {
+      // X2 F: one member stop gives one stopped row per delegated task. Later
+      // reader rows (check_async_task …) and the started notification that the
+      // terminal rewrite collapsed onto the same stopped sentence fold into
+      // the stopped child row, which owns the colleague conversation link.
+      const event = step.systemEvent;
+      if (event?.type === 'runtime_action_started'
+        && childStoppedTasks.has(String(event.metadata.runtime_task_id || ''))) return false;
+      const summary = (step.details as { memberSummary?: { kind?: string; status?: string; taskId?: string } } | null)?.memberSummary;
+      const taskId = summary?.kind === 'delegation' && summary.status === 'cancelled' ? summary.taskId : undefined;
+      if (!taskId) return true;
+      if (childStoppedTasks.has(taskId)) return false;
+      if (stoppedDelegationTasks.has(taskId)) return false;
+      stoppedDelegationTasks.add(taskId);
+      return true;
+    });
   if (visibleSteps.length === 0) {
     if (timeline.status === 'idle') return null;
     return (
@@ -619,11 +653,18 @@ export default function RunDisclosureBlock({
       </div>
     );
   }
-  const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
   const renderItems = groupRunSteps(visibleSteps.map((step) => (
     isGenericToolStep(step) ? { ...step, presentation: 'tool_history' as const } : step
   )));
+  // X2 A: the header count equals the rows the member can expand. Prose steps
+  // that render nothing (an in-run copy of the final answer, or empty text)
+  // stay in the record but are not counted, so the count never includes a row
+  // the member cannot open — and a block with nothing to expand shows no count.
+  const expandableRowCount = visibleSteps.filter((step) => {
+    if (step.kind !== 'prose' && step.kind !== 'commentary') return true;
+    return !(step.repeatsAnswer || !proseText(step));
+  }).length;
 
   return (
     <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
@@ -648,7 +689,9 @@ export default function RunDisclosureBlock({
               ))}</span>
             )
           )}
-          <span className="run-disclosure-count">{stepCount}</span>
+          {expandableRowCount > 0 && (
+            <span className="run-disclosure-count">{t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: expandableRowCount })}</span>
+          )}
         </button>
         {expanded && (
           <div className="run-disclosure-steps">

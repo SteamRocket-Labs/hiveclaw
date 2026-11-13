@@ -2484,6 +2484,22 @@ async def broadcast_web_chat_event(
     agent_id: uuid.UUID, session_id: str | uuid.UUID | None, event: dict[str, Any]
 ) -> None:
     event_payload = dict(event)
+    if event_payload.get("schema") == "hive.session_event_compatibility" and int(
+        event_payload.get("schema_version") or 0
+    ) == 1:
+        # X2 A: a committed compatibility envelope (an unmapped legacy runtime
+        # event such as tool_group_activation) is durable transcript evidence
+        # the reload path renders. Wrapping it in the live thread-item jacket
+        # destroys the envelope schema, so the live socket drops the row as an
+        # unknown 'event' frame and a finished block's step count changes
+        # across a reload. Deliver the committed bytes untouched, exactly like
+        # the canonical V2 branch below.
+        await web_chat_broker.send_session_message(
+            str(agent_id),
+            str(session_id) if session_id else None,
+            event_payload,
+        )
+        return
     if event_payload.get("schema") == "hive.session_event" and int(event_payload.get("schema_version") or 0) == 2:
         audience = str((event_payload.get("visibility") or {}).get("audience") or "")
         if audience in {"direct_user", "participants"}:

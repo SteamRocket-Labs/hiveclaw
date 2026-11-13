@@ -65,15 +65,17 @@ describe('RunDisclosureBlock live-to-terminal presentation', () => {
     const view = render(<RunDisclosureBlock timeline={running} presentationKey="session-1:run-delivery-latency" />);
 
     expect(screen.getByText('29s')).toBeTruthy();
+    // X2 B: a terminal block's duration is the typed 26 829 ms, not the
+    // live clock the transport latency inflated to 29 s (run 18: 44 s → 35 s).
     view.rerender(<RunDisclosureBlock timeline={terminal} presentationKey="session-1:run-delivery-latency" />);
-    expect(screen.getByText('29s')).toBeTruthy();
+    expect(screen.getByText('27s')).toBeTruthy();
 
     view.unmount();
     render(<RunDisclosureBlock timeline={terminal} presentationKey="session-1:run-delivery-latency" />);
-    expect(screen.getByText('29s')).toBeTruthy();
+    expect(screen.getByText('27s')).toBeTruthy();
   });
 
-  it('never moves the elapsed time backwards when delayed terminal evidence arrives', () => {
+  it('renders the typed duration when delayed terminal evidence arrives (X2 B: no client clock on a terminal block)', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-29T00:00:14Z'));
     const running: RunTimelineSnapshot = {
@@ -105,7 +107,8 @@ describe('RunDisclosureBlock live-to-terminal presentation', () => {
       />,
     );
 
-    expect(screen.getByText('14s')).toBeTruthy();
-    expect(screen.queryByText('2s')).toBeNull();
+    // X2 B: the terminal value is the typed duration; the observed client
+    // clock (which counted queue and transport time) must not move it.
+    expect(screen.getByText('2s')).toBeTruthy();
   });
 });

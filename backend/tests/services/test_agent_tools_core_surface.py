@@ -363,7 +363,7 @@ async def test_explicit_agent_team_discovers_team_create_without_command_pack(mo
     async def fake_get_agent_capability_group_policies(_db, _tenant_id, _agent_id):
         return {}
 
-    async def fake_mcp(_agent_id, _query):
+    async def fake_mcp(_agent_id, _query, **_kwargs):
         return []
 
     monkeypatch.setattr(agent_tools, "resolve_tenant_for_agent", fake_resolve_tenant)
@@ -437,7 +437,7 @@ async def test_discoverable_l2_tools_fail_closed_when_pack_policy_unavailable(mo
     async def fail_resolve(_agent_id):
         raise RuntimeError("tenant unavailable")
 
-    async def no_mcp(_agent_id, _query):
+    async def no_mcp(_agent_id, _query, **_kwargs):
         return []
 
     monkeypatch.setattr(agent_tools, "resolve_tenant_for_agent", fail_resolve)

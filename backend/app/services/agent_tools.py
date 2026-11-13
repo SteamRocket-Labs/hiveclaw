@@ -556,9 +556,18 @@ async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> _MCPGating | Non
 
 
 _WORD_RUN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+")
+_ASCII_ALNUM = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 # Host labels that carry no identity: every MCP endpoint has them.
 _GENERIC_HOST_LABELS = frozenset({"mcp", "www", "api"})
-_IDENTITY_MIN_CHARS = 3
+# Identity-grade run lengths: three Latin characters, two CJK characters (飞书,
+# 语雀, 钉钉 are real service names).
+_IDENTITY_MIN_LATIN = 3
+_IDENTITY_MIN_CJK = 2
+# Whole-query substring and compressed matching are restored from the base for
+# name-shaped queries, but a fragment of 1-4 characters ("mcp", "com", "use",
+# "with") is generic noise, never a name: such queries must find nothing, and
+# every real name-shaped query in the acceptance set is 5+ characters.
+_NAME_QUERY_MIN_CHARS = 5
 
 
 def _word_runs(text: Any) -> list[str]:
@@ -568,79 +577,120 @@ def _word_runs(text: Any) -> list[str]:
     return _WORD_RUN_RE.findall(str(text or "").lower())
 
 
-def _meaningful_query_terms(query: str) -> list[str]:
-    """Identity-grade terms of a tool_search query: word runs of at least
-    ``_IDENTITY_MIN_CHARS`` characters, deduplicated in order."""
-    terms: list[str] = []
-    for run in _word_runs(query):
-        if len(run) >= _IDENTITY_MIN_CHARS and run not in terms:
-            terms.append(run)
-    return terms
+def _identity_run_ok(run: str) -> bool:
+    if run and any("\u4e00" <= character <= "\u9fff" for character in run):
+        return len(run) >= _IDENTITY_MIN_CJK
+    return len(run) >= _IDENTITY_MIN_LATIN
 
 
-def _mcp_identity_tokens(
-    connection_label: str, endpoint_host: str, tool_name: Any = None
-) -> set[str]:
-    """The tokens that identify an MCP tool's service: the trusted connection
-    label's word runs and the endpoint host labels without ``mcp``/``www``/
-    ``api`` and the TLD — each at least ``_IDENTITY_MIN_CHARS`` characters.
-    With ``tool_name`` the tool name's runs (minus the ``mcp_`` prefix) join
-    the set. Generic template words ("use", "the", "mcp", "com") are never
-    identity tokens."""
-    tokens = {run for run in _word_runs(connection_label) if len(run) >= _IDENTITY_MIN_CHARS}
-    host_labels = [label for label in str(endpoint_host or "").split(".") if label]
-    for label in host_labels[:-1]:  # the TLD carries no identity
-        if len(label) >= _IDENTITY_MIN_CHARS and label not in _GENERIC_HOST_LABELS:
+def _host_label_tokens(text: str) -> set[str]:
+    """Dotted-host labels minus ``mcp``/``www``/``api`` and the TLD — the parts
+    of a hostname that identify the service. A hyphenated label ("g4b-public")
+    contributes its word runs too, so "g4b" matches by equality; the generic
+    labels never re-enter through a run."""
+    labels = [label for label in str(text or "").lower().split(".") if label]
+    tokens: set[str] = set()
+    for label in labels[:-1]:  # the TLD carries no identity
+        if label in _GENERIC_HOST_LABELS:
+            continue
+        if _identity_run_ok(label):
             tokens.add(label)
-    if tool_name is not None:
-        name = str(tool_name or "")
-        if name.startswith("mcp_"):
-            name = name[len("mcp_"):]
-        tokens.update(run for run in _word_runs(name) if len(run) >= _IDENTITY_MIN_CHARS)
+        tokens.update(
+            run
+            for run in _word_runs(label)
+            if run not in _GENERIC_HOST_LABELS and _identity_run_ok(run)
+        )
     return tokens
+
+
+def _mcp_identity_tokens(connection_label: str, endpoint_host: str) -> set[str]:
+    """The tokens that identify an MCP tool's SERVICE (G4c r4): the trusted
+    connection label's word runs and the endpoint host's labels — never tool
+    names and never the description template.
+
+    A label that equals the host, or is itself host-shaped (dots, no spaces),
+    contributes only its stripped host labels: a host-shaped label must not add
+    ``mcp``, ``com`` or ``www`` back into the identity set."""
+    tokens = _host_label_tokens(endpoint_host)
+    label = str(connection_label or "")
+    if not label:
+        return tokens
+    if label.lower() == str(endpoint_host or "").lower() or (
+        "." in label and not any(character.isspace() for character in label)
+    ):
+        return tokens | _host_label_tokens(label)
+    return tokens | {run for run in _word_runs(label) if _identity_run_ok(run)}
+
+
+def _raw_query_contains(raw: str, token: str) -> bool:
+    """Whether ``token`` occurs in ``raw`` with a non-ASCII-alphanumeric
+    character (or the string ends) on both sides — CJK characters and
+    punctuation count as boundaries, so "用DeepWiki查仓库" contains "deepwiki"
+    while "company" does not contain "com"."""
+    start = 0
+    while True:
+        index = raw.find(token, start)
+        if index < 0:
+            return False
+        left_ok = index == 0 or raw[index - 1] not in _ASCII_ALNUM
+        right = index + len(token)
+        right_ok = right >= len(raw) or raw[right] not in _ASCII_ALNUM
+        if left_ok and right_ok:
+            return True
+        start = index + 1
 
 
 def _mcp_tool_matches_query(query: str, tool) -> bool:
     """Match a tool_search query against an MCP tool's trusted text only.
 
-    G4c r3 (identity scope — the run 17 flood probe): a query term matches by
-    whole-token equality only against the SERVICE identity tokens (trusted
-    connection label runs, host labels) — never against the description
-    template every approved tool shares, so "search the web", "and use", "mcp"
-    or "com" list nothing. For queries without whitespace (no-space CJK such
-    as "用DeepWiki查仓库", full-width punctuation such as "DeepWiki，", or an
-    exact tool name like "mcp_read_wiki_contents") the identity tokens —
-    including the tool-name runs — are scanned as substrings of the raw
-    lowercased query. Whitespace-separated queries keep the base's whole-query
-    substring match over the tool name, remote name, approved description,
-    label and host. An empty query matches everything (list all reachable)."""
+    G4c r4 (identity at word boundaries, base restored for names):
+    - a query word run matches by EQUALITY against the service identity tokens
+      (trusted connection label runs, host labels) — never against the
+      description template every approved tool shares;
+    - a query without whitespace (no-space CJK, full-width punctuation,
+      host-shaped fragments) raw-scans the identity tokens with word
+      boundaries: "用DeepWiki查仓库" and "用飞书查文档" match, "task",
+      "company" and "checklist" do not;
+    - name-shaped queries keep the base matching: the whole query as a
+      substring of the tool name (Hive-side or remote) or the approved
+      description, and the compressed whole query (normalize_tool_query) as a
+      substring of the compressed name, remote name, label or host — the query
+      sits inside the identity, never the other way round ("Deep Wiki" and
+      "read wiki contents" match; "nonlinear regression" does not match a
+      "Linear" label). Fragments shorter than _NAME_QUERY_MIN_CHARS are noise.
+    An empty query matches everything (list all reachable)."""
     from app.services.mcp_metadata_trust import _safe_endpoint_host, trusted_connection_label
 
     normalized = query.strip().lower()
     if not normalized:
         return True
+    name = str(getattr(tool, "name", "") or "")
+    remote_name = str(getattr(tool, "mcp_tool_name", "") or "")
     host = _safe_endpoint_host(getattr(tool, "mcp_server_url", None) or "")
     label = trusted_connection_label(
         getattr(tool, "mcp_server_name", None), getattr(tool, "mcp_server_url", None)
     )
-    service_identity = _mcp_identity_tokens(label, host)
-    terms = _meaningful_query_terms(normalized)
-    if any(term == token for term in terms for token in service_identity):
+    identity = _mcp_identity_tokens(label, host)
+    if any(run == token for run in _word_runs(normalized) for token in identity):
         return True
     if not any(character.isspace() for character in normalized):
-        full_identity = _mcp_identity_tokens(label, host, getattr(tool, "name", None))
-        if any(token in normalized for token in full_identity):
+        if any(_raw_query_contains(normalized, token) for token in identity):
             return True
-    else:
-        blob = " ".join([
-            str(getattr(tool, "name", "") or ""),
-            str(getattr(tool, "mcp_tool_name", "") or ""),
-            str(tool.description or ""),
-            label,
-            host,
-        ]).lower()
-        if normalized in blob:
+    if len(normalized) >= _NAME_QUERY_MIN_CHARS:
+        if normalized in name or normalized in remote_name:
             return True
+        # The description keeps the base's whole-PHRASE substring match. A
+        # single word is restricted: the approved description is a shared
+        # platform template, and single template words ("company") are the
+        # r3-proven flood vector, not identity.
+        if any(character.isspace() for character in normalized) and normalized in str(tool.description or ""):
+            return True
+        compact_query = normalize_tool_query(normalized)
+        if compact_query and len(compact_query) >= _NAME_QUERY_MIN_CHARS:
+            for surface in (name, remote_name, label, host):
+                compact_surface = normalize_tool_query(surface)
+                if compact_surface and compact_query in compact_surface:
+                    return True
     return False
 
 
@@ -671,11 +721,10 @@ async def discoverable_tool_names_for_query(
     turn-1 visible) and routes MCP discovery through the DB-aware
     ``list_agent_mcp_deferred_tools_with_labels``.
     """
-    pairs_kwargs = {} if company_connections is None else {"company_connections": company_connections}
     return [
         name
         for name, _connection_label in await discoverable_deferred_tools_for_query(
-            agent_id, query, **pairs_kwargs
+            agent_id, query, company_connections=company_connections
         )
     ]
 
@@ -751,10 +800,10 @@ async def discoverable_deferred_tools_for_query(
     # schema path (Step 3 / 🦴#2), now with the connection label attached. The
     # optional out-param rides the same enumeration (zero extra statements) so
     # the prompt's Company Applications section and tool_search share one
-    # governed listing; it is passed positionally-absent when unused so seam
-    # patchers keep working unchanged.
-    seam_kwargs = {} if company_connections is None else {"company_connections": company_connections}
-    for mcp_name, connection_label in await list_agent_mcp_deferred_tools_with_labels(agent_id, mcp_query, **seam_kwargs):
+    # governed listing (G4c r4 N-a: plain kwarg; seam fakes accept it).
+    for mcp_name, connection_label in await list_agent_mcp_deferred_tools_with_labels(
+        agent_id, mcp_query, company_connections=company_connections
+    ):
         if mcp_name in CORE_TOOL_NAMES or mcp_name in seen:
             continue
         requested.append((mcp_name, connection_label))
@@ -772,8 +821,7 @@ async def available_deferred_tool_names_for_agent(
     ``company_connections`` (G4c r3) rides the same enumeration unchanged.
     """
     del limit
-    pairs_kwargs = {} if company_connections is None else {"company_connections": company_connections}
-    names = await discoverable_tool_names_for_query(agent_id, "", **pairs_kwargs)
+    names = await discoverable_tool_names_for_query(agent_id, "", company_connections=company_connections)
     return sorted(dict.fromkeys(names))
 
 
@@ -834,8 +882,9 @@ async def available_deferred_tool_candidates_for_agent(
     call already performs (→ the approval-gated MCP listing) — the prompt's
     Company Applications section derives from it with zero additional
     statements."""
-    names_kwargs = {} if company_connections is None else {"company_connections": company_connections}
-    names = await available_deferred_tool_names_for_agent(agent_id, limit=limit, **names_kwargs)
+    names = await available_deferred_tool_names_for_agent(
+        agent_id, limit=limit, company_connections=company_connections
+    )
     builtin_names = AGENT_TEAM_DEFERRED_TOOL_NAMES | {
         name for capability in iter_runtime_l2_capabilities() for name in capability.tools}
     candidates = []

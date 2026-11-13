@@ -35,12 +35,13 @@ def company_application_needs_member_connection(
       act through the card; "failed"/"disabled" rows merely keep the pre-G4c
       marker — those states are an administrator's to fix, not the member's.
 
-    Known limit (G4c r3): a token-paste parent server whose FIRST member has
+    Known limit (G4c r4): a token-paste parent server whose FIRST member has
     not connected yet (no child account, no company key) is column-identical
     to a no-sign-in service, so it gets no marker here. At call time a remote
     401/403 with no credentials tells the model the member can connect their
-    own account (tools/handlers/mcp.py) — that is the honest fallback for the
-    first member.
+    own account — rendered on the runtime fallback path the model actually
+    calls (web_mcp._execute_mcp_tool, shared with tools/handlers/mcp.py) —
+    that is the honest fallback for the first member.
     """
     auth = str(auth_status or "")
     if auth == "configured":

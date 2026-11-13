@@ -1400,15 +1400,13 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 from app.runtime.context import ensure_runtime_assembly_state
                 import inspect
 
-                deferred_kwargs = {}
+                deferred_kwargs = {"company_connections": company_mcp_connections}
                 deferred_signature = inspect.signature(available_deferred_tool_candidates_for_agent)
                 if "source_unbound" in deferred_signature.parameters:
                     deferred_source_unbound = []
                     deferred_kwargs["source_unbound"] = deferred_source_unbound
                 if "bound_only" in deferred_signature.parameters:
                     deferred_kwargs["bound_only"] = True
-                if "company_connections" in deferred_signature.parameters:
-                    deferred_kwargs["company_connections"] = company_mcp_connections
                 available_deferred_tools = await available_deferred_tool_candidates_for_agent(
                     request.agent_id, **deferred_kwargs
                 )
@@ -1475,13 +1473,18 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         }
         dynamic_sources["available_deferred_tools"] = ()
         dynamic_unbound["available_deferred_tools"] = tuple(deferred_source_unbound)
-        # G4c r3 (S1): the Company Applications section renders tenant registry
-        # data. No verifiable source-receipt kind exists for mcp_servers/tools
-        # rows today, so its sources are recorded explicitly empty — visible as
-        # its own ledger entry, not hidden inside the deferred catalog — and an
-        # unbound marker is deliberately NOT attached: Session V2 binding
-        # replaces an unbound section with the unverifiable-context notice,
-        # which would censor the section off the wire (measured in round 3).
+        # G4c r4 (provenance — controller-ruled KNOWN EXCEPTION): this section
+        # renders admin-approved tenant labels and validated hosts, yet Session
+        # V2 records a sources/unbound-empty section as a compiler-bound
+        # platform constant. Accepted because: the label and host are both
+        # inside the runtime approval fingerprint (a rename or URL change
+        # unlists the tool on the next turn); revocation removes the name on
+        # the next turn; the same label already reaches the model unbound
+        # inside the approved description (_neutral_description); and the
+        # alternatives fail — an unbound marker censors the section off the
+        # wire (measured in r3), and no existing source kind covers
+        # mcp_servers/tools rows without roughly six more statements per model
+        # request, breaking the 413 ceiling.
         dynamic_sources["company_connections"] = ()
         dynamic_unbound["company_connections"] = ()
         permissions_platform_constant = not dynamic_sources["permissions_context"] and not dynamic_unbound["permissions_context"]

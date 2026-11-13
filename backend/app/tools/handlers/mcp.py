@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import uuid
 from pathlib import Path
 from sqlalchemy import or_
@@ -483,18 +482,17 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
     except Exception as exc:
         error_class, retryable = "operation_failed", True
         hint = "Check the MCP server is reachable and the API key is valid."
-        # G4c r3 (account-label limit): a 401/403 answering a call that carried
-        # NO member account and no company key is the token-paste shape — the
-        # row looks exactly like a no-sign-in service, so the marker could not
-        # say it upfront. Tell the model the member can connect their own
-        # account through the same card the connect marker offers; a generic
-        # retryable failure would hide the one action that fixes it.
-        if bearer is None and not api_key and re.search(r"HTTP 40[13]", str(exc)):
+        # G4c r4 (S-A): shared decision + wording with the runtime fallback
+        # path (web_mcp._execute_mcp_tool), which is what the model actually
+        # calls after tool_search loads a schema.
+        from app.services.agent_tool_domains.web_mcp import (
+            _NO_CREDENTIAL_AUTH_HINT,
+            _is_no_credential_auth_rejection,
+        )
+
+        if _is_no_credential_auth_rejection(bearer, api_key, exc):
             error_class, retryable = "auth_required", False
-            hint = (
-                "The member can connect their account through the card in this conversation "
-                "(ask_user_question with configuration.mcp_server_id from list_mcp_tools)."
-            )
+            hint = _NO_CREDENTIAL_AUTH_HINT
         return render_tool_error(
             tool_name="call_mcp_tool",
             error_class=error_class,

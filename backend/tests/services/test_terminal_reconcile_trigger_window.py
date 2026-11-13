@@ -332,13 +332,61 @@ def _plan_nodes(node):
         yield from _plan_nodes(child)
 
 
+# The plan check runs against a LIKE-cloned runtime_tasks in this test's own
+# schema: plan choice for a fixed SQL string depends on the whole table's
+# statistics, and in a shared database other tests' rows inside the fixed
+# [PLAN_NOW-24h, PLAN_NOW] window first break the rows-removed bound and then
+# flip the planner to a bitmap AND/OR of two index scans. The clone carries
+# the same indexes, sees only this test's rows, and drops in one statement,
+# which also replaces a 500,000-row tenant delete (minutes of per-row FK
+# checks against referencing columns with no leading index) in teardown.
+PLAN_SCHEMA = "r19iso_trigger_reconcile_plan"
+
+
 async def test_trigger_reconcile_plan_ranges_existing_created_at_index(owner_sessionmaker, _tenant, monkeypatch):
-    seed = await _seed_large_reconcile(owner_sessionmaker, _tenant)
-    statement = await _claim_statement(monkeypatch, seed.tenant_id, now=PLAN_NOW)
-    async with tenant_scoped_session(seed.tenant_id, session_factory=owner_sessionmaker) as db:
-        plan = (await db.execute(text("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + _sql(statement)))).scalar_one()[0]
-        # EXPLAIN ANALYZE executes the locking SELECT; leave the fixture unchanged.
-        await db.rollback()
+    from sqlalchemy import event
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    async with owner_sessionmaker() as db:
+        await db.execute(text(f"DROP SCHEMA IF EXISTS {PLAN_SCHEMA} CASCADE"))
+        await db.execute(text(f"CREATE SCHEMA {PLAN_SCHEMA}"))
+        await db.execute(text(f"CREATE TABLE {PLAN_SCHEMA}.runtime_tasks (LIKE runtime_tasks INCLUDING ALL)"))
+        # LIKE ... INCLUDING ALL renames indexes (ix_runtime_tasks_created_at
+        # becomes runtime_tasks_created_at_idx); restore the production name
+        # the assertion reads. Drop the partial terminal-boundary lane
+        # indexes: on an isolated table their predicate matches the ten
+        # claimable rows almost perfectly, so the planner prefers them over
+        # the created_at range this test exists to observe, while every
+        # plain index — including the one under test — stays available.
+        await db.execute(text(
+            f"ALTER INDEX {PLAN_SCHEMA}.runtime_tasks_created_at_idx RENAME TO ix_runtime_tasks_created_at"))
+        await db.execute(text(
+            f"DROP INDEX {PLAN_SCHEMA}.runtime_tasks_task_type_terminal_boundary_reconcile_attempt_idx"))
+        await db.execute(text(
+            f"DROP INDEX {PLAN_SCHEMA}.runtime_tasks_expr_terminal_boundary_reconcile_attempted_at_idx"))
+        await db.commit()
+    engine = create_async_engine(owner_sessionmaker.kw["bind"].url, poolclass=NullPool)
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _plan_schema_first(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute(f"SET search_path TO {PLAN_SCHEMA}, public")
+        cursor.close()
+
+    plan_sessionmaker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        seed = await _seed_large_reconcile(plan_sessionmaker, _tenant)
+        statement = await _claim_statement(monkeypatch, seed.tenant_id, now=PLAN_NOW)
+        async with tenant_scoped_session(seed.tenant_id, session_factory=plan_sessionmaker) as db:
+            plan = (await db.execute(text("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + _sql(statement)))).scalar_one()[0]
+            # EXPLAIN ANALYZE executes the locking SELECT; leave the fixture unchanged.
+            await db.rollback()
+    finally:
+        await engine.dispose()
+        async with owner_sessionmaker() as db:
+            await db.execute(text(f"DROP SCHEMA IF EXISTS {PLAN_SCHEMA} CASCADE"))
+            await db.commit()
     print(json.dumps({"trigger_reconcile_plan": plan}))
     scans = [node for node in _plan_nodes(plan["Plan"]) if node.get("Relation Name") == "runtime_tasks"]
     assert len(scans) == 1
@@ -350,3 +398,43 @@ async def test_trigger_reconcile_plan_ranges_existing_created_at_index(owner_ses
     assert all(node["Node Type"] != "Seq Scan" for node in _plan_nodes(plan["Plan"]))
     assert scans[0].get("Rows Removed by Filter", 0) < 100
     assert plan["Plan"]["Actual Rows"] == 10
+
+
+async def test_foreign_in_window_rows_never_reach_the_owned_plan_schema(owner_sessionmaker, _tenant, monkeypatch):
+    """Shared-database reproduction, independent of suite order.
+
+    Full suites leave foreign completed rows inside the fixed
+    [PLAN_NOW-24h, PLAN_NOW] window (the R19a latency history seeds alone add
+    500,000 at now()-2 days). Reading the plan from the shared table, a few
+    hundred such rows already break the rows-removed bound; the owned-schema
+    plan check must stay untouched by them.
+    """
+    async with owner_sessionmaker() as db:
+        await db.execute(text("""
+            INSERT INTO tenants (id, name, slug, im_provider, is_active, min_heartbeat_interval_minutes,
+                timezone, default_max_triggers, min_poll_interval_floor, max_webhook_rate_ceiling,
+                tokens_used_today, tokens_used_month, tokens_used_total)
+            VALUES (md5('r19iso-foreign-plan')::uuid, 'R19a iso foreign plan rows', 'r19iso-foreign-plan',
+                'feishu', true, 5, 'UTC', 10, 60, 1000, 0, 0, 0)
+        """))
+        await db.execute(text("""
+            INSERT INTO runtime_tasks (id, tenant_id, task_type, status, depth, created_at,
+                terminal_boundary_enqueued_at, completion_outbox_settled_at,
+                root_idempotency_key, config_snapshot_hash, policy_snapshot_hash)
+            SELECT md5('r19iso-foreign-plan-' || n::text)::uuid, md5('r19iso-foreign-plan')::uuid,
+                'web_chat_turn', 'completed', 1,
+                timestamptz '2026-11-11 06:00+00' + n * interval '1 second', now(), now(),
+                'r19iso-foreign-plan-' || n::text, repeat('a', 64), repeat('b', 64)
+            FROM generate_series(CAST(1 AS int), CAST(120 AS int)) n
+        """))
+        await db.commit()
+    try:
+        await test_trigger_reconcile_plan_ranges_existing_created_at_index(
+            owner_sessionmaker, _tenant, monkeypatch)
+    finally:
+        async with owner_sessionmaker() as db:
+            await db.execute(text(
+                "DELETE FROM runtime_tasks WHERE tenant_id = md5('r19iso-foreign-plan')::uuid"))
+            await db.execute(text(
+                "DELETE FROM tenants WHERE id = md5('r19iso-foreign-plan')::uuid"))
+            await db.commit()

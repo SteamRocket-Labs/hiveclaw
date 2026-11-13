@@ -1,3 +1,4 @@
+// Frontend matches backend/app/services/runtime_display_status.py byte for byte.
 export const EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE = '已停止继续搜索，但没能整理出答复。你可以让我根据目前的结果直接作答。';
 
 export type RuntimeFailurePresentation = {

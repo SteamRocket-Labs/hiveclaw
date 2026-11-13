@@ -7,7 +7,7 @@ import pytest
 
 from app.kernel.contracts import TerminalReason
 from app.services.llm_client import AnthropicClient, OpenAICompatibleClient
-from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
+from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE, EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE
 from tests.kernel.test_r18a_empty_search_guard import (
     EMPTY_RESULT, _FakeClient, _answer, _kernel, _message_texts, _request, _round, _search_call,
 )
@@ -98,6 +98,66 @@ async def test_pending_input_continues_with_tools_and_cannot_start_a_second_summ
         assert executed == ["search_company_kb"] * 5
         assert result.terminal_reason is TerminalReason.TURN_STOP
         assert result.content == "The new question was answered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hit_first", [False, True])
+async def test_second_empty_search_stop_selects_its_sentence_after_all_round_results(hit_first):
+    """R21a r3 S3: both orders persist the exit-time material sentence."""
+    pending, executed, bound_rounds, persisted, events = [], [], [], [], []
+    new_request = "Use the new material to answer"
+
+    class Client(_FakeClient):
+        async def stream(self, **kwargs):
+            response = await super().stream(**kwargs)
+            if len(self.calls) == 6:
+                pending.append({"role": "user", "content": new_request})
+            return response
+
+    async def execute(name, *_a, **_k):
+        executed.append(name)
+        return '{"status":"ok","results":[{"text":"New weekly report material"}]}' if (
+            name == "search_memory") else EMPTY_RESULT
+
+    async def bind(index):
+        bound_rounds.append(index)
+        items = list(pending)
+        pending.clear()
+        return items
+
+    def commit(**payload):
+        return {"provider_request_id": payload["provider_request_id"], "continuation": {
+            "verdict": "continue" if payload["round_index"] == 6 else "terminal_candidate",
+            "pending_obligations": [{"kind": "pending_input"}] if payload["round_index"] == 6 else []}}
+
+    async def persist(_request, _config, content, _messages):
+        persisted.append(content)
+
+    memory_call = {"id": "memory-hit", "function": {
+        "name": "search_memory", "arguments": '{"query":"weekly report"}'}}
+    pair = [memory_call, _search_call(6)] if hit_first else [_search_call(6), memory_call]
+    client = Client([*[_round([_search_call(i)]) for i in range(1, 6)],
+        _answer(EMPTY_SEARCH_FINAL_MESSAGE), _round(pair)])
+    kernel = _kernel(client, execute, tools=("search_company_kb", "search_memory"))
+    kernel._persist_before_exit = persist
+    request = _request()
+    request.round_input_bind = bind
+    request.model_request_prepare = lambda **p: f"provider-{p['round_index']}"
+    request.model_response_commit = commit
+    request.on_event = events.append
+    result = await kernel.handle(request)
+
+    assert len(client.calls) == 7 and len(executed) == 7
+    assert executed.count("search_company_kb") == 6 and executed.count("search_memory") == 1
+    assert bound_rounds == [1, 2, 3, 4, 5, 7] and pending == []
+    assert client.calls[5]["tools"] is None and client.calls[6]["tools"] == client.calls[0]["tools"]
+    assert new_request not in _message_texts(client.calls[5])
+    assert new_request in _message_texts(client.calls[6])
+    assert sum(event.get("part", {}).get("event_type") == "loop_guard_terminal_evidence" for event in events) == 1
+    assert result.terminal_reason is TerminalReason.LOOP_GUARD
+    assert result.failure_code == "repeated_empty_search" and result.failure_retryable is False
+    assert result.content == EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE
+    assert persisted == [result.content]
 
 
 @pytest.mark.asyncio

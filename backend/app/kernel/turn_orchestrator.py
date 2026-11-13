@@ -3746,6 +3746,13 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         # R18a round 2 (reviewer blocker 2): end through the same
                         # failure shape for read-loop stops so every lane settles.
                         message = _loop_guard_terminal_decision.message
+                        if _loop_guard_terminal_decision.reason == "repeated_empty_search":
+                            from app.services.runtime_display_status import (
+                                EMPTY_SEARCH_FINAL_MESSAGE, EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE,
+                            )
+
+                            message = (EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE if loop_guard.empty_search_material_found
+                                else EMPTY_SEARCH_FINAL_MESSAGE)
                         await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, message, api_messages)
                         result = _build_error_result(

@@ -11,6 +11,7 @@ DELEGATED_TASK_RUNNING_MESSAGE = "同事正在处理，结果回来后会在这�
 BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE = "同事还在处理，这次我先停下了。同事完成后，结果会回到这项任务的对话里。"
 # Frozen empty-search stops: no material, or earlier material but no usable summary.
 EMPTY_SEARCH_FINAL_MESSAGE = "多次搜索都没有找到相关资料。"
+# Frontend matches byte for byte: frontend/src/pages/session-workbench/runtimeFailurePresentation.ts.
 EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE = "已停止继续搜索，但没能整理出答复。你可以让我根据目前的结果直接作答。"
 # Frozen sentences: stored result summaries and stored failure pages are compared
 # against these exact bytes, so a wording change desynchronizes old records.

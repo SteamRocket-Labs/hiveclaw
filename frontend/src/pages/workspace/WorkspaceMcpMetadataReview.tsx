@@ -26,10 +26,6 @@ function ActivationFacts({ tool }: { tool: EnterpriseMcpMetadataTool }) {
   const activation = tool.activation;
   if (!activation) return null;
   const configText = activation.configuration ? configurationText(activation.configuration) : '';
-  const previous = tool.reviewed_fingerprint
-    && tool.reviewed_fingerprint !== tool.metadata_fingerprint
-    ? tool.reviewed_fingerprint
-    : null;
   const credentialSet = activation.configuration?.credential === 'set';
   if (
     !activation.endpoint
@@ -37,7 +33,6 @@ function ActivationFacts({ tool }: { tool: EnterpriseMcpMetadataTool }) {
     && !activation.permissions?.length
     && !configText
     && !credentialSet
-    && !previous
   ) {
     return null;
   }
@@ -71,17 +66,6 @@ function ActivationFacts({ tool }: { tool: EnterpriseMcpMetadataTool }) {
         <div>
           <dt>{t('enterprise.tools.mcpActivationCredential', 'Credential')}</dt>
           <dd>{t('enterprise.tools.mcpActivationCredentialSet', 'Set')}</dd>
-        </div>
-      ) : null}
-      {previous ? (
-        <div>
-          <dt>{t('enterprise.tools.mcpPreviouslyApproved', 'Previously approved')}</dt>
-          <dd>
-            <details>
-              <summary>{t('enterprise.tools.mcpVersionDetails', 'View version ID')}</summary>
-              <code>{previous}</code>
-            </details>
-          </dd>
         </div>
       ) : null}
     </dl>
@@ -163,6 +147,10 @@ export function McpMetadataReviewPanel({
       ) : (
         <div className="ws-mcp-review-list">
           {tools.map((tool) => {
+            const previous = tool.reviewed_fingerprint
+              && tool.reviewed_fingerprint !== tool.metadata_fingerprint
+              ? tool.reviewed_fingerprint
+              : null;
             const draft = drafts[tool.tool_id] ?? tool.canonical_description;
             const busy = busyTool === tool.tool_id;
             const editingApproved = tool.runtime_approved && editingToolId === tool.tool_id;
@@ -186,6 +174,21 @@ export function McpMetadataReviewPanel({
                   <span>{t(`enterprise.tools.mcpTrustTier.${tool.trust_tier}`, tool.trust_tier)}</span>
                 </div>
                 <ActivationFacts tool={tool} />
+                <details className="ws-mcp-raw-evidence">
+                  <summary>{t('enterprise.tools.mcpVersionDetails', 'View version ID')}</summary>
+                  <dl className="ws-mcp-activation">
+                    <div>
+                      <dt>{t('enterprise.tools.mcpCurrentVersion', 'Current version')}</dt>
+                      <dd><code>{tool.metadata_fingerprint}</code></dd>
+                    </div>
+                    {previous ? (
+                      <div>
+                        <dt>{t('enterprise.tools.mcpPreviouslyApproved', 'Previously approved')}</dt>
+                        <dd><code>{previous}</code></dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                </details>
                 {tool.risk_flags.length > 0 ? (
                   <div className="ws-mcp-risk-flags">
                     {tool.risk_flags.map((flag) => <span key={flag}>{t(`enterprise.tools.mcpRisk.${flag}`, flag)}</span>)}

@@ -127,7 +127,30 @@ describe('MCP admin review presentation (X4)', () => {
     expect(defaultText(container)).not.toMatch(/[a-f0-9]{12}/);
     const previous = screen.getByText(previousFingerprint).closest('details')!;
     expect(previous.open).toBe(false);
+    expect(within(previous).getByText(fingerprint)).toBeTruthy();
     expect(screen.getByText('先前已批准')).toBeTruthy();
+  });
+
+  it('keeps the current candidate version in closed details even without a previous review or activation facts', () => {
+    const pending = tool({ runtime_approved: false, trust_status: 'pending_review',
+      reviewed_fingerprint: null, activation: undefined });
+    const { container, rerender } = panel(pending);
+    const summary = screen.getByText('查看版本标识');
+    const details = summary.closest('details')!;
+    expect(details.open).toBe(false);
+    expect(within(details).getByText('当前版本')).toBeTruthy();
+    expect(within(details).getByText(fingerprint)).toBeTruthy();
+    expect(screen.queryByText('先前已批准')).toBeNull();
+    expect(defaultText(container)).not.toMatch(/[a-f0-9]{12}/);
+    fireEvent.click(summary);
+    expect(defaultText(container)).toContain(fingerprint);
+    fireEvent.click(summary);
+    const nextFingerprint = 'cd'.repeat(32);
+    rerender(<McpMetadataReviewPanel serverName="DeepWiki" tools={[{ ...pending, metadata_fingerprint: nextFingerprint }]} busyTool={null} onReview={vi.fn()} />);
+    expect(within(details).getByText(nextFingerprint)).toBeTruthy();
+    expect(screen.queryByText(fingerprint)).toBeNull();
+    expect(details.open).toBe(false);
+    expect(defaultText(container)).not.toMatch(/[a-f0-9]{12}/);
   });
 
   it('edits the exact stored default and submits only the administrator draft through the existing request', async () => {
@@ -150,22 +173,27 @@ describe('MCP admin review presentation (X4)', () => {
     expect(screen.getByTestId('mcp-approved-purpose').textContent).toContain(chinesePurpose);
   });
 
-  it.each([
-    { name: '__system_hr__' },
-    { name: 'internal-hr-instance', agent_class: 'internal_system' },
-  ])('uses the existing HR assistant name for system access and preserves tenant names: %j', async (systemAgent) => {
+  it('uses the existing HR assistant name for system access and preserves tenant names', async () => {
     serve([], [
-      { id: 'system', enabled: true, ...systemAgent },
+      { id: 'system', name: '__system_hr__', enabled: true },
       { id: 'tenant-bot', name: 'rocky243deMacBook-Pro.local', enabled: true },
       { id: 'assistant', name: 'My Assistant', enabled: false },
     ]);
     render(<WorkspaceMcpServersView selectedTenantId="lab" />);
     await screen.findByText('DeepWiki');
-    expect(screen.queryByText(systemAgent.name)).toBeNull();
+    expect(screen.queryByText('__system_hr__')).toBeNull();
     expect(screen.getByText('人事助理')).toBeTruthy();
     expect(screen.getByText('rocky243deMacBook-Pro.local')).toBeTruthy();
     expect(screen.getByText('My Assistant').className).toContain('disabled');
     expect(screen.getByText('3 个员工')).toBeTruthy();
+  });
+
+  it('preserves the name of a non-HR internal agent', async () => {
+    serve([], [{ id: 'setup', name: 'Internal setup', enabled: true, agent_class: 'internal_system' }]);
+    render(<WorkspaceMcpServersView selectedTenantId="lab" />);
+    await screen.findByText('DeepWiki');
+    expect(screen.getByText('Internal setup')).toBeTruthy();
+    expect(screen.queryByText('人事助理')).toBeNull();
   });
 
   it('provides the same presentation in natural English without changing the model original', () => {

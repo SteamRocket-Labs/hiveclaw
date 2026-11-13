@@ -139,7 +139,7 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
               {server.agents.length > 0 ? (
                 <div className="ws-tools-agent-wrap">
                   {server.agents.map((agent) => (
-                    <span key={agent.id} className={`ws-tools-agent-chip ${agent.enabled ? 'enabled' : 'disabled'}`}>{agent.name === '__system_hr__' || ('agent_class' in agent && agent.agent_class === 'internal_system')
+                    <span key={agent.id} className={`ws-tools-agent-chip ${agent.enabled ? 'enabled' : 'disabled'}`}>{agent.name === '__system_hr__'
                       ? t('handover.hrAgentName', 'HR assistant') : agent.name}</span>
                   ))}
                 </div>

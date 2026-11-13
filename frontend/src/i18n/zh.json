@@ -4594,6 +4594,7 @@
       "mcpDefaultPurpose": "{{connection}}提供的工具 {{tool}}。助手只看到平台生成的默认说明，服务方的原始说明未采用。",
       "mcpAssistantOriginal": "助手看到的原文",
       "mcpVersionDetails": "查看版本标识",
+      "mcpCurrentVersion": "当前版本",
       "deleteConnector": "删除连接器",
       "import": "导入",
       "importFailed": "导入失败",

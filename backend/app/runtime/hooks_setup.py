@@ -273,9 +273,8 @@ async def _run_fast_reflection_learning_brain(
 ) -> dict[str, object] | None:
     """Use the post-turn learning brain for fast-reflection signal routing.
 
-    Failure returns None and leaves the synchronous service without a learning
-    candidate. This hook runs after RESPONSE_COMPLETE in a background task, so
-    it does not add latency to the user response.
+    Failure returns None and leaves the service without a learning candidate.
+    Required terminal projections await this call before acknowledging the boundary.
     """
     from app.services.fast_reflection_learning_brain import classify_fast_reflection_signal_with_learning_brain
 
@@ -453,8 +452,15 @@ async def project_committed_response_complete(ctx: HookContext) -> dict[str, obj
         raise ValueError("committed RESPONSE_COMPLETE projection requires an authoritative receipt")
     if _parse_agent_id(ctx) is None or not str(ctx.session_id or "").strip():
         raise ValueError("committed RESPONSE_COMPLETE projection requires Agent and session authority")
-    session_projection = await _project_on_response(ctx)
-    fast_reflection = await _fast_reflection_on_response(ctx)
+    session_projection, fast_reflection = await asyncio.gather(
+        _project_on_response(ctx), _fast_reflection_on_response(ctx), return_exceptions=True,
+    )
+    if isinstance(session_projection, BaseException) and isinstance(fast_reflection, BaseException):
+        logger.warning("[Hooks] Required fast reflection also failed error_type=%s", type(fast_reflection).__name__)
+    # Finish both required consumers before a retry can replay either one.
+    for result in (session_projection, fast_reflection):
+        if isinstance(result, BaseException):
+            raise result
     if not isinstance(session_projection, dict) or not isinstance(fast_reflection, dict):
         raise RuntimeError("committed RESPONSE_COMPLETE projection did not produce required receipts")
     source_refs = [str(receipt.get("source_ref") or "").strip() for receipt in (session_projection, fast_reflection)]

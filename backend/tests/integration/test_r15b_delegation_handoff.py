@@ -102,13 +102,21 @@ async def test_running_colleague_reads_end_parent_without_waiting_for_child(
     await lifecycle._execute(seed["run_id"], owner_sessionmaker, worker="r15b-polling-parent")
     async with owner_sessionmaker() as db:
         parent_run = await db.get(RuntimeTask, seed["run_id"])
-        assert parent_run.status == "completed", parent_run.result_summary
-        assert parent_run.result_summary == WAITING
+        # R19a: this runtime-authored stop has no sealed model final. It uses
+        # the same typed failure as a delegated child, while retaining the
+        # fixed waiting sentence and the original read/dispatch counts.
+        assert parent_run.status == "failed", parent_run.result_summary
+        assert parent_run.result_summary == "loop_guard"
+        assert parent_run.metadata_json["terminal_reason"] == "loop_guard"
+        assert parent_run.metadata_json["error_code"] == "identical_running_task_read"
         assert len(client.requests) == 1 + LoopGuard().identical_tool_threshold
         child = await lifecycle._child(owner_sessionmaker, seed)
         assert child.status == "pending"
     # No extra model round is needed to write the runtime's fixed waiting sentence.
     events = await lifecycle._session_api(app_user_sessionmaker, seed)
+    failures = [event for event in events if event.get("item_kind") == "runtime_failure"]
+    assert len(failures) == 1
+    assert failures[0]["payload"]["failure_code"] == "identical_running_task_read"
     assert sum(event.get("payload", {}).get("content") == WAITING for event in events) == 1
 
 

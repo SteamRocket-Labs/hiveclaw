@@ -22,6 +22,7 @@ from app.models.external_principal import ExternalPrincipal
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionCommand  # noqa: F401  (register transcript FK target)
 from app.models.tenant import Tenant
+from app.models.tenant_channel_config import TenantChannelConfig  # noqa: F401 (register ExternalPrincipal FK target)
 from app.models.user import User
 from app.services.channel_delivery_outbox import (
     ChannelDeliveryIntent,

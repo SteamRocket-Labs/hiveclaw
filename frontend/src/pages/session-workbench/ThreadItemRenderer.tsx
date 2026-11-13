@@ -252,6 +252,10 @@ function translateRuntimeFailure(t: TFunction, presentation: RuntimeFailurePrese
       return t('sessionWorkbench.threadItem.failure.emptySearch', presentation.fallback);
     case 'refused_result':
       return t('sessionWorkbench.threadItem.failure.refusedResult', presentation.fallback);
+    case 'terminal_task_read':
+      return t('sessionWorkbench.threadItem.failure.terminalTaskRead', presentation.fallback);
+    case 'running_task_read':
+      return t('sessionWorkbench.threadItem.failure.runningTaskRead', presentation.fallback);
     default:
       throw new Error(`Unhandled runtime failure presentation: ${String(presentation.kind)}`);
   }

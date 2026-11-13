@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, case, desc, exists, or_, select
+from sqlalchemy import and_, case, desc, exists, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loguru import logger
@@ -119,9 +119,12 @@ def _remote_recovery_control_condition():
 def _runtime_task_claim_conditions(*, claim_now: datetime):
     return (
         or_(
-            RuntimeTask.status.in_(CLAIMABLE_RUNTIME_TASK_STATUSES),
+            # These are fixed lifecycle states. Prepared generic plans must
+            # see their selectivity instead of estimating a historical state.
+            RuntimeTask.status.in_(tuple(literal(status, type_=RuntimeTask.status.type, literal_execute=True)
+                for status in CLAIMABLE_RUNTIME_TASK_STATUSES)),
             and_(
-                RuntimeTask.status == "running",
+                RuntimeTask.status == literal("running", type_=RuntimeTask.status.type, literal_execute=True),
                 RuntimeTask.task_type.in_(LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES),
                 or_(RuntimeTask.claim_expires_at.is_(None), RuntimeTask.claim_expires_at <= claim_now),
             ),

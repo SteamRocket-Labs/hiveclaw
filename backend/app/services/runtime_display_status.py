@@ -8,6 +8,7 @@ RUNTIME_LIMIT_MESSAGES = {
 }
 TERMINAL_TASK_READ_PREFIX = "任务结果未变化，已停止本次处理："
 DELEGATED_TASK_RUNNING_MESSAGE = "同事正在处理，结果回来后会在这里继续。"
+BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE = "同事还在处理，这次我先停下了。同事完成后，结果会回到这项任务的对话里。"
 # R18a: the loop guard's empty-search stop. True for the only input that
 # produces it — several searches in one turn all returned nothing.
 EMPTY_SEARCH_FINAL_MESSAGE = "多次搜索都没有找到相关资料。"
@@ -30,6 +31,7 @@ _FAILURE_MESSAGES = {
 }
 _TERMINAL_READ_MESSAGES = frozenset(TERMINAL_TASK_READ_PREFIX + reason for reason in _FAILURE_MESSAGES.values())
 _FAILURE_MESSAGES["identical_terminal_task_read"] = IDENTICAL_TERMINAL_READ_MESSAGE
+_FAILURE_MESSAGES["identical_running_task_read"] = DELEGATED_TASK_RUNNING_MESSAGE
 _FAILURE_MESSAGES["identical_refused_result_read"] = REFUSED_RESULT_READ_MESSAGE
 # R18a round 2/3: readers of a run stopped by the empty-search guard map this
 # failure code to the plain sentence — the web member card via the frontend
@@ -86,6 +88,10 @@ DELEGATION_RESULT_READ_NOTE = (
     "The colleague's task ended without a result body; this notice is all there is to read. "
     + FAILED_DELEGATION_MODEL_INSTRUCTION
 )
+DELEGATION_RUNNING_RESULT_READ_NOTE = (
+    "Delegated work is still running. Its result will arrive in a completion notification. "
+    "Wait for that notification; do not retry or delegate again."
+)
 
 
 def delegation_failure_result_page(
@@ -111,7 +117,8 @@ def delegation_failure_result_page(
     page = {
         "schema": "hive.runtime_result_page.v1",
         "result": failure["reason"],
-        "note": DELEGATION_RESULT_READ_NOTE,
+        "note": (DELEGATION_RUNNING_RESULT_READ_NOTE if failure["reason_code"] == "identical_running_task_read"
+            else DELEGATION_RESULT_READ_NOTE),
     }
     if result_ref:
         page["result_ref"] = result_ref
@@ -130,7 +137,13 @@ def is_delegation_failure_result_page(page: object) -> bool:
     """
     if not isinstance(page, dict):
         return False
-    if page.get("note") != DELEGATION_RESULT_READ_NOTE or page.get("schema") != "hive.runtime_result_page.v1":
+    if page.get("schema") != "hive.runtime_result_page.v1":
+        return False
+    # Preserve recognition of stored pages while binding the new running note
+    # only to its fixed running sentence.
+    if page.get("note") != DELEGATION_RESULT_READ_NOTE and not (
+        page.get("note") == DELEGATION_RUNNING_RESULT_READ_NOTE and page.get("result") == DELEGATED_TASK_RUNNING_MESSAGE
+    ):
         return False
     if not isinstance(page.get("result"), str) or page["result"] not in _FIXED_RESULT_SENTENCES:
         return False

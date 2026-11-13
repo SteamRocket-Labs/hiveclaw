@@ -30,14 +30,20 @@ from app.services.plan_authorization_lease import (
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.business_task_runtime import BusinessTaskExecutionPause, TaskExecutionOutcome, TaskExecutionStatus
-from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE, REFUSED_RESULT_READ_MESSAGE
+from app.services.runtime_display_status import (
+    BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE, EMPTY_SEARCH_FINAL_MESSAGE, REFUSED_RESULT_READ_MESSAGE,
+)
 
 
-_BUSINESS_TASK_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
+# One code -> member sentence map for guard stops (R18a, R19a, R19b). The
+# running-read value is the business sentence, never the web sentence in
+# runtime_display_status._FAILURE_MESSAGES.
 _PLAIN_BUSINESS_STOPS = {
     "repeated_empty_search": EMPTY_SEARCH_FINAL_MESSAGE,
+    "identical_running_task_read": BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE,
     "identical_refused_result_read": REFUSED_RESULT_READ_MESSAGE,
 }
+_BUSINESS_TASK_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 
 
 def _business_task_key(runtime_task_id: uuid.UUID | str) -> str:
@@ -803,8 +809,8 @@ async def execute_task(
         logger.info(f"[TaskExec] Task {task_id} persisted assistant evidence for atomic finalization")
 
     if terminal_reason_value != TerminalReason.TURN_STOP.value:
-        # These stops give the member a plain sentence without rerunning the
-        # whole task. Other failures retain their existing summary and retry.
+        # These guard stops have plain member copy; retrying the whole business
+        # task would repeat work. Other codes keep their summary and retry.
         plain = _PLAIN_BUSINESS_STOPS.get(str(failure_code or ""))
         return TaskExecutionOutcome(
             status=(

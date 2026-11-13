@@ -28,7 +28,8 @@ from uuid import UUID
 
 from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
 from app.services.runtime_display_status import (
-    DELEGATED_TASK_RUNNING_MESSAGE, EMPTY_SEARCH_FINAL_MESSAGE, IDENTICAL_TERMINAL_READ_MESSAGE,
+    DELEGATED_TASK_RUNNING_MESSAGE, DELEGATION_RUNNING_RESULT_READ_NOTE,
+    EMPTY_SEARCH_FINAL_MESSAGE, IDENTICAL_TERMINAL_READ_MESSAGE,
     REFUSED_RESULT_READ_MESSAGE, TERMINAL_TASK_READ_PREFIX,
     is_delegation_failure_result_page, is_runtime_failure_observation,
 )
@@ -377,7 +378,8 @@ class LoopGuard:
                 for key in list(self._refused_result_read_counts):
                     if key[0] == requested_ref:
                         del self._refused_result_read_counts[key]
-            running = observation.get("status") in {"pending", "running"} and observation.get("task_type") == "delegation"
+            running = (observation.get("status") in {"pending", "running"} and observation.get("task_type") == "delegation"
+                or observation.get("note") == DELEGATION_RUNNING_RESULT_READ_NOTE)
             # R16b: every reader answers a finished delegation with the plain
             # no-body page; the coded observation survives only in already-stored
             # records. Recognize both fixed projections so identical terminal

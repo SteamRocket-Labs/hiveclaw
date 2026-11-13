@@ -9,6 +9,23 @@ from app.kernel.loop_guard import LoopGuard
 from app.services.runtime_display_status import runtime_failure_observation
 
 
+@pytest.mark.parametrize("reader", ["check_async_task", "task_output", "list_async_tasks", "read_runtime_result"])
+def test_running_failure_page_uses_the_running_read_guard(reader):
+    from app.services.runtime_display_status import delegation_failure_result_page
+
+    page = delegation_failure_result_page(task_id=str(uuid4()), status="failed",
+        metadata={"error_code": "identical_running_task_read"})
+    guard = LoopGuard()
+    for index in range(guard.identical_tool_threshold):
+        body = {"ok": True, "task": page} if reader == "task_output" else [page] if reader == "list_async_tasks" else page
+        decision = guard.observe_tool_result(reader, {}, json.dumps(body),
+            machine_outcome="succeeded", side_effect_free=True)
+        if index < guard.identical_tool_threshold - 1:
+            assert decision is None
+    assert decision.reason == "identical_running_task_read"
+    assert decision.message == "同事正在处理，结果回来后会在这里继续。"
+
+
 @pytest.mark.parametrize("reader", ["check_async_task", "task_output", "list_async_tasks"])
 def test_running_colleague_stops_at_the_existing_identical_read_threshold(reader):
     own, child = uuid4(), uuid4()

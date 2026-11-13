@@ -161,7 +161,9 @@
         "persistenceError": "这次没有完成，请稍后再试。",
         "timeout": "模型服务响应超时，这次没有完成，请稍后再试。",
         "emptySearch": "多次搜索都没有找到相关资料。",
-        "refusedResult": "这份结果这次没法安全读取，我没能继续。你可以让我重新安排这项工作。"
+        "refusedResult": "这份结果这次没法安全读取，我没能继续。你可以让我重新安排这项工作。",
+        "terminalTaskRead": "同事那边的任务已经结束且没有成功，我没有再重复查询。你可以让我重新安排这项工作。",
+        "runningTaskRead": "同事正在处理，结果回来后会在这里继续。"
       },
       "permissionNeeded": "需要你确认：{{tool}}。",
       "thisTool": "该工具",

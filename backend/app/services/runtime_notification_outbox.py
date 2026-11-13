@@ -34,7 +34,9 @@ from app.models.runtime_task import (
 )
 from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
-from app.services.runtime_budget_service import RuntimeBudgetDenied, RuntimeBudgetReservation, RuntimeBudgetService
+from app.services.runtime_budget_service import (
+    RuntimeBudgetDenied, RuntimeBudgetReservation, RuntimeBudgetService, RuntimeBudgetSettlement,
+)
 from app.services.runtime_result_store import (
     RuntimeResultDescriptor,
     RuntimeResultIntegrationPage as RuntimeResultIntegrationPageValue,
@@ -1581,7 +1583,7 @@ class RuntimeNotificationOutboxService:
         return sorted(prepared, key=lambda page: (page.parent_session_id.hex, page.integration_epoch))
 
     async def _deliver_page(self, page: ClaimedResultIntegrationPage) -> dict[str, Any]:
-        from app.services.agent_session_continuation import continue_parent_session_with_result_page
+        from app.services.agent_session_continuation import _result_page_already_read, continue_parent_session_with_result_page
 
         subagent_items = [
             item for item in page.items if item.source_kind == "subagent" and item.child_session_id is not None
@@ -1589,12 +1591,17 @@ class RuntimeNotificationOutboxService:
         subagent_summaries: dict[uuid.UUID, str] = {}
 
         root_status = None
+        already_read = False
         async with tenant_scoped_session(
             page.tenant_id,
             session_factory=self._session_factory,
             require_tenant=True,
             source="runtime_result_page_sequence_preflight",
         ) as sequence_db:
+            if page.delivery_mode == "parent_continuation":
+                already_read = await _result_page_already_read(sequence_db, tenant_id=page.tenant_id,
+                    agent_id=page.parent_agent_id, session_id=page.parent_session_id, user_id=page.parent_user_id,
+                    items=list(page.manifest.get("items") or []))
             if page.root_runtime_task_id is not None and page.delivery_mode == "parent_continuation":
                 root_status = await sequence_db.scalar(select(RuntimeTask.status).where(
                     RuntimeTask.id == page.root_runtime_task_id, RuntimeTask.tenant_id == page.tenant_id,
@@ -1685,7 +1692,7 @@ class RuntimeNotificationOutboxService:
         budget_run_id: uuid.UUID | None = None
         continuation_denial = {"killed": "runtime_root_cancelled",
             "needs_reconciliation": "runtime_root_needs_reconciliation"}.get(root_status)
-        if page.delivery_mode == "parent_continuation" and budget_run_ids and continuation_denial is None:
+        if page.delivery_mode == "parent_continuation" and not already_read and budget_run_ids and continuation_denial is None:
             try:
                 budget_run_id = _uuid(next(iter(budget_run_ids)), field="budget_run_id")
             except ValueError:
@@ -1713,6 +1720,25 @@ class RuntimeNotificationOutboxService:
                 if admission_decision is not None and admission_decision.waiting:
                     raise CompletionDeliveryDeferred("runtime_budget_approval_required")
 
+        async def settle_previous_wake(db, event):
+            if not already_read or not budget_run_ids:
+                return
+            try:
+                run_id = _uuid(next(iter(budget_run_ids)), field="budget_run_id")
+            except ValueError:
+                return
+            service = RuntimeBudgetService(session_factory=self._session_factory)
+            key = f"runtime_result_page:{page.id}:continuation"
+            reservation = await service._existing_event(db, run_id, key, "reservation")
+            if reservation is None or await service._existing_event(db, run_id, key, "settlement") is not None:
+                return
+            # A prior attempt may have reserved before this result was read.
+            # The durable notification tells whether it actually woke a turn.
+            await service.settle(RuntimeBudgetSettlement(budget_run_id=run_id, reservation_key=key,
+                runtime_task_id=reservation.runtime_task_id,
+                actual_continuation_wakes=0 if (event.metadata_json or {}).get("consumer") == "session_projection" else 1,
+                reason="runtime_result_page_delivered"))
+
         async with tenant_scoped_session(
             page.tenant_id,
             session_factory=self._session_factory,
@@ -1729,6 +1755,7 @@ class RuntimeNotificationOutboxService:
                 )
             ).scalar_one_or_none()
             if existing is not None:
+                await settle_previous_wake(db, existing)
                 if admission is not None and admission_decision is not None:
                     await admission.settle(
                         admission_decision,
@@ -1804,7 +1831,7 @@ class RuntimeNotificationOutboxService:
                 integration_page_id=page.id,
                 manifest=page.manifest,
                 inherited_budget_run_id=budget_run_id,
-                resume_parent=page.delivery_mode == "parent_continuation" and continuation_denial is None,
+                resume_parent=page.delivery_mode == "parent_continuation" and not already_read and continuation_denial is None,
                 **({"continuation_denial": continuation_denial} if continuation_denial else {}),
                 # Transient admission-time claim fence: threaded, never
                 # persisted into any durable authority marker.
@@ -1819,6 +1846,7 @@ class RuntimeNotificationOutboxService:
                     )
                 )
             ).scalar_one_or_none()
+            await settle_previous_wake(db, delivered_event)
             if admission is not None and admission_decision is not None:
                 await admission.settle(
                     admission_decision,

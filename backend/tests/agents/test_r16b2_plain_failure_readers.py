@@ -85,6 +85,19 @@ class TestOnePlainPageForAllFourReaders:
 
         assert FAILED_DELEGATION_MODEL_INSTRUCTION in DELEGATION_RESULT_READ_NOTE
 
+    def test_running_note_is_bound_to_the_running_sentence_and_keeps_legacy_pages(self):
+        from app.services.runtime_display_status import (
+            DELEGATION_RESULT_READ_NOTE, delegation_failure_result_page, is_delegation_failure_result_page,
+        )
+
+        page = delegation_failure_result_page(task_id=str(uuid4()), status="failed",
+            metadata={"error_code": "identical_running_task_read"})
+        assert "still running" in page["note"] and "completion notification" in page["note"]
+        assert "ended" not in page["note"] and "offer to retry" not in page["note"]
+        assert is_delegation_failure_result_page(page)
+        assert is_delegation_failure_result_page({**page, "note": DELEGATION_RESULT_READ_NOTE})
+        assert not is_delegation_failure_result_page({**page, "result": "这次执行失败，没有完成。"})
+
     def test_a_plain_page_is_not_counted_as_a_failed_tool_call(self):
         # tools/service.py exempts the coded observation from failure counting;
         # the plain page must be exempt the same way.

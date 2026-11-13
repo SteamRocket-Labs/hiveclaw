@@ -258,7 +258,9 @@ async def test_turn_stop_orders_required_projections_before_custom_terminal(
     receipt = await processor(item)
 
     expected_parent = ["parent_completion"] if task_type == "delegation" else []
-    assert order == ["t0_bridge", "required_turn", "response_complete", *expected_parent, custom_event_name]
+    # R19a: a completed colleague notifies its parent before auxiliary memory;
+    # the custom terminal and boundary receipt still await every projection.
+    assert order == ["t0_bridge", "required_turn", *expected_parent, "response_complete", custom_event_name]
     assert receipt["terminal_event_id"] == str(material.terminal_event_id)
     assert len(receipt["response_projection_sha256"]) == 64
     if task_type == "delegation":

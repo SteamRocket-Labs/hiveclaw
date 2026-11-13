@@ -85,7 +85,7 @@ the Work Ledger or workspace artifacts rather than durable memory.
 
 def build_memory_tools_route_section() -> str:
     """Keep file discovery available before the resident profile has content."""
-    return _MEMORY_TOOLS_ROUTE + " If the directory is empty, there is nothing to recall."
+    return _MEMORY_TOOLS_ROUTE + " If `memory/t2/sessions/` is empty, there is no past session to read."
 
 
 def build_memory_section(memory_snapshot: str = "", *, budget_chars: int | None = None) -> str:

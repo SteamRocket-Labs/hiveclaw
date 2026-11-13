@@ -26,6 +26,105 @@ UNRESOLVED_TOOL_EFFECT_STATES = frozenset({"effect_started", "needs_reconciliati
 TOOL_EFFECT_RECONCILIATION_TASK_STATUSES = frozenset({"failed", "needs_reconciliation"})
 
 
+async def _member_target_for_invocation(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """The typed member-safe target stored on the tool_result payload (X3c).
+
+    Production member-view events never carry the arguments (a native
+    tool_call has only args_hash, a native tool_result has no args), so the
+    row's file name, fetch host or connected-app label must be derived here —
+    once, while the typed arguments are in hand — and read back at
+    serialization without a per-event lookup. Result text is never read.
+
+    X3c r2: one function decides the kind first and looks up MCP only when
+    the registry does not already know it; ``fs_write`` follows its ``mode``
+    (a delete gets no write target at all); an app label names only the
+    company connection that actually ran — the Tool row the executor picks
+    (tenant before global, deterministic), labeled only when its server is
+    company-owned (MCPServer.owner_user_id IS NULL, the G4c company rule).
+    Personal or member-installed connections keep the generic sentence.
+    """
+
+    from app.services.session_event_contract import (
+        MEMBER_TOOL_SUMMARY_KINDS,
+        _member_summary_filename,
+        _member_summary_host,
+    )
+
+    kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
+    if tool_name == "fs_write" and kind == "file_write":
+        mode = str((arguments or {}).get("mode") or "").strip().lower()
+        kind = {"delete": "file_delete", "edit": "file_edit"}.get(mode, "file_write")
+    if kind == "web_fetch":
+        host = _member_summary_host(arguments)
+        return {"kind": "web_fetch", "host": host} if host else None
+    if kind in {"file_read", "file_write", "file_edit", "file_delete"}:
+        # X3c r3: the resolved kind is always stored — a refused base name
+        # loses only the name, never the action (an fs_write edit whose name
+        # is refused must not read back as a write), and a delete stores no
+        # name at all.
+        filename = _member_summary_filename(arguments) if kind != "file_delete" else None
+        target: dict[str, Any] = {"kind": kind}
+        if filename:
+            target["filename"] = filename
+        return target
+    if kind is not None or not tool_name.startswith("mcp"):
+        # A name the registry already summarizes (mcp_list_resources and the
+        # like) never needs a connection label; neither does a non-MCP name.
+        return None
+
+    from app.models.mcp_server import MCPServer, MCPServerTool
+    from app.models.tool import Tool
+
+    tool_row = (
+        await db.execute(
+            select(Tool.id)
+            .where(
+                Tool.name == tool_name,
+                Tool.type == "mcp",
+                or_(Tool.tenant_id == tenant_id, Tool.tenant_id.is_(None)),
+            )
+            # The executor resolves the tenant row before the global row
+            # (web_mcp._resolve_mcp_tool); keep the same deterministic pick.
+            .order_by(Tool.tenant_id.is_(None), Tool.id)
+            .limit(1)
+        )
+    ).first()
+    if tool_row is None:
+        return None
+    server = (
+        await db.execute(
+            select(MCPServer.name, MCPServer.server_url)
+            .join(
+                MCPServerTool,
+                and_(
+                    MCPServerTool.mcp_server_id == MCPServer.id,
+                    MCPServerTool.tenant_id == tenant_id,
+                ),
+            )
+            .where(
+                MCPServerTool.tool_id == tool_row.id,
+                MCPServer.tenant_id == tenant_id,
+                # Company connections only, the same rule as G4c's company
+                # app list; member-installed servers keep the generic sentence.
+                MCPServer.owner_user_id.is_(None),
+            )
+            .order_by(MCPServer.name, MCPServer.id)
+            .limit(1)
+        )
+    ).first()
+    if server is None:
+        return None
+    from app.services.mcp_metadata_trust import trusted_connection_label
+
+    return {"kind": "mcp_app", "app_label": trusted_connection_label(server.name, server.server_url)}
+
+
 def permission_run_session_clause(session_id):
     """Native controls belong to the task type's pinned execution session."""
     return or_(
@@ -1173,6 +1272,12 @@ async def complete_tool_invocation(
     command_payload = {"code_execution_result": {
         "exit_code": command_result.get("exit_code"), "timed_out": command_result.get("timed_out"),
     }} if isinstance(command_result, Mapping) else {}
+    member_target = await _member_target_for_invocation(
+        db,
+        tenant_id=tenant_id,
+        tool_name=invocation.tool_name,
+        arguments=effective_payload,
+    )
     drafts.extend(
         [
             SessionEventDraft(
@@ -1217,6 +1322,10 @@ async def complete_tool_invocation(
                     "content": content,
                     "content_hash": content_hash,
                     **command_payload,
+                    # X3c: member-safe target (fetch host / base file name /
+                    # trusted MCP connection label) derived from the typed
+                    # arguments here; the member summary reads only this.
+                    **({"member_target": member_target} if member_target else {}),
                     **({"metadata": knowledge_metadata} if knowledge_metadata else {}),
                     # Bounded provider projection for session replay into model
                     # context; absent means the durable content is the projection.

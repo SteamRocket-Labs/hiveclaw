@@ -1371,6 +1371,10 @@ MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
     "read_file": "file_read",
     "fs_read": "file_read",
     "read_document": "file_read",
+    # X3c: a successful write/edit row names the file too (base name only).
+    "write_file": "file_write",
+    "fs_write": "file_write",
+    "edit_file": "file_edit",
     "delegate_to_agent": "delegation",
     "send_message_to_agent": "delegation",
     # a) memory search / read / load
@@ -1412,6 +1416,17 @@ MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
     # same class of model-facing text as run 9's system-instruction leak
     "read_context_resource": "context_read",
 }
+
+# X3c r2: the closed kind set a stored ``member_target`` may carry. The write
+# path resolves the kind once (fs_write follows its mode) because production
+# result payloads carry no arguments; the read side accepts only these.
+_MEMBER_TARGET_KINDS = frozenset({
+    "web_fetch",
+    "file_read",
+    "file_write",
+    "file_edit",
+    "file_delete",
+})
 
 # Structured statuses: a typed `status` field on a JSON result object of one
 # of these tools states the action was refused, aborted, or did not happen
@@ -1474,6 +1489,27 @@ _MEMBER_SUMMARY_DONE_RESULT_STATUSES = frozenset({
 _MEMBER_SUMMARY_COLLEAGUE_TASK_TYPES = frozenset({"", "delegation", "subagent"})
 
 
+def _member_host_valid(host: Any) -> str | None:
+    """A host is a host (X3c r2/r3): hostname characters only — no ``%``,
+    whitespace, ``@``, ``:``, ``/``, ``?`` or ``#``. Non-ASCII labels show as
+    (and are stored as) their IDNA/punycode form, so zero-width marks, soft
+    hyphens and homoglyph hosts never reach the member sentence as-is; a host
+    that will not encode down to plain letters, digits, dots and hyphens is
+    refused."""
+
+    if not isinstance(host, str):
+        return None
+    clean = host.strip().lower()
+    if not clean or re.search(r"[\s%@:/?#\\]", clean):
+        return None
+    if not clean.isascii():
+        try:
+            clean = clean.encode("idna").decode("ascii")
+        except (UnicodeError, ValueError):
+            return None
+    return clean if re.fullmatch(r"[a-z0-9.-]+", clean) else None
+
+
 def _member_summary_host(args: Any) -> str | None:
     """Plain host of a fetched page, taken only from the typed url argument."""
     if not isinstance(args, Mapping):
@@ -1493,7 +1529,45 @@ def _member_summary_host(args: Any) -> str | None:
         return None
     # urlparse returns None for scheme-less URLs ("example.com/x"), bare
     # schemes ("http://") and non-host schemes ("mailto:a@b.c").
-    return host.strip().lower() if host else None
+    return _member_host_valid(host.strip()) if host else None
+
+
+# X3c r2: one member-safe basename rule, applied when the target is written
+# and again when it is read back. A name that looks like a credential, or one
+# carrying a query/fragment, is never shown.
+_MEMBER_SECRET_FILENAME_MARKERS = (
+    "secret",
+    "credential",
+    "api_key",
+    "password",
+    "token",
+)
+_MEMBER_SECRET_FILENAME_PATTERNS = (
+    re.compile(r"(?i)^\.env"),
+    re.compile(r"(?i)^id_rsa"),
+    re.compile(r"(?i)\.pem$"),
+    re.compile(r"(?i)\.key$"),
+    re.compile(r"(?i)(?:^|[^a-z0-9])(?:sk-|ghp_|xox[bp]-)"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"[A-Za-z0-9]{24,}"),
+)
+
+
+def member_safe_basename(name: Any) -> str | None:
+    """The base name a member row may show, or None when it must stay nameless."""
+
+    if not isinstance(name, str) or not name or name in {".", ".."}:
+        return None
+    if "?" in name or "#" in name or "/" in name or "\\" in name:
+        return None
+    if re.search(r"(?i)[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}", name):
+        return None
+    lowered = name.lower()
+    if any(marker in lowered for marker in _MEMBER_SECRET_FILENAME_MARKERS):
+        return None
+    if any(pattern.search(name) for pattern in _MEMBER_SECRET_FILENAME_PATTERNS):
+        return None
+    return name
 
 
 def _member_summary_filename(args: Any) -> str | None:
@@ -1502,12 +1576,7 @@ def _member_summary_filename(args: Any) -> str | None:
     path = args.get("path") or args.get("file_path")
     if not isinstance(path, str) or not path or path.endswith(("/", "\\")):
         return None
-    name = re.split(r"[/\\]", path)[-1]
-    if not name or name in {".", ".."} or re.search(
-        r"(?i)[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}", name
-    ):
-        return None
-    return name
+    return member_safe_basename(re.split(r"[/\\]", path)[-1])
 
 
 def _status_text(value: Any) -> str:
@@ -1587,6 +1656,11 @@ def _member_summary_projection(
         return None
     native = "outcome" in payload or "invocation_id" in payload
     envelope: Mapping[str, Any] = {}
+    # X3c: the persistence path stores the member-safe target (fetch host,
+    # base file name, MCP app label) as a typed field when the typed
+    # arguments are in hand; production native payloads carry no args.
+    member_target = payload.get("member_target")
+    member_target = member_target if isinstance(member_target, Mapping) else {}
     if native:
         # Native V2 payload: kind comes only from the typed payload tool_name;
         # content is the result body itself and is never mined for names,
@@ -1620,6 +1694,18 @@ def _member_summary_projection(
         args = payload.get("args")
         if not isinstance(args, Mapping):
             args = envelope.get("args")
+    # X3c r2: the stored target is used only when the arguments are absent —
+    # a payload that still carries its typed arguments derives from them.
+    has_args = isinstance(args, Mapping) and bool(args)
+    if kind == "file_write" and tool_name == "fs_write":
+        # fs_write follows its mode (X3c r2): the chosen kind is stored with
+        # the target for native rows, or re-derived from the args.
+        if has_args:
+            mode = _status_text(args.get("mode"))
+            kind = {"delete": "file_delete", "edit": "file_edit"}.get(mode, "file_write")
+        else:
+            stored_kind = _text(member_target.get("kind"))
+            kind = stored_kind if stored_kind in _MEMBER_TARGET_KINDS else "file_write"
     result_obj: Any = None
     if isinstance(result, str) and result.strip():
         # A native refusal envelope is typed JSON even when preceded by a
@@ -1631,11 +1717,21 @@ def _member_summary_projection(
         except (TypeError, ValueError):
             parsed = None
         result_obj = parsed if isinstance(parsed, Mapping) else None
-        if kind == "file_read" and not error_envelope:
-            result_obj = None  # A JSON file's contents are data, not a tool status.
+        if kind in {"file_read", "file_write", "file_edit", "file_delete", "mcp_app"} and not error_envelope:
+            # A JSON file's contents are data, not a tool status; a write
+            # receipt's body is the same class; a remote MCP body is
+            # untrusted data that never decides the member sentence.
+            result_obj = None
     typed_status = _status_text(result_obj.get("status")) if result_obj else ""
     if kind is None and tool_name.startswith("search_") and typed_status:
         kind = "record_search"
+    app_label = _text(member_target.get("app_label"))
+    if kind is None and app_label:
+        # X3c: a company MCP tool row names the trusted connection label the
+        # persistence path resolved from its trusted connection (X3c r2: the
+        # tenant row the executor picks, company-owned servers only) — never
+        # the remote tool name or description.
+        kind = "mcp_app"
     if kind is None:
         return None
     state = _member_summary_state(
@@ -1647,13 +1743,21 @@ def _member_summary_projection(
     if tool_name.startswith("search_") and typed_status in {"empty", "ok", "partial"} and state != "not_done":
         if _status_text(payload.get("outcome")) != "unknown":
             summary.update(state="done", found=typed_status != "empty")
-    host = _member_summary_host(args) if kind == "web_fetch" else None
-    if host:
-        summary["host"] = host
-    if kind == "file_read":
-        filename = _member_summary_filename(args)
+    if kind == "web_fetch":
+        # X3c r2: the stored host is validated by the same host rule on read.
+        host = _member_summary_host(args) if has_args else _member_host_valid(_text(member_target.get("host")))
+        if host:
+            summary["host"] = host
+    if kind in {"file_read", "file_write", "file_edit"}:
+        filename = (
+            _member_summary_filename(args)
+            if has_args
+            else member_safe_basename(_text(member_target.get("filename")))
+        )
         if filename:
             summary["filename"] = filename
+    if kind == "mcp_app":
+        summary["app_label"] = app_label
     if kind in {"file_read", "delegation"} and state == "not_done" and result_obj and isinstance(result_obj.get("error_class"), str):
         summary["error_class"] = result_obj["error_class"]
     if kind == "delegation" and result_obj:
@@ -1680,16 +1784,22 @@ def _apply_member_tool_summary(payload: dict[str, Any], *, item_kind: str) -> di
     and text parts. Idempotent: an already-projected native payload (summary
     present, content emptied) returns as is. Typed mechanics the UI relies on
     (envelope name/args/status, ids for pairing, durations, step ids, artifact
-    parts) stay in the member view.
+    parts) stay in the member view. The raw ``member_target`` never leaves the
+    server to a non-operator reader (X3c r2): the summary carries the already
+    validated value, and a stale stored target must not ride beside it.
     """
 
     if isinstance(payload.get("member_summary"), Mapping) and payload.get("content") == "":
+        if "member_target" in payload:
+            return {key: value for key, value in payload.items() if key != "member_target"}
         return payload
     projection = _member_summary_projection(payload, item_kind=item_kind)
     if projection is None:
+        if "member_target" in payload:
+            return {key: value for key, value in payload.items() if key != "member_target"}
         return payload
     summary, native, envelope = projection
-    clean = dict(payload)
+    clean = {key: value for key, value in payload.items() if key != "member_target"}
     clean["member_summary"] = summary
     clean["result"] = ""
     if native or not envelope:

@@ -197,6 +197,11 @@ def test_registry_kinds_are_complete_and_stable() -> None:
         "read_file": "file_read",
         "fs_read": "file_read",
         "read_document": "file_read",
+        # X3c adds the write/edit kinds: a successful write or edit row names
+        # the file by its base name only, like a read row.
+        "write_file": "file_write",
+        "fs_write": "file_write",
+        "edit_file": "file_edit",
         "delegate_to_agent": "delegation",
         "send_message_to_agent": "delegation",
         "search_memory": "memory_search",
@@ -702,7 +707,8 @@ def test_x3br2_native_call_projects_authoritative_host_without_touching_operator
     row.item_kind, row.event_type = "tool_call", "tool_call.completed"
     row.payload_schema = "hive.session.payload.tool_call.completed.v2"
     before = _operator_payload(row)
-    assert _user_payload(row)["host"] == "例子.测试"
+    # X3c r3: a non-ASCII host shows as its punycode form, never as-is.
+    assert _user_payload(row)["host"] == "xn--fsqu00a.xn--0zwm56d"
     assert _operator_payload(row) == before
 
 

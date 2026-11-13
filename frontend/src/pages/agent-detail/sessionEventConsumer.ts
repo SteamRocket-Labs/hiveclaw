@@ -11,7 +11,7 @@ import {
   type TranscriptReplayState,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
-import { memberToolSummaryFromRecord, memberSummaryWithArgs } from './memberToolSummary';
+import { memberHost, memberToolSummaryFromRecord, memberSummaryWithArgs } from './memberToolSummary';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
 import type { SessionMessageStore } from './sessionMessageStore';
@@ -461,7 +461,7 @@ function projectCanonicalItem(
       // result for summarized tools; the expanded step renders it verbatim.
       toolMemberSummary: (() => {
         const summary = memberToolSummaryFromRecord(toolEnvelope.member_summary ?? pairedEnvelope?.member_summary);
-        if (summary?.kind === 'web_fetch' && !summary.host && typeof toolEnvelope.host === 'string') summary.host = toolEnvelope.host;
+        if (summary?.kind === 'web_fetch' && !summary.host) summary.host = memberHost(toolEnvelope.host);
         if (summary?.kind === 'file_read' && summary.state === 'not_done') {
           const metadata = recordValue(pairedEnvelope?.metadata ?? toolEnvelope.metadata);
           const reason = recordValue(metadata?.workspace_input_receipt)?.reason_code;

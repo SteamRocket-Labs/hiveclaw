@@ -26,6 +26,7 @@ import { approvalActionFor } from '../session-workbench/approvalActionPresentati
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { fileReadFailureForDisplay, toolFailureForDisplay, toolOutputForDisplay } from './toolFailurePresentation';
 import { memberFilename, memberToolSummaryFromRecord, memberToolSummarySentence, memberSummaryWithArgs } from './memberToolSummary';
+import { commandExecutionOutcome } from './chatDisclosureReducer';
 import { useAuthStore } from '../../stores';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import { isKeptResultStep, presentSystemStep } from './systemStepPresentation';
@@ -231,11 +232,10 @@ function ColleagueConversationLink({ metadata }: { metadata: Record<string, unkn
 
 function commandOutcome(details: unknown): 'done' | 'failed' | 'unknown' | null {
   const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
-  const execution = record.executionResult as { exit_code?: unknown; timed_out?: unknown } | undefined;
-  if (execution) {
-    if (execution.timed_out === true || typeof execution.exit_code !== 'number' || !Number.isFinite(execution.exit_code)) return 'unknown';
-    return execution.exit_code === 0 ? 'done' : 'failed';
-  }
+  // X3c r2: the typed execution result goes through the one shared predicate
+  // the step status uses, so the sentence and the marker never diverge.
+  const typed = commandExecutionOutcome(record.executionResult);
+  if (typed !== null) return typed;
   const values = [details, record.result, record.rawResult];
   const records = values.flatMap(value => {
     if (typeof value === 'string') {
@@ -439,6 +439,11 @@ function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
   }
   if (step.kind === 'permission' && step.title === 'permission_resolved') {
     return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
+  }
+  // X3c r3: fs_write's collapsed title follows the stored kind — a delete
+  // row is titled by what it did, never "Write file".
+  if ((step.details as { memberSummary?: { kind?: string } } | null)?.memberSummary?.kind === 'file_delete') {
+    return t('agent.chat.disclosure.toolTitle.deleteFile', 'Delete file');
   }
   return localizedToolName(toolNameOf(step), t, step.title);
 }

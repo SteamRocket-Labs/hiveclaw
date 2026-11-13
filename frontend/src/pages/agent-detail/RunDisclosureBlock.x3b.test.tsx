@@ -226,16 +226,17 @@ it('x3br2 keeps typed file and memory details on collapsed rows', () => {
 it('x3br2 preserves the backend host exactly instead of normalizing it again', () => {
   const { container } = renderSteps([{ ...step('done'), kind: 'tool', details: { toolName: 'web_fetch',
     args: { url: 'http://例子.测试/path?q=value' }, memberSummary: { kind: 'web_fetch', state: 'done', host: '例子.测试' } } }]);
-  expect(container.querySelector('p')?.textContent).toBe('打开了网页 例子.测试');
-  expect(container.textContent).not.toContain('xn--');
+  // X3c r3: a non-ASCII host is never shown as-is — the URL API's punycode
+  // hostname is what a member sees.
+  expect(container.querySelector('p')?.textContent).toBe('打开了网页 xn--fsqu00a.xn--0zwm56d');
 });
 
 it('x3br2 preserves the backend call host on native reload', () => {
   const events = [native(1, 'tool_call', { tool_name: 'web_fetch', args: { url: 'http://例子.测试/path' }, host: '例子.测试' }),
     native(2, 'tool_result', { tool_name: 'web_fetch', outcome: 'success', content: '', member_summary: { kind: 'web_fetch', state: 'done' } })];
   const { container } = renderSteps(buildRunTimelineFromMessages(hydrateSessionTranscriptEvents(events as never).messages).steps);
-  expect(container.querySelector('p')?.textContent).toBe('打开了网页 例子.测试');
-  expect(container.querySelector('.run-tool-history-summary')?.textContent).toBe('例子.测试');
+  expect(container.querySelector('p')?.textContent).toBe('打开了网页 xn--fsqu00a.xn--0zwm56d');
+  expect(container.querySelector('.run-tool-history-summary')?.textContent).toBe('xn--fsqu00a.xn--0zwm56d');
 });
 
 it('x3br2 distinguishes a delegation that was never sent', () => {

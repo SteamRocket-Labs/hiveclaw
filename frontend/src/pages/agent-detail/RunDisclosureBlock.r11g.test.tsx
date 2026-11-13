@@ -41,7 +41,7 @@ it.each([
 });
 
 it.each([
-  ['write_file', { path: 'workspace/sales-report-sales-run8.md' }, '✅ Written to workspace/sales-report-sales-run8.md (3123 chars)', '已写入文件「sales-report-sales-run8.md」。'],
+  ['write_file', { path: 'workspace/sales-report-sales-run8.md' }, '✅ Written to workspace/sales-report-sales-run8.md (3123 chars)', '已写入文件「sales-report-sales-run8.md」'],
   // Controller ruling X3b r3 item 1: no structural success signal survives both paths.
   ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。', '保存记忆。已返回结果'],
 ] as const)('shows a non-command %s sentence without mutating the model payload (X3b item 2)', (toolName, toolArgs, toolResult, sentence) => {
@@ -58,7 +58,7 @@ it.each([
 });
 
 it.each([
-  ['write_file', { path: 'workspace/run8-count.md' }, '已写入文件「run8-count.md」。', '✅ Written to workspace/run8-count.md (106 chars)'],
+  ['write_file', { path: 'workspace/run8-count.md' }, '已写入文件「run8-count.md」', '✅ Written to workspace/run8-count.md (106 chars)'],
   ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, '已记住：用户的 E2E 测试代号是 白鹭-8。', 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。'],
 ] as const)('shows the member receipt of %s and preserves its model envelope', (toolName, toolArgs, text, model_visible_text) => {
   const envelope = { text, model_visible_text };

@@ -69,7 +69,13 @@ it.each([
   const before = JSON.stringify(messages);
   const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages(messages)} />);
   for (const selector of ['.run-disclosure-header', '.run-tool-group-toggle', '.run-step-toggle', '.run-tool-history-toggle']) {
-    for (const toggle of container.querySelectorAll<HTMLElement>(selector)) fireEvent.click(toggle);
+    for (const toggle of container.querySelectorAll<HTMLElement>(selector)) {
+      // X3c: a non-zero exit or a timeout now marks the command step failed,
+      // so the block opens for attention already expanded — clicking the
+      // header again would collapse it. Only open, never close.
+      if (toggle.getAttribute('aria-expanded') === 'true') continue;
+      fireEvent.click(toggle);
+    }
   }
   expect(container.querySelector('p')?.textContent).toBe(`运行命令。${status}`);
   expect(container.textContent).not.toContain(stdout);

@@ -707,7 +707,8 @@ def test_x3br2_native_call_projects_authoritative_host_without_touching_operator
     row.item_kind, row.event_type = "tool_call", "tool_call.completed"
     row.payload_schema = "hive.session.payload.tool_call.completed.v2"
     before = _operator_payload(row)
-    assert _user_payload(row)["host"] == "例子.测试"
+    # X3c r3: a non-ASCII host shows as its punycode form, never as-is.
+    assert _user_payload(row)["host"] == "xn--fsqu00a.xn--0zwm56d"
     assert _operator_payload(row) == before
 
 

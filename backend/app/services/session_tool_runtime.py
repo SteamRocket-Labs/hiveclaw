@@ -63,11 +63,16 @@ async def _member_target_for_invocation(
     if kind == "web_fetch":
         host = _member_summary_host(arguments)
         return {"kind": "web_fetch", "host": host} if host else None
-    if kind in {"file_read", "file_write", "file_edit"}:
-        filename = _member_summary_filename(arguments)
-        return {"kind": kind, "filename": filename} if filename else None
-    if kind == "file_delete":
-        return {"kind": "file_delete"}
+    if kind in {"file_read", "file_write", "file_edit", "file_delete"}:
+        # X3c r3: the resolved kind is always stored — a refused base name
+        # loses only the name, never the action (an fs_write edit whose name
+        # is refused must not read back as a write), and a delete stores no
+        # name at all.
+        filename = _member_summary_filename(arguments) if kind != "file_delete" else None
+        target: dict[str, Any] = {"kind": kind}
+        if filename:
+            target["filename"] = filename
+        return target
     if kind is not None or not tool_name.startswith("mcp"):
         # A name the registry already summarizes (mcp_list_resources and the
         # like) never needs a connection label; neither does a non-MCP name.

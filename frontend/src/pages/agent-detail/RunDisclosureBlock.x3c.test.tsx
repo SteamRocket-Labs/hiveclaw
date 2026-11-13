@@ -7,6 +7,7 @@ import { translateFromCatalog } from '../../test/i18nMock';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import { buildRunTimelineFromMessages, type RunStepSnapshot } from './chatDisclosureReducer';
 import { hydrateSessionTranscriptEvents } from './sessionEventConsumer';
+import { memberToolSummaryFromRecord } from './memberToolSummary';
 
 // X3c member sentences over the production event shapes: the expanded row
 // names the file, the web host and the connected app, and a failed command
@@ -147,7 +148,7 @@ it('a null exit code or a string exit code is not done, and keeps the unconfirme
   }
 });
 
-it('fs_write follows its mode: a delete is never a write sentence (X3c r2)', () => {
+it('fs_write follows its mode: a delete is never a write sentence (X3c r2/r3)', () => {
   const events = [
     ...settledCall('fs_write', { member_summary: { kind: 'file_delete', state: 'done' } }),
     ...settledCall('fs_write', { member_summary: { kind: 'file_edit', state: 'done', filename: 'weekly-report.md' } }),
@@ -155,8 +156,26 @@ it('fs_write follows its mode: a delete is never a write sentence (X3c r2)', () 
   const { container } = renderedRows(events);
   const text = container.textContent || '';
   expect(text).toContain('编辑了文件「weekly-report.md」');
+  // r3: the delete row is titled and sentenced as 删除文件; neither its
+  // expanded sentence nor its title says 写入. (The edit row's own title
+  // staying Write file is the existing mapping.)
+  expect(text).toContain('删除文件');
+  const deleteRow = [...container.querySelectorAll('[data-testid="run-disclosure-step"], .run-tool-history-item')]
+    .find((row) => row.textContent?.includes('删除文件'));
+  expect(deleteRow?.textContent).not.toContain('写入');
   expect(text).not.toContain('已写入文件');
   expect(text).not.toContain('写入了文件');
+});
+
+it('non-ASCII hosts show as punycode; hidden-character hosts show clean (X3c r3)', () => {
+  for (const [stored, shown] of [
+    ['例子.测试', 'xn--fsqu00a.xn--0zwm56d'],
+    ['раураl.com', 'xn--l-7sba6dbr.com'],
+    ['evil.com\u200b', 'evil.com'],
+    ['a\u00adb.com', 'ab.com'],
+  ] as const) {
+    expect(memberToolSummaryFromRecord({ kind: 'web_fetch', state: 'done', host: stored })?.host).toBe(shown);
+  }
 });
 
 it('keeps the generic sentence for history rows written before X3c', () => {

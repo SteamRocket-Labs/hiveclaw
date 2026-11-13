@@ -2978,6 +2978,7 @@
           "fileEdit": "编辑了文件",
           "fileEditNamed": "编辑了文件「{{filename}}」",
           "fileEditFailed": "这次没有编辑文件",
+          "fileDeleteFailed": "这次没有删除文件",
           "mcpApp": "使用了已连接的应用",
           "mcpAppNamed": "使用了已连接的应用「{{app}}」",
           "mcpAppFailed": "已连接的应用这次没有完成",

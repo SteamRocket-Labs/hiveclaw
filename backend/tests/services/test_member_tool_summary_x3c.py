@@ -216,6 +216,41 @@ def test_x3c_a_host_is_a_host() -> None:
     assert _member_summary_host({"url": "https://deepwiki.com/react"}) == "deepwiki.com"
 
 
+def test_x3c_stored_directory_path_gives_no_filename() -> None:
+    # X3c r3 (reviewer R1): a stored target carrying a directory produces no
+    # name at all — the member wire must not carry the full path.
+    row = _native_row("read_file", "x", member_target={"kind": "file_read", "filename": "a/b/c.txt"})
+    payload = _user_payload(row)
+    assert payload["member_summary"] == {"kind": "file_read", "state": "done"}
+    assert "a/b/c.txt" not in json.dumps(payload, ensure_ascii=False)
+    backslash = _native_row("read_file", "x", member_target={"kind": "file_read", "filename": "a\\b\\c.txt"})
+    assert "filename" not in _user_payload(backslash)["member_summary"]
+
+
+def test_x3c_refused_name_edit_still_reads_as_an_edit() -> None:
+    # X3c r3 (Grok r2-1), serializer level: the stored kind decides even when
+    # the base name was refused.
+    row = _native_row("fs_write", "ok", member_target={"kind": "file_edit"})
+    summary = _user_payload(row)["member_summary"]
+    assert summary == {"kind": "file_edit", "state": "done"}
+
+
+def test_x3c_hidden_character_hosts_show_clean_or_punycode() -> None:
+    # X3c r3 (reviewer nit): zero-width marks and soft hyphens never ride the
+    # host; non-ASCII labels show as their punycode form.
+    from app.services.session_event_contract import _member_host_valid
+
+    assert _member_host_valid("evil.com\u200b") == "evil.com"
+    assert _member_host_valid("a\u00adb.com") == "ab.com"
+    assert _member_host_valid("раураl.com") == "xn--l-7sba6dbr.com"
+    assert _member_host_valid("例子.测试") == "xn--fsqu00a.xn--0zwm56d"
+    # The member wire carries the clean/punycode host, never the hidden bytes.
+    row = _native_row("web_fetch", PAGE_BODY, member_target={"kind": "web_fetch", "host": "evil.com\u200b"})
+    payload = _user_payload(row)
+    assert payload["member_summary"] == {"kind": "web_fetch", "state": "done", "host": "evil.com"}
+    assert "\u200b" not in json.dumps(payload, ensure_ascii=False)
+
+
 def test_x3c_raw_member_target_never_leaves_the_server_for_members() -> None:
     # X3c r2: once the member summary is written, the raw stored target is
     # dropped from the user-audience payload; the operator view keeps it.
@@ -394,6 +429,19 @@ async def test_x3c_fs_write_follows_its_mode(owner_sessionmaker, mode, expected)
     assert summary.get("filename") == expected.get("filename")
 
 
+@pytest.mark.asyncio
+async def test_x3c_refused_name_fs_write_edit_persists_the_edit_kind(owner_sessionmaker) -> None:
+    # X3c r3 (Grok r2-1), production shape: the base name is refused, the
+    # resolved kind is still stored — the row must read as an edit.
+    _, _, _, invocation_id = await _settled_invocation(
+        owner_sessionmaker, "fs_write", "edited", arguments={"path": "a/id_rsa", "mode": "edit"},
+    )
+    payload = await _result_payload(owner_sessionmaker, invocation_id)
+    assert payload["member_target"] == {"kind": "file_edit"}
+    summary = _user_payload(_row_of(payload))["member_summary"]
+    assert summary == {"kind": "file_edit", "state": "done"}
+
+
 def _row_of(payload: dict) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid4(), sequence=42, tenant_id=uuid4(), schema_version=2,
@@ -414,10 +462,12 @@ async def test_x3c_mcp_label_names_the_company_connection_that_ran(owner_session
     # row the executor picks wins, and the label comes from that row's own
     # company server (MCPServer.owner_user_id IS NULL, the G4c company rule).
     async def seed(db, tenant, user_id=None):
-        await _mcp_company_connection("mcp_ask_wiki_question", server_name="Acme Internal Wiki")(db, tenant)
+        # r3: the global row is inserted FIRST — without the ORDER BY the
+        # pick would follow insertion order and label the wrong connection.
         await _mcp_company_connection(
             "mcp_ask_wiki_question", server_name="GlobalWiki", global_tool=True,
         )(db, tenant)
+        await _mcp_company_connection("mcp_ask_wiki_question", server_name="Acme Internal Wiki")(db, tenant)
 
     _, _, _, invocation_id = await _settled_invocation(
         owner_sessionmaker, "mcp_ask_wiki_question", json.dumps({"answer": "remote"}),

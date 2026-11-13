@@ -1490,23 +1490,24 @@ _MEMBER_SUMMARY_COLLEAGUE_TASK_TYPES = frozenset({"", "delegation", "subagent"})
 
 
 def _member_host_valid(host: Any) -> str | None:
-    """A host is a host (X3c r2): hostname characters only — no ``%``,
-    whitespace, ``@``, ``:``, ``/``, ``?`` or ``#`` — and it must survive
-    parsing ``https://{host}/`` unchanged. Percent-encoded paths and queries
-    riding a malformed host never reach the member sentence."""
+    """A host is a host (X3c r2/r3): hostname characters only — no ``%``,
+    whitespace, ``@``, ``:``, ``/``, ``?`` or ``#``. Non-ASCII labels show as
+    (and are stored as) their IDNA/punycode form, so zero-width marks, soft
+    hyphens and homoglyph hosts never reach the member sentence as-is; a host
+    that will not encode down to plain letters, digits, dots and hyphens is
+    refused."""
 
     if not isinstance(host, str):
         return None
     clean = host.strip().lower()
     if not clean or re.search(r"[\s%@:/?#\\]", clean):
         return None
-    try:
-        from urllib.parse import urlparse
-
-        reparsed = urlparse(f"https://{clean}/").hostname
-    except ValueError:
-        return None
-    return clean if reparsed == clean else None
+    if not clean.isascii():
+        try:
+            clean = clean.encode("idna").decode("ascii")
+        except (UnicodeError, ValueError):
+            return None
+    return clean if re.fullmatch(r"[a-z0-9.-]+", clean) else None
 
 
 def _member_summary_host(args: Any) -> str | None:
@@ -1557,7 +1558,7 @@ def member_safe_basename(name: Any) -> str | None:
 
     if not isinstance(name, str) or not name or name in {".", ".."}:
         return None
-    if "?" in name or "#" in name:
+    if "?" in name or "#" in name or "/" in name or "\\" in name:
         return None
     if re.search(r"(?i)[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}", name):
         return None

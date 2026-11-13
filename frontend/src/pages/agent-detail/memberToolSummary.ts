@@ -43,17 +43,17 @@ export function memberFilename(value: unknown): string | undefined {
   return name;
 }
 
-/** A host is a host (X3c r2): hostname characters only — no `%`, whitespace,
- * `@`, `:`, `/`, `?` or `#` — and it must survive re-parsing `https://{host}/`.
- * The WHATWG URL punycodes IDN labels, so a non-ASCII host that passed the
- * charset check is accepted on its punycode round-trip. */
+/** A host is a host (X3c r2/r3): hostname characters only — no `%`, whitespace,
+ * `@`, `:`, `/`, `?` or `#`. A non-ASCII host is never shown as-is: the URL
+ * API's parsed hostname (punycode, with zero-width marks and soft hyphens
+ * mapped away) is what a member sees. */
 export function memberHost(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const host = value.trim().toLowerCase();
   if (!host || /[\s%@:/?#\\]/.test(host)) return undefined;
   try {
-    const parsed = new URL(`https://${host}/`);
-    return parsed.hostname === host || /[^\x00-\x7f]/.test(host) ? host : undefined;
+    const parsed = new URL(`https://${host}/`).hostname;
+    return /^[a-z0-9.-]+$/.test(parsed) ? parsed : undefined;
   } catch { return undefined; }
 }
 
@@ -188,9 +188,15 @@ export function memberToolSummarySentence(summary: MemberToolSummary, t: TFuncti
       : extra('fileWrite', 'Wrote a file');
   }
   if (summary.kind === 'file_edit') {
-    if (summary.state !== 'done') return extra('fileEditFailed', 'The file was not edited this time.');
+    if (summary.state !== 'done') return extra('fileEditFailed', 'The file was not edited this time');
     return summary.filename ? extra('fileEditNamed', 'Edited the file “{{filename}}”', { filename: summary.filename })
       : extra('fileEdit', 'Edited a file');
+  }
+  // X3c r3: a delete is not a write — the sentence reuses the delete-file
+  // title, and the failed state gets its own key.
+  if (summary.kind === 'file_delete') {
+    if (summary.state === 'not_done') return extra('fileDeleteFailed', 'The file was not deleted this time');
+    if (summary.state === 'done') return t('agent.chat.disclosure.toolTitle.deleteFile', 'Delete file');
   }
   // X3c: a company MCP row names the trusted connection label — never the
   // remote tool name or description.

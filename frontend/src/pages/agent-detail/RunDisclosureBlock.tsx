@@ -431,6 +431,11 @@ function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
   if (step.kind === 'permission' && step.title === 'permission_resolved') {
     return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
   }
+  // X3c r3: fs_write's collapsed title follows the stored kind — a delete
+  // row is titled by what it did, never "Write file".
+  if ((step.details as { memberSummary?: { kind?: string } } | null)?.memberSummary?.kind === 'file_delete') {
+    return t('agent.chat.disclosure.toolTitle.deleteFile', 'Delete file');
+  }
   return localizedToolName(toolNameOf(step), t, step.title);
 }
 

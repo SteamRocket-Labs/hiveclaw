@@ -161,9 +161,29 @@ async def test_ambiguous_delegated_provider_send_keeps_typed_reconciliation(
     monkeypatch,
     tmp_path,
 ):
+    from app.models.agent import Agent
+    from app.models.llm import LLMModel
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionModelResult
     from app.services.llm_client import LLMError
+    from tests.integration import test_m1g46_native_skill_receipt_postgres as native_skill
+
+    mcp_servers = [{"type": "url", "name": "local-effect", "url": "http://127.0.0.1:1/mcp"}]
+    original_seed = native_skill._seed_run
+
+    async def seed_with_provider_effect(*args, **kwargs):
+        seed = await original_seed(*args, **kwargs)
+        async with owner_sessionmaker() as db:
+            agent = await db.get(Agent, seed["agent_id"])
+            model = await db.get(LLMModel, agent.primary_model_id)
+            # R18a fences only a wire with possible provider-side effects. Use
+            # real model options so prepare persists the MCP entry unchanged;
+            # the scripted client never contacts this local placeholder.
+            model.provider_options = {"mcp_servers": mcp_servers}
+            await db.commit()
+        return seed
+
+    monkeypatch.setattr(native_skill, "_seed_run", seed_with_provider_effect)
 
     seed, client, _bindings, _imported = await _run_native_skill_task(
         owner_sessionmaker,
@@ -183,6 +203,66 @@ async def test_ambiguous_delegated_provider_send_keeps_typed_reconciliation(
         assert task.metadata_json["session_v2_reconciliation"]["delivery_state"] == "unknown"
         rows = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])))
         assert len(rows) == 1 and rows[0].state == "needs_reconciliation" and rows[0].seal_json
+        assert rows[0].model_request_snapshot_json["wire_request"]["reasoning"]["mcp_servers"] == mcp_servers
+    assert not (seed["agent_root"] / "workspace/native-report.md").exists()
+
+
+async def test_effect_free_ambiguous_delegated_provider_send_fails_plainly(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    tmp_path,
+):
+    from types import SimpleNamespace
+    from app.agents import orchestrator
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult
+    from app.services.llm_client import LLMError
+
+    original_invoke = orchestrator.invoke_agent
+
+    async def invoke_with_fallback(request):
+        # R18a must exit before fallback even when another model is available.
+        # The fixture routes every model to the same recorded scripted client.
+        request.fallback_model = SimpleNamespace(
+            provider="openai",
+            model="fallback-must-not-run",
+            api_key="synthetic-local-provider-only",
+            base_url="http://127.0.0.1:1",
+            supports_vision=False,
+            max_input_tokens=256_000,
+            max_output_tokens=None,
+        )
+        return await original_invoke(request)
+
+    monkeypatch.setattr(orchestrator, "invoke_agent", invoke_with_fallback)
+    seed, client, _bindings, _imported = await _run_native_skill_task(
+        owner_sessionmaker,
+        app_user_sessionmaker,
+        monkeypatch,
+        tmp_path,
+        delegated=True,
+        settle_delegation=True,
+        client_script=[LLMError("Transport disconnected after dispatch", delivery_state="unknown")],
+    )
+    result = seed["delegation_result"]
+    assert len(client.requests) == 1 and result.failed, "Do not call the fallback model after an unknown delivery."
+    # R18a returns the classified provider failure for function-tools-only
+    # sends, keeping the humanized text instead of reconciliation IDs/instructions.
+    assert result.terminal_reason == "provider_error", result
+    assert result.content == "[LLM Error] 连接 AI 模型服务方失败，请稍后重试。"
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, seed["run_id"])
+        assert task.status == "failed" and task.completed_at is not None
+        assert "session_v2_reconciliation" not in task.metadata_json
+        assert task.result_summary == result.content
+        rows = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])))
+        assert len(rows) == 1 and rows[0].state == "failed"
+        assert rows[0].reconciliation_owner is None
+        assert rows[0].seal_json["delivery_state"] == "unknown"
+        wire = rows[0].model_request_snapshot_json["wire_request"]
+        assert wire["tools"] and all(tool["type"] == "function" for tool in wire["tools"])
+        assert not wire.get("mcp_servers") and not wire["reasoning"].get("mcp_servers")
     assert not (seed["agent_root"] / "workspace/native-report.md").exists()
 
 

@@ -192,7 +192,11 @@ async def test_committed_plaza_post_is_in_the_completed_empty_search_answer(
         assert approval.json()["status"] == "resolved" and approval.json()["run_status"] == "resumable"
     async with owner_sessionmaker() as db:
         claimed = await RuntimeTaskClaimService(db=db, worker_id="r20b-publish-resume",
-            task_types=("web_chat_turn",)).claim_available()
+            task_types=("web_chat_turn",)).claim_available(batch_size=1000)
+    # The claim statement is not tenant-scoped, and earlier files in a shared test
+    # database can leave claimable web_chat_turn rows. "Exactly this run" is asserted
+    # within this test's own tenant; other tenants' leftovers are not this test's data.
+    claimed = [task for task in claimed if task.tenant_id == seed["tenant_id"]]
     assert [task.id for task in claimed] == [seed["run_id"]]
     await run_claimed_runtime_task(execute_web_chat_run(seed["run_id"]), task_id=seed["run_id"],
         claim_version=claimed[0].claim_version, worker_id="r20b-publish-resume", lease_seconds=180)

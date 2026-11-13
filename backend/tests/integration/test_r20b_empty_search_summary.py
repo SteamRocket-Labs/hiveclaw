@@ -8,6 +8,10 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+# Load the resolver before per-tenant seams so a lazy import cannot retain
+# the first case's tenant resolver in a later case's real parent tool read.
+import app.tools.resolver  # noqa: F401
+
 from tests.integration.test_r18a_round2_settlement_lanes import (
     SEARCH_TOOL, _execute_claimed_run, _failure_events, _patch_r18a_seams, _run_status,
 )
@@ -70,24 +74,31 @@ def _bind_native_entry(monkeypatch, owner):
     monkeypatch.setattr(native, "_seed_run", seed_with_admitted_entry)
 
 
-@pytest.fixture(autouse=True)
-def _no_auxiliary_model(monkeypatch):
+def _disable_auxiliary_model(monkeypatch):
     async def no_memory_model(_tenant_id):
         return None
 
     monkeypatch.setattr("app.services.session_memory._get_session_memory_model_config", no_memory_model)
 
 
+@pytest.fixture(autouse=True)
+def _no_auxiliary_model(monkeypatch):
+    _disable_auxiliary_model(monkeypatch)
+
+
 async def _assert_final(owner, run_id, answer, rounds):
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionModelResult
+    from app.services.session_control_plane import _runtime_task_user_blocker
 
     async with owner() as db:
         run = await db.get(RuntimeTask, run_id)
         assert run.status == "completed", (run.status, run.result_summary, run.metadata_json)
         assert "session_v2_reconciliation" not in run.metadata_json
         assert not run.metadata_json.get("error_code")
+        assert not run.metadata_json.get("failure_code")
+        assert _runtime_task_user_blocker(run) is None
         models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id)
             .order_by(SessionModelResult.round_id)))
         assert len(models) == rounds and all(row.state == "round_committed" for row in models)
@@ -199,7 +210,7 @@ async def test_summary_model_failure_is_visible_without_operator_reconciliation(
     assert client.requests[-1]["tools"] is None
 
 
-async def test_business_task_empty_search_summary_settles_with_its_real_model_receipt(
+async def _run_business_empty_search_summary(
     owner_sessionmaker, monkeypatch, tmp_path,
 ):
     from app.models.runtime_task import RuntimeTask
@@ -209,6 +220,7 @@ async def test_business_task_empty_search_summary_settles_with_its_real_model_re
     from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
     from app.services.runtime_task_worker import _execute_claimed_business_task
 
+    _disable_auxiliary_model(monkeypatch)
     seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="查公司知识库里的海外差旅报销标准。")
     from app.config import get_settings
 
@@ -254,9 +266,16 @@ async def test_business_task_empty_search_summary_settles_with_its_real_model_re
         assert run.metadata_json["outcome"]["response_complete_payload"]
         assert run.metadata_json["outcome"]["error_code"] is None
     assert len(client.requests) == 6 and client.requests[-1]["tools"] is None
+    return {"seed": seed, "client": client, "run": run, "task": task}
 
 
-async def test_delegated_empty_search_answer_reaches_the_parent_continuation(
+async def test_business_task_empty_search_summary_settles_with_its_real_model_receipt(
+    owner_sessionmaker, monkeypatch, tmp_path,
+):
+    await _run_business_empty_search_summary(owner_sessionmaker, monkeypatch, tmp_path)
+
+
+async def _run_delegated_empty_search_summary(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
 ):
     import app.runtime.invoker as invoker
@@ -266,6 +285,7 @@ async def test_delegated_empty_search_answer_reaches_the_parent_continuation(
     from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
     from tests.integration.test_m1g46_native_skill_receipt_postgres import _run_native_skill_task
 
+    _disable_auxiliary_model(monkeypatch)
     async def no_skill(_seed):
         return {}
 
@@ -327,6 +347,16 @@ async def test_delegated_empty_search_answer_reaches_the_parent_continuation(
         "type": "function", "function": {"name": "read_runtime_result", "parameters": {"type": "object",
             "properties": {"result_ref": {"type": "string"}}, "required": ["result_ref"]}}}])
     await _execute_claimed_run(owner_sessionmaker, parent_seed, claim_version=0)
+    assert len(parent_client.requests) == 2
     assert result_ref in json.dumps(parent_client.requests[0]["messages"], ensure_ascii=False)
     assert ANSWER in json.dumps(parent_client.requests[1]["messages"], ensure_ascii=False)
     await _assert_final(owner_sessionmaker, parent_seed["run_id"], ANSWER, 2)
+    return {"seed": seed, "client": client, "result": result,
+        "parent_seed": parent_seed, "parent_client": parent_client}
+
+
+async def test_delegated_empty_search_answer_reaches_the_parent_continuation(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    await _run_delegated_empty_search_summary(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)

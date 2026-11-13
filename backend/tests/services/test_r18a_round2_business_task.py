@@ -1,16 +1,4 @@
-"""R18a round 2 ruling 2(c) + round 3 ruling 3: business-task lane.
-
-What each lane shows for a run stopped by the empty-search guard: the outcome
-is FAILED (never NEEDS_RECONCILIATION); for failure_code repeated_empty_search
-the member-facing summary is the plain sentence 「多次搜索都没有找到相关资料。」
-and the outcome is not retryable (the member projection therefore offers no
-retry). The running-task-read stop (R19a) and the refused-result stop (R19b,
-source-neutral) also have plain copy and no retry; other codes —
-identical_terminal_task_read, tool_round_limit, provider errors — keep their
-English summary and retry. A
-parent reading the business RuntimeTask through runtime_failure_observation
-still sees the generic sentence (error_code sits under metadata.outcome;
-pre-existing, report-only)."""
+"""R20b summary completion and the unchanged R18a business read-stop contracts."""
 
 from __future__ import annotations
 
@@ -24,8 +12,51 @@ from tests.services.test_task_executor import _FakeSession, _fake_resolve_tenant
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_empty_search_guard_summary_is_a_completed_business_answer(
+    owner_sessionmaker, monkeypatch, tmp_path,
+):
+    from sqlalchemy import select
+
+    from app.models.session_v2 import SessionModelResult
+    from app.services.business_task_runtime import project_business_task
+    from app.services.session_control_plane import _runtime_task_user_blocker
+    from tests.integration.test_r20b_empty_search_summary import ANSWER, _run_business_empty_search_summary
+
+    case = await _run_business_empty_search_summary(owner_sessionmaker, monkeypatch, tmp_path)
+    task, run = case["task"], case["run"]
+    outcome = run.metadata_json["outcome"]
+
+    # R20b/P2: displayed state matches the summary; its receipt settles the lane (R18a round 2 blocker 2).
+    assert run.status == "completed" and outcome["status"] == "succeeded"
+    # R20b/P2: the completed summary has no failure code (R18a round 2 blocker 2).
+    assert outcome["error_code"] is None and not run.metadata_json.get("failure_code")
+    # R20b/P2: the summary settles the lane through normal completion (R18a round 2 blocker 2).
+    assert outcome["terminal_reason"] == "turn_stop"
+    # R20b/P2: the member receives the completed summary answer (R18a round 2 blocker 2).
+    assert task.last_result == ANSWER
+    assert outcome["retryable"] is False
+    assert _runtime_task_user_blocker(run) is None
+    assert "session_v2_reconciliation" not in run.metadata_json
+    assert outcome["response_complete_payload"]
+    async with owner_sessionmaker() as db:
+        summary = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.run_id == run.id,
+            SessionModelResult.round_id == f"{run.id}:round:6"))
+        assert summary is not None and summary.state == "round_committed"
+        assert summary.seal_json["response"]["content"] == ANSWER
+    assert len(case["client"].requests) == 6 and case["client"].requests[-1]["tools"] is None
+
+    # Keep the existing member-projection checks on the persisted outcome.
+    projection = project_business_task(task=task, runtime_task=run)
+    assert projection["recovery_message"] == outcome["summary"]
+    assert projection["actions"]["can_retry"] is outcome["retryable"]
+    assert projection["recovery_state"] != "retry_available"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure_code", [
-    "repeated_empty_search", "identical_terminal_task_read",
+    "identical_terminal_task_read",
     "identical_running_task_read", "identical_refused_result_read",
 ])
 async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, failure_code):

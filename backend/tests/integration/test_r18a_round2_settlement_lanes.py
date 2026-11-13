@@ -7,7 +7,6 @@ the m1g49 harness: the ledger leaving the task ``running`` and the terminal
 finalizer writing ``failed`` in a later transaction is the seam under test.
 """
 
-import asyncio
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -418,148 +417,44 @@ async def test_ruling1_effect_free_timeout_never_reaches_the_fallback_model(
     assert rounds[0].state != "needs_reconciliation"
 
 
-async def test_ruling2b_delegated_colleague_fails_plainly_and_parent_reads_the_sentence(
-    owner_sessionmaker, monkeypatch, tmp_path
+async def test_ruling2b_delegated_colleague_completes_and_parent_reads_the_sentence(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path
 ):
-    """Ruling 2(b): a delegated colleague whose model keeps rewording an empty
-    company-knowledge search ends failed (not needs_reconciliation), and the
-    parent's read of the child carries the plain sentence."""
-    from app.agents import orchestrator
-    from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy
-    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
-    from app.models.chat_session import ChatSession
+    """R20b/P2: a committed summary settles the child and its parent return."""
     from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult
     from app.services.runtime_display_status import runtime_failure_observation
-    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+    from app.services.session_control_plane import _runtime_task_user_blocker
+    from tests.integration.test_r20b_empty_search_summary import ANSWER, _run_delegated_empty_search_summary
 
-    seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="帮我查一下公司知识库")
-    child_session_id = uuid4()
-    child_run_id = uuid4()
-    parent_agent_id = uuid4()
-    parent_session_id = str(uuid4())
+    case = await _run_delegated_empty_search_summary(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    seed, result = case["seed"], case["result"]
+
+    # R20b/P2: displayed state matches the summary; its receipt settles the lane (R18a round 2 blocker 2).
+    assert result.failed is False
+    # R20b/P2: the summary now settles the lane normally (R18a round 2 blocker 2).
+    assert result.terminal_reason == "turn_stop"
+    # R20b/P2: completed summary work carries no failure code (R18a round 2 blocker 2).
+    assert result.failure_metadata is None
+    status, metadata = await _run_status(owner_sessionmaker, seed["run_id"])
+    # R20b/P2: the persisted state matches the summary completion (R18a round 2 blocker 2).
+    assert status == "completed"
+    assert not metadata.get("failure_code") and not metadata.get("error_code")
+    assert "session_v2_reconciliation" not in metadata
+
     async with owner_sessionmaker() as db:
-        from app.models.agent import Agent
-
-        db.add(Agent(id=parent_agent_id, tenant_id=seed["tenant_id"], name="Parent",
-                     creator_id=seed["user_id"], owner_user_id=seed["user_id"]))
-        await db.flush()
-        db.add(ChatSession(id=uuid.UUID(parent_session_id), agent_id=parent_agent_id,
-                           tenant_id=seed["tenant_id"], user_id=seed["user_id"], source_channel="web"))
-        db.add(RuntimeTask(
-            id=child_run_id, task_type="delegation", status="running",
-            tenant_id=seed["tenant_id"],
-            parent_agent_id=parent_agent_id, parent_session_id=parent_session_id,
-            child_agent_id=seed["agent_id"], child_session_id=str(child_session_id),
-            root_user_id=seed["user_id"], root_session_id=str(child_session_id),
-            root_runtime_task_id=child_run_id,
-            prompt="查一下公司知识库里有没有关于「白鹭计划」的资料",
-            claimed_by="r18a-child-worker", claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-            claim_version=1, attempt_count=1,
-            metadata_json={"turn_id": f"turn-{child_run_id.hex}", "user_id": str(seed["user_id"])},
-        ))
-        await db.flush()
-        db.add(ChatSession(id=child_session_id, agent_id=seed["agent_id"], tenant_id=seed["tenant_id"],
-                           user_id=seed["user_id"], source_channel="agent", runtime_task_id=child_run_id))
-        await db.commit()
-
-    async def fake_invoke_agent(invocation):
-        """The REAL kernel loop with a model that keeps rewording the search;
-        the invocation result is projected into the invoker result shape."""
-        search_calls = iter(range(1, 20))
-
-        class RewordingClient(ScriptedLLMClient):
-            async def stream(self, **kwargs):
-                self.requests.append(kwargs)
-                index = next(search_calls)
-                from app.services.llm_client import LLMResponse
-
-                return LLMResponse(
-                    content="",
-                    tool_calls=[{"id": f"search-{index}", "type": "function", "function": {
-                        "name": "search_company_kb",
-                        "arguments": json.dumps({"query": f"白鹭计划 第{index}种说法"})}}],
-                    finish_reason="tool_calls",
-                    usage={"prompt_tokens": 10, "completion_tokens": 5},
-                    model="fake-4.1",
-                )
-
-        kernel = AgentKernel(KernelDependencies(
-            resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=seed["tenant_id"], max_tool_rounds=30),
-            resolve_current_user_name=lambda *_a, **_k: "Parent",
-            build_system_prompt=lambda *_a, **_k: "PROMPT",
-            resolve_memory_context=lambda *_a, **_k: "",
-            get_tools=lambda *_a, **_k: [SEARCH_TOOL],
-            maybe_compress_messages=lambda messages, **_k: messages,
-            create_client=lambda _m: RewordingClient([]),
-            execute_tool=lambda *_a, **_k: json.dumps({"status": "empty", "results": []}, ensure_ascii=False),
-            persist_memory=lambda **_k: None,
-            record_token_usage=lambda *_a, **_k: None,
-            get_max_tokens=lambda *_a, **_k: 2048,
-            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
-            estimate_tokens_from_chars=lambda n: n // 4,
-        ))
-        result = await kernel.handle(InvocationRequest(
-            model=invocation.model,
-            messages=[dict(message) for message in invocation.messages],
-            agent_name=invocation.agent_name, role_description=invocation.role_description or "",
-            agent_id=invocation.agent_id, user_id=invocation.user_id,
-        ))
-        return SimpleNamespace(
-            content=result.content,
-            terminal_reason=getattr(result.terminal_reason, "value", result.terminal_reason),
-            failure_code=result.failure_code,
-            failure_delivery_state=result.failure_delivery_state,
-            failure_retryable=result.failure_retryable,
-            parts=list(result.parts or []),
-            model_result_receipt=None,
-            response_complete_payload=None,
-        )
-
-    monkeypatch.setattr(orchestrator, "invoke_agent", fake_invoke_agent)
-
-    from app.services import runtime_task_service
-
-    monkeypatch.setattr(runtime_task_service, "async_session", owner_sessionmaker, raising=False)
-
-
-    target = SimpleNamespace(id=seed["agent_id"], name="知识同事", role_description="查资料",
-                             tenant_id=seed["tenant_id"])
-    from app.kernel.contracts import ExecutionIdentityRef
-    from tests.agents.test_r16b_delegation_material_and_failure_text import _a2a_authority_kwargs
-
-    request = AgentDelegationRequest(
-        target=target,
-        target_model=SimpleNamespace(provider="openai", model="fake-4.1"),
-        conversation_messages=[{"role": "user", "content": "查一下「白鹭计划」"}],
-        owner_id=seed["user_id"],
-        session_id=str(child_session_id),
-        trace_id="trace-r18a-2b",
-        depth=1,
-        policy=OrchestrationPolicy(timeout_seconds=60),
-        tenant_id=seed["tenant_id"],
-        runtime_task_id=str(child_run_id),
-        interaction_type="delegation",
-        execution_identity=ExecutionIdentityRef(identity_type="delegated_user", identity_id=seed["user_id"]),
-        **_a2a_authority_kwargs(
-            target=target, owner_id=seed["user_id"], session_id=str(child_session_id),
-            parent_agent_id=parent_agent_id, parent_session_id=parent_session_id,
-        ),
-    )
-    token = set_runtime_task_fence(task_id=child_run_id, worker_id="r18a-child-worker", claim_version=1)
-    try:
-        orchestrator._spawn_async_delegation_task(
-            task_id=str(child_run_id), request=request, trace_id="trace-r18a-2b"
-        )
-        pending = orchestrator._async_tasks[str(child_run_id)].task
-        result = await asyncio.wait_for(pending, timeout=60)
-    finally:
-        reset_runtime_task_fence(token)
-        orchestrator._async_tasks.pop(str(child_run_id), None)
-
-    assert result.failed is True
-    assert result.terminal_reason == "loop_guard"
-    assert result.failure_metadata["error_code"] == "repeated_empty_search"
-    status, metadata = await _run_status(owner_sessionmaker, child_run_id)
-    assert status == "failed"  # not needs_reconciliation — no operator hold for the child
-    observation = runtime_failure_observation(status, metadata)
-    assert observation["reason"] == "多次搜索都没有找到相关资料。"  # exactly what the parent reads
+        run = await db.get(RuntimeTask, seed["run_id"])
+        assert _runtime_task_user_blocker(run) is None
+        summary = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.run_id == run.id,
+            SessionModelResult.round_id == f"{run.id}:round:6"))
+        assert summary is not None and summary.state == "round_committed"
+        assert summary.seal_json["response"]["content"] == ANSWER
+    assert len(case["client"].requests) == 6 and case["client"].requests[-1]["tools"] is None
+    assert result.response_complete_payload and result.transcript_committed
+    # R20b/P2: the normal answer replaces the failure observation; its receipt settles the lane (R18a round 2 blocker 2).
+    assert runtime_failure_observation(status, metadata) is None
+    # R20b/P2: the parent receives the completed summary answer (R18a round 2 blocker 2).
+    assert result.content == ANSWER
+    assert ANSWER in json.dumps(case["parent_client"].requests[1]["messages"], ensure_ascii=False)

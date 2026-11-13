@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text, update
 
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
@@ -14,6 +14,7 @@ from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.models.runtime_result import RuntimeResultObject
 from app.models.runtime_task import RuntimeTask
 from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+from app.models.session_v2 import SessionInputAdmission, SessionTurnInput
 from app.models.user import User
 from tests.integration.test_failed_delegation_continuation import _execute, _failed_child
 from tests.integration.test_r19a_consumed_result import auxiliary_models
@@ -24,6 +25,11 @@ from tests.integration.test_web_chat_worker_restart_kernel_recovery import (
     _seed_run,
 )
 from tests.services.test_runtime_terminal_boundary_outbox import _binding, _enqueue, _seed_terminal_task
+
+
+# The measured wait's hang guard; the settle below uses the same horizon so
+# it only ever settles work the worker could really take during the test.
+MEASUREMENT_GUARD_SECONDS = 300
 
 
 async def _history(owner):
@@ -82,35 +88,42 @@ async def _stop(task):
 
 
 async def _settle_foreign_work(owner):
-    """Make the shared database hold no claimable or undelivered foreign work.
+    """Make the shared database hold no work the worker could take from it.
 
     The production runtime-task worker claims any tenant's work, so leftovers
-    from earlier tests in this shared database (pending/resumable tasks,
-    running tasks of lease-reclaimable types whose lease is expired or will
-    expire while this test measures, and undelivered boundary/notification
-    rows) are claimed and dispatched by this test's worker and then run
-    through its monkeypatched scripted clients. Called before either test
-    seeds anything, so every row it touches predates the test: it can only
-    settle foreign leftovers, never this test's own chain. The enqueued and
-    settled stamps mirror the shape `_history` writes for its settled rows,
-    so no reconcile lane re-enqueues work for the settled tasks.
+    from earlier tests in this shared database are claimed and dispatched by
+    this test's worker and then run through its monkeypatched scripted
+    clients. Called before either test seeds anything, so every row it
+    touches predates the test: it can only settle foreign leftovers, never
+    this test's own chain. The enqueued and settled stamps mirror the shape
+    `_history` writes for its settled rows, so no reconcile lane re-enqueues
+    work for the settled tasks.
     """
-    from app.services.runtime_task_claim_service import (
-        CLAIMABLE_RUNTIME_TASK_STATUSES,
-        LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES,
-    )
+    from app.services.runtime_task_claim_service import _runtime_task_claim_conditions
+
+    # Only what the claim could really take during the measurement: the
+    # production claim conditions evaluated at the guard horizon, so a lease
+    # or schedule that matures inside the hang guard is settled too, while a
+    # future scheduled_at, an inactive tenant, or a lease that cannot expire
+    # within the guard is left untouched.
+    guard_horizon = datetime.now(UTC) + timedelta(seconds=MEASUREMENT_GUARD_SECONDS)
+    claim_conditions = _runtime_task_claim_conditions(claim_now=guard_horizon)
+    # The input-dispatch lane runs once per second and dispatches admitted
+    # inputs (state='admitted' with dispatch_state='pending', or 'dispatching'
+    # with an expired lease), spawning runs this test never seeded.
+    admitted_inputs = and_(SessionInputAdmission.state == "admitted", or_(
+        SessionInputAdmission.dispatch_state == "pending",
+        and_(SessionInputAdmission.dispatch_state == "dispatching",
+            SessionInputAdmission.lease_expires_at <= func.now())))
 
     async with owner() as db:
-        # Claimable runtime tasks — pending/resumable, or a lease-reclaimable
-        # type still marked running — move to a terminal state.
-        settled_tasks = (await db.execute(text("""
-            UPDATE runtime_tasks SET status='skipped', completed_at=now(),
-                terminal_boundary_enqueued_at=coalesce(terminal_boundary_enqueued_at, now()),
-                completion_outbox_settled_at=coalesce(completion_outbox_settled_at, now())
-            WHERE status = ANY(CAST(:claimable AS text[]))
-                OR (status = 'running' AND task_type = ANY(CAST(:reclaimable AS text[])))
-        """), {"claimable": list(CLAIMABLE_RUNTIME_TASK_STATUSES),
-            "reclaimable": list(LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES)})).rowcount
+        settled_tasks = (await db.execute(update(RuntimeTask).where(*claim_conditions).values(
+            status="skipped", completed_at=func.now(),
+            terminal_boundary_enqueued_at=func.coalesce(
+                RuntimeTask.terminal_boundary_enqueued_at, func.now()),
+            completion_outbox_settled_at=func.coalesce(
+                RuntimeTask.completion_outbox_settled_at, func.now()),
+        ))).rowcount
         # Undelivered boundary and notification rows are marked delivered, so
         # the measured lanes only ever carry this test's own chain.
         settled_boundaries = (await db.execute(text("""
@@ -123,20 +136,28 @@ async def _settle_foreign_work(owner):
                 delivered_at=coalesce(delivered_at, now())
             WHERE status = ANY(CAST(:undelivered AS text[]))
         """), {"undelivered": ["pending", "processing"]})).rowcount
+        settled_admission_ids = (await db.execute(
+            update(SessionInputAdmission).where(admitted_inputs)
+            .values(dispatch_state="dispatched")
+            .returning(SessionInputAdmission.input_id))).scalars().all()
+        if settled_admission_ids:
+            await db.execute(update(SessionTurnInput)
+                .where(SessionTurnInput.id.in_(settled_admission_ids),
+                    SessionTurnInput.status != "applied")
+                .values(status="applied"))
         await db.commit()
-    # Stated precondition for the measurement, in the claim service's own
-    # terms: nothing claimable or undelivered remains in the shared database.
+    # Stated precondition for the measurement, in the claim service's and the
+    # dispatch lane's own terms: nothing they could take remains.
     async with owner() as db:
-        assert await db.scalar(select(func.count()).select_from(RuntimeTask).where(or_(
-            RuntimeTask.status.in_(CLAIMABLE_RUNTIME_TASK_STATUSES),
-            and_(RuntimeTask.status == "running",
-                RuntimeTask.task_type.in_(LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES)),
-        ))) == 0
+        assert await db.scalar(select(func.count()).select_from(RuntimeTask)
+            .where(*claim_conditions)) == 0
+        assert await db.scalar(select(func.count()).select_from(SessionInputAdmission)
+            .where(admitted_inputs)) == 0
         for model in (RuntimeTerminalBoundaryOutbox, RuntimeNotificationOutbox):
             assert await db.scalar(select(func.count()).select_from(model).where(
                 model.status.in_(("pending", "processing")))) == 0
     return {"runtime_tasks": settled_tasks, "boundaries": settled_boundaries,
-        "notifications": settled_notifications}
+        "notifications": settled_notifications, "admissions": len(settled_admission_ids)}
 
 
 async def _settle_origin(owner, app_factory, monkeypatch, seed):
@@ -268,7 +289,7 @@ async def test_parent_starts_before_memory_and_web_joins_both_projections(
     running = asyncio.create_task(worker.start_runtime_task_worker_loop())
     try:
         # Hang guard only; the measured 5 s and 30–40 s assertions below are unchanged.
-        async with asyncio.timeout(300):
+        async with asyncio.timeout(MEASUREMENT_GUARD_SECONDS):
             while True:
                 child, notice, parents, boundaries = await _state(owner_sessionmaker, seed, web_run_id)
                 if (notice and notice.delivered_at and len(parents) == 1 and parents[0].status == "completed"
@@ -308,14 +329,14 @@ async def test_parent_starts_before_memory_and_web_joins_both_projections(
 async def _plant_foreign_leftovers(owner, tmp_path):
     """Plant the leftover shapes earlier tests leave in a shared database.
 
-    Three shapes, each in its own foreign tenant so none of them can belong
+    Four shapes, each in its own foreign tenant so none of them can belong
     to the measured chain: a web_chat_turn a dead worker left ``running``
     with an expired lease (the claim lane reclaims and dispatches it), a
-    queued claimable web turn no worker ever claimed, and a completed web
-    turn whose terminal boundary row was never delivered. The two web turns
-    are seeded as mid-run leftovers: their input was already applied to the
-    session and dispatched to the run, exactly what a dead worker leaves,
-    so the leftover itself cannot spawn further turns.
+    queued claimable web turn whose admitted input is still pending dispatch
+    (the input-dispatch lane picks it up once per second), a completed web
+    turn whose terminal boundary row was never delivered, and the expired
+    run's input bookkeeping already marked dispatched/applied — exactly what
+    a dead worker leaves behind mid-turn.
     """
     seeded = await _seed_terminal_task(owner, tenant_name="R19a iso foreign boundary",
         task_type="web_chat_turn")
@@ -333,15 +354,17 @@ async def _plant_foreign_leftovers(owner, tmp_path):
             UPDATE runtime_tasks SET status='pending', claimed_by=NULL, claim_version=0,
                 attempt_count=0, claim_expires_at=NULL WHERE id = :queued
         """), {"queued": queued["run_id"]})
-        for run in (expired, queued):
-            await db.execute(text("""
-                UPDATE session_input_admissions SET dispatch_state='dispatched'
-                    WHERE session_id = :session
-            """), {"session": run["session_id"]})
-            await db.execute(text("""
-                UPDATE session_turn_inputs SET status='applied'
-                    WHERE session_id = :session AND status <> 'applied'
-            """), {"session": run["session_id"]})
+        # Only the dead worker's run has consumed its input; the queued turn's
+        # admission stays 'admitted'/'pending' with no pre-marking, the exact
+        # shape the input-dispatch lane takes.
+        await db.execute(text("""
+            UPDATE session_input_admissions SET dispatch_state='dispatched'
+                WHERE session_id = :session
+        """), {"session": expired["session_id"]})
+        await db.execute(text("""
+            UPDATE session_turn_inputs SET status='applied'
+                WHERE session_id = :session AND status <> 'applied'
+        """), {"session": expired["session_id"]})
         await db.commit()
     return expired, queued, seeded
 

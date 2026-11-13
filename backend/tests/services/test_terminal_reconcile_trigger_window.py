@@ -337,9 +337,10 @@ def _plan_nodes(node):
 # statistics, and in a shared database other tests' rows inside the fixed
 # [PLAN_NOW-24h, PLAN_NOW] window first break the rows-removed bound and then
 # flip the planner to a bitmap AND/OR of two index scans. The clone carries
-# the same indexes, sees only this test's rows, and drops in one statement,
-# which also replaces a 500,000-row tenant delete (minutes of per-row FK
-# checks against referencing columns with no leading index) in teardown.
+# production's full index set and trigger, sees only this test's rows, and
+# drops in one statement, which also replaces a 500,000-row tenant delete
+# (minutes of per-row FK checks against referencing columns with no leading
+# index) in teardown.
 PLAN_SCHEMA = "r19iso_trigger_reconcile_plan"
 
 
@@ -352,19 +353,50 @@ async def test_trigger_reconcile_plan_ranges_existing_created_at_index(owner_ses
         await db.execute(text(f"DROP SCHEMA IF EXISTS {PLAN_SCHEMA} CASCADE"))
         await db.execute(text(f"CREATE SCHEMA {PLAN_SCHEMA}"))
         await db.execute(text(f"CREATE TABLE {PLAN_SCHEMA}.runtime_tasks (LIKE runtime_tasks INCLUDING ALL)"))
-        # LIKE ... INCLUDING ALL renames indexes (ix_runtime_tasks_created_at
-        # becomes runtime_tasks_created_at_idx); restore the production name
-        # the assertion reads. Drop the partial terminal-boundary lane
-        # indexes: on an isolated table their predicate matches the ten
-        # claimable rows almost perfectly, so the planner prefers them over
-        # the created_at range this test exists to observe, while every
-        # plain index — including the one under test — stays available.
+        # LIKE copies indexes, not triggers. Attach the production generation
+        # trigger (wording mirrors db_bootstrap exactly) so the 500,000 bulk
+        # rows enter the partial terminal-boundary indexes exactly as on the
+        # real table; without it their generation stays NULL, the discovery
+        # index holds only the ten seeded rows and wins the plan. The other
+        # production triggers on runtime_tasks do not affect the seeded
+        # values: enforce_session_writer_epoch only validates writer_generation
+        # (observe mode returns NEW unchanged), and
+        # sync_terminal_boundary_task_route fires only on task_type updates,
+        # which this seed never performs.
+        await db.execute(text(f"""
+            CREATE TRIGGER trg_runtime_task_terminal_boundary_generation
+            BEFORE INSERT OR UPDATE OF task_type, terminal_boundary_generation
+            ON {PLAN_SCHEMA}.runtime_tasks
+            FOR EACH ROW
+            EXECUTE FUNCTION public.set_runtime_task_terminal_boundary_generation()
+        """))
+        # LIKE renames indexes; give the created_at index its production name
+        # back. Find it by definition (a plain single-column btree on
+        # created_at) instead of assuming LIKE's generated name.
+        clone_created_at_index = (await db.scalar(text(f"""
+            SELECT i.relname FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid
+            WHERE x.indrelid = '{PLAN_SCHEMA}.runtime_tasks'::regclass
+              AND x.indnkeyatts = 1 AND x.indexprs IS NULL AND x.indpred IS NULL
+              AND NOT x.indisunique
+              AND pg_get_indexdef(x.indexrelid) LIKE '%USING btree (created_at)'
+        """)))
+        assert clone_created_at_index, "the clone has no plain single-column created_at index"
         await db.execute(text(
-            f"ALTER INDEX {PLAN_SCHEMA}.runtime_tasks_created_at_idx RENAME TO ix_runtime_tasks_created_at"))
-        await db.execute(text(
-            f"DROP INDEX {PLAN_SCHEMA}.runtime_tasks_task_type_terminal_boundary_reconcile_attempt_idx"))
-        await db.execute(text(
-            f"DROP INDEX {PLAN_SCHEMA}.runtime_tasks_expr_terminal_boundary_reconcile_attempted_at_idx"))
+            f'ALTER INDEX {PLAN_SCHEMA}."{clone_created_at_index}" RENAME TO ix_runtime_tasks_created_at'))
+        # The clone's index set must equal the production table's set, by
+        # definition (index name and schema normalised out of pg_get_indexdef).
+        def normalised(relclass):
+            return text(f"""
+                SELECT regexp_replace(pg_get_indexdef(indexrelid),
+                    '^CREATE (UNIQUE )?INDEX [^ ]+ ON [^ ]+\\.', 'CREATE \\1INDEX ON t.')
+                FROM pg_index WHERE indrelid = '{relclass}'::regclass ORDER BY 1
+            """)
+        production_indexes = list(await db.scalars(normalised("public.runtime_tasks")))
+        clone_indexes = list(await db.scalars(normalised(f"{PLAN_SCHEMA}.runtime_tasks")))
+        print("TRIGGER_WINDOW_CLONE_INDEXES", json.dumps(
+            {"equal": clone_indexes == production_indexes,
+             "production": production_indexes, "clone": clone_indexes}))
+        assert clone_indexes == production_indexes
         await db.commit()
     engine = create_async_engine(owner_sessionmaker.kw["bind"].url, poolclass=NullPool)
 
@@ -410,6 +442,13 @@ async def test_foreign_in_window_rows_never_reach_the_owned_plan_schema(owner_se
     plan check must stay untouched by them.
     """
     async with owner_sessionmaker() as db:
+        # A killed earlier run may have committed this fixed-id tenant after
+        # seeding but before its finally-block; clear it first so the INSERT
+        # below cannot collide with the leftover primary key or slug.
+        await db.execute(text(
+            "DELETE FROM runtime_tasks WHERE tenant_id = md5('r19iso-foreign-plan')::uuid"))
+        await db.execute(text(
+            "DELETE FROM tenants WHERE id = md5('r19iso-foreign-plan')::uuid"))
         await db.execute(text("""
             INSERT INTO tenants (id, name, slug, im_provider, is_active, min_heartbeat_interval_minutes,
                 timezone, default_max_triggers, min_poll_interval_floor, max_webhook_rate_ceiling,

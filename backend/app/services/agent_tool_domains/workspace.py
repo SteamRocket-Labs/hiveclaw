@@ -1826,10 +1826,18 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
                 # registry/bot display name falls back to the validated host).
                 # Pending servers stay listed and auth_status is unchanged.
                 from app.services.mcp_metadata_trust import trusted_connection_label
+                from app.services.tool_search_manifest import company_application_needs_member_connection
 
                 company_applications = [{"name": trusted_connection_label(name, server_url),
-                    "mcp_server_id": str(server_id), "auth_status": auth_status}
-                    for server_id, name, auth_status, server_url in await db.execute(select(MCPServer.id, MCPServer.name, MCPServer.auth_status, MCPServer.server_url).where(
+                    "mcp_server_id": str(server_id), "auth_status": auth_status,
+                    # G4c: a connected server that needs no sign-in (auth_status
+                    # "none", no OAuth config) is usable directly — only a server
+                    # whose member credential is genuinely missing or broken asks
+                    # the member to connect an account.
+                    "connect_if_account_needed": company_application_needs_member_connection(status, auth_status, config_json)}
+                    for server_id, name, auth_status, status, config_json, server_url in await db.execute(select(
+                        MCPServer.id, MCPServer.name, MCPServer.auth_status, MCPServer.status, MCPServer.config_json,
+                        MCPServer.server_url).where(
                         MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id.is_(None)).order_by(MCPServer.name, MCPServer.id))]
     deferred_names = [name for name, _connection_label in deferred_tools]
     capture = getattr(authority_scope, "skill_inputs", None)
@@ -1869,17 +1877,22 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         render_tool_search_manifest_sections(manifest),
     ]
     if company_applications is not None:
-        lines.extend(["Connection actions:", json.dumps({
+        # G4c: the connection-card instruction is emitted only when at least one
+        # registered row genuinely needs the member's account. A no-sign-in
+        # connected server must never receive it (run 17 acceptance).
+        connection_actions = {
             "not_connected": {
                 "when": "The requested service is absent from company_applications.",
                 "connect_action": {"location": MCP_ADMIN_ROUTE, "actor": "administrator"},
             },
-            "connect_if_account_needed": {"tool": "ask_user_question", "arguments": {
+        }
+        if any(row.get("connect_if_account_needed") for row in company_applications):
+            connection_actions["connect_if_account_needed"] = {"tool": "ask_user_question", "arguments": {
                 "questions": [{"question": "<Write a connection question in the member's language>", "options": []}],
                 "configuration": {"mcp_server_id": "<mcp_server_id from the company_applications row>"},
-            }},
-        }, ensure_ascii=False)])
-        lines.append(
+            }}
+        lines.extend(["Connection actions:", json.dumps(connection_actions, ensure_ascii=False)])
+        guidance = (
             "company_applications is the complete list of company-registered apps, not a list of personal accounts. "
             "If the requested app is absent, answer in one sentence in the member's language "
             f"that it is not connected and an administrator can add it — the clickable route is {MCP_ADMIN_ROUTE} — "
@@ -1887,12 +1900,19 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
             "Do not try browsers, CLIs, shell commands, web requests, workspace files, memory, personal knowledge or other routes to reach it. "
             "Do not probe browser sessions, email or importable integrations as workarounds. "
             "Do not install or create a company connection. "
-            "Only for a row marked connect_if_account_needed, copy that call template, substituting configuration.mcp_server_id "
-            "with the row's mcp_server_id and replacing the question text with the member's language to show the existing connection card. "
-            "Registration alone does not mean the member is connected. Never ask for credentials in chat. "
+        )
+        if any(row.get("connect_if_account_needed") for row in company_applications):
+            guidance += (
+                "Only for a row marked connect_if_account_needed, copy that call template, substituting configuration.mcp_server_id "
+                "with the row's mcp_server_id and replacing the question text with the member's language to show the existing connection card. "
+                "Registration alone does not mean the member is connected. "
+            )
+        guidance += (
+            "Never ask for credentials in chat. "
             "When you tell the member the route, quote its clickable labels exactly as given and do not mention "
             "tool search, tool names, management tools or any other internal mechanism."
         )
+        lines.append(guidance)
     else:
         lines.append("Company application registration is unknown; do not claim that an application is unconnected.")
     if deferred_names:

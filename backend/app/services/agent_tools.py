@@ -14,6 +14,7 @@ The agent reads/writes these files directly. No per-concept tools needed.
 """
 
 import logging
+import string
 import threading
 import uuid
 from contextvars import ContextVar
@@ -554,24 +555,58 @@ async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> _MCPGating | Non
     return _MCPGating(reachable_by_tool_id=gating, always_load_tool_names=always_load_tool_names)
 
 
+def _meaningful_query_terms(query: str) -> list[str]:
+    """Whitespace terms of a tool_search query with edge punctuation stripped.
+
+    Single characters are dropped: a member's real query names things among
+    connectives ("deepwiki github repository docs", "用 DeepWiki 查仓库"), and a
+    lone "a"/"用" carries no signal worth matching.
+    """
+    terms: list[str] = []
+    for raw in query.split():
+        term = raw.strip(string.punctuation + string.whitespace).lower()
+        if len(term) >= 2 and term not in terms:
+            terms.append(term)
+    return terms
+
+
 def _mcp_tool_matches_query(query: str, tool) -> bool:
-    """Match a tool_search query against an MCP tool's name / server / underlying
-    tool name (fuzzy via :func:`normalize_tool_query`). An empty query matches
-    everything (list all reachable)."""
+    """Match a tool_search query against an MCP tool's trusted text only.
+
+    Surfaces: the tool's name (Hive-side and remote), its approved description,
+    its trusted connection label, and the validated endpoint host. A multi-word
+    query matches when any meaningful term matches any surface (G4c: the member
+    names the service among other words); the whole query still matches as one
+    phrase, and an empty query matches everything (list all reachable)."""
+    from app.services.mcp_metadata_trust import _safe_endpoint_host, trusted_connection_label
+
     normalized = query.strip().lower()
     if not normalized:
         return True
+    host = _safe_endpoint_host(getattr(tool, "mcp_server_url", None) or "")
+    label = trusted_connection_label(
+        getattr(tool, "mcp_server_name", None), getattr(tool, "mcp_server_url", None)
+    )
     candidates = [
         tool.name or "",
-        getattr(tool, "mcp_server_name", "") or "",
         getattr(tool, "mcp_tool_name", "") or "",
         tool.description or "",
+        label,
+        host,
     ]
     blob = " ".join(candidates).lower()
     if normalized in blob:
         return True
+    terms = _meaningful_query_terms(normalized)
+    if any(term in blob for term in terms):
+        return True
     compact = normalize_tool_query(normalized)
-    return bool(compact and any(compact in normalize_tool_query(c) for c in candidates))
+    compact_terms = [normalize_tool_query(term) for term in terms]
+    compact_candidates = [normalize_tool_query(c) for c in candidates]
+    return bool(
+        (compact and any(compact in c for c in compact_candidates))
+        or any(t in c for t in compact_terms if t for c in compact_candidates)
+    )
 
 
 def _tool_visible_to_agent_tenant(tool: Any, agent: Any | None) -> bool:
@@ -811,15 +846,15 @@ async def gather_deferred_tool_candidates_for_agent(
     return candidates
 
 
-async def list_agent_mcp_deferred_tools_with_labels(agent_id: uuid.UUID, query: str = "") -> list[tuple[str, str]]:
-    """The single DB-aware, governed MCP enumeration (J / 🦴#2; G4b r2).
+async def _list_agent_mcp_deferred_with_connection_labels(
+    agent_id: uuid.UUID, query: str = ""
+) -> list[tuple[str, str, str]]:
+    """The governed MCP enumeration with full connection text (G4c).
 
-    Yields ``(tool_name, connection_label)`` where the label is the validated
-    MCP URL's host (``_safe_endpoint_host``) — trusted-only text, never the
-    stored ``mcp_server_name``. BOTH the text result (``workspace._tool_search``)
-    and the schema injection (``invoker._deferred_tool_names_for_query``) reach
-    it through ``discoverable_deferred_tools_for_query``, so "what the model is
-    told exists" == "what actually loads".
+    One code path yields ``(tool_name, endpoint_host, trusted_connection_label)``
+    per reachable tool. The public 2-tuple wrapper keeps the patchable seam, and
+    the prompt-facing connection list derives from the same governed loop, so
+    the prompt can never name a connection whose tools tool_search cannot load.
 
     Governance listing gate: only REACHABLE MCP tools are listed — denied tools
     and tools on disabled servers/packs never appear (CC parity: denied == not
@@ -828,16 +863,12 @@ async def list_agent_mcp_deferred_tools_with_labels(agent_id: uuid.UUID, query: 
     decision, so a NON-default MCP tool can never be surfaced — the choke point
     that, with the matching tightening in :func:`get_agent_tools_for_llm`, closes
     the discovery force-enable escalation (§J #1).
-
-    Patch THIS seam (module global, read at call time) to fake the pipeline end
-    to end; ``list_agent_mcp_deferred_tools`` is a names-only convenience
-    wrapper for direct callers.
     """
 
     from app.models.tool import AgentTool, Tool
-    from app.services.mcp_metadata_trust import _safe_endpoint_host
+    from app.services.mcp_metadata_trust import _safe_endpoint_host, trusted_connection_label
 
-    matched: list[tuple[str, str]] = []
+    matched: list[tuple[str, str, str]] = []
     seen: set[str] = set()
     try:
         # RLS 阶段1: `tools`/`agents` are policy-bearing — resolve the agent's
@@ -882,10 +913,55 @@ async def list_agent_mcp_deferred_tools_with_labels(agent_id: uuid.UUID, query: 
                 if t.name in seen:
                     continue
                 seen.add(t.name)
-                matched.append((t.name, _safe_endpoint_host(getattr(t, "mcp_server_url", None) or "")))
+                matched.append(
+                    (
+                        t.name,
+                        _safe_endpoint_host(getattr(t, "mcp_server_url", None) or ""),
+                        trusted_connection_label(
+                            getattr(t, "mcp_server_name", None), getattr(t, "mcp_server_url", None)
+                        ),
+                    )
+                )
     except Exception as e:
         logger.warning(f"[Tools] list_agent_mcp_deferred_tools failed: {e}")
     return matched
+
+
+async def list_agent_mcp_deferred_tools_with_labels(agent_id: uuid.UUID, query: str = "") -> list[tuple[str, str]]:
+    """The single DB-aware, governed MCP enumeration (J / 🦴#2; G4b r2).
+
+    Yields ``(tool_name, connection_label)`` where the label is the validated
+    MCP URL's host (``_safe_endpoint_host``) — trusted-only text, never the
+    stored ``mcp_server_name``. BOTH the text result (``workspace._tool_search``)
+    and the schema injection (``invoker._deferred_tool_names_for_query``) reach
+    it through ``discoverable_deferred_tools_for_query``, so "what the model is
+    told exists" == "what actually loads".
+
+    Patch THIS seam (module global, read at call time) to fake the pipeline end
+    to end; ``list_agent_mcp_deferred_tools`` is a names-only convenience
+    wrapper for direct callers.
+    """
+    return [
+        (name, host)
+        for name, host, _trusted_label in await _list_agent_mcp_deferred_with_connection_labels(agent_id, query)
+    ]
+
+
+async def reachable_company_mcp_connections_for_agent(agent_id: uuid.UUID) -> list[tuple[str, str]]:
+    """Distinct ``(trusted_connection_label, endpoint_host)`` pairs for company
+    MCP connections whose tools are reachable for this agent (G4c: the runtime
+    prompt names the installed company applications, so a member's words —
+    "用 DeepWiki 查一下" — reach the tool_search route even before any search).
+    Derived from the same governed enumeration as the deferred tool list: only
+    approved, assigned, non-denied tools contribute a connection."""
+    connections: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for _tool_name, host, label in await _list_agent_mcp_deferred_with_connection_labels(agent_id, ""):
+        pair = (label, host)
+        if pair not in seen:
+            seen.add(pair)
+            connections.append(pair)
+    return connections
 
 
 async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:

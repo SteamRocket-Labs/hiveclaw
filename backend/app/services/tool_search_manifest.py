@@ -16,6 +16,29 @@ def _matches_query(query: str, *values: Any) -> bool:
     return any(normalized in _as_text(value).lower() for value in values)
 
 
+def company_application_needs_member_connection(status: Any, auth_status: Any, config_json: Any) -> bool:
+    """Whether a company application row should tell the member to connect an
+    account (G4c). ``auth_status`` alone cannot decide it: "none" on a connected
+    server means NO sign-in is needed (a public MCP such as DeepWiki), while
+    "none" on a needs_auth server means the per-member credential is missing.
+
+    Mapping (mirrors the writers in mcp_server_service / mcp_accounts / the
+    mcp_servers API):
+    - auth_status "configured": a usable credential already exists → no.
+    - status "connected" + auth_status "none" + no OAuth config: the server
+      needs no account at all → no.
+    - otherwise (status "needs_auth"/"failed"/"disabled", or OAuth configured
+      with auth_status none/expired/error): the member account is genuinely
+      missing or broken → yes.
+    """
+    auth = str(auth_status or "")
+    if auth == "configured":
+        return False
+    if str(status or "") == "connected" and auth == "none" and not (config_json or {}).get("oauth"):
+        return False
+    return True
+
+
 def _loaded_tool_schema_entries(tool_names: Iterable[str]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -122,7 +145,10 @@ def render_tool_search_manifest_sections(manifest: dict[str, Any]) -> str:
             detail = _as_text(row.get("description") or row.get("source") or row.get("activation"))
             if section_name == "company_applications":
                 detail = f"mcp_server_id: {row['mcp_server_id']}"
-                if row["auth_status"] != "configured":
+                # G4c: the row's own flag decides; auth_status alone mislabels a
+                # connected no-sign-in server as account-needed. Hand-built rows
+                # without the flag keep the pre-G4c auth_status rule.
+                if row.get("connect_if_account_needed", row.get("auth_status") != "configured"):
                     detail += " | connect_if_account_needed"
             suffix = f" | {detail}" if detail else ""
             lines.append(f"- {label}{suffix}")

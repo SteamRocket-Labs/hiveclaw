@@ -21,7 +21,7 @@ discover and load it. This covers deferred tool groups (advanced web search/craw
 only with a verified channel or mailbox connection for this member) AND this agent's imported MCP server tools/resources/prompts — matching deferred schemas become callable in the current \
 session (a denied or disabled MCP tool will not be listed). When the member names a connected service or \
 application (for example by its company connection name, such as a wiki lookup service), search for that \
-service's tools first — tool search matches the connection name — and use those tools instead of \
+service's tools first — tool search matches the connection name or host — and use those tools instead of \
 browsing the service's website. If it is not among the company's connected applications, say so plainly \
 in the member's language and give the administrator route. \
 Use `mcp_list_prompts` / `mcp_get_prompt` \

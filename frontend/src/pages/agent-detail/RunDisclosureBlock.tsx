@@ -152,9 +152,19 @@ function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string |
         readObservedRunDuration(presentationKey),
       );
   React.useEffect(() => {
-    if (!timeline.durationIsFinal) persistObservedRunDuration(presentationKey, observedDurationMs);
-  }, [observedDurationMs, presentationKey, timeline.durationIsFinal]);
+    // Only a live clock is worth remembering; a terminal duration is typed
+    // server evidence and must never be inflated by client observation (X2 B).
+    if (running && !timeline.durationIsFinal) persistObservedRunDuration(presentationKey, observedDurationMs);
+  }, [observedDurationMs, presentationKey, running, timeline.durationIsFinal]);
   if (timeline.durationIsFinal) return formatDuration(timeline.durationMs);
+  // X2 B: once a block reached a terminal status its duration is typed server
+  // evidence computed the same way live and after reload. The observed client
+  // clock may only serve live work (run 18: 44 s at the failed status settled
+  // to the typed 35 s); a delayed terminal projection never re-inflates it.
+  // `blocked` keeps the live elapsed clock while the member waits.
+  if (timeline.status !== 'running' && timeline.status !== 'blocked' && timeline.status !== 'idle') {
+    return formatDuration(timeline.durationMs);
+  }
   const duration = formatDuration(Math.max(observedDurationMs, timeline.durationMs ?? 0));
   if (duration) return duration;
   return running && !Number.isNaN(parsed) ? i18n.t('agent.chat.disclosure.elapsedSeconds', '{{seconds}}s', { seconds: 0 }) : '';
@@ -549,6 +559,38 @@ function RunTimelineItem({ item, resultPreview, viewerOwnsSession }: { item: Run
   return <RunStepRow step={item.step} resultPreview={resultPreview} viewerOwnsSession={viewerOwnsSession} />;
 }
 
+/** X2 r2 A: one predicate for "this row renders". Prose and commentary rows
+ * that repeat the final answer, or whose display text is empty (for example a
+ * bare DELIVERABLE marker), render nothing — so they are neither shown nor
+ * counted. */
+function stepRenders(step: RunStepSnapshot): boolean {
+  if (step.kind !== 'prose' && step.kind !== 'commentary') return true;
+  return !step.repeatsAnswer && Boolean(assistantReplyForDisplay(proseText(step)));
+}
+
+/** X2 r2 F: the delegated task this step reports as stopped, with the
+ * candidate's ownership rank — a stopped child row owns the sentence (and
+ * the authorized colleague conversation link, X3b r2), then the first
+ * rewritten delegation tool row, then a cancelled runtime action receipt.
+ * Started notifications never own; they only repeat the lifecycle. */
+function stoppedDelegationCandidate(step: RunStepSnapshot): { task: string; rank: number } | null {
+  const summary = (step.details as { memberSummary?: { kind?: string; status?: string; taskId?: string } } | null)?.memberSummary;
+  if (summary?.kind === 'delegation' && summary.status === 'cancelled' && summary.taskId) {
+    return { task: summary.taskId, rank: step.systemEvent?.type === 'child_session' ? 0 : 1 };
+  }
+  const event = step.systemEvent;
+  if (!event) return null;
+  if (event.type === 'child_session' && step.status === 'cancelled'
+    && String(event.metadata.runtime_task_id || '')) {
+    return { task: String(event.metadata.runtime_task_id), rank: 0 };
+  }
+  if (event.type === 'runtime_action_failed' && event.metadata.action_kind === 'a2a_delegation'
+    && step.status === 'cancelled' && String(event.metadata.runtime_task_id || '')) {
+    return { task: String(event.metadata.runtime_task_id), rank: 2 };
+  }
+  return null;
+}
+
 export default function RunDisclosureBlock({
   timeline,
   presentationKey = null,
@@ -559,6 +601,10 @@ export default function RunDisclosureBlock({
   viewerOwnsSession?: boolean;
 }) {
   const { t } = useTranslation();
+  // X2 r2 D: a mid-load block with unknown totals renders nothing — no
+  // status, count or clock — until the page that completes its turn arrives,
+  // so its first rendered status is its final status.
+  if (timeline.statusUnknown) return null;
   const running = timeline.status === 'running';
   const resultsKept = timeline.status === 'done' && !timeline.answerMessageId && timeline.steps.some(isKeptResultStep);
   const runDuration = useRunDuration(timeline, presentationKey);
@@ -575,12 +621,32 @@ export default function RunDisclosureBlock({
     }
   }, [opensForAttention, timeline.id, timeline.status]);
 
-  const title = resultsKept ? t('agent.chat.disclosure.system.resultsAvailable', 'Task results received')
+  // X2 r2 E: the block's run is done, but one of its delegated tasks still
+  // has a colleague working for this reader. The header shows the existing
+  // running label with the block's typed duration — presentation only; the
+  // model status, other blocks, the session status and the placeholder are
+  // untouched. (A handed-off parent run is `completed`; no backend path
+  // emits waiting_for_child.)
+  const handoffInFlight = timeline.status === 'done' && timeline.delegationInFlight;
+  const title = handoffInFlight ? runtimeStatusLabel('running', t)
+    : resultsKept ? t('agent.chat.disclosure.system.resultsAvailable', 'Task results received')
     : runtimeStatusLabel(timeline.status, t, timeline.phase);
   const interruptedHint = t(
     'agent.chat.disclosure.interruptedHint',
     'This turn has no completion record; send a new message to continue.',
   );
+  // X2 r2 F: one member stop gives one stopped row per delegated task. The
+  // owner is a stopped child row (it carries the authorized colleague link,
+  // X3b r2), else the first delegation tool row the terminal rewrite stopped,
+  // else the first cancelled runtime action receipt. Every other row the
+  // rewrite collapsed onto the same 「已停止…」 sentence folds into it.
+  const stoppedDelegationOwner = new Map<string, { id: string; rank: number }>();
+  for (const step of timeline.steps) {
+    const candidate = stoppedDelegationCandidate(step);
+    if (!candidate) continue;
+    const existing = stoppedDelegationOwner.get(candidate.task);
+    if (!existing || candidate.rank < existing.rank) stoppedDelegationOwner.set(candidate.task, { id: step.id, rank: candidate.rank });
+  }
   const visibleSteps = timeline.steps
     .filter((step) => getRunStepPresentation(step) !== 'external')
     .filter((step, _index, steps) => {
@@ -602,7 +668,19 @@ export default function RunDisclosureBlock({
           && other.details === `${source.metadata.target_agent_name} 的委派任务失败：${step.details}`;
       });
     })
-    .map((step) => presentSystemStep(step, t));
+    .map((step) => presentSystemStep(step, t))
+    .filter((step) => {
+      // A started notification the terminal rewrite collapsed onto the
+      // stopped sentence folds into the owner row.
+      const event = step.systemEvent;
+      if (event?.type === 'runtime_action_started' && event.metadata.action_kind === 'a2a_delegation'
+        && stoppedDelegationOwner.has(String(event.metadata.runtime_task_id || ''))) return false;
+      const candidate = stoppedDelegationCandidate(step);
+      if (!candidate) return true;
+      const owner = stoppedDelegationOwner.get(candidate.task);
+      return !owner || owner.id === step.id;
+    })
+    .filter(stepRenders);
   if (visibleSteps.length === 0) {
     if (timeline.status === 'idle') return null;
     return (
@@ -619,7 +697,6 @@ export default function RunDisclosureBlock({
       </div>
     );
   }
-  const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
   const renderItems = groupRunSteps(visibleSteps.map((step) => (
     isGenericToolStep(step) ? { ...step, presentation: 'tool_history' as const } : step
@@ -648,7 +725,7 @@ export default function RunDisclosureBlock({
               ))}</span>
             )
           )}
-          <span className="run-disclosure-count">{stepCount}</span>
+          <span className="run-disclosure-count">{t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length })}</span>
         </button>
         {expanded && (
           <div className="run-disclosure-steps">

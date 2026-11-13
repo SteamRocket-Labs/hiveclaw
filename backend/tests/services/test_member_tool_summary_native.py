@@ -171,3 +171,60 @@ async def test_model_input_builder_carries_raw_bytes_despite_user_projection(own
         durable_content = event.metadata_json["v2_payload"]["content"]
         assert durable_content == MEMORY_BODY
         assert all(str(message.content) == durable_content for message in tool_messages)
+
+
+@pytest.mark.asyncio
+async def test_broadcast_delivers_committed_compatibility_envelope_bytes_untouched(monkeypatch) -> None:
+    """X2 A: an unmapped legacy runtime event (run 18's 「准备所需功能」 and
+    「运行状态」 rows) serializes as a compatibility envelope. Wrapping it in
+    the live thread-item jacket destroys the envelope schema, so the live
+    socket drops the row as an unknown 'event' frame while reload keeps it —
+    the finished block's step count then changes across a reload. The broker
+    must receive the committed bytes, like the canonical V2 branch."""
+    from app.services import web_chat_runtime
+
+    sent: list[dict] = []
+
+    async def capture(_agent_id, _session_id, payload):
+        sent.append(payload)
+
+    monkeypatch.setattr(web_chat_runtime.web_chat_broker, "send_session_message", capture)
+    sid = str(uuid4())
+    committed = {
+        "schema": "hive.session_event_compatibility",
+        "schema_version": 1,
+        "compatibility_status": "needs_reconciliation",
+        "reason": "unmapped_legacy_kind",
+        "event_id": str(uuid4()),
+        "sequence": 41,
+        "legacy_kind": "legacy_unknown",
+        "legacy_lifecycle": "legacy_unknown",
+        "legacy_event_type": "tool_group_activation",
+        "legacy_item_type": "event",
+        "legacy_item_status": "succeeded",
+        "payload": {
+            "content": "Activated runtime tool groups for this task.",
+            "parts": [{"type": "event", "event_type": "tool_group_activation"}],
+            "metadata": {"content": "Activated runtime tool groups for this task."},
+        },
+        "occurred_at": "2026-11-13T09:21:36.5Z",
+    }
+
+    await web_chat_runtime.broadcast_web_chat_event(
+        uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        dict(committed),
+    )
+
+    assert len(sent) == 1
+    delivered = sent[0]
+    assert delivered["schema"] == "hive.session_event_compatibility"
+    assert delivered["legacy_event_type"] == "tool_group_activation"
+    assert delivered["event_id"] == committed["event_id"]
+    assert delivered["sequence"] == 41
+    assert delivered["payload"]["content"] == "Activated runtime tool groups for this task."
+    # No thread-item jacket: the live socket must route this frame through the
+    # compatibility branch exactly like a reload does.
+    assert delivered.get("id") is None
+    assert delivered.get("event_type") is None
+    assert delivered.get("type") is None

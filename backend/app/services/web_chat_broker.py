@@ -107,14 +107,24 @@ class WebChatBroker:
                     self._subscription_buffers.pop(socket_key, None)
                     self._subscription_draining.discard(socket_key)
                     return
+            # Sequenced session frames: canonical V2 envelopes and the
+            # compatibility envelopes X2 r2 delivers with their committed
+            # bytes. On ranked storage both carry storage sequences, so both
+            # must project to delivery sequences here or the member socket
+            # drops the compatibility frame (non-safe integer) and the block's
+            # rows differ between live and reload.
+            sequenced = {
+                "hive.session_event",
+                "hive.session_event_compatibility",
+            }
             canonical = [
                 frame
                 for frame in batch
-                if frame.get("schema") == "hive.session_event"
+                if frame.get("schema") in sequenced
                 and isinstance(frame.get("sequence"), int)
                 and int(frame["sequence"]) > cursor
             ]
-            passthrough = [frame for frame in batch if frame.get("schema") != "hive.session_event"]
+            passthrough = [frame for frame in batch if frame.get("schema") not in sequenced]
             canonical.sort(key=lambda frame: int(frame["sequence"]))
             seen_event_ids_by_sequence: dict[int, str] = {}
             for frame in canonical:
@@ -169,7 +179,7 @@ class WebChatBroker:
                         storage_offset = self._subscription_storage_offsets.get(id(ws), 0)
                         if (
                             storage_offset > 0
-                            and message.get("schema") == "hive.session_event"
+                            and message.get("schema") in {"hive.session_event", "hive.session_event_compatibility"}
                             and isinstance(message.get("sequence"), int)
                         ):
                             from app.services.session_delivery_cursor import project_future_session_event_for_delivery

@@ -201,6 +201,27 @@ def _build_turn_route_span_metadata(request: Any) -> dict[str, Any]:
     }
 
 
+def _session_company_connections(session_ctx: Any) -> list[tuple[str, str]]:
+    """Reachable company MCP connections for the dynamic suffix (G4c r2).
+
+    The agent tool-surface load (``get_agent_tools_for_llm``) derives the
+    ``(trusted_connection_label, endpoint_host)`` pairs in-memory from rows it
+    already fetched and records them on the per-session assembly state; prompt
+    assembly reads them back here — zero additional statements or sessions on
+    the model-round path."""
+    if session_ctx is None:
+        return []
+    try:
+        from app.runtime.context import ensure_runtime_assembly_state
+
+        return [
+            (str(label), str(host))
+            for label, host in ensure_runtime_assembly_state(session_ctx).company_mcp_connections
+        ]
+    except Exception:
+        return []
+
+
 def _bind_system_prompt_suffix_sections(
     protected_sections: list[str],
     request: Any,
@@ -1599,6 +1620,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             dynamic_suffix = build_dynamic_prompt_suffix(
                 active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                 available_deferred_tools=available_deferred_tools,
+                company_connections=_session_company_connections(session_ctx),
                 memory_snapshot=resolved_memory_context,
                 skill_catalog=request.skill_catalog,
                 runtime_metadata_context=resolved_runtime_metadata_context,
@@ -1632,6 +1654,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             dynamic_suffix = build_dynamic_prompt_suffix(
                 active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                 available_deferred_tools=available_deferred_tools,
+                company_connections=_session_company_connections(session_ctx),
                 memory_snapshot=resolved_memory_context,
                 skill_catalog=request.skill_catalog,
                 runtime_metadata_context=resolved_runtime_metadata_context,
@@ -2462,6 +2485,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     _ptl_dynamic = build_dynamic_prompt_suffix(
                                         active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                         available_deferred_tools=available_deferred_tools,
+                                        company_connections=_session_company_connections(session_ctx),
                                         memory_snapshot=resolved_memory_context,
                                         skill_catalog=request.skill_catalog,
                                         runtime_metadata_context=resolved_runtime_metadata_context,
@@ -2574,6 +2598,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     _ptl_dynamic = build_dynamic_prompt_suffix(
                                         active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                         available_deferred_tools=available_deferred_tools,
+                                        company_connections=_session_company_connections(session_ctx),
                                         memory_snapshot=resolved_memory_context,
                                         skill_catalog=request.skill_catalog,
                                         runtime_metadata_context=resolved_runtime_metadata_context,
@@ -2668,6 +2693,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         _ptl_dynamic = build_dynamic_prompt_suffix(
                                             active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                             available_deferred_tools=available_deferred_tools,
+                                            company_connections=_session_company_connections(session_ctx),
                                             memory_snapshot=resolved_memory_context,
                                             skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,
@@ -3095,6 +3121,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         build_dynamic_prompt_suffix(
                                             active_tool_groups=session_context.active_tool_groups,
                                             available_deferred_tools=available_deferred_tools,
+                                            company_connections=_session_company_connections(session_ctx),
                                             memory_snapshot=resolved_memory_context,
                                             skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,

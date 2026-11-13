@@ -377,32 +377,6 @@ async def _build_runtime_metadata_sections(
             f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate."
         )
 
-    # G4c (run 17 step 7c): a bot that never calls tool_search must still be
-    # able to connect a member's words ("用 DeepWiki 查一下") to the installed
-    # company application. Name each reachable connection with trusted text
-    # only — the trusted label plus the validated endpoint host — and route to
-    # the existing discovery surface; no tool schemas are loaded here.
-    try:
-        from app.services.agent_tools import reachable_company_mcp_connections_for_agent
-
-        connections = await reachable_company_mcp_connections_for_agent(agent_id)
-    except Exception as exc:
-        logger.debug("Failed to list company MCP connections for agent {}: {}", agent_id, exc)
-        connections = []
-    if connections:
-        section_lines = [
-            "\n## Company Applications",
-            "Company applications installed for this team. Their tools are NOT loaded here:",
-        ]
-        for connection_label, endpoint_host in connections:
-            section_lines.append(f"- {connection_label} ({endpoint_host})")
-        section_lines.append(
-            "When the member names one of these applications, load its tools with `tool_search` "
-            "(query the application name or host shown here) and call them for the work; "
-            "do not browse the application's website instead."
-        )
-        parts.append("\n".join(section_lines))
-
     return parts
 
 

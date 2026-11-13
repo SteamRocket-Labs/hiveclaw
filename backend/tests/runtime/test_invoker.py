@@ -1108,7 +1108,7 @@ async def test_invoke_agent_keeps_core_tools_when_skill_read_has_no_declared_exp
     async def fake_compress(messages, **kwargs):
         return messages
 
-    async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None):
+    async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None, company_connections=None):
         tool_load_calls.append(core_only)
         name = "core_tool" if core_only else "expanded_tool"
         return [{"type": "function", "function": {"name": name, "description": "", "parameters": {"type": "object"}}}]
@@ -1872,7 +1872,7 @@ async def test_tool_search_records_discovered_tools_and_returns_deferred_schema(
     session = SessionContext()
     requested_names_seen: list[list[str] | None] = []
 
-    async def fake_get_agent_tools_for_llm(agent_id_arg, *, core_only=False, requested_names=None):
+    async def fake_get_agent_tools_for_llm(agent_id_arg, *, core_only=False, requested_names=None, company_connections=None):
         assert agent_id_arg == agent_id
         assert core_only is False
         requested_names_seen.append(list(requested_names or []))
@@ -1930,7 +1930,7 @@ async def test_tool_search_records_compact_requested_tool_alias(monkeypatch):
     session = SessionContext()
     requested_names_seen: list[list[str] | None] = []
 
-    async def fake_get_agent_tools_for_llm(agent_id_arg, *, core_only=False, requested_names=None):
+    async def fake_get_agent_tools_for_llm(agent_id_arg, *, core_only=False, requested_names=None, company_connections=None):
         assert agent_id_arg == agent_id
         assert core_only is False
         requested_names_seen.append(list(requested_names or []))
@@ -1977,7 +1977,7 @@ async def test_tool_search_second_disjoint_query_keeps_previously_loaded_tools(m
     agent_id = uuid4()
     session = SessionContext()
 
-    async def fake_get_agent_tools_for_llm(agent_id_arg, *, core_only=False, requested_names=None):
+    async def fake_get_agent_tools_for_llm(agent_id_arg, *, core_only=False, requested_names=None, company_connections=None):
         assert agent_id_arg == agent_id
         assert core_only is False
         return [
@@ -2147,7 +2147,7 @@ async def test_invoke_agent_returns_response_complete_payload_without_terminal_h
     async def no_deferred_tool_candidates(_agent_id):
         return []
 
-    async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None):
+    async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None, company_connections=None):
         return [
             {"type": "function", "function": {"name": "read_file", "description": "", "parameters": {"type": "object"}}}
         ]
@@ -2373,7 +2373,7 @@ async def test_invoke_agent_filters_excluded_tools_from_runtime_surface(monkeypa
     async def fake_compress(messages, **kwargs):
         return messages
 
-    async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None):
+    async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None, company_connections=None):
         return [
             {
                 "type": "function",
@@ -2441,7 +2441,7 @@ async def test_invoke_agent_filters_allowed_tools_from_runtime_surface(monkeypat
     async def fake_compress(messages, **kwargs):
         return messages
 
-    async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None):
+    async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None, company_connections=None):
         return [
             {
                 "type": "function",
@@ -3696,7 +3696,7 @@ async def test_disable_tools_yields_empty_tool_surface(monkeypatch):
     """
     from app.runtime.invoker import AgentInvocationRequest, get_agent_kernel
 
-    async def fake_tools(agent_id, core_only=False, requested_names=None):
+    async def fake_tools(agent_id, core_only=False, requested_names=None, company_connections=None):
         return [
             {"function": {"name": "write_file"}},
             {"function": {"name": "read_file"}},
@@ -3947,7 +3947,7 @@ async def test_kernel_get_tools_reinjects_discovered_tool_schemas(monkeypatch):
 
     captured: dict = {}
 
-    async def fake_tools(agent_id, core_only=False, requested_names=None):
+    async def fake_tools(agent_id, core_only=False, requested_names=None, company_connections=None):
         captured["requested_names"] = requested_names
         return [{"function": {"name": "write_file"}}]
 
@@ -3976,7 +3976,7 @@ async def test_kernel_get_tools_without_discovered_tools_keeps_none_requested(mo
 
     captured: dict = {}
 
-    async def fake_tools(agent_id, core_only=False, requested_names=None):
+    async def fake_tools(agent_id, core_only=False, requested_names=None, company_connections=None):
         captured["requested_names"] = requested_names
         return [{"function": {"name": "write_file"}}]
 

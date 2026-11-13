@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from tests.integration.test_g4b_found_by_name_postgres import _seed_company
 from tests.integration.test_m1g7_routine_settings_postgres import scoped_runtime_factories  # noqa: F401
+from tests.integration.test_r5e_unavailable_app_postgres import app_work as app_work  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -193,31 +194,47 @@ async def test_a_service_that_really_needs_an_account_still_asks_for_one(
 async def test_runtime_prompt_names_installed_company_applications(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, scoped_runtime_factories, tmp_path,  # noqa: F811
 ):
-    """Run 17 step 7c: a bot that never calls tool_search can still connect the
-    member's words to the service, because the per-round runtime metadata names
-    each reachable company application by its trusted label and validated host,
-    with the tool_search route to its tools. Nothing is named when no company
-    application is reachable for the bot."""
+    """Run 17 step 7c, round 2: a bot that never calls tool_search can still
+    connect the member's words to the service. The prompt's Company Applications
+    section rides the agent tool-surface load — ``get_agent_tools_for_llm``
+    derives the (trusted label, host) pairs in-memory from rows it already
+    fetched (zero extra statements), records them on the per-session assembly
+    state, and the dynamic suffix renders them next to the deferred index."""
     from app.database import pin_rls_tenant_context
     from app.models.mcp_server import AgentMCPServerAssignment
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
     from app.services import agent_tools
-    from app.services.agent_context import build_agent_runtime_context
+    from app.services.agent_tools import get_agent_tools_for_llm
 
     app, tenant_id, admin, second_id, server_id = await _seed_production_shape(
         owner_sessionmaker, app_user_sessionmaker)
 
     scoped_runtime_factories()
-    monkeypatch.setattr(agent_tools, "_agent_has_feishu_cli_access", lambda: False)
 
-    context = await build_agent_runtime_context(second_id, tenant_id=tenant_id)
-    section = context.split("## Company Applications", 1)
-    assert len(section) == 2, context
+    async def _no_feishu_cli() -> bool:
+        return False
+
+    monkeypatch.setattr(agent_tools, "_agent_has_feishu_cli_access", _no_feishu_cli)
+
+    # The tool-surface load (turn 1: core_only) hands the pairs over in-memory.
+    connections: list[tuple[str, str]] = []
+    await get_agent_tools_for_llm(second_id, core_only=True, company_connections=connections)
+    assert connections == [(SERVER_NAME, SERVER_HOST)], connections
+
+    suffix = build_dynamic_prompt_suffix(
+        available_deferred_tools=[{"name": "spawn_subagent"}],
+        company_connections=connections,
+    )
+    section = suffix.split("## Company Applications", 1)
+    assert len(section) == 2, suffix
     body = section[1].split("\n## ", 1)[0]
     assert f"- {SERVER_NAME} ({SERVER_HOST})" in body, body
-    assert "tool_search" in body, body
+    assert "tool_search" in body and "do not browse the application's website" in body, body
     # Trusted text only: the raw URL and the remote description never appear.
     assert SERVER_URL not in body and "remote wiki evidence" not in body, body
 
+    # Governance unchanged: with the server assignment disabled nothing is
+    # reachable, so the load derives no pairs and the section disappears.
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, tenant_id)
         assignment = (await db.execute(select(AgentMCPServerAssignment).where(
@@ -226,5 +243,65 @@ async def test_runtime_prompt_names_installed_company_applications(
         assignment.enabled = False
         await db.commit()
 
-    context = await build_agent_runtime_context(second_id, tenant_id=tenant_id)
-    assert "## Company Applications" not in context or SERVER_NAME not in context, context
+    connections_after: list[tuple[str, str]] = []
+    await get_agent_tools_for_llm(second_id, core_only=True, company_connections=connections_after)
+    assert connections_after == [], connections_after
+    assert "## Company Applications" not in build_dynamic_prompt_suffix(
+        available_deferred_tools=[{"name": "spawn_subagent"}],
+        company_connections=connections_after,
+    )
+
+
+async def test_company_applications_section_reaches_the_model_wire(
+    app_work, owner_sessionmaker, monkeypatch,  # noqa: F811
+):
+    """End to end: one scripted web-chat turn with the production shape — the
+    compiled model request carries the Company Applications section naming
+    DeepWiki by trusted label and host, with no tool_search call needed."""
+    import app.runtime.invoker as invoker
+    from app.database import pin_rls_tenant_context
+    from app.models.mcp_server import AgentMCPServerAssignment, MCPServer, MCPServerTool
+    from app.models.tool import AgentTool, Tool
+    from app.services.mcp_metadata_trust import _neutral_description, current_mcp_fingerprint, review_mcp_metadata
+    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+    from app.services.web_chat_runtime import execute_web_chat_run
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient
+
+    s = app_work
+    async with owner_sessionmaker() as db:
+        await pin_rls_tenant_context(db, s["tenant_id"])
+        server = MCPServer(tenant_id=s["tenant_id"], name=SERVER_NAME, server_key="deepwiki-e2e",
+            registry_source="direct", server_url=SERVER_URL, status="connected", auth_status="none")
+        db.add(server)
+        await db.flush()
+        for remote in TOOL_REMOTE_NAMES:
+            tool = Tool(tenant_id=s["tenant_id"], name=f"mcp_{remote}", display_name=remote,
+                description=_neutral_description(tool_name=remote, server_name=SERVER_NAME, server_url=SERVER_URL),
+                type="mcp", category="custom", parameters_schema={"type": "object", "properties": {}},
+                config={}, mcp_server_url=SERVER_URL, mcp_server_name=SERVER_NAME, mcp_tool_name=remote,
+                mcp_raw_description="remote wiki evidence", mcp_raw_schema={}, enabled=True, is_default=False)
+            db.add(tool)
+            await db.flush()
+            review_mcp_metadata(tool, decision="approve", reviewer_id=s["user_id"],
+                expected_fingerprint=current_mcp_fingerprint(tool))
+            db.add(MCPServerTool(tenant_id=s["tenant_id"], mcp_server_id=server.id, tool_id=tool.id,
+                mcp_tool_name=remote))
+            db.add(AgentTool(agent_id=s["agent_id"], tenant_id=s["tenant_id"], tool_id=tool.id,
+                enabled=True, source="system", config={}))
+        db.add(AgentMCPServerAssignment(tenant_id=s["tenant_id"], agent_id=s["agent_id"],
+            mcp_server_id=server.id, enabled=True, default_tool_mode="auto", always_load=False))
+        await db.commit()
+
+    client = ScriptedLLMClient([{"content": "我先看看有什么可用能力。"}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    token = set_runtime_task_fence(task_id=s["run_id"], worker_id="kernel-worker-1", claim_version=1)
+    try:
+        await execute_web_chat_run(s["run_id"])
+    finally:
+        reset_runtime_task_fence(token)
+
+    assert len(client.requests) == 1
+    compiled = "\n".join(str(message["content"]) for message in client.requests[0]["messages"])
+    assert "## Company Applications" in compiled, compiled[-2000:]
+    assert f"- {SERVER_NAME} ({SERVER_HOST})" in compiled, compiled[-2000:]
+    assert SERVER_URL not in compiled.split("## Company Applications", 1)[1].split("\n## ", 1)[0]

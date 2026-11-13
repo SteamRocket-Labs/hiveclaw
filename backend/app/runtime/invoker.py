@@ -1572,6 +1572,10 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         # RC11: specialized reasoning passes can disable the tool surface entirely so
         # synthesis cannot route through write_file and exhaust the round budget.
         if disable_tools:
+            if request.session_context is not None:
+                from app.runtime.context import ensure_runtime_assembly_state
+
+                ensure_runtime_assembly_state(request.session_context).record_company_mcp_connections([])
             return []
         # Auto-include channel-specific tools so agents don't need to
         # manually load_skill before their channel tools become available.
@@ -1590,13 +1594,25 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             # accumulator does not persist across invocations; session.metadata
             # carries discovered_tools and __post_init__ restores them.
             _requested_names.extend(request.session_context.discovered_tools)
+        _company_connections: list[tuple[str, str]] = []
         tools = await _maybe_await(
             get_agent_tools_for_llm(
                 agent_id,
                 core_only=core_only,
                 requested_names=_requested_names or None,
+                company_connections=_company_connections,
             )
         )
+        if request.session_context is not None:
+            # G4c r2: the tool-surface load derives the reachable company MCP
+            # connections in-memory from rows it already fetched; record them on
+            # the per-session assembly state for prompt assembly — zero extra
+            # statements on the model-round path.
+            from app.runtime.context import ensure_runtime_assembly_state
+
+            ensure_runtime_assembly_state(request.session_context).record_company_mcp_connections(
+                _company_connections
+            )
         if allowed_tool_names:
             tools = [tool for tool in tools if tool["function"]["name"] in allowed_tool_names]
         if not excluded_tool_names:

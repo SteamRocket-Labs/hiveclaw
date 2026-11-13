@@ -31,7 +31,8 @@ from app.services.plan_authorization_lease import (
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.business_task_runtime import BusinessTaskExecutionPause, TaskExecutionOutcome, TaskExecutionStatus
 from app.services.runtime_display_status import (
-    BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE, EMPTY_SEARCH_FINAL_MESSAGE, REFUSED_RESULT_READ_MESSAGE,
+    BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE, EMPTY_SEARCH_FINAL_MESSAGE, EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE,
+    REFUSED_RESULT_READ_MESSAGE,
 )
 
 
@@ -812,6 +813,8 @@ async def execute_task(
         # These guard stops have plain member copy; retrying the whole business
         # task would repeat work. Other codes keep their summary and retry.
         plain = _PLAIN_BUSINESS_STOPS.get(str(failure_code or ""))
+        if failure_code == "repeated_empty_search" and reply == EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE:
+            plain = EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE
         return TaskExecutionOutcome(
             status=(
                 TaskExecutionStatus.CANCELLED

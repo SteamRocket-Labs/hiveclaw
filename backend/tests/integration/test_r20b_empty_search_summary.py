@@ -101,6 +101,8 @@ async def _assert_final(owner, run_id, answer, rounds):
         assert _runtime_task_user_blocker(run) is None
         models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id)
             .order_by(SessionModelResult.round_id)))
+        # R21a's alternating script exceeds nine rounds; round IDs sort numerically.
+        models.sort(key=lambda row: int(row.round_id.rsplit(":", 1)[1]))
         assert len(models) == rounds and all(row.state == "round_committed" for row in models)
         replies = list(await db.scalars(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.run_id == run_id, ChatTranscriptEvent.event_type == "assistant_text.snapshot")))
@@ -118,6 +120,65 @@ async def _assert_final(owner, run_id, answer, rounds):
         assert models[-1].seal_json["continuation"]["verdict"] == "terminal_candidate"
         assert not list(await db.scalars(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.run_id == run_id, ChatTranscriptEvent.event_type == "run.needs_reconciliation")))
+
+
+@pytest.mark.parametrize("material", [
+    json.dumps({"status": "partial", "results": [{"text": "本周完成接口联调", "verified": False}]},
+               ensure_ascii=False),
+    "本周完成接口联调；平常周报格式尚未确认。",
+], ids=["typed_partial", "prose_memory"])
+@pytest.mark.parametrize("first_tool", ["search_personal_kb", "search_company_kb"])
+async def test_run18_material_then_alternating_empties_persists_the_web_summary(
+    owner_sessionmaker, monkeypatch, tmp_path, material, first_tool,
+):
+    """R21a: real execute_web_chat_run completes with the bounded model reply."""
+    import app.runtime.invoker as invoker
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+
+    seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="按我平常的格式写本周周报。")
+    second_tool = "search_company_kb" if first_tool == "search_personal_kb" else "search_personal_kb"
+    names = ["search_memory", *[first_tool if i % 2 else second_tool for i in range(1, 10)]]
+    answer = "本周完成接口联调。没有找到你平常的周报格式，相关来源也尚未核实。"
+    script = [{"tool_calls": [{"id": f"search-{i}", "type": "function", "function": {
+        "name": name, "arguments": json.dumps({"query": f"周报 平常格式 第{i}种说法"})}}],
+        "finish_reason": "tool_calls"} for i, name in enumerate(names)] + [{"content": answer}]
+    client = ScriptedLLMClient(script)
+    _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, client)
+    executed = []
+
+    async def execute(name, args, *_a, tool_call_id=None, trace_metadata_sink=None,
+                      pre_effect_callback=None, **_k):
+        executed.append(name)
+        await pre_effect_callback({"tool_call_id": tool_call_id, "tool_name": name, "arguments": dict(args)})
+        result = material if name == "search_memory" else json.dumps({"status": "empty", "results": []})
+        _settled_trace(trace_metadata_sink, tool_name=name, args=args, result=result)
+        return result
+
+    monkeypatch.setattr(invoker, "execute_tool", execute)
+    monkeypatch.setattr(invoker, "get_agent_tools_for_llm", lambda *_a, **_k: [
+        {**SEARCH_TOOL, "function": {**SEARCH_TOOL["function"], "name": name}}
+        for name in ("search_memory", first_tool, second_tool)])
+    await _execute_claimed_run(owner_sessionmaker, seed)
+    assert executed == names and len(client.requests) == 11
+    assert client.requests[-1]["tools"] is None
+    context = json.dumps(client.requests[-1]["messages"], ensure_ascii=False)
+    assert "material already found in this turn" in context
+    assert "The last searches returned no new material." in context
+    assert "no matching material was found" not in context
+    await _assert_final(owner_sessionmaker, seed["run_id"], answer, 11)
+    assert await _failure_events(owner_sessionmaker, seed["session_id"]) == []
+    async with owner_sessionmaker() as db:
+        invocations = list(await db.scalars(select(SessionToolInvocation).where(
+            SessionToolInvocation.run_id == seed["run_id"])))
+        assert len(invocations) == 10
+        summary = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.run_id == seed["run_id"],
+            SessionModelResult.round_id == f"{seed['run_id']}:round:11"))
+        # Match R20b r5: the scripted client records absent optional fields as None.
+        def normalize(messages):
+            return [{key: value for key, value in message.items() if value is not None} for message in messages]
+        assert normalize(summary.model_request_snapshot_json["wire_request"]["messages"]) == normalize(
+            client.requests[-1]["messages"])
 
 
 async def test_committed_plaza_post_is_in_the_completed_empty_search_answer(

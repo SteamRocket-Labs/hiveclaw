@@ -218,19 +218,19 @@ def test_guard_unit_same_round_empties_after_the_warning_only_warn():
     ]
 
 
-def test_guard_unit_material_found_disables_the_stop_for_the_turn():
-    """A typed non-empty search result means material exists; only warnings
-    may fire for the rest of the turn."""
+def test_guard_unit_material_found_keeps_the_empty_streak_bound():
+    """R21a reverses R18a r2: earlier material changes copy, not the bound."""
     guard = LoopGuard()
     guard.observe_tool_result("search_company_kb", {"query": "hit"}, OK_RESULT,
         machine_outcome="succeeded", side_effect_free=True)
     severities = []
-    for index in range(9):
+    for index in range(5):
         decision = guard.observe_tool_result("search_company_kb", {"query": index}, EMPTY_RESULT,
             machine_outcome="succeeded", side_effect_free=True)
         severities.append(decision.severity if decision else None)
         guard.observe_tool_call("search_company_kb", {"query": index})  # rounds keep advancing
-    assert severities == [None, None, "warn"] + [None] * 6
+    # R21a: the warned later round must abort even though an earlier search hit.
+    assert severities == [None, None, "warn", None, "abort"]
 
 
 def test_guard_unit_non_empty_result_resets_the_consecutive_count():
@@ -301,9 +301,8 @@ async def test_five_parallel_empties_in_one_round_only_warn():
 
 
 @pytest.mark.asyncio
-async def test_found_material_then_empties_never_stops_with_the_sentence():
-    """R18a round 2 ruling 3: material was found, so the nothing-found stop
-    sentence would be false; the model answers with what it found."""
+async def test_found_material_then_empties_gets_a_summary_with_the_material():
+    """R21a: R20b's model-written summary replaces the false nothing-found stop."""
 
     executed: list[dict] = []
 
@@ -311,9 +310,7 @@ async def test_found_material_then_empties_never_stops_with_the_sentence():
         executed.append({"tool": tool_name, "args": args})
         return OK_RESULT if len(executed) <= 2 else EMPTY_RESULT
 
-    # R18a round 3 (reviewer nit b): one empty per round, so the test fails if
-    # the material gate is removed (the count then reaches the abort threshold
-    # in a warned later round).
+    # One empty per round reaches the abort threshold in a warned later round.
     responses = [
         SimpleNamespace(content="", tool_calls=_parallel_search_calls(1, 2),
                         reasoning_content=None, usage={"total_tokens": 5}),
@@ -329,6 +326,7 @@ async def test_found_material_then_empties_never_stops_with_the_sentence():
     assert len(executed) == 7
     assert result.content == "找到了一些资料，没有「白鹭计划」专档。"
     assert "多次搜索都没有找到相关资料。" not in result.content
+    assert client.calls[-1]["tools"] is None
 
 
 @pytest.mark.asyncio
@@ -385,10 +383,8 @@ def _round(calls: list[dict]) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_prose_hit_then_empties_never_stops_with_the_sentence():
-    """R18a round 3 ruling 1: a search_memory hit is plain text, not typed —
-    it is material, so a later company-KB empty streak cannot end with the
-    nothing-found sentence."""
+async def test_prose_hit_then_empties_gets_a_summary_with_the_material():
+    """R21a: prose hits still count as material, now in the bounded summary."""
 
     executed: list[dict] = []
 
@@ -409,6 +405,150 @@ async def test_prose_hit_then_empties_never_stops_with_the_sentence():
 
     assert [call["tool"] for call in executed] == ["search_memory"] + ["search_company_kb"] * 5
     assert result.content == "记忆里有一条「白鹭计划」的记录，公司知识库里没有更多资料。"
+    assert client.calls[-1]["tools"] is None
+
+
+MATERIAL_FALLBACK = "已停止继续搜索，但没能整理出答复。你可以让我按已经找到的资料直接作答。"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("material", [
+    json.dumps({"status": "partial", "results": [{"text": "本周完成接口联调", "verified": False}]},
+               ensure_ascii=False),
+    "本周完成接口联调；平常周报格式尚未确认。",
+], ids=["typed_partial", "prose_memory"])
+@pytest.mark.parametrize("first_tool", ["search_personal_kb", "search_company_kb"])
+@pytest.mark.parametrize("summary_kind", ["answer", "tool", "empty"])
+async def test_run18_material_then_alternating_empty_searches_get_one_final_reply(
+    material, first_tool, summary_kind,
+):
+    """Real handle: either KB tool can trip its own five-empty warned streak."""
+    from app.kernel.contracts import TerminalReason
+    from app.kernel.engine import _llm_messages_to_dicts
+
+    second_tool = "search_company_kb" if first_tool == "search_personal_kb" else "search_personal_kb"
+    executed, prepared, failures, persisted = [], [], [], []
+    answer = "本周完成接口联调。没有找到你平常的周报格式，相关来源也尚未核实。"
+
+    async def execute(name, args, *_a, **_k):
+        executed.append((name, args))
+        return material if name == "search_memory" else EMPTY_RESULT
+
+    summary = {"answer": _answer(answer), "tool": _round([_call(first_tool, 100)]), "empty": _answer("")}
+    script = [_round([_call("search_memory", 0)]),
+        *[_round([_call(first_tool if i % 2 else second_tool, i)]) for i in range(1, 10)],
+        summary[summary_kind], _answer("This extra round must not run")]
+    client = _FakeClient(script)
+    kernel = _kernel(client, execute, tools=("search_memory", first_tool, second_tool))
+
+    async def persist(_request, _config, content, messages):
+        persisted.append((content, list(messages)))
+
+    kernel._persist_before_exit = persist
+    request = _request()
+    request.model_request_prepare = lambda **p: prepared.append(p) or f"provider-{len(prepared)}"
+    request.model_request_fail = lambda **p: failures.append(p)
+    result = await kernel.handle(request)
+
+    assert [name for name, _args in executed] == ["search_memory"] + [
+        first_tool if i % 2 else second_tool for i in range(1, 10)]
+    assert len(client.calls) == 11  # material, nine empties, one summary
+    assert client.calls[-1]["tools"] is None
+    assert "[Loop Guard Warning]" not in _message_texts(client.calls[5])
+    assert "answer with the material already found" in _message_texts(client.calls[6])
+    instruction = client.calls[-1]["messages"][-1]
+    assert "Stop searching" in instruction.content
+    assert "material already found in this turn" in instruction.content
+    assert "could not be found or confirmed" in instruction.content
+    assert "action already committed" in instruction.content
+    assert "Do not claim actions that were only proposed, denied, failed, or unknown." in instruction.content
+    assert "This is the final reply for this turn. Any tool call you return will not run." in instruction.content
+    assert "no matching material was found" not in instruction.content
+    assert prepared[-1]["wire_request"]["messages"] == _llm_messages_to_dicts(client.calls[-1]["messages"])
+    assert prepared[-1]["messages"] == client.calls[-1]["messages"]
+    assert instruction.context_origin.unbound == ()
+    facts = [message for message in client.calls[-1]["messages"]
+        if "<loop_guard_terminal_evidence>" in str(message.content)]
+    assert len(facts) == 1
+    assert "The last searches returned no new material." in facts[0].content
+    assert facts[0].context_origin.unbound == ()
+    assert "The searches returned no matching material." not in facts[0].content
+    assert "Any tool call you return will not run." not in facts[0].content
+    history = (result.response_complete_payload["messages"] if summary_kind == "answer"
+        else _llm_messages_to_dicts(persisted[-1][1]))
+    assert sum(message.get("content") == facts[0].content for message in history) == 1
+    assert all(message.get("content") != instruction.content for message in history)  # request-only, as in R20b r5
+    if summary_kind == "answer":
+        assert result.terminal_reason is TerminalReason.TURN_STOP
+        assert result.content == answer and result.failure_code is None
+        assert failures == []
+    else:
+        assert result.terminal_reason is TerminalReason.LOOP_GUARD
+        assert result.failure_code == "repeated_empty_search" and result.failure_retryable is False
+        assert result.content == MATERIAL_FALLBACK
+        assert persisted[-1][0] == MATERIAL_FALLBACK
+        assert failures == [{"round_index": 11, "provider_request_id": "provider-11",
+            "continuation_index": 0, "error_class": "repeated_empty_search",
+            "delivery_state": "response_received", "retry_safe": True}]
+
+
+@pytest.mark.parametrize("sentence", [EMPTY_SEARCH_FINAL_MESSAGE, MATERIAL_FALLBACK])
+def test_empty_search_frozen_sentences_survive_the_delegation_readers(sentence):
+    from app.services.runtime_display_status import (
+        delegation_failure_result_page, is_delegation_failure_result_page,
+        is_runtime_failure_observation, runtime_failure_observation,
+    )
+
+    observation = runtime_failure_observation("failed", {"error_code": "repeated_empty_search"},
+        result_summary=sentence)
+    assert observation["reason"] == sentence and observation["retryable"] is False
+    assert is_runtime_failure_observation(observation)
+    page = delegation_failure_result_page(task_id=str(uuid4()), status="failed",
+        metadata={"error_code": "repeated_empty_search"}, result_summary=sentence)
+    assert page["result"] == sentence and is_delegation_failure_result_page(page)
+    assert runtime_failure_observation("failed", {"error_code": "repeated_empty_search"},
+        result_summary="Untrusted partial model output")["reason"] == EMPTY_SEARCH_FINAL_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_no_material_summary_instruction_and_fact_are_byte_identical():
+    client = _FakeClient([*[_round([_search_call(i)]) for i in range(1, 6)], _answer(EMPTY_SEARCH_FINAL_MESSAGE)])
+    kernel = _kernel(client, lambda *_a, **_k: EMPTY_RESULT)
+    result = await kernel.handle(_request())
+    assert client.calls[-1]["messages"][-1].content == (
+        "Finish this turn with a normal assistant reply in the member's language, "
+        "plainly saying that no matching material was found. "
+        "Also report any action already committed in this same turn, grounded in successful tool results. "
+        "Do not claim actions that were only proposed, denied, failed, or unknown. "
+        "This is the final reply for this turn. Any tool call you return will not run.")
+    facts = [message["content"] for message in result.response_complete_payload["messages"]
+        if "<loop_guard_terminal_evidence>" in str(message.get("content"))]
+    assert len(facts) == 1
+    assert facts[0].split("</loop_guard_terminal_evidence>\n")[1] == "The searches returned no matching material."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hit_first", [False, True])
+async def test_same_round_material_withdraws_abort_even_after_an_earlier_hit(hit_first):
+    """R21a preserves withdrawal for fresh material before or after the abort."""
+    from app.kernel.contracts import TerminalReason
+
+    executed = []
+
+    async def execute(name, *_a, **_k):
+        executed.append(name)
+        return OK_RESULT if name == "search_memory" else EMPTY_RESULT
+
+    empties = [_call("search_company_kb", i) for i in range(4, 9)]
+    hit = _call("search_memory", 9)
+    client = _FakeClient([_round([_call("search_memory", 0)]),
+        *[_round([_call("search_company_kb", i)]) for i in range(1, 4)],
+        _round([hit, *empties] if hit_first else [*empties, hit]),
+        _answer("已经找到新的资料。")])
+    result = await _kernel(client, execute, tools=("search_memory", "search_company_kb")).handle(_request())
+    assert len(executed) == 10 and len(client.calls) == 6
+    assert client.calls[-1]["tools"]  # normal continuation, not the final summary
+    assert result.terminal_reason is TerminalReason.TURN_STOP and result.content == "已经找到新的资料。"
 
 
 @pytest.mark.asyncio

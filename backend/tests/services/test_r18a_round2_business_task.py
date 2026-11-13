@@ -58,6 +58,7 @@ async def test_empty_search_guard_summary_is_a_completed_business_answer(
 @pytest.mark.parametrize("failure_code", [
     "identical_terminal_task_read",
     "identical_running_task_read", "identical_refused_result_read",
+    "repeated_empty_search",
 ])
 async def test_read_loop_guard_stop_is_a_plain_business_failure(monkeypatch, failure_code):
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
@@ -104,6 +105,18 @@ async def test_read_loop_guard_stop_is_a_plain_business_failure(monkeypatch, fai
 
     async def fake_invoke_agent(request):
         """Run the real read-loop guard and project its result into the executor input."""
+        if failure_code == "repeated_empty_search":
+            from tests.kernel.test_r18a_empty_search_guard import (
+                EMPTY_RESULT, OK_RESULT, _FakeClient, _answer, _call, _kernel, _request, _round,
+            )
+
+            client = _FakeClient([_round([_call("search_memory", 0)]),
+                *[_round([_call("search_company_kb", i)]) for i in range(1, 6)], _answer("")])
+            result = await _kernel(client, lambda name, *_a, **_k: (
+                OK_RESULT if name == "search_memory" else EMPTY_RESULT),
+                tools=("search_memory", "search_company_kb")).handle(_request())
+            assert len(client.calls) == 7 and client.calls[-1]["tools"] is None
+            return result
         search_index = iter(range(1, 20))
 
         class RewordingClient:
@@ -200,7 +213,11 @@ async def test_read_loop_guard_stop_is_a_plain_business_failure(monkeypatch, fai
     assert outcome.error_code == failure_code
     assert outcome.terminal_reason == "loop_guard"
 
-    if failure_code == "identical_refused_result_read":
+    if failure_code == "repeated_empty_search":
+        # R21a: the executor preserves the new frozen fallback when earlier material exists.
+        assert outcome.summary == "已停止继续搜索，但没能整理出答复。你可以让我按已经找到的资料直接作答。"
+        assert outcome.retryable is False
+    elif failure_code == "identical_refused_result_read":
         # Approval, remote, subagent and creation results are also refused; the
         # summary must be source-neutral and must not rerun the whole task.
         assert outcome.summary == "这份结果这次没法安全读取，我没能继续。你可以让我重新安排这项工作。"
@@ -243,6 +260,6 @@ async def test_read_loop_guard_stop_is_a_plain_business_failure(monkeypatch, fai
     projection = project_business_task(task=projected_task, runtime_task=runtime)
     assert projection["recovery_message"] == outcome.summary
     assert projection["actions"]["can_retry"] is outcome.retryable
-    if failure_code in {"identical_running_task_read", "identical_refused_result_read"}:
+    if failure_code in {"identical_running_task_read", "identical_refused_result_read", "repeated_empty_search"}:
         # No plain guard stop offers a retry of the whole task.
         assert projection["recovery_state"] != "retry_available"

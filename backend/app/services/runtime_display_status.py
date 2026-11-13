@@ -9,9 +9,9 @@ RUNTIME_LIMIT_MESSAGES = {
 TERMINAL_TASK_READ_PREFIX = "任务结果未变化，已停止本次处理："
 DELEGATED_TASK_RUNNING_MESSAGE = "同事正在处理，结果回来后会在这里继续。"
 BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE = "同事还在处理，这次我先停下了。同事完成后，结果会回到这项任务的对话里。"
-# R18a: the loop guard's empty-search stop. True for the only input that
-# produces it — several searches in one turn all returned nothing.
+# Frozen empty-search stops: no material, or earlier material but no usable summary.
 EMPTY_SEARCH_FINAL_MESSAGE = "多次搜索都没有找到相关资料。"
+EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE = "已停止继续搜索，但没能整理出答复。你可以让我按已经找到的资料直接作答。"
 # Frozen sentences: stored result summaries and stored failure pages are compared
 # against these exact bytes, so a wording change desynchronizes old records.
 DELEGATION_TIMEOUT_MESSAGE = "没在时限内完成这项任务。"
@@ -43,7 +43,8 @@ _FAILURE_MESSAGES["identical_refused_result_read"] = REFUSED_RESULT_READ_MESSAGE
 # metadata.outcome, not at the top level (pre-existing, report-only).
 _FAILURE_MESSAGES["repeated_empty_search"] = EMPTY_SEARCH_FINAL_MESSAGE
 # Every fixed sentence the plain delegation result page may legally carry.
-_FIXED_RESULT_SENTENCES = frozenset(_FAILURE_MESSAGES.values()) | _TERMINAL_READ_MESSAGES
+_FIXED_RESULT_SENTENCES = (frozenset(_FAILURE_MESSAGES.values()) | _TERMINAL_READ_MESSAGES
+    | {EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE})
 
 
 FAILED_DELEGATION_MODEL_INSTRUCTION = (
@@ -69,6 +70,8 @@ def runtime_failure_observation(status: str, metadata: dict, *, result_summary: 
     else:
         return None
     message = _FAILURE_MESSAGES[reason]
+    if reason == "repeated_empty_search" and result_summary == EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE:
+        message = EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE
     if reason == "identical_terminal_task_read" and isinstance(result_summary, str) and result_summary in _TERMINAL_READ_MESSAGES:
         message = result_summary  # Only fixed runtime copy, never a failed model's partial body.
     return {"ok": True, "status": status, "reason_code": reason, "reason": message,

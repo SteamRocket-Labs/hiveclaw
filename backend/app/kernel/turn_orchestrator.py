@@ -329,6 +329,7 @@ async def _execute_committed_provider_round(
     attempt_state: dict[str, Any],
     previous_result_receipt: dict[str, Any] | None,
     final_reply_only: bool = False,
+    empty_search_material_found: bool = False,
 ) -> dict[str, Any]:
     """Own one Provider request/result fence without owning Agent semantics."""
 
@@ -349,9 +350,13 @@ async def _execute_committed_provider_round(
             request_tools = []
         stream_messages = [*stream_messages, support._context_message(
             role="system", kind="runtime_reminder", unbound=(),
-            content=("Finish this turn with a normal assistant reply in the member's language, "
+            content=(("Stop searching. Finish this turn with a normal assistant reply in the member's language, "
+                "using the material already found in this turn. "
+                "Plainly say what could not be found or confirmed. "
+                if empty_search_material_found else
+                "Finish this turn with a normal assistant reply in the member's language, "
                 "plainly saying that no matching material was found. "
-                "Also report any action already committed in this same turn, grounded in successful tool results. "
+                ) + "Also report any action already committed in this same turn, grounded in successful tool results. "
                 "Do not claim actions that were only proposed, denied, failed, or unknown. "
                 "This is the final reply for this turn. Any tool call you return will not run."),
         )]
@@ -1176,7 +1181,8 @@ async def _project_loop_guard_warning(
 
 
 async def _project_loop_guard_terminal_evidence(
-    decision: LoopGuardDecision, *, api_messages: list, _context_message: Any, _emit_event: Any
+    decision: LoopGuardDecision, *, api_messages: list, _context_message: Any, _emit_event: Any,
+    empty_search_material_found: bool = False,
 ) -> None:
     import json
 
@@ -1186,7 +1192,8 @@ async def _project_loop_guard_terminal_evidence(
     }
     empty_search = decision.reason == "repeated_empty_search"
     guidance = (
-        "The searches returned no matching material."
+        ("The last searches returned no new material." if empty_search_material_found
+            else "The searches returned no matching material.")
         if empty_search else
         "The governed runtime has recorded that this side-effect-free retry path is exhausted "
         "without state progress. Treat this as evidence, not as a platform-authored semantic "
@@ -2344,6 +2351,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             attempt_state=provider_attempt_state,
                             previous_result_receipt=last_model_result_receipt,
                             final_reply_only=final_empty_search_reply,
+                            empty_search_material_found=loop_guard.empty_search_material_found,
                         )
                         response = provider_round["response"]
                         provider_request_id = provider_round["provider_request_id"]
@@ -2933,12 +2941,16 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             ))
                     accumulated_tokens += self._deps.extract_usage_tokens(response.usage) or 0
                     round_charge_key["key"] = provider_request_id
-                    from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
+                    from app.services.runtime_display_status import (
+                        EMPTY_SEARCH_FINAL_MESSAGE, EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE,
+                    )
 
+                    message = (EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE if loop_guard.empty_search_material_found
+                        else EMPTY_SEARCH_FINAL_MESSAGE)
                     await _record_new_token_usage()
-                    await self._persist_before_exit(request, runtime_config, EMPTY_SEARCH_FINAL_MESSAGE, api_messages)
+                    await self._persist_before_exit(request, runtime_config, message, api_messages)
                     result = _build_error_result(
-                        EMPTY_SEARCH_FINAL_MESSAGE, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
+                        message, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
                         terminal_reason=TerminalReason.LOOP_GUARD, failure_code="repeated_empty_search",
                     )
                     result.parts = collected_parts + result.parts
@@ -3730,11 +3742,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 # in call order, so a fruitful result later in this round cannot
                 # withdraw an abort recorded on the fifth empty. All of the
                 # round's results are observed by now; if any search tool found
-                # material, the "nothing found" stop is not true — drop it.
+                # new material, withdraw this round's abort. Earlier material
+                # changes the final reply's copy, not the empty-search bound.
                 if (
                     _loop_guard_terminal_decision is not None
                     and _loop_guard_terminal_decision.reason == "repeated_empty_search"
-                    and loop_guard.empty_search_material_found
+                    and loop_guard.empty_search_material_found_in_round
                 ):
                     _loop_guard_terminal_decision = None
 
@@ -3763,6 +3776,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     await _project_loop_guard_terminal_evidence(
                         _loop_guard_terminal_decision, api_messages=api_messages,
                         _context_message=_context_message, _emit_event=_emit_event,
+                        empty_search_material_found=loop_guard.empty_search_material_found,
                     )
                     _loop_guard_terminal_decision = None
 

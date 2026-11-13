@@ -327,8 +327,8 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
             files, source_revision_id = content["files"], str(revision.id)
     else:
         files, source_revision_id = content["platform_skill_sources"], str(revision.id)
-    # Keep stored claims frozen, but bind an updated default to exact current
-    # application bytes without attesting its copy history.
+    # Stored claims bind only while equal to the running package. Files matching
+    # the running package bind to the same lineage without attesting copy history.
     bundled = (
         _bundled_platform_skill_hashes()
         if source_path is None

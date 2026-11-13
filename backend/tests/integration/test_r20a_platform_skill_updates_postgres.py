@@ -183,6 +183,7 @@ async def test_updated_package_keeps_old_parent_result_readable(
     page = json.loads(read["content"])
     print("R20A_RESULT_READ", json.dumps(page, ensure_ascii=False))
     print("R20A_RECOVERED_OLD_LEAF", evidence["old_leaf"] in evidence["recoveries"])
+    assert (evidence["old_leaf"] in evidence["recoveries"]) == (update_at == "historical_before_parent")
     assert page["status"] == "ok", page
     assert page["complete"] is True and RESULT in page["content"]
     assert page["dependency_coverage"]["complete"] is True
@@ -267,7 +268,7 @@ async def test_every_bundled_path_binds_current_bytes_and_reads_old_dependency(
         assert retained.content_hash == canonical_content_hash(content)
 
 
-@pytest.mark.parametrize("writer", ["member", "registry", "custom_template"])
+@pytest.mark.parametrize("writer", ["member", "registry", "custom_template", "registry_install"])
 async def test_non_package_skill_bytes_remain_refused(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, writer,
 ):
@@ -296,6 +297,49 @@ async def test_non_package_skill_bytes_remain_refused(
     path = seed["agent_root"] / SKILL_PATH
     path.parent.mkdir(parents=True)
     path.write_bytes(original)
+    if writer == "registry_install":
+        from app.models.agent import Agent
+        from app.services.ai_asset_adapters import project_skill
+        from app.services.ai_assets import register_projection
+        from app.services.config_versioning import save_revision
+
+        await _push_default(owner_sessionmaker, updated)
+        dependency = {"source_kind": "agent_platform_skill_file",
+            "source_id": f"{seed['agent_id']}\n{SKILL_PATH}\n{revision_id}", "source_version": original_digest}
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            actor = await db.get(User, seed["user_id"])
+            await sources.validate_skill_file_dependency(db, seed["tenant_id"], dependency,
+                user=actor, runtime_request=None)
+            skill = Skill(name="Installed MCP Package", folder_name="mcp-installer", tenant_id=seed["tenant_id"])
+            skill.files = [SkillFile(path="SKILL.md", content=updated.decode())]
+            db.add(skill)
+            await db.flush()
+            projection = project_skill(skill, owner_user_id=actor.id)
+            await register_projection(db, projection, change_source="create", actor_user_id=actor.id)
+            await save_revision(db, entity_type="registry_skill_original", entity_id=skill.id,
+                tenant_id=seed["tenant_id"], content=projection.content, change_source="create",
+                changed_by_user_id=actor.id)
+            installed = await sources.install_registry_skill_with_sources(db, workspace=seed["agent_root"],
+                agent=await db.get(Agent, seed["agent_id"]), skill=skill, actor=actor)
+            assert installed["source_receipt"]["status"] == "captured"
+            installation = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == seed["tenant_id"],
+                ConfigRevision.entity_type == "agent_skill_install", ConfigRevision.entity_id == sources._installation_id(
+                    seed["agent_id"], "mcp-installer"), ConfigRevision.is_active.is_(True)))
+            assert installation.content["origins"]
+            assert installation.content["files"] == {SKILL_PATH: hashlib.sha256(updated).hexdigest()}
+            await db.commit()
+        assert path.read_bytes() == updated
+        assert sources.original_platform_skill_hashes(seed["agent_root"]) == {
+            SKILL_PATH: hashlib.sha256(updated).hexdigest()}
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            with pytest.raises(ContentInputReceiptError) as refused:
+                await sources.validate_skill_file_dependency(db, seed["tenant_id"], dependency,
+                    user=await db.get(User, seed["user_id"]), runtime_request=None)
+            assert refused.value.code == "content_source_changed"
+            assert SKILL_PATH not in await sources._platform_skill_sources(db, seed["tenant_id"], seed["agent_id"])
+        return
     if writer == "registry":
         await _push_default(owner_sessionmaker, arbitrary)
     elif writer == "custom_template":

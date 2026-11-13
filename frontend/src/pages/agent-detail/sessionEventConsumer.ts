@@ -11,7 +11,7 @@ import {
   type TranscriptReplayState,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
-import { memberToolSummaryFromRecord, memberSummaryWithArgs } from './memberToolSummary';
+import { memberHost, memberToolSummaryFromRecord, memberSummaryWithArgs } from './memberToolSummary';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
 import type { SessionMessageStore } from './sessionMessageStore';
@@ -461,7 +461,7 @@ function projectCanonicalItem(
       // result for summarized tools; the expanded step renders it verbatim.
       toolMemberSummary: (() => {
         const summary = memberToolSummaryFromRecord(toolEnvelope.member_summary ?? pairedEnvelope?.member_summary);
-        if (summary?.kind === 'web_fetch' && !summary.host && typeof toolEnvelope.host === 'string') summary.host = toolEnvelope.host;
+        if (summary?.kind === 'web_fetch' && !summary.host) summary.host = memberHost(toolEnvelope.host);
         return summary ? memberSummaryWithArgs(summary, toolArgs) : undefined;
       })(),
       artifacts: extractArtifactParts(pairedResult?.payload ?? item.payload),

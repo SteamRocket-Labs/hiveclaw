@@ -93,7 +93,6 @@ describe('X3c production-shaped rows name the target through both planes', () =>
   it('a read row names the file from the typed member summary', () => {
     const { reloadMessage, liveMessage } = toolMessageOf(productionToolPair('read_file', {
       member_summary: { kind: 'file_read', state: 'done', filename: 'sales-run19.csv' },
-      member_target: { filename: 'sales-run19.csv' },
     }), 'read_file');
     for (const message of [reloadMessage, liveMessage]) {
       expect(message?.toolMemberSummary?.filename).toBe('sales-run19.csv');
@@ -105,14 +104,12 @@ describe('X3c production-shaped rows name the target through both planes', () =>
   it('a web row names the host, and a failed fetch names the host that did not open', () => {
     const ok = toolMessageOf(productionToolPair('web_fetch', {
       member_summary: { kind: 'web_fetch', state: 'done', host: 'deepwiki.com' },
-      member_target: { host: 'deepwiki.com' },
     }), 'web_fetch');
     expect(ok.reloadMessage?.toolMemberSummary?.host).toBe('deepwiki.com');
     expect(ok.liveMessage?.toolMemberSummary?.host).toBe('deepwiki.com');
 
     const failed = toolMessageOf(productionToolPair('firecrawl_fetch', {
       member_summary: { kind: 'web_fetch', state: 'not_done', host: 'example.org' },
-      member_target: { host: 'example.org' },
     }), 'firecrawl_fetch');
     const timeline = buildRunTimelineFromMessages(failed.reloaded.messages);
     expect(timeline?.steps.at(-1)?.status).toBe('failed');
@@ -125,7 +122,6 @@ describe('X3c production-shaped rows name the target through both planes', () =>
     ] as const) {
       const { reloadMessage, liveMessage } = toolMessageOf(productionToolPair(tool, {
         member_summary: { kind, state: 'done', filename },
-        member_target: { filename },
       }), tool);
       expect(reloadMessage?.toolMemberSummary?.kind).toBe(kind);
       expect(reloadMessage?.toolMemberSummary?.filename).toBe(filename);
@@ -136,7 +132,6 @@ describe('X3c production-shaped rows name the target through both planes', () =>
   it('a company MCP row names the trusted connection label', () => {
     const { reloadMessage, liveMessage } = toolMessageOf(productionToolPair('mcp_ask_wiki_question', {
       member_summary: { kind: 'mcp_app', state: 'done', app_label: 'DeepWiki' },
-      member_target: { app_label: 'DeepWiki' },
     }), 'mcp_ask_wiki_question');
     expect(reloadMessage?.toolMemberSummary?.appLabel).toBe('DeepWiki');
     expect(liveMessage?.toolMemberSummary?.appLabel).toBe('DeepWiki');
@@ -147,6 +142,34 @@ describe('X3c production-shaped rows name the target through both planes', () =>
       member_summary: { kind: 'file_read', state: 'done' },
     }), 'read_file');
     expect(reloadMessage?.toolMemberSummary).toEqual({ kind: 'file_read', state: 'done' });
+  });
+
+
+  it('never shows a secret-shaped filename or a malformed host (X3c r2)', () => {
+    const secret = toolMessageOf(productionToolPair('read_file', {
+      member_summary: { kind: 'file_read', state: 'done', filename: 'client_secret.pem' },
+    }), 'read_file');
+    // The record-level guard refuses the name even if a stale row carries it.
+    expect(secret.reloadMessage?.toolMemberSummary?.filename).toBeUndefined();
+
+    const badHost = toolMessageOf(productionToolPair('web_fetch', {
+      member_summary: { kind: 'web_fetch', state: 'done', host: 'user:pass@evil.example:443/a?token=1' },
+    }), 'web_fetch');
+    expect(badHost.reloadMessage?.toolMemberSummary?.host).toBeUndefined();
+  });
+
+  it('only a clean zero exit is done (X3c r2: null, non-number, timeout are not done)', () => {
+    for (const execution of [
+      { exit_code: null, timed_out: false },
+      { exit_code: '1', timed_out: false },
+      { exit_code: undefined, timed_out: false },
+    ]) {
+      const { reloaded } = toolMessageOf(productionToolPair('execute_code', {}, {
+        code_execution_result: execution,
+      }), 'execute_code');
+      const timeline = buildRunTimelineFromMessages(reloaded.messages);
+      expect(timeline?.steps.at(-1)?.status).toBe('failed');
+    }
   });
 
   it('a command with a non-zero exit is failed; a zero exit stays done (run 19 row 16)', () => {

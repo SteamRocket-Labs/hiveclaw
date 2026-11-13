@@ -26,6 +26,7 @@ import { approvalActionFor } from '../session-workbench/approvalActionPresentati
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { toolOutputForDisplay } from './toolFailurePresentation';
 import { memberFilename, memberToolSummaryFromRecord, memberToolSummarySentence, memberSummaryWithArgs } from './memberToolSummary';
+import { commandExecutionOutcome } from './chatDisclosureReducer';
 import { useAuthStore } from '../../stores';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import { isKeptResultStep, presentSystemStep } from './systemStepPresentation';
@@ -228,11 +229,10 @@ function ColleagueConversationLink({ metadata }: { metadata: Record<string, unkn
 
 function commandOutcome(details: unknown): 'done' | 'failed' | 'unknown' | null {
   const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
-  const execution = record.executionResult as { exit_code?: unknown; timed_out?: unknown } | undefined;
-  if (execution) {
-    if (execution.timed_out === true || typeof execution.exit_code !== 'number' || !Number.isFinite(execution.exit_code)) return 'unknown';
-    return execution.exit_code === 0 ? 'done' : 'failed';
-  }
+  // X3c r2: the typed execution result goes through the one shared predicate
+  // the step status uses, so the sentence and the marker never diverge.
+  const typed = commandExecutionOutcome(record.executionResult);
+  if (typed !== null) return typed;
   const values = [details, record.result, record.rawResult];
   const records = values.flatMap(value => {
     if (typeof value === 'string') {
@@ -293,9 +293,6 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
     }
     if (['write_file', 'fs_write'].includes(toolName || '') && step.status === 'done' && file) {
       return <p>{t('agent.chat.toolResults.memberSummary.fileWriteNamed', 'Wrote the file “{{filename}}”.', { filename: file })}</p>;
-    }
-    if (toolName === 'edit_file' && step.status === 'done' && file) {
-      return <p>{t('agent.chat.toolResults.memberSummary.fileEditNamed', 'Edited the file “{{filename}}”.', { filename: file })}</p>;
     }
     const status = outcome === 'unknown' ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
       : outcome === 'done' ? t('agent.chat.disclosure.resultSucceeded', 'Succeeded')

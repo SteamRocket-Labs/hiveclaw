@@ -66,9 +66,9 @@ function renderedRows(events: unknown[]) {
 
 it('names the file of read, write and edit rows (base name only)', () => {
   const events = [
-    ...settledCall('read_file', { member_summary: { kind: 'file_read', state: 'done', filename: 'sales-run19.csv' }, member_target: { filename: 'sales-run19.csv' } }),
-    ...settledCall('write_file', { member_summary: { kind: 'file_write', state: 'done', filename: 'weekly-report.md' }, member_target: { filename: 'weekly-report.md' } }),
-    ...settledCall('edit_file', { member_summary: { kind: 'file_edit', state: 'done', filename: 'weekly-report.md' }, member_target: { filename: 'weekly-report.md' } }),
+    ...settledCall('read_file', { member_summary: { kind: 'file_read', state: 'done', filename: 'sales-run19.csv' } }),
+    ...settledCall('write_file', { member_summary: { kind: 'file_write', state: 'done', filename: 'weekly-report.md' } }),
+    ...settledCall('edit_file', { member_summary: { kind: 'file_edit', state: 'done', filename: 'weekly-report.md' } }),
   ];
   const { container } = renderedRows(events);
   const text = container.textContent || '';
@@ -81,8 +81,8 @@ it('names the file of read, write and edit rows (base name only)', () => {
 
 it('names the host of web rows and of a fetch that did not open', () => {
   const events = [
-    ...settledCall('web_fetch', { member_summary: { kind: 'web_fetch', state: 'done', host: 'deepwiki.com' }, member_target: { host: 'deepwiki.com' } }),
-    ...settledCall('exa_fetch', { member_summary: { kind: 'web_fetch', state: 'not_done', host: 'example.org' }, member_target: { host: 'example.org' } }),
+    ...settledCall('web_fetch', { member_summary: { kind: 'web_fetch', state: 'done', host: 'deepwiki.com' } }),
+    ...settledCall('exa_fetch', { member_summary: { kind: 'web_fetch', state: 'not_done', host: 'example.org' } }),
   ];
   const { container } = renderedRows(events);
   const text = container.textContent || '';
@@ -93,7 +93,7 @@ it('names the host of web rows and of a fetch that did not open', () => {
 
 it('names the trusted connection label of a company MCP row', () => {
   const { container } = renderedRows(
-    settledCall('mcp_ask_wiki_question', { member_summary: { kind: 'mcp_app', state: 'done', app_label: 'DeepWiki' }, member_target: { app_label: 'DeepWiki' } }),
+    settledCall('mcp_ask_wiki_question', { member_summary: { kind: 'mcp_app', state: 'done', app_label: 'DeepWiki' } }),
   );
   const text = container.textContent || '';
   expect(text).toContain('使用了已连接的应用「DeepWiki」');
@@ -115,6 +115,48 @@ it('marks a non-zero-exit command failed with the accessible marker; a zero exit
   expect(rows.some((row) => row.getAttribute('data-status') === 'done' && row.textContent?.includes('运行命令'))).toBe(true);
   // The timeline agrees: a failed command step is a failed step, not done.
   expect(timeline.steps.some((step) => step.status === 'failed')).toBe(true);
+});
+
+
+it('never renders a secret-shaped filename (X3c r2)', () => {
+  const events = [
+    ...settledCall('read_file', { member_summary: { kind: 'file_read', state: 'done', filename: 'client_secret.pem' } }),
+    ...settledCall('write_file', { member_summary: { kind: 'file_write', state: 'done', filename: 'notes.txt?token=secret' } }),
+    ...settledCall('read_file', { member_summary: { kind: 'file_read', state: 'done', filename: 'sales-run19.csv' } }),
+  ];
+  const { container } = renderedRows(events);
+  const text = container.textContent || '';
+  expect(text).toContain('读取了文件「sales-run19.csv」');
+  expect(text).not.toContain('client_secret');
+  expect(text).not.toContain('notes.txt?token');
+});
+
+it('a null exit code or a string exit code is not done, and keeps the unconfirmed sentence (X3c r2)', () => {
+  for (const executionResult of [{ exit_code: null, timed_out: false }, { exit_code: '1', timed_out: false }]) {
+    x3cSequence = 0; // each iteration is its own fresh session (sequences restart at 1)
+    const events = settledCall('execute_code', {}, { code_execution_result: executionResult });
+    const messages = hydrateSessionTranscriptEvents(events as never, 0).messages;
+    const timeline = buildRunTimelineFromMessages(messages);
+    expect(timeline.steps.at(-1)?.status).toBe('failed');
+    const view = renderSteps(timeline.steps);
+    const row = view.container.querySelector('[data-testid="run-disclosure-step"]');
+    expect(row?.getAttribute('data-status')).toBe('failed');
+    expect(row?.querySelector('[role="img"][aria-label="未完成"]')).toBeTruthy();
+    expect(row?.textContent).toContain('结果尚未确认');
+    cleanup();
+  }
+});
+
+it('fs_write follows its mode: a delete is never a write sentence (X3c r2)', () => {
+  const events = [
+    ...settledCall('fs_write', { member_summary: { kind: 'file_delete', state: 'done' } }),
+    ...settledCall('fs_write', { member_summary: { kind: 'file_edit', state: 'done', filename: 'weekly-report.md' } }),
+  ];
+  const { container } = renderedRows(events);
+  const text = container.textContent || '';
+  expect(text).toContain('编辑了文件「weekly-report.md」');
+  expect(text).not.toContain('已写入文件');
+  expect(text).not.toContain('写入了文件');
 });
 
 it('keeps the generic sentence for history rows written before X3c', () => {

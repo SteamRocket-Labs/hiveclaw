@@ -23,11 +23,38 @@ export interface MemberToolSummary {
   taskId?: string;
 }
 
+// X3c r2: one member-safe basename rule, mirroring the backend's
+// member_safe_basename. A name that looks like a credential, or one carrying
+// a query/fragment, is never shown.
+const SECRET_NAME_MARKERS = ['secret', 'credential', 'api_key', 'password', 'token'];
+const SECRET_NAME_PATTERNS = [
+  /^\.env/i, /^id_rsa/i, /\.pem$/i, /\.key$/i,
+  /(?:^|[^a-z0-9])(?:sk-|ghp_|xox[bp]-)/i, /AKIA[0-9A-Z]{16}/, /[A-Za-z0-9]{24,}/,
+];
+
 export function memberFilename(value: unknown): string | undefined {
   if (typeof value !== 'string' || !value || /[/\\]$/.test(value)) return undefined;
   const name = value.split(/[/\\]/).pop();
-  return name && !['.', '..'].includes(name) && !/[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}/i.test(name)
-    ? name : undefined;
+  if (!name || ['.', '..'].includes(name)) return undefined;
+  if (/[?#]/.test(name)) return undefined;
+  if (/[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}/i.test(name)) return undefined;
+  if (SECRET_NAME_MARKERS.some(marker => name.toLowerCase().includes(marker))) return undefined;
+  if (SECRET_NAME_PATTERNS.some(pattern => pattern.test(name))) return undefined;
+  return name;
+}
+
+/** A host is a host (X3c r2): hostname characters only — no `%`, whitespace,
+ * `@`, `:`, `/`, `?` or `#` — and it must survive re-parsing `https://{host}/`.
+ * The WHATWG URL punycodes IDN labels, so a non-ASCII host that passed the
+ * charset check is accepted on its punycode round-trip. */
+export function memberHost(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const host = value.trim().toLowerCase();
+  if (!host || /[\s%@:/?#\\]/.test(host)) return undefined;
+  try {
+    const parsed = new URL(`https://${host}/`);
+    return parsed.hostname === host || /[^\x00-\x7f]/.test(host) ? host : undefined;
+  } catch { return undefined; }
 }
 
 /** Compatibility-only display fallback when no backend summary exists. */
@@ -35,7 +62,7 @@ export function memberHostFromUrl(value: unknown): string | undefined {
   if (typeof value !== 'string' || /[\s\\]/.test(value.trim())) return undefined;
   try {
     const url = new URL(value);
-    return ['http:', 'https:'].includes(url.protocol) ? url.hostname : undefined;
+    return ['http:', 'https:'].includes(url.protocol) ? memberHost(url.hostname) : undefined;
   } catch { return undefined; }
 }
 
@@ -60,7 +87,7 @@ export function memberToolSummaryFromRecord(value: unknown): MemberToolSummary |
   if (typeof record.kind !== 'string' || !record.kind.trim()) return null;
   if (typeof record.state !== 'string' || !MEMBER_SUMMARY_STATES.has(record.state)) return null;
   const summary: MemberToolSummary = { kind: record.kind, state: record.state as MemberToolSummaryState };
-  if (typeof record.host === 'string' && record.host.trim()) summary.host = record.host.trim();
+  summary.host = memberHost(record.host);
   summary.filename = memberFilename(record.filename);
   // X3c: the trusted connection label a company MCP row names (backend-resolved).
   const appLabel = record.app_label ?? record.appLabel;

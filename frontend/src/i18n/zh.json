@@ -2973,7 +2973,7 @@
           "fileList": "列出了文件夹里的文件",
           "fileListFailed": "这次没有列出文件夹里的文件",
           "fileWrite": "写入了文件",
-          "fileWriteNamed": "已写入文件「{{filename}}」。",
+          "fileWriteNamed": "已写入文件「{{filename}}」",
           "fileWriteFailed": "这次没有写入文件",
           "fileEdit": "编辑了文件",
           "fileEditNamed": "编辑了文件「{{filename}}」",

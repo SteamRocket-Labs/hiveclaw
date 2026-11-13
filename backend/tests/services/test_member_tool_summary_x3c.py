@@ -101,7 +101,7 @@ def _operator_payload(row: SimpleNamespace) -> dict:
 def test_x3c_native_fetch_row_names_the_host_from_the_typed_target() -> None:
     # Production shape: firecrawl_fetch tool_result without args, with the
     # member_target the persistence path derived from the typed url argument.
-    row = _native_row("firecrawl_fetch", PAGE_BODY, member_target={"host": "deepwiki.com"})
+    row = _native_row("firecrawl_fetch", PAGE_BODY, member_target={"kind": "web_fetch", "host": "deepwiki.com"})
     before = json.dumps(_operator_payload(row), ensure_ascii=False, sort_keys=True)
     payload = _user_payload(row)
     assert payload["member_summary"] == {"kind": "web_fetch", "state": "done", "host": "deepwiki.com"}
@@ -113,13 +113,13 @@ def test_x3c_native_fetch_row_names_the_host_from_the_typed_target() -> None:
 
 
 def test_x3c_failed_fetch_names_the_host_that_did_not_open() -> None:
-    row = _native_row("web_fetch", "partial bytes", outcome="failed", member_target={"host": "example.org"})
+    row = _native_row("web_fetch", "partial bytes", outcome="failed", member_target={"kind": "web_fetch", "host": "example.org"})
     payload = _user_payload(row)
     assert payload["member_summary"] == {"kind": "web_fetch", "state": "not_done", "host": "example.org"}
 
 
 def test_x3c_native_file_read_names_the_basename_from_the_typed_target() -> None:
-    row = _native_row("read_file", "date,sales\n2026,35", member_target={"filename": "sales-run19.csv"})
+    row = _native_row("read_file", "date,sales\n2026,35", member_target={"kind": "file_read", "filename": "sales-run19.csv"})
     payload = _user_payload(row)
     assert payload["member_summary"] == {"kind": "file_read", "state": "done", "filename": "sales-run19.csv"}
     assert "2026,35" not in json.dumps(payload, ensure_ascii=False)
@@ -129,12 +129,12 @@ def test_x3c_native_file_read_names_the_basename_from_the_typed_target() -> None
 def test_x3c_write_and_edit_rows_name_the_file(tool: str, kind: str) -> None:
     # X3b left write/edit rows on the generic action.status sentence; X3c
     # summarizes them like reads, with the base name only.
-    row = _native_row(tool, "Write confirmed.", member_target={"filename": "weekly-report.md"})
+    row = _native_row(tool, "Write confirmed.", member_target={"kind": kind, "filename": "weekly-report.md"})
     payload = _user_payload(row)
     assert payload["member_summary"] == {"kind": kind, "state": "done", "filename": "weekly-report.md"}
     assert "Write confirmed." not in json.dumps(payload, ensure_ascii=False)
     # A refused write is not done.
-    failed = _native_row(tool, "denied", outcome="denied", member_target={"filename": "weekly-report.md"})
+    failed = _native_row(tool, "denied", outcome="denied", member_target={"kind": kind, "filename": "weekly-report.md"})
     assert _user_payload(failed)["member_summary"]["state"] == "not_done"
 
 
@@ -143,7 +143,7 @@ def test_x3c_company_mcp_row_names_the_trusted_connection_label() -> None:
     # 「使用已连接的应用」. X3c: the row names the trusted connection label
     # G4c uses; the remote tool name and description never enter the summary.
     body = json.dumps({"answer": "remote body with mcp_ask_wiki_question ids", "remote_tool": "ask_wiki_question"})
-    row = _native_row("mcp_ask_wiki_question", body, member_target={"app_label": "DeepWiki"})
+    row = _native_row("mcp_ask_wiki_question", body, member_target={"kind": "mcp_app", "app_label": "DeepWiki"})
     before = json.dumps(_operator_payload(row), ensure_ascii=False, sort_keys=True)
     payload = _user_payload(row)
     assert payload["member_summary"] == {"kind": "mcp_app", "state": "done", "app_label": "DeepWiki"}
@@ -151,7 +151,7 @@ def test_x3c_company_mcp_row_names_the_trusted_connection_label() -> None:
     assert "remote body" not in json.dumps(payload, ensure_ascii=False)
     assert json.dumps(_operator_payload(row), ensure_ascii=False, sort_keys=True) == before
     # A failed MCP call keeps the label with the not-done state.
-    failed = _native_row("mcp_ask_wiki_question", "upstream error", outcome="failed", member_target={"app_label": "DeepWiki"})
+    failed = _native_row("mcp_ask_wiki_question", "upstream error", outcome="failed", member_target={"kind": "mcp_app", "app_label": "DeepWiki"})
     assert _user_payload(failed)["member_summary"] == {
         "kind": "mcp_app", "state": "not_done", "app_label": "DeepWiki",
     }
@@ -167,21 +167,72 @@ def test_x3c_old_history_rows_keep_the_generic_sentence() -> None:
     assert _user_payload(fetch)["member_summary"] == {"kind": "web_fetch", "state": "done"}
 
 
-def test_x3c_args_still_win_over_the_stored_target() -> None:
-    # Legacy/compat rows and any payload carrying the real typed arguments
-    # derive from the arguments themselves (the actual call), never from a
-    # stale stored target.
-    row = _native_row("web_fetch", PAGE_BODY, member_target={"host": "stale.example"})
-    row.metadata_json["v2_payload"]["args"] = {"url": "https://fresh.example/path"}
-    payload = _user_payload(row)
-    assert payload["member_summary"]["host"] == "fresh.example"
-
-
 def test_x3c_member_target_filename_keeps_the_member_safe_rules() -> None:
     # The stored target is platform-written, but the read side still refuses a
     # UUID-shaped or directory-carrying name it did not expect.
     row = _native_row("read_file", "x", member_target={"filename": "120e98ce-d9e6-5e29-a707-7992e369a745.md"})
     assert "filename" not in _user_payload(row)["member_summary"]
+
+
+@pytest.mark.parametrize("path", [
+    "secrets/sk-proj-AbCdEf0123456789xyz.txt",
+    "AKIAIOSFODNN7EXAMPLE.csv",
+    "workspace/.env",
+    "a/id_rsa",
+    "a/api_key.txt",
+    "notes.txt?token=secret",
+    "creds/client_secret.pem",
+    "server.key",
+    "bearer-token-cache.json",
+    "credential-notes-2026.md",
+])
+def test_x3c_secret_shaped_filenames_are_never_shown(path: str) -> None:
+    # X3c r2 (review inputs): one rule at write and read time — a name that
+    # looks like a credential, or one carrying a query/fragment, stays nameless.
+    row = _native_row("read_file", "x", member_target={"kind": "file_read", "filename": path.rsplit("/", 1)[-1]})
+    summary = _user_payload(row)["member_summary"]
+    assert summary == {"kind": "file_read", "state": "done"}, path
+
+
+def test_x3c_plain_filenames_still_shown() -> None:
+    # The same rule must not eat ordinary work file names.
+    for name in ("sales-run19.csv", "weekly-report.md", "run8-count.md", "quarterly-report-2026.md"):
+        row = _native_row("read_file", "x", member_target={"kind": "file_read", "filename": name})
+        assert _user_payload(row)["member_summary"]["filename"] == name, name
+
+
+def test_x3c_a_host_is_a_host() -> None:
+    # X3c r2: percent-encoded paths/queries riding a malformed host, and a
+    # stored host with userinfo/port/path, never reach the member sentence —
+    # at write time and when reading back the stored target.
+    from app.services.session_event_contract import _member_summary_host
+
+    for url in ("https://example.com%2Fsecret%3Ftoken%3Dabc", "https://evil.com%0a.set"):
+        assert _member_summary_host({"url": url}) is None, url
+    row = _native_row("web_fetch", PAGE_BODY, member_target={"kind": "web_fetch", "host": "user:pass@evil.example:443/a?token=1"})
+    summary = _user_payload(row)["member_summary"]
+    assert summary == {"kind": "web_fetch", "state": "done"}
+    # A normal URL still yields exactly its host.
+    assert _member_summary_host({"url": "https://deepwiki.com/react"}) == "deepwiki.com"
+
+
+def test_x3c_raw_member_target_never_leaves_the_server_for_members() -> None:
+    # X3c r2: once the member summary is written, the raw stored target is
+    # dropped from the user-audience payload; the operator view keeps it.
+    row = _native_row("read_file", "x", member_target={"kind": "file_read", "filename": "sales-run19.csv"})
+    user = _user_payload(row)
+    assert user["member_summary"]["filename"] == "sales-run19.csv"
+    assert "member_target" not in user
+    operator = _operator_payload(row)
+    assert operator["member_target"] == {"kind": "file_read", "filename": "sales-run19.csv"}
+
+
+def test_x3c_stored_target_used_only_when_args_are_absent() -> None:
+    # X3c r2: a payload that still carries its typed arguments derives from
+    # them; the stored target is the args-absent fallback only.
+    row = _native_row("web_fetch", PAGE_BODY, member_target={"kind": "web_fetch", "host": "stale.example"})
+    row.metadata_json["v2_payload"]["args"] = {"url": "https://fresh.example/path"}
+    assert _user_payload(row)["member_summary"]["host"] == "fresh.example"
 
 
 async def _settled_invocation(
@@ -191,7 +242,7 @@ async def _settled_invocation(
     *,
     arguments: dict,
     execution_evidence_extra: dict | None = None,
-    mcp_tool_row: dict | None = None,
+    extra_seed=None,
 ):
     """The real persistence path: prepare -> effect started -> complete."""
 
@@ -200,11 +251,9 @@ async def _settled_invocation(
     )
 
     tenant, user, agent, session = await _seed(owner_sessionmaker)
-    if mcp_tool_row is not None:
-        from app.models.tool import Tool
-
+    if extra_seed is not None:
         async with owner_sessionmaker() as db:
-            db.add(Tool(tenant_id=tenant, type="mcp", **mcp_tool_row))
+            await extra_seed(db, tenant, user)
             await db.commit()
     _, run, turn = await _submit_turn(owner_sessionmaker, user_id=user, agent_id=agent,
         session_id=session, content="marker")
@@ -238,6 +287,43 @@ async def _settled_invocation(
         return tenant, agent, session, invocation.id
 
 
+def _mcp_company_connection(tool_name: str, *, server_name: str, personal=False, global_tool=False):
+    """Seed one MCP Tool row linked (or not) to one MCPServer row.
+
+    ``personal`` marks the server member-installed (owner_user_id set to the
+    session's seeded user); without it the server is company-owned
+    (owner_user_id IS NULL), the G4c company rule.
+    """
+
+    async def seed(db, tenant, user_id=None):
+        from app.models.mcp_server import MCPServer, MCPServerTool
+        from app.models.tool import Tool
+
+        tool = Tool(
+            id=uuid.uuid4(), name=tool_name, display_name=tool_name, description="",
+            type="mcp", tenant_id=None if global_tool else tenant,
+            mcp_server_name=server_name,
+            mcp_server_url=f"https://{server_name.lower().replace(' ', '-')}.example",
+            mcp_tool_name=tool_name,
+        )
+        db.add(tool)
+        if global_tool:
+            return
+        server = MCPServer(
+            id=uuid.uuid4(), tenant_id=tenant, name=server_name,
+            owner_user_id=user_id if personal else None,
+            server_key=f"{server_name}-{uuid.uuid4().hex[:8]}",
+            server_url=f"https://{server_name.lower().replace(' ', '-')}.example",
+        )
+        db.add(server)
+        await db.flush()
+        db.add(MCPServerTool(
+            tenant_id=tenant, mcp_server_id=server.id, tool_id=tool.id, mcp_tool_name=tool_name,
+        ))
+
+    return seed
+
+
 async def _result_payload(owner_sessionmaker, invocation_id) -> dict:
     from app.models.chat_transcript_event import ChatTranscriptEvent
 
@@ -250,16 +336,28 @@ async def _result_payload(owner_sessionmaker, invocation_id) -> dict:
         return event.metadata_json["v2_payload"]
 
 
+@pytest.mark.parametrize("mode,kind", [("delete", "file_delete"), ("edit", "file_edit"), ("write", "file_write"), (None, "file_write")])
+def test_x3c_fs_write_kind_follows_args_mode_on_the_read_side(mode, kind) -> None:
+    # Legacy/compat fs_write rows still carry their arguments; the kind
+    # follows the mode there too (X3c r2).
+    row = _native_row("fs_write", "ok")
+    row.metadata_json["v2_payload"]["args"] = {"path": "workspace/weekly-report.md", **({"mode": mode} if mode else {})}
+    summary = _user_payload(row)["member_summary"]
+    assert summary["kind"] == kind
+    assert summary.get("filename") == (None if kind == "file_delete" else "weekly-report.md")
+
+
 @pytest.mark.asyncio
 async def test_x3c_persistence_stores_the_typed_file_target(owner_sessionmaker) -> None:
     # The real path: a tool call goes in, the transcript event comes out with
-    # the typed target derived from the typed arguments.
+    # the typed target (r2: the resolved kind is stored with the value because
+    # production result payloads carry no arguments).
     _, _, _, invocation_id = await _settled_invocation(
         owner_sessionmaker, "read_file", 'print("source")\n' * 10,
         arguments={"path": "memory/t0/sessions/s/workspace/uploads/sales-run19.csv"},
     )
     payload = await _result_payload(owner_sessionmaker, invocation_id)
-    assert payload["member_target"] == {"filename": "sales-run19.csv"}
+    assert payload["member_target"] == {"kind": "file_read", "filename": "sales-run19.csv"}
 
 
 @pytest.mark.asyncio
@@ -269,24 +367,93 @@ async def test_x3c_persistence_stores_the_typed_host_target(owner_sessionmaker) 
         arguments={"url": "https://deepwiki.com/react/python"},
     )
     payload = await _result_payload(owner_sessionmaker, invocation_id)
-    assert payload["member_target"] == {"host": "deepwiki.com"}
+    assert payload["member_target"] == {"kind": "web_fetch", "host": "deepwiki.com"}
+
+
+@pytest.mark.parametrize("mode,expected", [
+    ("delete", {"kind": "file_delete"}),
+    ("edit", {"kind": "file_edit", "filename": "weekly-report.md"}),
+    ("write", {"kind": "file_write", "filename": "weekly-report.md"}),
+    (None, {"kind": "file_write", "filename": "weekly-report.md"}),
+])
+@pytest.mark.asyncio
+async def test_x3c_fs_write_follows_its_mode(owner_sessionmaker, mode, expected) -> None:
+    # X3c r2: fs_write is one tool with three modes. A delete stores no name
+    # and its kind, so the row never reads as a write; edit/write store the
+    # matching sentence kind with the base name.
+    arguments = {"path": "workspace/weekly-report.md"}
+    if mode is not None:
+        arguments["mode"] = mode
+    _, _, _, invocation_id = await _settled_invocation(
+        owner_sessionmaker, "fs_write", "ok", arguments=arguments,
+    )
+    payload = await _result_payload(owner_sessionmaker, invocation_id)
+    assert payload["member_target"] == expected
+    summary = _user_payload(_row_of(payload))["member_summary"]
+    assert summary["kind"] == expected["kind"]
+    assert summary.get("filename") == expected.get("filename")
+
+
+def _row_of(payload: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid4(), sequence=42, tenant_id=uuid4(), schema_version=2,
+        scope_json={"level": "round", "session_id": "s1", "thread_id": "s1", "turn_id": "tu", "run_id": "ru", "round_id": "ro"},
+        item_id=str(uuid4()), item_kind="tool_result", event_type="tool_result.completed",
+        lifecycle="completed", payload_schema="hive.session.payload.tool_result.completed.v2",
+        actor_type="tool", visibility_scope="direct_user", run_id="ru", message_id="m1",
+        invocation_id="inv-x3c", provider_tool_use_id="ptu", content_hash="h" * 8,
+        created_at="2026-11-13T10:00:00Z",
+        metadata_json={"actor": {"type": "tool"}, "visibility": {"audience": "direct_user"},
+                       "v2_persisted_at": "2026-11-13T10:00:00Z", "v2_payload": payload},
+    )
 
 
 @pytest.mark.asyncio
-async def test_x3c_persistence_stores_the_trusted_mcp_connection_label(owner_sessionmaker) -> None:
-    # Tool.type == 'mcp' is the typed decision; the label is the same
-    # trusted_connection_label G4c uses, resolved at write time only.
+async def test_x3c_mcp_label_names_the_company_connection_that_ran(owner_sessionmaker) -> None:
+    # X3c r2: a same-named tenant row and global row both exist; the tenant
+    # row the executor picks wins, and the label comes from that row's own
+    # company server (MCPServer.owner_user_id IS NULL, the G4c company rule).
+    async def seed(db, tenant, user_id=None):
+        await _mcp_company_connection("mcp_ask_wiki_question", server_name="Acme Internal Wiki")(db, tenant)
+        await _mcp_company_connection(
+            "mcp_ask_wiki_question", server_name="GlobalWiki", global_tool=True,
+        )(db, tenant)
+
     _, _, _, invocation_id = await _settled_invocation(
         owner_sessionmaker, "mcp_ask_wiki_question", json.dumps({"answer": "remote"}),
         arguments={"repoName": "facebook/react", "question": "how?"},
-        mcp_tool_row={
-            "id": uuid.uuid4(), "name": "mcp_ask_wiki_question", "display_name": "DeepWiki ask",
-            "description": "ask", "mcp_server_name": "DeepWiki", "mcp_server_url": "https://deepwiki.com",
-            "mcp_tool_name": "ask_wiki_question",
-        },
+        extra_seed=seed,
     )
     payload = await _result_payload(owner_sessionmaker, invocation_id)
-    assert payload["member_target"] == {"app_label": "DeepWiki"}
+    assert payload["member_target"] == {"kind": "mcp_app", "app_label": "Acme Internal Wiki"}
+
+
+@pytest.mark.asyncio
+async def test_x3c_personal_mcp_connection_gets_no_label(owner_sessionmaker) -> None:
+    # X3c r2: a member-installed server (owner_user_id set) is not a company
+    # connection; its rows keep the generic sentence.
+    _, _, _, invocation_id = await _settled_invocation(
+        owner_sessionmaker, "mcp_ask_wiki_question", json.dumps({"answer": "remote"}),
+        arguments={"repoName": "facebook/react"},
+        extra_seed=_mcp_company_connection(
+            "mcp_ask_wiki_question", server_name="My Personal Wiki", personal=True,
+        ),
+    )
+    payload = await _result_payload(owner_sessionmaker, invocation_id)
+    assert "member_target" not in payload
+
+
+@pytest.mark.asyncio
+async def test_x3c_registry_mcp_tools_skip_the_connection_lookup(owner_sessionmaker) -> None:
+    # X3c r2: a name the registry already summarizes (mcp_list_resources and
+    # the like) stores no target even when a matching Tool row exists.
+    _, _, _, invocation_id = await _settled_invocation(
+        owner_sessionmaker, "mcp_list_resources", json.dumps({"resources": []}),
+        arguments={"server": "DeepWiki"},
+        extra_seed=_mcp_company_connection("mcp_list_resources", server_name="DeepWiki"),
+    )
+    payload = await _result_payload(owner_sessionmaker, invocation_id)
+    assert "member_target" not in payload
 
 
 @pytest.mark.asyncio
@@ -314,10 +481,10 @@ async def test_x3c_persistence_keeps_the_typed_command_result(owner_sessionmaker
 
 @pytest.mark.asyncio
 async def test_x3c_model_input_bytes_unchanged_by_the_typed_target(owner_sessionmaker) -> None:
-    # The model-input proof on the real history-replay path: after the write
-    # path stores member_target, the replayed provider messages are exactly
-    # the durable result bytes — the new field reaches neither the replayed
-    # content nor any provider message field.
+    # The model-input proof on the real history-replay path: the replayed
+    # provider messages are exactly the durable result bytes, and deleting
+    # member_target from the stored row changes nothing in the replay (r2:
+    # the strengthened before/after comparison over the full message list).
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.services.session_event_contract import serialize_session_event
     from app.services.session_semantic_history import load_session_semantic_history
@@ -333,7 +500,7 @@ async def test_x3c_model_input_bytes_unchanged_by_the_typed_target(owner_session
             ChatTranscriptEvent.event_type == "tool_result.completed",
         ))
         durable_payload = event.metadata_json["v2_payload"]
-        assert durable_payload["member_target"] == {"filename": "sales-run19.csv"}
+        assert durable_payload["member_target"] == {"kind": "file_read", "filename": "sales-run19.csv"}
         row = SimpleNamespace(
             id=event.id, sequence=event.sequence, tenant_id=event.tenant_id, schema_version=2,
             scope_json=event.scope_json, item_id=event.item_id or str(event.id), item_kind=event.item_kind,
@@ -350,9 +517,14 @@ async def test_x3c_model_input_bytes_unchanged_by_the_typed_target(owner_session
         history = await load_session_semantic_history(db, tenant_id=tenant, agent_id=agent, session_id=session)
         tool_messages = [message for message in history.messages if message.role == "tool"]
         assert tool_messages, "fixture_did_not_produce_tool_replay"
-        # Byte identity: every replayed tool message is the exact durable
-        # content, and the typed target appears in no provider message bytes.
+        # Byte identity: every replayed tool message is the exact durable content.
         assert all(str(message.content) == content for message in tool_messages)
-        assert "member_target" not in json.dumps(
-            [dataclasses.asdict(message) for message in history.messages], ensure_ascii=False, default=str
-        )
+        before = [dataclasses.asdict(message) for message in history.messages]
+        # r2: strip the stored field and replay again — the provider messages
+        # the model would receive are identical without it.
+        stored = event.metadata_json["v2_payload"]
+        stored.pop("member_target")
+        await db.commit()
+        again = await load_session_semantic_history(db, tenant_id=tenant, agent_id=agent, session_id=session)
+        assert [dataclasses.asdict(message) for message in again.messages] == before
+        assert "member_target" not in json.dumps(before, ensure_ascii=False, default=str)

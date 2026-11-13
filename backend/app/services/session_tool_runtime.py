@@ -38,34 +38,86 @@ async def _member_target_for_invocation(
     Production member-view events never carry the arguments (a native
     tool_call has only args_hash, a native tool_result has no args), so the
     row's file name, fetch host or connected-app label must be derived here —
-    from the typed arguments or the tool's trusted connection — and read back
-    at serialization without a per-event lookup. Result text is never read.
+    once, while the typed arguments are in hand — and read back at
+    serialization without a per-event lookup. Result text is never read.
+
+    X3c r2: one function decides the kind first and looks up MCP only when
+    the registry does not already know it; ``fs_write`` follows its ``mode``
+    (a delete gets no write target at all); an app label names only the
+    company connection that actually ran — the Tool row the executor picks
+    (tenant before global, deterministic), labeled only when its server is
+    company-owned (MCPServer.owner_user_id IS NULL, the G4c company rule).
+    Personal or member-installed connections keep the generic sentence.
     """
 
-    from app.services.session_event_contract import member_safe_tool_target
+    from app.services.session_event_contract import (
+        MEMBER_TOOL_SUMMARY_KINDS,
+        _member_summary_filename,
+        _member_summary_host,
+    )
 
-    target = member_safe_tool_target(tool_name, arguments)
-    if target is not None:
-        return target
-    if not tool_name.startswith("mcp"):
+    kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
+    if tool_name == "fs_write" and kind == "file_write":
+        mode = str((arguments or {}).get("mode") or "").strip().lower()
+        kind = {"delete": "file_delete", "edit": "file_edit"}.get(mode, "file_write")
+    if kind == "web_fetch":
+        host = _member_summary_host(arguments)
+        return {"kind": "web_fetch", "host": host} if host else None
+    if kind in {"file_read", "file_write", "file_edit"}:
+        filename = _member_summary_filename(arguments)
+        return {"kind": kind, "filename": filename} if filename else None
+    if kind == "file_delete":
+        return {"kind": "file_delete"}
+    if kind is not None or not tool_name.startswith("mcp"):
+        # A name the registry already summarizes (mcp_list_resources and the
+        # like) never needs a connection label; neither does a non-MCP name.
         return None
+
+    from app.models.mcp_server import MCPServer, MCPServerTool
     from app.models.tool import Tool
 
-    row = await db.execute(
-        select(Tool.mcp_server_name, Tool.mcp_server_url).where(
-            Tool.name == tool_name,
-            Tool.type == "mcp",
-            or_(Tool.tenant_id == tenant_id, Tool.tenant_id.is_(None)),
+    tool_row = (
+        await db.execute(
+            select(Tool.id)
+            .where(
+                Tool.name == tool_name,
+                Tool.type == "mcp",
+                or_(Tool.tenant_id == tenant_id, Tool.tenant_id.is_(None)),
+            )
+            # The executor resolves the tenant row before the global row
+            # (web_mcp._resolve_mcp_tool); keep the same deterministic pick.
+            .order_by(Tool.tenant_id.is_(None), Tool.id)
+            .limit(1)
         )
-    )
-    connection = row.first()
-    if connection is None:
+    ).first()
+    if tool_row is None:
+        return None
+    server = (
+        await db.execute(
+            select(MCPServer.name, MCPServer.server_url)
+            .join(
+                MCPServerTool,
+                and_(
+                    MCPServerTool.mcp_server_id == MCPServer.id,
+                    MCPServerTool.tenant_id == tenant_id,
+                ),
+            )
+            .where(
+                MCPServerTool.tool_id == tool_row.id,
+                MCPServer.tenant_id == tenant_id,
+                # Company connections only, the same rule as G4c's company
+                # app list; member-installed servers keep the generic sentence.
+                MCPServer.owner_user_id.is_(None),
+            )
+            .order_by(MCPServer.name, MCPServer.id)
+            .limit(1)
+        )
+    ).first()
+    if server is None:
         return None
     from app.services.mcp_metadata_trust import trusted_connection_label
 
-    # The same trusted-only label G4c shows (never the remote tool name or
-    # description); mcp__ / legacy mcp_ naming both start with "mcp".
-    return {"app_label": trusted_connection_label(connection.mcp_server_name, connection.mcp_server_url)}
+    return {"kind": "mcp_app", "app_label": trusted_connection_label(server.name, server.server_url)}
 
 
 def permission_run_session_clause(session_id):

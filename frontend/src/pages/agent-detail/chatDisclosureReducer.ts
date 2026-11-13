@@ -554,6 +554,19 @@ function getEventStepPresentation(
   return 'surface';
 }
 
+/** X3c r2: the one judgement for a command's typed execution result. Only a
+ * clean zero exit is done; a null or missing exit code (the write side's
+ * "not a clean zero"), a non-number code, a timeout or a kill is not done.
+ * A timeout or an unreadable code keeps R13c's unconfirmed sentence. */
+export function commandExecutionOutcome(execution: unknown): 'done' | 'failed' | 'unknown' | null {
+  if (!execution || typeof execution !== 'object' || Array.isArray(execution)) return null;
+  const record = execution as { exit_code?: unknown; timed_out?: unknown };
+  if (record.timed_out === true) return 'unknown';
+  const code = record.exit_code;
+  if (typeof code !== 'number' || !Number.isFinite(code)) return 'unknown';
+  return code === 0 ? 'done' : 'failed';
+}
+
 function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean): RunStepStatus {
   const live = (status: RunStepStatus): RunStepStatus =>
     status === 'running' && !allowLiveRunning ? 'interrupted' : status;
@@ -580,17 +593,13 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
       // not-done status used here.
       return 'failed';
     }
-    // X3c: a command that ran (outcome success) still failed when its typed
-    // execution result says so — a non-zero exit or a timeout is not done.
-    // Decided from the typed payload field only, never from output text;
-    // a zero exit stays done.
-    const execution = message.sessionItem?.payload?.code_execution_result;
-    if (execution && typeof execution === 'object' && !Array.isArray(execution)) {
-      const record = execution as { exit_code?: unknown; timed_out?: unknown };
-      if (record.timed_out === true
-        || (typeof record.exit_code === 'number' && Number.isFinite(record.exit_code) && record.exit_code !== 0)) {
-        return 'failed';
-      }
+    // X3c r2: a command that ran (outcome success) still failed when its
+    // typed execution result is not a clean zero exit — the same predicate
+    // the sentence uses, decided from the typed payload field only, never
+    // from output text.
+    const execution = commandExecutionOutcome(message.sessionItem?.payload?.code_execution_result);
+    if (execution !== null && execution !== 'done') {
+      return 'failed';
     }
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking && !message.toolMeta.answered) return 'blocked';
     if (message.toolMeta?.kind === 'runtime_step') {

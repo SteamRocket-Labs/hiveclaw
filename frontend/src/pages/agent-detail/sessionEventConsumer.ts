@@ -410,8 +410,8 @@ function projectCanonicalItem(
     // N4: the write-side tool_name on result payloads is the only new source
     // of standalone-result titles; keep it limited to the summarized set so
     // every other tool keeps its old title.
-    const directPayloadName = typeof recordValue(item.payload).tool_name === 'string'
-      ? recordValue(item.payload).tool_name as string : undefined;
+    const directName = (recordValue(item.payload) ?? {}).tool_name;
+    const directPayloadName = typeof directName === 'string' ? directName : undefined;
     const envelopePayload = item.kind === 'tool_result' && directPayloadName && !isMemberSummarizedTool(directPayloadName)
       ? { ...item.payload, tool_name: undefined }
       : item.payload;

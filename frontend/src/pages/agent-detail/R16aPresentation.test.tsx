@@ -43,7 +43,8 @@ it('R16a.1 gives uploaded cards their own phone layout with a two-line name and 
     { name: 'sales-run12.csv', path: 'workspace/uploads/sales-run12.csv', source: 'human_input', mimeType: 'text/csv', size: 849 },
   ]} />);
   expect(container.querySelector('.chat-artifact-row.is-upload')).toBeTruthy();
-  expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('csv · 849 B');
+  // X3b item 12 localizes the file type in the Chinese UI.
+  expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('CSV 表格 · 849 B');
   expect(css).toMatch(/@media\s*\(max-width:\s*600px\)[\s\S]*\.chat-artifact-row\.is-upload\s*\{[^}]*flex-wrap:\s*wrap/);
   expect(css).toMatch(/\.is-upload\s+\.chat-artifact-stem\s*\{[^}]*-webkit-line-clamp:\s*2/);
   expect(container.querySelector('.chat-artifact-extension')?.textContent).toBe('.csv');
@@ -53,7 +54,8 @@ it('R16a.1 round2 uses the delivered-card preview kind for uploads when availabl
   const { container } = render(<ArtifactCards agentId="bot" artifacts={[
     { name: 'notes.md', path: 'workspace/uploads/notes.md', source: 'human_input', mimeType: 'text/markdown', previewKind: 'markdown', size: 32 },
   ]} />);
-  expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('markdown · 32 B');
+  // X3b item 12 localizes the file type in the Chinese UI.
+  expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('Markdown 文档 · 32 B');
 });
 
 it('R16a.1 retains available upload size in the composer card', () => {
@@ -93,15 +95,16 @@ it('R16a.6 preserves native English, escapes and code', () => {
   expect(container.textContent).toContain('**“literal”**后');
 });
 
-it('R16a.7 counts only reads shown in steps and retains a failed read in the total', () => {
+it('R16a.7 counts only successful reads and keeps a failed read reachable (X3b item 11)', () => {
   const tools = ['list_files', 'fs_list', 'write_file', 'fs_write', 'edit_file', 'delete_file', 'read_file', 'fs_read', 'read_document'];
-  const messages = tools.map((toolName, i) => ({ id: String(i), role: 'tool_call' as const, content: '', toolName, toolStatus: 'done' as const }));
+  const messages = tools.map((toolName, i) => ({ id: String(i), role: 'tool_call' as const, content: '', toolName, toolStatus: 'done' as const, eventStatus: 'success' }));
   expect(buildRunTimelineFromMessages(messages).summary?.files).toBe(3);
-  messages[6] = { ...messages[6], toolStatus: 'failed' as never };
+  messages[6] = { ...messages[6], eventStatus: 'failed' };
   const timeline = buildRunTimelineFromMessages(messages);
-  expect(timeline.summary?.files).toBe(3);
+  // X3b item 11 excludes the typed failure from the successful-read count.
+  expect(timeline.summary?.files).toBe(2);
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
-  expect(container.querySelector('.run-disclosure-summary')?.textContent).toContain('读取 3 个文件');
+  expect(container.querySelector('.run-disclosure-summary')?.textContent).toContain('读取 2 个文件');
   expect(timeline.steps.filter(step => ['read_file', 'fs_read', 'read_document'].includes((step.details as {toolName: string}).toolName))).toHaveLength(3);
 });
 
@@ -121,7 +124,8 @@ it('R16a.8 names the tool supplied by event data', () => {
   ] }} />);
   expect(container.querySelector('.run-step-title, .run-tool-history-title')?.textContent).toBe('读取文件');
   fireEvent.click(container.querySelector('.run-step-toggle, .run-tool-history-toggle')!);
-  expect(container.querySelector('p')?.textContent).toContain('读取文件');
+  // X3b item 4 uses a read sentence; missing typed paths give no filename.
+  expect(container.querySelector('p')?.textContent).toBe('读取了文件');
 });
 
 it('R16a.9 uses member wording for loading and delivered versions', () => {

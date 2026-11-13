@@ -41,16 +41,18 @@ it.each([
 });
 
 it.each([
-  ['write_file', { path: 'workspace/sales-report-sales-run8.md' }, '✅ Written to workspace/sales-report-sales-run8.md (3123 chars)'],
-  ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。'],
-] as const)('shows the recorded non-command %s result as in production without mutating the model payload', (toolName, toolArgs, toolResult) => {
+  ['write_file', { path: 'workspace/sales-report-sales-run8.md' }, '✅ Written to workspace/sales-report-sales-run8.md (3123 chars)', '已写入文件「sales-report-sales-run8.md」。'],
+  // Controller ruling X3b r3 item 1: no structural success signal survives both paths.
+  ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。', '保存记忆。已返回结果'],
+] as const)('shows a non-command %s sentence without mutating the model payload (X3b item 2)', (toolName, toolArgs, toolResult, sentence) => {
   const message: AgentChatMessage = { id: toolName, role: 'tool_call', content: '', toolName, toolArgs, toolResult, toolStatus: 'done' };
   const before = JSON.stringify(message);
   const timeline = buildRunTimelineFromMessages([message]);
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
   expand(container);
-  // owner ruling 11-10: non-command results show as on 2182d216
-  expect(container.querySelector('p')?.textContent).toBe(toolResult);
+  // X3b item 2: sentences use typed path/status, never the original result body.
+  expect(container.querySelector('p')?.textContent).toBe(sentence);
+  expect(container.textContent).not.toContain(toolResult);
   expect(JSON.stringify(message)).toBe(before);
   expect((timeline.steps[0].details as { result: string }).result).toBe(toolResult);
 });
@@ -66,7 +68,9 @@ it.each([
   const timeline = buildRunTimelineFromMessages([message]);
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
   expand(container);
-  expect(container.querySelector('p')?.textContent).toBe(text);
+  // Controller ruling X3b r3 item 1: typed memory arguments alone cannot prove success.
+  expect(container.querySelector('p')?.textContent).toBe(toolName === 'write_file' ? text : '保存记忆。已返回结果');
+  if (toolName === 'save_memory') expect(container.textContent).not.toContain('已记住');
   expect(container.textContent).not.toMatch(/Written to|Saved memory|workspace|106|model_visible_text/);
   expect(JSON.stringify(message)).toBe(before);
   expect((timeline.steps[0].details as { rawResult: string }).rawResult).toBe(JSON.stringify(envelope));
@@ -106,13 +110,14 @@ it.each([
   '报告位于/var/tmp/report.md',
   "{'rows': 20, 'ok': True}", '{"rows": 20, "ok": True}', 'Traceback (most recent call last):\nValueError: PRIVATE_ERROR',
   'send_message_to_agent failed', 'call_private123',
-])('shows non-JSON non-command result text as in production: %s', toolResult => {
+])('replaces unsummarized non-command output with a sentence (X3b item 2): %s', toolResult => {
   const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
     { role: 'tool_call', content: '', toolName: 'send_message_to_agent', toolResult, toolStatus: 'done' },
   ])} />);
   expand(container);
-  // owner ruling 11-10: non-command results show as on 2182d216
-  expect(container.querySelector('p')?.textContent).toBe(toolResult.replace(/\r?\n/g, ' '));
+  // X3b item 2 supersedes raw-output display for every listed shape.
+  expect(container.querySelector('p')?.textContent).toBe('联系同事。已返回结果');
+  expect(container.textContent).not.toContain(toolResult.replace(/\r?\n/g, ' '));
 });
 
 it.each([
@@ -128,24 +133,28 @@ it.each([
   '和/或',
   '对方数字员工暂不可用',
   '报告内容已读取。',
-] as const)('preserves the recorded non-command result sentence: %s', toolResult => {
+] as const)('keeps non-command prose internal and shows a sentence (X3b item 2): %s', toolResult => {
   const timeline = buildRunTimelineFromMessages([
     { role: 'tool_call', content: '', toolName: 'send_message_to_agent', toolResult, toolStatus: 'done' },
   ]);
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
   expand(container);
-  // owner ruling 11-10: non-command results show as on 2182d216
-  expect(container.querySelector('p')?.textContent).toBe(toolResult);
+  // X3b item 2 applies to apparently readable prose and diagnostic text alike.
+  expect(container.querySelector('p')?.textContent).toBe('联系同事。已返回结果');
+  expect(container.textContent).not.toContain(toolResult);
   expect((timeline.steps[0].details as { result: string }).result).toBe(toolResult);
 });
 
-it('shows dates, ratios, A/B groups and a URL verbatim in a non-command result', () => {
+it('keeps dates, ratios and URLs in raw results internal (X3b item 2)', () => {
   const toolResult = '截至 2026/11/10 完成 3/4，A/B 两组：见 https://example.com';
   const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
     { role: 'tool_call', content: '', toolName: 'read_file', toolResult, toolStatus: 'done' },
   ])} />);
   expand(container);
-  expect(container.querySelector('p')?.textContent).toBe(toolResult);
+  // X3b item 2 does not classify prose to decide whether it is safe to show.
+  expect(container.querySelector('p')?.textContent).toBe('读取了文件');
+  expect(container.textContent).not.toContain(toolResult);
+  expect(container.textContent).not.toContain('https://');
 });
 
 it('names the recorded generic step and readiness event with everyday words', () => {
@@ -201,18 +210,19 @@ it('keeps model-authored words intact even when they contain technical vocabular
   expect(container.querySelector('.run-commentary-content')?.textContent).toBe(content);
 });
 
-it('preserves sibling lines when summarizing a mixed non-command memory result', () => {
+it('shows only the typed availability notice from a mixed memory result (X3b item 2)', () => {
   const toolResult = 'INTERNAL_HEADER /vercel/sandbox/workspace\n{"schema":"hive.explicit_memory_availability.v1"}\nPRIVATE_RAW_LINE';
   const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
     { role: 'tool_call', content: '', toolName: 'search_memory', toolResult, toolStatus: 'done' },
   ])} />);
   expand(container);
-  // owner ruling 11-10: non-command results show as on 2182d216
-  expect(container.querySelector('p')?.textContent).toBe('INTERNAL_HEADER /vercel/sandbox/workspace\n目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。\nPRIVATE_RAW_LINE');
+  // X3b item 2 keeps the typed notice and omits unsummarized sibling prose.
+  expect(container.querySelector('p')?.textContent).toBe('目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。');
+  expect(container.textContent).not.toMatch(/INTERNAL_HEADER|PRIVATE_RAW_LINE|workspace/);
   expect(container.textContent).not.toContain('schema');
 });
 
-it.each(['search_memory', 'load_memory'])('preserves the memory body beside the availability notice from %s', toolName => {
+it.each(['search_memory', 'load_memory'])('shows the typed availability notice without the raw body from %s (X3b item 2)', toolName => {
   const body = '## 你要求记住的内容\n- 偏好深色界面\n\n## 可用情况\n';
   const message = '目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。';
   const toolResult = body + JSON.stringify({ schema: 'hive.explicit_memory_availability.v1', status: 'partial',
@@ -222,18 +232,22 @@ it.each(['search_memory', 'load_memory'])('preserves the memory body beside the 
   ]);
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
   expand(container);
-  expect(container.querySelector('p')?.textContent).toBe(body + message);
+  // X3b item 2 removes the body from the member view; the model copy stays exact.
+  expect(container.querySelector('p')?.textContent).toBe(message);
+  expect(container.textContent).not.toContain('偏好深色界面');
   expect(container.textContent).not.toMatch(/schema|explicit_memory_source_unverified/);
   expect((timeline.steps[0].details as { result: string }).result).toBe(toolResult);
 });
 
-it('preserves recalled conversation lines beside a recall error notice', () => {
+it('shows the typed recall error notice without raw conversation lines (X3b item 2)', () => {
   const toolResult = '已找到的对话内容。\n## 相关对话\n{"schema":"hive.session_recall_error.v1"}';
   const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
     { role: 'tool_call', content: '', toolName: 'search_memory', toolResult, toolStatus: 'done' },
   ])} />);
   expand(container);
-  expect(container.querySelector('p')?.textContent).toBe('已找到的对话内容。\n## 相关对话\n暂时无法读取这部分历史对话，请稍后重试。');
+  // X3b item 2 allows the exact typed notice, not adjacent result prose.
+  expect(container.querySelector('p')?.textContent).toBe('暂时无法读取这部分历史对话，请稍后重试。');
+  expect(container.textContent).not.toContain('已找到的对话内容');
   expect(container.textContent).not.toContain('schema');
 });
 

@@ -2684,7 +2684,9 @@
           "subagentRunning": "{{name}} 正在后台处理任务。",
           "filesUpdated": "已更新 {{count}} 个文件",
           "filesUpdated_one": "已更新 {{count}} 个文件",
-          "filesUpdated_other": "已更新 {{count}} 个文件"
+          "filesUpdated_other": "已更新 {{count}} 个文件",
+          "colleagueEnded": "同事任务已结束",
+          "noResultKept": "没有可供查看的结果；本次对话未继续。"
         },
         "failure": {
           "tokenBudget": "这次用完了用量预算，没有完成。",
@@ -2768,7 +2770,10 @@
         "elapsedMinutesSeconds": "{{minutes}} 分 {{seconds}} 秒",
         "memoryUnavailable": "暂时无法读取这部分历史对话，请稍后重试。",
         "memoryPartial": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。",
-        "openColleagueConversation": "查看这位同事的对话"
+        "openColleagueConversation": "查看这位同事的对话",
+        "failedMarker": "未完成",
+        "stoppedMarker": "已停止",
+        "blockedMarker": "等待处理"
       },
       "artifacts": {
         "viewSource": "查看源码",
@@ -2810,7 +2815,20 @@
         "withdrawOriginalConfirm": "撤回后，后续工作将不能使用这份原件。当前工作文件保持不变，历史与保留数据不会被删除。",
         "withdrawOriginalFailed": "未能确认撤回，请先查看原件状态，再决定是否重试。",
         "originalStatusFailed": "无法加载原件状态，请再次点击“原件状态”重试。",
-        "retainedOriginal": "查看保留原件"
+        "retainedOriginal": "查看保留原件",
+        "fileTypes": {
+          "other": "文件",
+          "markdown": "Markdown 文档",
+          "md": "Markdown 文档",
+          "csv": "CSV 表格",
+          "text": "文本文档",
+          "txt": "文本文档",
+          "office": "办公文档",
+          "pdf": "PDF 文档",
+          "image": "图片",
+          "download": "文件",
+          "html": "HTML 文档"
+        }
       },
       "toolResults": {
         "talkToCreatedBot": "和它说话",
@@ -2945,7 +2963,24 @@
           "skillLoad": "加载了技能",
           "skillLoadFailed": "技能没有加载成功",
           "contextRead": "查看了工作资料",
-          "contextReadFailed": "工作资料这次没读到"
+          "contextReadFailed": "工作资料这次没读到",
+          "personalSearch": "查找个人资料",
+          "companySearch": "查找公司资料",
+          "recordSearch": "查找资料",
+          "searchEmpty": "{{action}}，没有找到相关内容",
+          "searchFound": "{{action}}，找到了相关内容",
+          "searchFailed": "{{action}}，这次没有成功",
+          "fileList": "列出了文件夹里的文件",
+          "fileListFailed": "这次没有列出文件夹里的文件",
+          "fileWriteNamed": "已写入文件「{{filename}}」。",
+          "memorySaved": "已记住：{{content}}",
+          "fileRead": "读取了文件",
+          "fileReadNamed": "读取了文件「{{filename}}」",
+          "fileReadFailed": "这次没有读取文件",
+          "webFetchFailedHost": "没有打开网页 {{host}}",
+          "delegationStopped": "已停止，同事没有完成这项工作。",
+          "delegationDone": "同事已完成这项工作。",
+          "delegationFailed": "同事没有完成这项工作。"
         }
       },
       "workLedger": {

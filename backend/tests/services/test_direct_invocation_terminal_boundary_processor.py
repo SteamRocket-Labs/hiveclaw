@@ -132,6 +132,95 @@ async def _async_value(value):
     return value
 
 
+@pytest.mark.parametrize("case", ["origin_killed", "origin_skipped", "origin_failed", "no_origin", "empty", "none",
+    "empty_no_reason", "text_last", "none_last", "number_last"])
+async def test_x3br2_pre_start_projection_respects_instruction_gate(owner_sessionmaker, monkeypatch, case):
+    from unittest.mock import AsyncMock
+    from app.database import tenant_scoped_session
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.services.session_event_contract import serialize_session_event
+    from app.services import direct_invocation_terminal_boundary_processor as boundary
+    from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+
+    seeded = await _seed_postgres_direct_terminal(owner_sessionmaker, task_type="delegation", include_response_payload=False)
+    task_id, child_id = uuid.uuid4(), uuid.uuid4()
+    instruction = "  Preserve this exact delegated instruction.\nPrivate task content.\n"
+    origin = case.startswith("origin_")
+    malformed = {"text_last": ["text"], "none_last": [None], "number_last": [1]}
+    messages = malformed.get(case, [] if case in {"empty", "none", "empty_no_reason"} else [{"role": "user", "content": instruction}])
+    no_reason = case == "empty_no_reason" or case in malformed
+    if origin:
+        messages[0]["a2a_instruction_origin"] = {"parent_session_id": str(seeded.parent_session_id), "tool_call_item_id": str(uuid.uuid4())}
+    status = case.removeprefix("origin_") if origin else "killed"
+    async with tenant_scoped_session(seeded.tenant_id, session_factory=owner_sessionmaker) as db:
+        task = RuntimeTask(id=task_id, tenant_id=seeded.tenant_id, task_type="delegation", status=status,
+            parent_agent_id=seeded.parent_agent_id, child_agent_id=seeded.child_agent_id,
+            parent_session_id=str(seeded.parent_session_id), child_session_id=str(child_id), root_user_id=seeded.user_id,
+            root_session_id=str(seeded.parent_session_id), completed_at=datetime.now(UTC),
+            prompt=None if case == "none" else "" if case == "empty" else "The prompt copy must not replace stored messages.",
+            result_summary="Task cancelled by parent agent", terminal_boundary_generation=1,
+            metadata_json={"conversation_messages": messages, **({} if no_reason else {"terminal_reason": "task_killed"})})
+        db.add(task)
+        await db.flush()
+        db.add(ChatSession(id=child_id, tenant_id=seeded.tenant_id, agent_id=seeded.child_agent_id,
+            user_id=seeded.user_id, runtime_task_id=task_id, peer_agent_id=seeded.parent_agent_id,
+            parent_session_id=seeded.parent_session_id, session_kind="delegation_run", source_channel="agent",
+            visibility_scope="agent_owner", listed_surface="chat", title="Pre-start delegation"))
+        await db.flush()
+        sealed = await boundary.enqueue_direct_terminal_boundary_for_task(db, task)
+        assert sealed is not None
+        snapshot = json.dumps(boundary.direct_terminal_authority_snapshot(task), sort_keys=True, default=str)
+        sealed_bytes = json.dumps(sealed.binding_json, sort_keys=True, default=str)
+        await db.commit()
+
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=owner_sessionmaker)
+    claimed = await service.claim_batch(tenant_id=seeded.tenant_id, worker_id="x3br2", task_types=("delegation",))
+    assert len(claimed) == 1
+    processor = boundary.DirectInvocationTerminalBoundaryProcessor(session_factory=owner_sessionmaker)
+    material = await processor._load(claimed[0])
+    bridge = AsyncMock()
+    authorize = AsyncMock(side_effect=AssertionError("Member projection must never authorize an instruction"))
+    monkeypatch.setattr("app.services.runtime_control_bus.publish_transcript_t0_bridge", bridge)
+    monkeypatch.setattr("app.services.delegation_input_origin.authorize_delegation_instruction", authorize)
+    receipt = await boundary._project_delegation_parent_completion(material, session_factory=owner_sessionmaker)
+    assert receipt["parent_event_id"]
+    import asyncio
+    from app.database import _after_commit_tasks
+    await asyncio.gather(*tuple(_after_commit_tasks))
+    authorize.assert_not_awaited()
+    async with tenant_scoped_session(seeded.tenant_id, session_factory=owner_sessionmaker) as db:
+        rows = list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == child_id)))
+        users = [row for row in rows if row.event_type == "user_message"]
+        expected = [instruction] if case == "no_origin" else []
+        assert [row.content for row in users] == expected
+        assert all("Complete the delegated task" not in row.content for row in rows)
+        published = {str(call.kwargs["transcript_event_id"]) for call in bridge.await_args_list}
+        if expected:
+            assert str(users[0].id) in published  # Same first-message/T0 behavior as the normal no-origin path.
+        else:
+            published_rows = list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.id.in_([uuid.UUID(value) for value in published]))))
+            assert not any(row.event_type == "user_message" for row in published_rows)
+            assert not any(instruction in row.content for row in published_rows)
+        if status == "killed":
+            visible = [serialize_session_event(row, audience="user")["payload"]["content"] for row in rows if row.event_type != "user_message"]
+            assert visible == ["已停止，同事没有完成这项工作。"]
+        if no_reason:
+            parents = list(await db.scalars(select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.session_id == seeded.parent_session_id,
+                ChatTranscriptEvent.run_id == task_id,
+                ChatTranscriptEvent.event_type == "child_session")))
+            assert len(parents) == 1
+            assert parents[0].metadata_json["reason"] == "delegation_terminal"
+        task = await db.get(RuntimeTask, task_id)
+        assert task.metadata_json["conversation_messages"] == messages
+        assert json.dumps(boundary.direct_terminal_authority_snapshot(task), sort_keys=True, default=str) == snapshot
+        from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+        retained = await db.get(RuntimeTerminalBoundaryOutbox, sealed.id)
+        assert json.dumps(retained.binding_json, sort_keys=True, default=str) == sealed_bytes
+
+
 async def test_runtime_terminal_returns_receipt_without_hooks_or_t0(monkeypatch) -> None:
     from app.services.direct_invocation_terminal_boundary_processor import (
         DirectInvocationTerminalBoundaryProcessor,

@@ -22,6 +22,18 @@ export type { ArtifactOpenMode, ArtifactDeliveryContext } from './artifactPresen
 
 type Translate = ReturnType<typeof useTranslation>['t'];
 
+function artifactTypeLabel(artifact: ChatArtifactPart, t: Translate, language?: string): string {
+  if (artifact.source !== 'human_input' && getEffectiveArtifactPreviewKind(artifact) === 'html') {
+    return t('agent.chat.artifacts.preview', 'Preview');
+  }
+  const extension = artifact.name.split('.').pop()?.toLowerCase();
+  const raw = artifact.previewKind || (artifact.source === 'human_input' ? extension : undefined);
+  if (!raw) return '';
+  const kind = extension === 'csv' ? 'csv' : ['md', 'markdown'].includes(raw) ? 'markdown' : raw;
+  const fallback = language?.startsWith('en') ? raw : t('agent.chat.artifacts.fileTypes.other', 'File');
+  return t(`agent.chat.artifacts.fileTypes.${kind}`, fallback);
+}
+
 export type ArtifactPreviewState = {
   artifact: ChatArtifactPart;
   content?: string;
@@ -334,7 +346,7 @@ export function ArtifactCards({
   operatorReason?: string;
   viewerUserId?: string;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const visibleArtifacts = (artifacts || []).filter((artifact) => (
     artifact.path && isUserFacingDeliveryArtifact(artifact, context)
   ));
@@ -377,8 +389,7 @@ export function ArtifactCards({
                 ? <><span className="chat-artifact-stem">{artifact.name.slice(0, artifact.name.lastIndexOf('.'))}</span><span className="chat-artifact-extension">{artifact.name.slice(artifact.name.lastIndexOf('.'))}</span></>
                 : artifact.name}</span>
               <span className="chat-artifact-meta">
-                {[artifact.source === 'human_input' ? artifact.previewKind || artifact.name.split('.').pop()?.toLowerCase()
-                  : getEffectiveArtifactPreviewKind(artifact) === 'html' ? t('agent.chat.artifacts.preview', 'Preview') : artifact.previewKind, size].filter(Boolean).join(' · ')}
+                {[artifactTypeLabel(artifact, t, i18n?.resolvedLanguage || i18n?.language), size].filter(Boolean).join(' · ')}
               </span>
             </button>
             <span className="chat-artifact-actions">

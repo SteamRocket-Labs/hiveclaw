@@ -711,12 +711,17 @@ async def _project_delegation_parent_completion(
             "tenant_id": payload.get("tenant_id") or str(material.tenant_id),
             "target_agent_id": payload.get("to_agent"),
             "interaction_type": payload.get("interaction_type") or "delegation",
+            "conversation_messages": (
+                material.task_metadata["conversation_messages"]
+                if isinstance(material.task_metadata.get("conversation_messages"), list) else []
+            ),
             "target_artifact_path": payload.get("target_artifact_path"),
             "target_artifacts": payload.get("target_artifacts"),
             "edit_mode": payload.get("edit_mode"),
         },
     }
     from app.agents.orchestrator import (
+        _append_peer_delegation_terminal_state,
         _delegation_projection_request_from_record,
         _project_delegation_completion_to_parent,
         _project_delegation_request_terminal_to_parent,
@@ -729,7 +734,9 @@ async def _project_delegation_parent_completion(
     if projected_status == "skipped":
         projected_status = "blocked"
     reason = str(payload.get("parent_projection_reason") or "").strip() or None
-    if material.event_kind == "runtime_terminal":
+    last_message = request.conversation_messages[-1] if request.conversation_messages else None
+    has_instruction = isinstance(last_message, dict) and bool(last_message.get("content"))
+    if material.event_kind == "runtime_terminal" and has_instruction:
         receipt = await _project_delegation_request_terminal_to_parent(
             request=request,
             status=projected_status,
@@ -739,12 +746,19 @@ async def _project_delegation_parent_completion(
             session_factory=session_factory,
         )
     else:
+        if material.event_kind == "runtime_terminal":
+            # The Session is admitted before dispatch. Without a stored task
+            # message, retain its stop row rather than create a placeholder.
+            await _append_peer_delegation_terminal_state(
+                request=request, status=projected_status, summary=material.result_summary,
+                reason=reason or "delegation_terminal", session_factory=session_factory,
+            )
         receipt = await _project_delegation_completion_to_parent(
             request=request,
             task_id=str(material.runtime_task_id),
             status=projected_status,
             summary=material.result_summary,
-            reason=reason,
+            reason=reason or "delegation_terminal",
             required=True,
             session_factory=session_factory,
         )

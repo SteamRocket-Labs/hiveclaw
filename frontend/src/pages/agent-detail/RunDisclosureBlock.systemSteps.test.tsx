@@ -54,7 +54,9 @@ it.each(['zh', 'en'])('keeps denied results available for review in %s without e
   locale.language = language;
   const message = getRuntimeEventMessage({ type: 'agent_task_notification',
     message: '2 runtime result(s) ready in integration epoch 9 (terminal=2/expected=3). Parent continuation denied: requester_inactive.',
-    runtime_result_integration_page: true, item_count: 2, continuation_status: 'denied', continuation_denial: 'requester_inactive' });
+    runtime_result_integration_page: true, item_count: 2, continuation_status: 'denied', continuation_denial: 'requester_inactive',
+    // X3b item 7: a genuine kept result needs a typed body or artifact fact.
+    result_manifest: { items: [{ terminal_status: 'completed', result_size_bytes: 500, artifact_count: 0 }] } });
   expect(message).toBeTruthy();
   const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([message!])} />);
   expand(container);

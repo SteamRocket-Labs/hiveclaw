@@ -32,7 +32,8 @@ it('R15f.1 keeps the full filename and metadata with tappable file actions at 39
       originalUpload: { id: 'upload', ownerUserId: 'member' } },
   ]} viewerUserId="member" onOpenArtifact={open} onDownloadArtifact={download} />);
   expect(container.querySelector('.chat-artifact-name')?.textContent).toBe(name);
-  expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('markdown · 8 KB');
+  // X3b item 12 localizes the file type in the Chinese UI.
+  expect(container.querySelector('.chat-artifact-meta')?.textContent).toBe('Markdown 文档 · 8 KB');
   expect(phoneRules).not.toMatch(/\.chat-artifact-actions\s*\{[^}]*(?:display:\s*none|visibility:\s*hidden|pointer-events:\s*none)/);
   expect(rule('.chat-artifact-main')).toMatch(/flex-wrap:\s*wrap/);
   expect(rule('.chat-artifact-name')).toMatch(/white-space:\s*normal/);
@@ -126,7 +127,9 @@ function keptResults(): RunTimelineSnapshot {
   const messages = [
     getRuntimeEventMessage({ id: 'integration', type: 'agent_task_notification',
       message: '1 runtime result(s) ready in integration epoch 9 (terminal=1/expected=1). Parent continuation denied: parent_stopped.',
-      runtime_result_integration_page: true, item_count: 1, continuation_status: 'denied' })!,
+      runtime_result_integration_page: true, item_count: 1, continuation_status: 'denied',
+      // X3b item 7 requires typed proof that this preview has a real body.
+      result_manifest: { items: [{ terminal_status: 'completed', result_size_bytes: 800, artifact_count: 0 }] } })!,
     getRuntimeEventMessage({ id: 'result', type: 'child_session', status: 'completed',
       message: `**要点一｜${'完成报告'.repeat(44)}**\n\n- 核对资料\n\n查看 [报告](https://example.test/report) 和 \`摘要\`。` })!,
   ];

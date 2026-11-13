@@ -9,6 +9,9 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconCircleCheck,
+  IconCircleX,
+  IconPlayerStop,
+  IconAlertCircle,
   IconFileText,
   IconHelp,
   IconLoader2,
@@ -22,7 +25,7 @@ import { assistantReplyForDisplay } from './CanonicalCardAssistantSupplement';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { toolOutputForDisplay } from './toolFailurePresentation';
-import { memberToolSummaryFromRecord, memberToolSummarySentence } from './memberToolSummary';
+import { memberFilename, memberToolSummaryFromRecord, memberToolSummarySentence, memberSummaryWithArgs } from './memberToolSummary';
 import { useAuthStore } from '../../stores';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import { isKeptResultStep, presentSystemStep } from './systemStepPresentation';
@@ -157,8 +160,26 @@ function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string |
   return running && !Number.isNaN(parsed) ? i18n.t('agent.chat.disclosure.elapsedSeconds', '{{seconds}}s', { seconds: 0 }) : '';
 }
 
-function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
+function stepMarkerLabel(status: RunStepSnapshot['status'] | undefined, t: TFunction, unconfirmed = false): string | undefined {
+  if (unconfirmed) return t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.');
+  if (status === 'cancelled') return t('agent.chat.disclosure.stoppedMarker', 'Stopped');
+  if (status === 'blocked') return t('agent.chat.disclosure.blockedMarker', 'Needs attention');
+  if (status === 'failed') return t('agent.chat.disclosure.failedMarker', 'Not completed');
+  return undefined;
+}
+
+function stepIsUnconfirmed(step: RunStepSnapshot): boolean {
+  return (step.details as { memberSummary?: { state?: string } } | null)?.memberSummary?.state === 'unknown';
+}
+
+function StepIcon({ kind, running, status, unconfirmed }: { kind: RunStepKind; running: boolean; status?: RunStepSnapshot['status']; unconfirmed?: boolean }) {
+  const { t } = useTranslation();
   const size = 14;
+  const label = stepMarkerLabel(status, t, unconfirmed);
+  if (label) {
+    const Marker = unconfirmed ? IconHelp : status === 'cancelled' ? IconPlayerStop : status === 'blocked' ? IconAlertCircle : IconCircleX;
+    return <span role="img" aria-label={label}><Marker size={size} stroke={2.1} aria-hidden="true" /></span>;
+  }
   if (running) {
     return <IconLoader2 size={size} stroke={2.2} className="session-tui-step-spinner" />;
   }
@@ -222,54 +243,47 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
     const toolName = toolNameOf(step);
     // X3: summarized tools show one plain sentence in place of the raw result
     // the model saw. There is deliberately no way to view the raw text here.
-    // An unknown kind yields no sentence and falls through to the existing
-    // display (version skew must not hide a step behind an empty paragraph).
+    // An unknown kind falls through to a plain action/status sentence.
     const memberSummary = memberToolSummaryFromRecord(
       (step.details as { memberSummary?: unknown } | null)?.memberSummary,
     );
     if (memberSummary) {
-      const memberSentence = memberToolSummarySentence(memberSummary, t);
+      const args = (step.details as { args?: Record<string, unknown> } | null)?.args;
+      const memberSentence = memberToolSummarySentence(memberSummaryWithArgs(memberSummary, args), t);
       if (memberSentence) return <p>{memberSentence}</p>;
     }
-    const toolDetails = step.details as { rawResult?: unknown; result?: unknown } | null;
-    const raw = toolDetails?.rawResult ?? toolDetails?.result;
-    if (['delegate_to_agent', 'send_message_to_agent', 'check_async_task', 'list_async_tasks', 'task_output'].includes(toolName || '') && typeof raw === 'string') {
+    // Legacy live frames can still lack the backend summary (R15b). The
+    // shared terminal override above owns final state; only an unsummarized,
+    // non-terminal observation may use this typed-JSON compatibility copy.
+    const raw = (step.details as { rawResult?: unknown; result?: unknown } | null)?.rawResult
+      ?? (step.details as { result?: unknown } | null)?.result;
+    if (!memberSummary && ['done', 'running'].includes(step.status) && typeof raw === 'string'
+      && ['delegate_to_agent', 'send_message_to_agent', 'check_async_task', 'list_async_tasks', 'task_output'].includes(toolName || '')) {
       try {
-        const envelope = JSON.parse(raw);
-        const tasks = toolName === 'list_async_tasks' ? envelope
-          : toolName === 'task_output' ? [envelope?.task] : toolName === 'check_async_task' ? [envelope] : [];
-        if ((envelope?.ok === true && envelope.operation === 'delegate'
-          && ['queued', 'pending', 'running'].includes(envelope.status))
+        const page = JSON.parse(raw);
+        const tasks = toolName === 'list_async_tasks' ? page : toolName === 'task_output' ? [page?.task] : toolName === 'check_async_task' ? [page] : [];
+        if ((page?.ok === true && page.operation === 'delegate' && ['queued', 'pending', 'running'].includes(page.status))
           || (Array.isArray(tasks) && tasks.some(task => task?.task_type === 'delegation' && ['pending', 'running'].includes(task.status)))) {
           return <p>{t('agent.chat.disclosure.colleagueWorking', 'The colleague is working. The result will return here.')}</p>;
         }
-      } catch { /* Unstructured colleague replies retain their existing presentation. */ }
+      } catch { /* No typed compatibility observation. */ }
     }
     const command = step.kind === 'command' || ['run_command', 'execute_code', 'run_skill_tool'].includes(toolName || '');
     const outcome = command ? commandOutcome(step.details) : null;
     const summary = command && outcome !== null ? null : toolOutputForDisplay(step.details, t, step.status, !command);
     if (summary) return <p>{summary}</p>;
     const details = step.details as { args?: Record<string, unknown>; result?: unknown } | null;
-    const result = typeof step.details === 'string' ? step.details : details?.result;
-    // Raw non-command tool text can reach members as on production; backend per-tool member summaries will replace it.
-    if (!command && typeof result === 'string' && result.trim()) {
-      try {
-        JSON.parse(result);
-      } catch {
-        // Non-command steps show exactly what production shows (R11g /
-        // X1-r2 ruling 2); per-tool member summaries are a later slice.
-        const lines = result.trim().split(/\r?\n/);
-        return <p>{lines.map((line, index) => (
-          <React.Fragment key={index}>
-            {index > 0 && <br />}
-            <PastedCredentialText content={line} />
-            {line && index < lines.length - 1 && ' '}
-          </React.Fragment>
-        ))}</p>;
-      }
-    }
     const path = step.kind === 'file' ? details?.args?.path ?? details?.args?.file_path : null;
-    const file = typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).pop() : undefined;
+    const file = memberFilename(path);
+    if (['list_files', 'fs_list'].includes(toolName || '')) {
+      return <p>{memberToolSummarySentence({ kind: 'file_list', state: step.status === 'done' ? 'done' : 'not_done' }, t)}</p>;
+    }
+    if (['read_file', 'fs_read', 'read_document'].includes(toolName || '') && step.status === 'done') {
+      return <p>{memberToolSummarySentence({ kind: 'file_read', state: 'done', filename: file }, t)}</p>;
+    }
+    if (['write_file', 'fs_write'].includes(toolName || '') && step.status === 'done' && file) {
+      return <p>{t('agent.chat.toolResults.memberSummary.fileWriteNamed', 'Wrote the file “{{filename}}”.', { filename: file })}</p>;
+    }
     const status = outcome === 'unknown' ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
       : outcome === 'done' ? t('agent.chat.disclosure.resultSucceeded', 'Succeeded')
       : outcome === 'failed' || step.status === 'failed'
@@ -309,10 +323,11 @@ function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepS
     <div
       data-testid="run-disclosure-step"
       data-presentation={getRunStepPresentation(step)}
+      data-status={step.status}
       className={getRunStepPresentation(step) === 'surface' ? 'run-step is-surfaced' : 'run-step'}
     >
       <span className={running ? 'run-step-icon is-running' : 'run-step-icon'}>
-        <StepIcon kind={step.kind} running={running} />
+        <StepIcon kind={step.kind} running={running} status={step.status} unconfirmed={stepIsUnconfirmed(step)} />
       </span>
       <div className="run-step-body">
         <button
@@ -328,7 +343,7 @@ function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepS
             <span className="run-step-caret" />
           )}
           <span className="run-step-title">{localizedToolTitle(step, t)}</span>
-          {preview && !(expanded && step.status === 'failed') && <span className="run-step-summary">{
+          {preview && !(expanded && ['failed', 'cancelled'].includes(step.status)) && <span className="run-step-summary">{
             preview.includes('[REDACTED_SECRET]')
               ? <PastedCredentialText content={preview} />
               : <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown>
@@ -436,7 +451,8 @@ function localizedAggregateSummary(
 
 function toolStepLabel(step: RunStepSnapshot, t: TFunction): string {
   const title = localizedToolTitle(step, t);
-  return step.summary ? `${title} · ${step.summary}` : title;
+  const summary = step.summary;
+  return summary ? `${title} · ${summary}` : title;
 }
 
 function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
@@ -451,10 +467,11 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
   const hasDetails = hasStepDetails(step);
+  const summary = step.summary;
   const row = (
     <>
       <span className={step.status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
-        <StepIcon kind={step.kind} running={step.status === 'running'} />
+        <StepIcon kind={step.kind} running={step.status === 'running'} status={step.status} unconfirmed={stepIsUnconfirmed(step)} />
       </span>
       <span className="run-tool-history-title">
         {localizedToolTitle(step, t)}
@@ -462,7 +479,7 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
           <span className="run-tool-history-status">{t('agent.chat.disclosure.interruptedBadge', 'Interrupted')}</span>
         )}
       </span>
-      {step.summary && <span className="run-tool-history-summary">{step.summary}</span>}
+      {summary && <span className="run-tool-history-summary">{summary}</span>}
     </>
   );
 
@@ -501,15 +518,19 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
         ? t('agent.chat.disclosure.toolInterrupted', 'Interrupted: {{tools}}', { tools: namedTools })
         : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', { tools: namedTools });
   const historyLabel = t('agent.chat.disclosure.toolHistory', 'Tool call history');
+  const statusStep = steps.find(step => step.status === status && !stepIsUnconfirmed(step))
+    || steps.find(step => step.status === status) || currentStep;
+  const unconfirmed = stepIsUnconfirmed(statusStep);
+  const markerLabel = stepMarkerLabel(status, t, unconfirmed);
   return (
     <details data-testid="run-disclosure-tool-group" data-status={status} className="run-tool-group">
       <summary
         data-testid="run-disclosure-tool-group-toggle"
         className="run-tool-group-toggle"
-        aria-label={historyLabel}
+        aria-label={markerLabel ? `${historyLabel} · ${markerLabel}` : historyLabel}
       >
         <span className={status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
-          <StepIcon kind={currentStep.kind} running={status === 'running'} />
+          <StepIcon kind={currentStep.kind} running={status === 'running'} status={status} unconfirmed={unconfirmed} />
         </span>
         <span className="run-tool-group-label">{label}</span>
         <IconChevronRight className="run-tool-group-chevron" size={13} stroke={2.2} aria-hidden="true" />
@@ -565,6 +586,12 @@ export default function RunDisclosureBlock({
     .filter((step, _index, steps) => {
       const event = step.systemEvent;
       const taskId = event?.metadata.runtime_task_id;
+      // Keep the stopped child row: it owns the authorized conversation link.
+      if (event?.type === 'runtime_action_failed' && event.metadata.action_kind === 'a2a_delegation'
+        && step.status === 'cancelled' && taskId) {
+        return !steps.some(other => other.status === 'cancelled' && other.systemEvent?.type === 'child_session'
+          && other.systemEvent.metadata.runtime_task_id === taskId);
+      }
       if (event?.type !== 'child_session' || step.status !== 'failed' || !taskId) return true;
       // The runtime status already carries this child's exact failure sentence.
       return !steps.some(other => {

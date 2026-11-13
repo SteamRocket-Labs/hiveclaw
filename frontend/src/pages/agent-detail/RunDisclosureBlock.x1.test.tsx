@@ -28,7 +28,7 @@ it('a step preview never shows raw markdown markers', () => {
   expect(container.textContent).not.toContain('**');
 });
 
-it('a long raw provider dump shows in full, exactly what production shows (X1-r2 ruling 2)', () => {
+it('a long raw provider dump is replaced by a sentence (X3b item 2)', () => {
   const dump = [
     '已改用其他方式获取以下结果：',
     '',
@@ -43,19 +43,23 @@ it('a long raw provider dump shows in full, exactly what production shows (X1-r2
   fireEvent.click(toolGroupToggle(container));
   fireEvent.click(container.querySelector('.run-tool-history-toggle') as HTMLButtonElement);
   expect(container.querySelector('.run-detail-summary')).toBeNull();
-  expect(container.textContent).toContain('line 0 of the raw page markdown');
-  expect(container.textContent).toContain('line 119 of the raw page markdown');
+  // X3b item 2 supersedes raw-output display even when no summary is available.
+  expect(container.querySelector('p')?.textContent).toBe('读取网页。已返回结果');
+  expect(container.textContent).not.toContain('line 0 of the raw page markdown');
+  expect(container.textContent).not.toContain('line 119 of the raw page markdown');
 });
 
-it('a short plain tool result keeps its line layout', () => {
+it('a short plain tool result is replaced by a sentence (X3b item 2)', () => {
   const { container } = render(<RunDisclosureBlock timeline={{ id: 'run', status: 'running', steps: [{
     id: 'fetch', kind: 'search', title: 'Fetch web page', status: 'done', visibility: 'visible',
     summary: '', details: '第一行结果\n第二行结果',
   }] }} />);
   fireEvent.click(toolGroupToggle(container));
   fireEvent.click(container.querySelector('.run-tool-history-toggle') as HTMLButtonElement);
-  expect(container.textContent).toContain('第一行结果');
-  expect(container.textContent).toContain('第二行结果');
+  // X3b item 2 applies to short raw results too.
+  expect(container.querySelector('p')?.textContent).toBe('读取网页。已返回结果');
+  expect(container.textContent).not.toContain('第一行结果');
+  expect(container.textContent).not.toContain('第二行结果');
   expect(container.querySelector('.run-detail-summary')).toBeNull();
 });
 

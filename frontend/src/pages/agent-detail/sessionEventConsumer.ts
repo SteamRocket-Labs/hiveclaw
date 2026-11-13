@@ -9,7 +9,7 @@ import {
   type TranscriptReplayState,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
-import { memberToolSummaryFromRecord } from './memberToolSummary';
+import { memberToolSummaryFromRecord, memberSummaryWithArgs } from './memberToolSummary';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
 import type { SessionMessageStore } from './sessionMessageStore';
@@ -457,9 +457,11 @@ function projectCanonicalItem(
       toolRawResult: normalized.raw,
       // X3: the member projection carries a typed summary instead of the raw
       // result for summarized tools; the expanded step renders it verbatim.
-      toolMemberSummary: memberToolSummaryFromRecord(
-        toolEnvelope.member_summary ?? pairedEnvelope?.member_summary,
-      ) || undefined,
+      toolMemberSummary: (() => {
+        const summary = memberToolSummaryFromRecord(toolEnvelope.member_summary ?? pairedEnvelope?.member_summary);
+        if (summary?.kind === 'web_fetch' && !summary.host && typeof toolEnvelope.host === 'string') summary.host = toolEnvelope.host;
+        return summary ? memberSummaryWithArgs(summary, toolArgs) : undefined;
+      })(),
       artifacts: extractArtifactParts(pairedResult?.payload ?? item.payload),
       toolMeta: normalized.toolMeta,
       eventType: item.kind,
@@ -586,7 +588,7 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
     if (item.parentItemId) toolResultByCall.set(item.parentItemId, item);
     if (item.invocationId) toolResultByCall.set(item.invocationId, item);
   });
-  return items
+  return projectMemberDelegationStates(items
     .sort((left, right) => left.first_sequence - right.first_sequence || left.id.localeCompare(right.id))
     .filter(item => !(item.kind === 'assistant_text' && terminalFinalSources.has(item.id)))
     .filter((item) => item.kind !== 'tool_result'
@@ -594,7 +596,57 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
       || !((item.parentItemId && toolCallIds.has(item.parentItemId))
         || (item.invocationId && toolCallInvocations.has(item.invocationId))))
     .map((item) => projectCanonicalItem(item, store, toolResultByCall, questionsByInvocation))
-    .filter((message): message is AgentChatMessage => message !== null);
+    .filter((message): message is AgentChatMessage => message !== null));
+}
+
+/** Current member presentation over the existing typed terminal events. The
+ * original store, tool results and model history remain untouched. */
+function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatMessage[] {
+  const terminals = new Map<string, string>();
+  const key = (value: unknown) => typeof value === 'string' ? value.replaceAll('-', '').toLowerCase() : '';
+  const terminal = (value: unknown) => ['completed', 'failed', 'error', 'killed', 'cancelled', 'blocked', 'skipped'].includes(String(value));
+  const metadataOf = (message: AgentChatMessage) => message.threadItem?.metadata || message.sessionItem?.payload || {};
+  for (const message of messages) {
+    const metadata = metadataOf(message);
+    const status = metadata.status || message.eventStatus;
+    if ((metadata.action_kind === 'a2a_delegation' || (message.eventType === 'child_session' && String(metadata.reason || '').startsWith('delegation_'))
+      || message.sessionItem?.kind === 'a2a_delegation') && terminal(status)) {
+      const task = key(metadata.runtime_task_id || metadata.task_id);
+      if (task) terminals.set(task, String(status));
+    }
+    const manifest = recordValue(metadata.result_manifest);
+    for (const item of Array.isArray(manifest?.items) ? manifest.items : []) {
+      if (item && ['delegation', 'a2a_delegation'].includes(item.task_type) && terminal(item.terminal_status)) terminals.set(key(item.source_run_id), item.terminal_status);
+    }
+  }
+  return messages.map(message => {
+    const metadata = metadataOf(message);
+    if (message.role === 'event' && (metadata.action_kind === 'a2a_delegation' || message.eventType === 'child_session')) {
+      const status = terminals.get(key(metadata.runtime_task_id || metadata.task_id));
+      if (!status) return message;
+      const memberStatus = status === 'killed' ? 'cancelled' : status;
+      return { ...message, eventStatus: memberStatus,
+        ...(message.threadItem ? { threadItem: { ...message.threadItem, metadata: { ...metadata, status: memberStatus } } } : {}),
+        ...(message.sessionItem ? { sessionItem: { ...message.sessionItem, payload: { ...metadata, status: memberStatus } } } : {}) };
+    }
+    const waitingRead = message.toolMemberSummary?.kind === 'colleague_result' && message.toolMemberSummary.state === 'in_progress';
+    const legacyReader = !message.toolMemberSummary && ['check_async_task', 'task_output', 'list_async_tasks'].includes(message.toolName || '');
+    if (message.role !== 'tool_call' || (!waitingRead && !legacyReader && !['delegate_to_agent', 'send_message_to_agent'].includes(message.toolName || ''))) return message;
+    let taskIds: unknown[] = message.toolMemberSummary?.taskId ? [message.toolMemberSummary.taskId] : [];
+    if (!taskIds.length) {
+      try {
+        const page = JSON.parse(message.toolRawResult || message.toolResult || '{}');
+        const tasks = Array.isArray(page) ? page : [recordValue(page)?.task ?? page];
+        taskIds = tasks.map(task => recordValue(task)?.task_id || recordValue(task)?.runtime_task_id);
+      } catch { /* Compatibility records may have no typed task id. */ }
+    }
+    const statuses = taskIds.map(id => terminals.get(key(id)));
+    if (!statuses.length || statuses.some(status => !status)) return message;
+    const status = statuses.find(status => ['failed', 'error'].includes(status!))
+      || statuses.find(status => status !== 'completed') || 'completed';
+    return { ...message, toolMemberSummary: { ...message.toolMemberSummary, kind: 'delegation',
+      state: status === 'completed' ? 'done' : 'not_done', status: status === 'killed' ? 'cancelled' : status } };
+  });
 }
 
 export function reconcileCanonicalPermissionReplay(
@@ -661,7 +713,7 @@ export function composeMixedPlaneSessionMessages(options: {
     if (message.sessionItem?.id && canonicalItemIds.has(message.sessionItem.id)) return false;
     return !messageIdentities(message).some((identity) => canonicalIdentities.has(identity));
   });
-  return [...compatibilityMessages, ...canonicalMessages]
+  return projectMemberDelegationStates([...compatibilityMessages, ...canonicalMessages]
     .map((message, index) => ({
       message,
       index,
@@ -670,7 +722,7 @@ export function composeMixedPlaneSessionMessages(options: {
         ?? Number.MAX_SAFE_INTEGER,
     }))
     .sort((left, right) => left.sequence - right.sequence || left.index - right.index)
-    .map(({ message }) => message);
+    .map(({ message }) => message));
 }
 
 export function hydrateSessionTranscriptEvents(

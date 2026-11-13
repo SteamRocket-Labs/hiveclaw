@@ -9,7 +9,7 @@ import {
   type TranscriptReplayState,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
-import { memberToolSummaryFromRecord } from './memberToolSummary';
+import { isMemberSummarizedTool, memberToolSummaryFromRecord } from './memberToolSummary';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
 import type { SessionMessageStore } from './sessionMessageStore';
@@ -407,7 +407,15 @@ function projectCanonicalItem(
     };
   }
   if (item.kind === 'tool_call' || item.kind === 'tool_result') {
-    const toolEnvelope = persistedToolEnvelope(item.payload);
+    // N4: the write-side tool_name on result payloads is the only new source
+    // of standalone-result titles; keep it limited to the summarized set so
+    // every other tool keeps its old title.
+    const directPayloadName = typeof recordValue(item.payload).tool_name === 'string'
+      ? recordValue(item.payload).tool_name as string : undefined;
+    const envelopePayload = item.kind === 'tool_result' && directPayloadName && !isMemberSummarizedTool(directPayloadName)
+      ? { ...item.payload, tool_name: undefined }
+      : item.payload;
+    const toolEnvelope = persistedToolEnvelope(envelopePayload);
     const pairedResult = item.kind === 'tool_call'
       ? toolResultByCall.get(item.id) || (item.invocationId ? toolResultByCall.get(item.invocationId) : undefined)
       : item;

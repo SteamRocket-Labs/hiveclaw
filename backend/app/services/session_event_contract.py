@@ -1359,8 +1359,9 @@ _LEGACY_TOOL_ENVELOPE_FIELDS = (
 # result refusal pages, whole web pages, capability manifests with server ids).
 # The sentence is decided by the tool name, the step status, and typed fields
 # only; result prose is never read or classified. The summary is computed at
-# member-view serialization time and never persisted: the operator envelope and
-# the durable row (the model's input) stay byte-identical.
+# member-view serialization time: the operator envelope and the durable row
+# (the model's input) stay byte-identical. Compatibility rows' outbox envelope
+# stores this user projection at write time (chat_transcript).
 MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
     # a) memory search / read / load
     "search_memory": "memory_search",
@@ -1393,23 +1394,41 @@ MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
     "list_mcp_tools": "capability_lookup",
     "list_mcp_resources": "capability_lookup",
     "inspect_mcp_tool": "capability_lookup",
+    "mcp_list_resources": "capability_lookup",
+    "mcp_list_prompts": "capability_lookup",
+    "search_clawhub": "capability_lookup",
     "load_skill": "skill_load",
+    # resident prompt pages (soul, company information, organization): the
+    # same class of model-facing text as run 9's system-instruction leak
+    "read_context_resource": "context_read",
 }
 
-# Structured refusal statuses: a typed `status` field on a JSON result object
-# of one of these tools means the action was refused or did not happen. The
-# member sentence then says it was not done, agreeing with the typed evidence.
+# Structured statuses: a typed `status` field on a JSON result object of one
+# of these tools states the action was refused, aborted, or did not happen
+# (read_runtime_result refusal pages, batch-aborted fetches, stale pages).
 _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES = frozenset({
     "error",
     "failed",
     "not_found",
     "denied",
+    "forbidden",
     "authority_denied",
     "source_access_denied",
     "source_unavailable",
     "infrastructure_unavailable",
     "integrity_error",
     "invalid_arguments",
+    "aborted",
+    "cancelled",
+    "stale_resource",
+})
+
+# A colleague task still working is not a read result (R15b).
+_MEMBER_SUMMARY_IN_PROGRESS_RESULT_STATUSES = frozenset({
+    "queued",
+    "pending",
+    "running",
+    "in_progress",
 })
 
 
@@ -1426,98 +1445,152 @@ def _member_summary_host(args: Any) -> str | None:
         host = urlparse(url.strip()).hostname
     except ValueError:
         return None
-    return host.strip().lower() or None
+    # urlparse returns None for scheme-less URLs ("example.com/x"), bare
+    # schemes ("http://") and non-host schemes ("mailto:a@b.c").
+    return host.strip().lower() if host else None
+
+
+def _member_summary_state(
+    *,
+    outcome: str,
+    envelope_status: str,
+    result_obj: Any,
+    delivery_state: str = "",
+) -> str:
+    """done | not_done | in_progress | unknown, from typed fields only.
+
+    The invocation's own typed outcome decides first; structured result pages
+    then contribute their typed status (top-level or task.status for task
+    readers). A top-level `ok: false` is never masked by an inner result
+    string. Prose is never classified.
+    """
+
+    if outcome == "unknown" or delivery_state == "unknown":
+        return "unknown"
+    if outcome not in {"", "success"}:
+        return "not_done"
+    if envelope_status == "failed":
+        return "not_done"
+    if isinstance(result_obj, Mapping):
+        if result_obj.get("ok") is False:
+            return "not_done"
+        for status_source in (result_obj.get("status"), _result_task_status(result_obj)):
+            status = str(status_source or "").strip().lower()
+            if status in _MEMBER_SUMMARY_IN_PROGRESS_RESULT_STATUSES:
+                return "in_progress"
+            if status in _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES:
+                return "not_done"
+    return "done"
+
+
+def _result_task_status(result_obj: Mapping[str, Any]) -> Any:
+    task = result_obj.get("task")
+    return task.get("status") if isinstance(task, Mapping) else None
 
 
 def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[str, Any] | None:
     if item_kind != "tool_result":
         return None
-    # Two payload shapes reach this projection: native V2 rows carry the raw
-    # result in payload.content with the typed tool_name/outcome beside it;
-    # legacy/compatibility envelopes carry the persisted envelope JSON inside
-    # payload.content with name/args/status/result embedded in it.
-    content = payload.get("content")
-    envelope: Mapping[str, Any] = {}
-    if isinstance(content, str) and content.strip():
-        try:
-            parsed = json.loads(content)
-        except (TypeError, ValueError):
-            parsed = None
-        if isinstance(parsed, Mapping):
-            envelope = parsed
-    tool_name = (
-        _text(payload.get("tool_name"))
-        or _text(payload.get("name"))
-        or _text(envelope.get("name"))
-        or _text(envelope.get("tool_name"))
-        or ""
-    )
-    kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
-    if kind is None:
-        return None
-    outcome = str(payload.get("outcome") or "").strip().lower()
-    status = str(payload.get("status") or envelope.get("status") or "").strip().lower()
-    args = payload.get("args")
-    if not isinstance(args, Mapping):
-        args = envelope.get("args")
-    result_obj: Any = None
-    result = payload.get("result")
-    if not isinstance(result, str):
-        # The embedded legacy envelope carries its result under "result";
-        # native V2 payloads put the result itself in content.
+    native = "outcome" in payload or "invocation_id" in payload
+    if native:
+        # Native V2 payload: kind comes only from the typed payload tool_name;
+        # content is the result body itself and is never mined for names,
+        # args, or statuses beyond the structured result's typed fields.
+        tool_name = _text(payload.get("tool_name")) or ""
+        kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
+        if kind is None:
+            return None
+        content = payload.get("content")
+        result = content if isinstance(content, str) else None
+        args = payload.get("args") if isinstance(payload.get("args"), Mapping) else None
+    else:
+        # Legacy/compatibility shape: the persisted tool envelope is embedded
+        # in payload.content with name/args/status/result inside it.
+        content = payload.get("content")
+        envelope: Mapping[str, Any] = {}
+        if isinstance(content, str) and content.strip():
+            try:
+                parsed = json.loads(content)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, Mapping):
+                envelope = parsed
+        tool_name = (
+            _text(payload.get("tool_name"))
+            or _text(payload.get("name"))
+            or _text(envelope.get("name"))
+            or _text(envelope.get("tool_name"))
+            or ""
+        )
+        kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
+        if kind is None:
+            return None
         embedded_result = envelope.get("result")
-        result = embedded_result if isinstance(embedded_result, str) else content
+        result = embedded_result if isinstance(embedded_result, str) else (content if isinstance(content, str) else None)
+        args = payload.get("args")
+        if not isinstance(args, Mapping):
+            args = envelope.get("args")
+    result_obj: Any = None
     if isinstance(result, str) and result.strip():
         try:
             parsed = json.loads(result)
         except (TypeError, ValueError):
             parsed = None
         result_obj = parsed if isinstance(parsed, Mapping) else None
-    failed = outcome == "failed" or status == "failed"
-    if not failed and isinstance(result_obj, Mapping):
-        # Typed fields on a structured result page: an explicit `ok: false` or
-        # a refusal status states the action did not happen (read_runtime_result
-        # refusal pages; async task envelopes). Prose is never classified.
-        if result_obj.get("ok") is False:
-            failed = True
-        else:
-            result_status = result_obj.get("status")
-            if isinstance(result_status, str):
-                failed = result_status.strip().lower() in _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES
-    summary: dict[str, Any] = {"kind": kind, "failed": failed}
+    state = _member_summary_state(
+        outcome=str(payload.get("outcome") or "").strip().lower(),
+        envelope_status=str(payload.get("status") or ("" if native else envelope.get("status")) or "").strip().lower(),
+        result_obj=result_obj,
+        delivery_state=str(payload.get("delivery_state") or "").strip().lower(),
+    )
+    summary: dict[str, Any] = {"kind": kind, "state": state}
     host = _member_summary_host(args)
     if host:
         summary["host"] = host
     return summary
 
 
-def member_tool_summary_applicable(payload: Any) -> bool:
-    """Whether this tool_result payload belongs to a member-summarized tool.
-
-    Narrow gate for delivery boundaries that otherwise forward committed
-    envelope bytes untouched: only a summarized tool result needs the user
-    projection before it reaches a direct-user surface.
-    """
-
-    return _member_tool_summary(payload if isinstance(payload, Mapping) else {}, item_kind="tool_result") is not None
-
-
 def _apply_member_tool_summary(payload: dict[str, Any], *, item_kind: str) -> dict[str, Any]:
     """Drop the raw result bytes of a member-summarized tool from the user view.
 
-    The typed summary replaces the raw result content, the envelope JSON that
-    embeds it, replayed inline content, and text parts. Typed mechanics the UI
-    already relies on (args, statuses, ids for pairing, durations, artifact
-    parts) stay untouched.
+    The typed summary replaces the raw result content, replayed inline content,
+    and text parts. Idempotent: an already-projected payload returns as is.
+    Typed mechanics the UI relies on (envelope name/args/status, ids for
+    pairing, durations, step ids, artifact parts) stay in the member view.
     """
 
+    if isinstance(payload.get("member_summary"), Mapping):
+        return payload
+    native = "outcome" in payload or "invocation_id" in payload
+    envelope: Mapping[str, Any] = {}
+    if not native:
+        content = payload.get("content")
+        if isinstance(content, str) and content.strip():
+            try:
+                parsed = json.loads(content)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, Mapping):
+                envelope = parsed
     summary = _member_tool_summary(payload, item_kind=item_kind)
     if summary is None:
         return payload
     clean = dict(payload)
     clean["member_summary"] = summary
     clean["result"] = ""
-    clean["content"] = ""
+    if native or not envelope:
+        clean["content"] = ""
+    else:
+        # Legacy rows keep their envelope mechanics: the envelope minus its
+        # raw result (and any replayed inline content) serializes back into
+        # content so name, args, status, duration_ms and step_id survive.
+        projected_envelope = {key: value for key, value in envelope.items() if key != "result"}
+        replacement = projected_envelope.get("content_replacement")
+        if isinstance(replacement, Mapping):
+            projected_envelope["content_replacement"] = {
+                key: value for key, value in replacement.items() if key != "inline_content"
+            }
+        clean["content"] = json.dumps(projected_envelope, ensure_ascii=False, sort_keys=True)
     # Native V2 rows carry a second bounded copy for model-context replay.
     if "model_visible_content" in clean:
         clean["model_visible_content"] = ""
@@ -1698,10 +1771,6 @@ def _serialize_v2_row(row: Any, *, audience: str) -> dict[str, Any]:
         visibility=visibility,
         audience=audience,
     )
-    if audience != "operator":
-        event["payload"] = _apply_member_tool_summary(
-            event["payload"], item_kind=str(event.get("item_kind") or "")
-        )
     if redacted_fields:
         event_visibility = dict(event["visibility"])
         event_visibility["redacted_fields"] = sorted(
@@ -1747,7 +1816,7 @@ def _redacted_legacy_payload(
     return payload, redacted_fields
 
 
-def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str, Any]:
+def _serialize_session_event_for_audience(row: Any, *, audience: str) -> dict[str, Any]:
     """Serialize a V2 row, or explicitly adapt a legacy row without semantic guessing."""
 
     if isinstance(row, dict) and row.get("schema") == SESSION_EVENT_SCHEMA:
@@ -1759,9 +1828,6 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
         )
         if audience == "operator":
             return event
-        event["payload"] = _apply_member_tool_summary(
-            event["payload"], item_kind=str(event.get("item_kind") or "")
-        )
         visibility = dict(event["visibility"])
         if redacted_fields:
             visibility["redacted_fields"] = sorted(set([*visibility.get("redacted_fields", []), *redacted_fields]))
@@ -1798,10 +1864,6 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
         compatibility["payload"], redacted_fields = _redacted_legacy_payload(
             compatibility["payload"], visibility_authority, audience
         )
-        if audience != "operator":
-            compatibility["payload"] = _apply_member_tool_summary(
-                compatibility["payload"], item_kind=str(item_kind or "")
-            )
         if redacted_fields:
             compatibility["redacted_fields"] = redacted_fields
         return compatibility
@@ -1889,10 +1951,23 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
     # projected legacy payload: the operator envelope keeps exact bytes, user
     # projections drop the redacted fields.
     event["payload"], redacted_fields = _redacted_legacy_payload(payload, visibility_authority, audience)
-    if audience != "operator":
-        event["payload"] = _apply_member_tool_summary(event["payload"], item_kind=item_kind)
     if redacted_fields:
         event["visibility"]["redacted_fields"] = redacted_fields
+    return event
+
+
+def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str, Any]:
+    """Serialize one session event for an audience.
+
+    The single user-audience exit for the X3 member tool summaries: every
+    branch (native V2 row, canonical dict envelope, compatibility envelope,
+    legacy full-scope row) funnels through here, so live delivery, hydration,
+    reconcile, SSE and group history all see the same projection.
+    """
+
+    event = _serialize_session_event_for_audience(row, audience=audience)
+    if audience != "operator" and str(event.get("item_kind") or event.get("legacy_kind") or "") == "tool_result":
+        event["payload"] = _apply_member_tool_summary(event["payload"], item_kind="tool_result")
     return event
 
 

@@ -2940,7 +2940,9 @@
           "capabilityLookup": "Looked up available capabilities",
           "capabilityLookupFailed": "The capability lookup did not complete",
           "skillLoad": "Loaded a skill",
-          "skillLoadFailed": "The skill did not load"
+          "skillLoadFailed": "The skill did not load",
+          "contextRead": "Read work context",
+          "contextReadFailed": "Couldn't read work context this time"
         }
       },
       "workLedger": {

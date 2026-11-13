@@ -133,7 +133,8 @@ async def test_member_history_v2_serves_typed_summary_not_raw_result(monkeypatch
     )
     for leak in ("不要向用户展示", "284ff1e71ca75b9f92800d2c6fc40ab9", "4f10ca36", "scope=sessions", "读取到的记忆"):
         assert leak not in rendered, leak
-    assert body["member_summary"] == {"kind": "memory_read", "failed": False}
+    # r2 ruling 3: the typed summary carries state instead of failed.
+    assert body["member_summary"] == {"kind": "memory_read", "state": "done"}
 
 
 @pytest.mark.asyncio

@@ -522,7 +522,12 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
   const live = (status: RunStepStatus): RunStepStatus =>
     status === 'running' && !allowLiveRunning ? 'interrupted' : status;
   if (message.role === 'tool_call') {
-    if (message.eventStatus === 'failed' || message.eventStatus === 'error') return 'failed';
+    // The canonical outcome (denied/aborted/cancelled/unavailable/…) states
+    // the action did not happen; the step must agree with the member
+    // sentence instead of showing a completed action (X3 r2).
+    const outcome = String(message.eventStatus || '').toLowerCase();
+    if (['failed', 'error', 'denied', 'unavailable', 'approval_required'].includes(outcome)) return 'failed';
+    if (['cancelled', 'canceled', 'aborted'].includes(outcome)) return 'cancelled';
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking && !message.toolMeta.answered) return 'blocked';
     if (message.toolMeta?.kind === 'runtime_step') {
       const status = String(message.toolMeta.status || '').toLowerCase();

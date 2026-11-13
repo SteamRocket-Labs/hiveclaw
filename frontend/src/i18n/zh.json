@@ -2940,7 +2940,9 @@
           "capabilityLookup": "查找了可用的能力",
           "capabilityLookupFailed": "这次没有查到可用的能力",
           "skillLoad": "加载了技能",
-          "skillLoadFailed": "技能没有加载成功"
+          "skillLoadFailed": "技能没有加载成功",
+          "contextRead": "查看了工作资料",
+          "contextReadFailed": "工作资料这次没读到"
         }
       },
       "workLedger": {

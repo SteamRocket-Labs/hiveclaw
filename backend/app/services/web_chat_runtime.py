@@ -2489,20 +2489,19 @@ async def broadcast_web_chat_event(
         if audience in {"direct_user", "participants"}:
             # Canonical envelopes are already committed with an outbox row.
             # Their committed bytes are delivered untouched, with one member
-            # exception (X3): a summarized tool_result carries model-facing
-            # result bytes the direct-user socket must never see, so exactly
-            # that envelope is projected through the same user projection the
-            # Redis publication boundary applies. Every other envelope keeps
-            # its committed bytes; the outbox may legally redeliver the same
-            # immutable event_id.
-            delivered = event_payload
-            if str(event_payload.get("item_kind") or "") == "tool_result":
-                from app.services.session_event_contract import member_tool_summary_applicable
+            # exception (X3): a tool_result carries model-facing result bytes
+            # the direct-user socket must never see, so every tool_result goes
+            # through the same user projection the Redis publication boundary
+            # applies (idempotent, so redelivery from either plane carries the
+            # same bytes). Every other envelope keeps its committed bytes; the
+            # outbox may legally redeliver the same immutable event_id.
+            from app.services.web_chat_stream_bus import _user_live_projection
 
-                if member_tool_summary_applicable(event_payload.get("payload")):
-                    from app.services.web_chat_stream_bus import _user_live_projection
-
-                    delivered = _user_live_projection(event_payload)
+            delivered = (
+                _user_live_projection(event_payload)
+                if str(event_payload.get("item_kind") or "") == "tool_result"
+                else event_payload
+            )
             await web_chat_broker.send_session_message(
                 str(agent_id),
                 str(session_id) if session_id else None,

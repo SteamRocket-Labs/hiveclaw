@@ -222,11 +222,14 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
     const toolName = toolNameOf(step);
     // X3: summarized tools show one plain sentence in place of the raw result
     // the model saw. There is deliberately no way to view the raw text here.
+    // An unknown kind yields no sentence and falls through to the existing
+    // display (version skew must not hide a step behind an empty paragraph).
     const memberSummary = memberToolSummaryFromRecord(
       (step.details as { memberSummary?: unknown } | null)?.memberSummary,
     );
     if (memberSummary) {
-      return <p>{memberToolSummarySentence(memberSummary, t)}</p>;
+      const memberSentence = memberToolSummarySentence(memberSummary, t);
+      if (memberSentence) return <p>{memberSentence}</p>;
     }
     const toolDetails = step.details as { rawResult?: unknown; result?: unknown } | null;
     const raw = toolDetails?.rawResult ?? toolDetails?.result;

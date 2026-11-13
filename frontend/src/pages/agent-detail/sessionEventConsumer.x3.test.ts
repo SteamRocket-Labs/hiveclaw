@@ -58,7 +58,7 @@ function summarizedToolPair(): SessionEventV2[] {
       status: 'completed',
       result: '',
       content: '',
-      member_summary: { kind: 'memory_read', failed: false },
+      member_summary: { kind: 'memory_read', state: 'done' },
     },
   };
   return [call, result];
@@ -83,9 +83,19 @@ function compatibilityToolEnvelope(): Record<string, unknown> {
     session_id: 'session-1',
     occurred_at: '2026-11-12T00:00:02Z',
     payload: {
-      content: '',
+      // r2 ruling 5: the legacy envelope minus its raw result serializes back
+      // into content, so the member view keeps the pairing mechanics.
+      content: JSON.stringify({
+        name: 'search_memory',
+        args: { query: '周报 格式' },
+        status: 'done',
+        tool_call_id: 'call_x3',
+        visibility: 'collapsed',
+        step_id: 'step_9',
+        duration_ms: 812,
+      }),
       parts: [],
-      metadata: { tool_name: 'search_memory', status: 'done', member_summary: { kind: 'memory_search', failed: false } },
+      metadata: { tool_name: 'search_memory', status: 'done', member_summary: { kind: 'memory_search', state: 'done' } },
     },
   };
 }
@@ -103,7 +113,7 @@ describe('member tool summary through the session planes', () => {
     if (!store) throw new Error('fixture_did_not_create_store');
     const messages = toolMessagesOf(projectSessionEventStoreToMessages(store));
     const result = messages.find((message) => message.toolName === 'load_memory');
-    expect(result?.toolMemberSummary).toEqual({ kind: 'memory_read', failed: false });
+    expect(result?.toolMemberSummary).toEqual({ kind: 'memory_read', state: 'done' });
     // The rendered result text is empty; typed args (the member's own
     // request) remain, but no result prose or management notes arrive.
     expect(result?.toolRawResult ?? '').toBe('');
@@ -128,7 +138,7 @@ describe('member tool summary through the session planes', () => {
     // The expanded step the member opens renders the summary, not raw text.
     const timeline = buildRunTimelineFromMessages(reloaded.messages);
     const details = timeline?.steps.find((step) => step.details && (step.details as Record<string, unknown>).memberSummary)?.details as Record<string, unknown>;
-    expect(details?.memberSummary).toEqual({ kind: 'memory_read', failed: false });
+    expect(details?.memberSummary).toEqual({ kind: 'memory_read', state: 'done' });
   });
 
   it('the compatibility plane (persisted V1 tool results) carries the summary through reload', () => {
@@ -137,7 +147,7 @@ describe('member tool summary through the session planes', () => {
       0,
     );
     const compat = toolMessagesOf(reloaded.messages).find((message) => message.toolName === 'search_memory');
-    expect(compat?.toolMemberSummary).toEqual({ kind: 'memory_search', failed: false });
+    expect(compat?.toolMemberSummary).toEqual({ kind: 'memory_search', state: 'done' });
     expect(compat?.toolRawResult ?? '').toBe('');
     expect(JSON.stringify(reloaded.messages)).not.toContain(MEMORY_BODY);
   });
@@ -159,5 +169,68 @@ describe('member tool summary through the session planes', () => {
     const plain = toolMessagesOf(reloaded.messages).find((message) => message.toolName === 'read_file');
     expect(plain?.toolMemberSummary).toBeUndefined();
     expect(plain?.toolRawResult).toContain('2026-11-01,35');
+  });
+
+  it('a colleague still working carries the in_progress state through the real projection (r2 ruling 2)', () => {
+    const call: SessionEventV2 = {
+      ...canonicalEvent(1), item_id: 'call', item_kind: 'tool_call',
+      kind: 'tool_call.completed', payload_schema: 'hive.session.payload.tool_call.completed.v2',
+      invocation_id: 'inv-running',
+      payload: { tool_name: 'check_async_task', args: { task_id: 't-1' } },
+    };
+    // The exact bytes the member backend emits for a running delegation check.
+    const result: SessionEventV2 = {
+      ...canonicalEvent(2), item_id: 'result', item_kind: 'tool_result',
+      kind: 'tool_result.completed', payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      invocation_id: 'inv-running',
+      payload: {
+        tool_name: 'check_async_task',
+        invocation_id: 'inv-running',
+        outcome: 'success',
+        content: JSON.stringify({ task_id: 't-1', task_type: 'delegation', status: 'running', result: null }),
+        member_summary: { kind: 'colleague_result', state: 'in_progress' },
+        parts: [],
+      },
+    };
+    const reloaded = hydrateSessionTranscriptEvents([call, result] as unknown as ChatTranscriptEventPayload[], 0);
+    const message = toolMessagesOf(reloaded.messages).find((m) => m.toolName === 'check_async_task');
+    expect(message?.toolMemberSummary).toEqual({ kind: 'colleague_result', state: 'in_progress' });
+    const timeline = buildRunTimelineFromMessages(reloaded.messages);
+    const details = timeline?.steps.find((step) => (step.details as Record<string, unknown>)?.memberSummary)?.details as Record<string, unknown>;
+    expect((details?.memberSummary as Record<string, unknown>)?.state).toBe('in_progress');
+  });
+
+  it('a standalone non-summarized result keeps its old title (r2 ruling 9 / N4)', () => {
+    // Only summarized tools take a standalone result's title from its payload
+    // tool_name; read_file keeps the pre-X3 generic title behavior.
+    const result: SessionEventV2 = {
+      ...canonicalEvent(1), item_id: 'result', item_kind: 'tool_result',
+      kind: 'tool_result.completed', payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      invocation_id: 'inv-standalone',
+      payload: { tool_name: 'read_file', invocation_id: 'inv-standalone', outcome: 'success', content: 'a,b\n1,2', parts: [] },
+    };
+    const reloaded = hydrateSessionTranscriptEvents([result] as unknown as ChatTranscriptEventPayload[], 0);
+    const message = toolMessagesOf(reloaded.messages)[0];
+    expect(message?.toolName).toBeUndefined();
+    const summarized: SessionEventV2 = {
+      ...result, event_id: 'event-summarized', item_id: 'result-summarized',
+      payload: { tool_name: 'load_memory', invocation_id: 'inv-s2', outcome: 'success', content: '', member_summary: { kind: 'memory_read', state: 'done' }, parts: [] },
+    };
+    const withSummary = hydrateSessionTranscriptEvents([summarized] as unknown as ChatTranscriptEventPayload[], 0);
+    expect(toolMessagesOf(withSummary.messages)[0]?.toolName).toBe('load_memory');
+  });
+
+  it('not-done outcomes mark the step failed or cancelled, agreeing with the sentence (r2 ruling 3)', () => {
+    for (const [outcome, expected] of [['denied', 'failed'], ['aborted', 'cancelled'], ['cancelled', 'cancelled'], ['unavailable', 'failed']] as const) {
+      const result: SessionEventV2 = {
+        ...canonicalEvent(1), item_id: `result-${outcome}`, item_kind: 'tool_result',
+        kind: 'tool_result.completed', payload_schema: 'hive.session.payload.tool_result.completed.v2',
+        invocation_id: `inv-${outcome}`,
+        payload: { tool_name: 'web_fetch', invocation_id: `inv-${outcome}`, outcome, content: '', parts: [] },
+      };
+      const reloaded = hydrateSessionTranscriptEvents([result] as unknown as ChatTranscriptEventPayload[], 0);
+      const timeline = buildRunTimelineFromMessages(reloaded.messages);
+      expect(timeline?.steps[0]?.status).toBe(expected);
+    }
   });
 });

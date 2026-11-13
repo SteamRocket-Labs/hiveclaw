@@ -462,6 +462,13 @@ function projectCanonicalItem(
       toolMemberSummary: (() => {
         const summary = memberToolSummaryFromRecord(toolEnvelope.member_summary ?? pairedEnvelope?.member_summary);
         if (summary?.kind === 'web_fetch' && !summary.host && typeof toolEnvelope.host === 'string') summary.host = toolEnvelope.host;
+        if (summary?.kind === 'file_read' && summary.state === 'not_done') {
+          const metadata = recordValue(pairedEnvelope?.metadata ?? toolEnvelope.metadata);
+          const reason = recordValue(metadata?.workspace_input_receipt)?.reason_code;
+          // The specific typed refusal outranks a coarse auth_or_permission
+          // class. Preserve it through the existing summary string field.
+          if (typeof reason === 'string' && reason) summary.errorClass = reason;
+        }
         return summary ? memberSummaryWithArgs(summary, toolArgs) : undefined;
       })(),
       artifacts: extractArtifactParts(pairedResult?.payload ?? item.payload),
@@ -605,6 +612,7 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
  * original store, tool results and model history remain untouched. */
 function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatMessage[] {
   const terminals = new Map<string, string>();
+  const terminalSessions = new Map<string, string>();
   const key = (value: unknown) => typeof value === 'string' ? value.replaceAll('-', '').toLowerCase() : '';
   const terminal = (value: unknown) => ['completed', 'failed', 'error', 'killed', 'cancelled', 'blocked', 'skipped'].includes(String(value));
   const metadataOf = (message: AgentChatMessage) => message.threadItem?.metadata || message.sessionItem?.payload || {};
@@ -615,17 +623,28 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
       || message.sessionItem?.kind === 'a2a_delegation') && terminal(status)) {
       const task = key(metadata.runtime_task_id || metadata.task_id);
       if (task) terminals.set(task, String(status));
+      const childSession = key(metadata.child_session_id);
+      if (childSession) terminalSessions.set(childSession, String(status));
     }
     const manifest = recordValue(metadata.result_manifest);
     for (const item of Array.isArray(manifest?.items) ? manifest.items : []) {
-      if (item && ['delegation', 'a2a_delegation'].includes(item.task_type) && terminal(item.terminal_status)) terminals.set(key(item.source_run_id), item.terminal_status);
+      if (item && ['delegation', 'a2a_delegation'].includes(item.task_type) && terminal(item.terminal_status)) {
+        terminals.set(key(item.source_run_id), item.terminal_status);
+        const childSession = key(item.child_session_id);
+        if (childSession) terminalSessions.set(childSession, item.terminal_status);
+      }
     }
   }
   return messages.map(message => {
     const metadata = metadataOf(message);
     if (message.role === 'event' && (metadata.action_kind === 'a2a_delegation' || message.eventType === 'child_session')) {
-      const status = terminals.get(key(metadata.runtime_task_id || metadata.task_id));
+      const status = terminalSessions.get(key(metadata.child_session_id))
+        || terminals.get(key(metadata.runtime_task_id || metadata.task_id));
       if (!status) return message;
+      // Run 19's started notice carries the parent run id; the terminal
+      // carries the child task id. Their typed child-session identity joins
+      // them. Fold the obsolete notice into the task's existing final row.
+      if (message.eventType === 'runtime_action_started') return null;
       const memberStatus = status === 'killed' ? 'cancelled' : status;
       return { ...message, eventStatus: memberStatus,
         ...(message.threadItem ? { threadItem: { ...message.threadItem, metadata: { ...metadata, status: memberStatus } } } : {}),
@@ -648,7 +667,7 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
       || statuses.find(status => status !== 'completed') || 'completed';
     return { ...message, toolMemberSummary: { ...message.toolMemberSummary, kind: 'delegation',
       state: status === 'completed' ? 'done' : 'not_done', status: status === 'killed' ? 'cancelled' : status } };
-  });
+  }).filter((message): message is AgentChatMessage => message !== null);
 }
 
 export function reconcileCanonicalPermissionReplay(

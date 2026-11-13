@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
 import MarkdownRenderer from './MarkdownRenderer';
+import run19 from '../test/fixtures/x3dRun19Rows.json';
 
 // 渲染契约：MarkdownRenderer 只输出语义 class（.md-content 体系），
 // 不再内嵌 inline style —— 视觉全部由 index.css 承担。
@@ -75,4 +76,14 @@ describe('MarkdownRenderer', () => {
     expect(html).not.toContain('data:text/html');
     expect(html).not.toContain('token=secret');
   });
+});
+
+
+it('X3d-5 preserves single tilde date ranges from run 19 while retaining double-tilde strikethrough', () => {
+  const html = renderToStaticMarkup(<MarkdownRenderer content={run19.dateSentence} />);
+  expect(html).toContain('11-09~11-15');
+  expect(html).toContain('11-02~11-08');
+  expect(html).toContain('10,000 元');
+  expect(html).not.toContain('<del>');
+  expect(renderToStaticMarkup(<MarkdownRenderer content="~~已撤回~~" />)).toContain('<del>已撤回</del>');
 });

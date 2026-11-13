@@ -181,7 +181,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({
     <div className={classes} style={style}>
       <ReactMarkdown
         skipHtml
-        remarkPlugins={[remarkGfm, remarkChineseStrong]}
+        remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkChineseStrong]}
         rehypePlugins={[rehypeSanitize]}
         urlTransform={safeMarkdownUrl}
         components={markdownComponents}

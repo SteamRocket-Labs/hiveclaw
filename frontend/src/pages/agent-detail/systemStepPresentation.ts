@@ -63,7 +63,9 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
     const review = stopped ? hasKeptResult(metadata)
       ? t('agent.chat.disclosure.system.resultsKept', 'Results are kept for review; this conversation did not continue.')
       : t('agent.chat.disclosure.system.noResultKept', 'There is no result to view; this conversation did not continue.') : undefined;
-    return display(title, review);
+    const items = (metadata.result_manifest as { items?: Array<{ terminal_status?: string }> } | undefined)?.items || [];
+    const cancelled = items.length > 0 && items.every(item => ['killed', 'cancelled'].includes(String(item.terminal_status)));
+    return { ...display(title, review), ...(cancelled ? { status: 'cancelled' as const } : {}) };
   }
   if (event.type === 'team_member' && typeof metadata.member_name === 'string'
     && text === `Team member created: ${metadata.member_name}`) {

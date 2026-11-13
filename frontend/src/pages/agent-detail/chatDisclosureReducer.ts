@@ -565,6 +565,7 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
     if (message.toolMemberSummary?.status === 'cancelled' || ['killed', 'cancelled', 'canceled'].includes(String(envelopeStatus))) return 'cancelled';
     if (['blocked', 'skipped'].includes(message.toolMemberSummary?.status || '')) return 'blocked';
     if (outcome === 'approval_required') return 'blocked';
+    if (message.sessionItem?.lifecycle === 'waiting') return 'blocked';
     const notDone = ['failed', 'error', 'denied', 'unavailable'].includes(outcome)
       || summaryState === 'not_done' || summaryState === 'unknown';
     if (notDone || ['cancelled', 'canceled', 'aborted'].includes(outcome)) {
@@ -575,6 +576,10 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
       // not-done status used here.
       return 'failed';
     }
+    // A returned delegation call can still be waiting for its colleague,
+    // including after the parent run ended. The typed terminal projection
+    // clears this summary when the colleague ends.
+    if (summaryState === 'in_progress' && ['delegation', 'colleague_result'].includes(message.toolMemberSummary?.kind || '')) return 'running';
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking && !message.toolMeta.answered) return 'blocked';
     if (message.toolMeta?.kind === 'runtime_step') {
       const status = String(message.toolMeta.status || '').toLowerCase();
@@ -626,6 +631,9 @@ export function isDisclosureStepMessage(message: AgentChatMessage): boolean {
 
 function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: boolean): RunStepSnapshot | null {
   if (!isDisclosureStepMessage(message)) return null;
+  // The approval card already owns the decision. A canonical resolved item
+  // with no sentence otherwise becomes a question-mark "Runtime event" row.
+  if (message.eventType === 'permission_resolved' && !message.content?.trim()) return null;
   const status = statusForMessage(message, allowLiveRunning);
   const summary = getDisclosureStepSummary(message);
   const canonicalKind = message.sessionItem?.kind;

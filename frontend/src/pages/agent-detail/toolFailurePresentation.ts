@@ -16,6 +16,22 @@ const FAILURE_GROUPS: Array<[string, string[]]> = [
 ];
 const FAILURE_KIND = Object.fromEntries(FAILURE_GROUPS.flatMap(([kind, names]) => names.map(name => [name, kind])));
 
+const READ_FAILURE_KIND: Record<string, string> = {
+  auth_or_permission: 'permission', auth_required: 'permission', forbidden: 'permission',
+  authz_policy_violation: 'permission', content_source_access_denied: 'permission',
+  not_found: 'readMissing',
+  workspace_input_capture_unavailable: 'readInputUnavailable', provider_unavailable: 'readInputUnavailable',
+  content_source_changed: 'readChanged', workspace_input_revision_changed: 'readChanged',
+};
+
+/** Only typed refusal reasons/classes decide the sentence; never error prose. */
+export function fileReadFailureForDisplay(reason: unknown, t: TFunction): string {
+  const kind = typeof reason === 'string' && Object.prototype.hasOwnProperty.call(READ_FAILURE_KIND, reason)
+    ? READ_FAILURE_KIND[reason] : undefined;
+  return kind ? t(`agent.chat.disclosure.failure.${kind}`, 'The file could not be read this time.')
+    : t('agent.chat.toolResults.memberSummary.fileReadFailed', 'The file was not read this time.');
+}
+
 /** Only tool failure envelopes are projected; assistant prose is never scanned. */
 export function toolFailureForDisplay(details: unknown, t: TFunction, status: RunStepStatus): string | null {
   const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
@@ -41,6 +57,9 @@ export function toolFailureForDisplay(details: unknown, t: TFunction, status: Ru
     return null;
   }
   const errorClass = String(error?.error_class);
+  if (['read_file', 'fs_read', 'read_document'].includes(String(error.tool_name || record.toolName))) {
+    return fileReadFailureForDisplay(error.reason_code || error.error_class, t);
+  }
   if (error.provider === 'mcp' && ['auth_required', 'configuration_required'].includes(errorClass)
     && error.diagnostic_hint === '请管理员检查应用连接地址。') {
     return t('agent.chat.disclosure.failure.connectionAdmin', 'The app connection is unavailable. Ask an administrator to check its settings.');

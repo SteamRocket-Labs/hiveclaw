@@ -24,7 +24,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { assistantReplyForDisplay } from './CanonicalCardAssistantSupplement';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
-import { toolOutputForDisplay } from './toolFailurePresentation';
+import { fileReadFailureForDisplay, toolOutputForDisplay } from './toolFailurePresentation';
 import { memberFilename, memberToolSummaryFromRecord, memberToolSummarySentence, memberSummaryWithArgs } from './memberToolSummary';
 import { useAuthStore } from '../../stores';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
@@ -175,6 +175,7 @@ function stepMarkerLabel(status: RunStepSnapshot['status'] | undefined, t: TFunc
   if (status === 'cancelled') return t('agent.chat.disclosure.stoppedMarker', 'Stopped');
   if (status === 'blocked') return t('agent.chat.disclosure.blockedMarker', 'Needs attention');
   if (status === 'failed') return t('agent.chat.disclosure.failedMarker', 'Not completed');
+  if (status === 'running' || status === 'queued') return runtimeStatusLabel(status, t);
   return undefined;
 }
 
@@ -187,8 +188,10 @@ function StepIcon({ kind, running, status, unconfirmed }: { kind: RunStepKind; r
   const size = 14;
   const label = stepMarkerLabel(status, t, unconfirmed);
   if (label) {
-    const Marker = unconfirmed ? IconHelp : status === 'cancelled' ? IconPlayerStop : status === 'blocked' ? IconAlertCircle : IconCircleX;
-    return <span role="img" aria-label={label}><Marker size={size} stroke={2.1} aria-hidden="true" /></span>;
+    const Marker = unconfirmed ? IconHelp : status === 'cancelled' ? IconPlayerStop : status === 'blocked' ? IconAlertCircle
+      : status === 'running' || status === 'queued' ? IconLoader2 : IconCircleX;
+    return <span role="img" aria-label={label}><Marker size={size} stroke={2.1} aria-hidden="true"
+      className={running ? 'session-tui-step-spinner' : undefined} /></span>;
   }
   if (running) {
     return <IconLoader2 size={size} stroke={2.2} className="session-tui-step-spinner" />;
@@ -258,6 +261,9 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
       (step.details as { memberSummary?: unknown } | null)?.memberSummary,
     );
     if (memberSummary) {
+      if (memberSummary.kind === 'file_read' && memberSummary.state === 'not_done') {
+        return <p>{fileReadFailureForDisplay(memberSummary.errorClass, t)}</p>;
+      }
       const args = (step.details as { args?: Record<string, unknown> } | null)?.args;
       const memberSentence = memberToolSummarySentence(memberSummaryWithArgs(memberSummary, args), t);
       if (memberSentence) return <p>{memberSentence}</p>;

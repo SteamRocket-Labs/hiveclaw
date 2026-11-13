@@ -1,5 +1,8 @@
+// Frontend matches backend/app/services/runtime_display_status.py byte for byte.
+export const EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE = '已停止继续搜索，但没能整理出答复。你可以让我根据目前的结果直接作答。';
+
 export type RuntimeFailurePresentation = {
-  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error' | 'timeout' | 'empty_search' | 'refused_result' | 'terminal_task_read' | 'running_task_read';
+  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown' | 'persistence_error' | 'timeout' | 'empty_search' | 'empty_search_summary_failed' | 'refused_result' | 'terminal_task_read' | 'running_task_read';
   fallback: string;
 };
 
@@ -8,6 +11,7 @@ export function runtimeFailurePresentation(
   retryable: boolean,
   deliveryState?: unknown,
   terminalReason?: unknown,
+  message?: unknown,
 ): RuntimeFailurePresentation {
   if (terminalReason === 'persistence_error') {
     return {
@@ -16,6 +20,12 @@ export function runtimeFailurePresentation(
     };
   }
   if (failureCode === 'repeated_empty_search') {
+    if (message === EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE) {
+      return {
+        kind: 'empty_search_summary_failed',
+        fallback: "I've stopped searching, but I couldn't put together a reply. You can ask me to answer directly using the results so far.",
+      };
+    }
     // R18a round 2: the loop guard stopped the turn after several consecutive
     // typed-empty searches; the plain sentence is the member's answer, and no
     // retry action is offered (retry_safe is false for this failure).

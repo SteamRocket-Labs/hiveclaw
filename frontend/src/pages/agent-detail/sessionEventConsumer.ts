@@ -13,7 +13,7 @@ import { memberToolSummaryFromRecord } from './memberToolSummary';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
 import type { SessionMessageStore } from './sessionMessageStore';
-import { runtimeFailurePresentation } from '../session-workbench/runtimeFailurePresentation';
+import { EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE, runtimeFailurePresentation } from '../session-workbench/runtimeFailurePresentation';
 import {
   createSessionEventStore,
   reduceSessionCompatibilityEvent,
@@ -480,7 +480,8 @@ function projectCanonicalItem(
     const failureRetryable = item.payload.retryable === true;
     const failureRetrySafe = 'retry_safe' in item.payload ? item.payload.retry_safe === true : failureRetryable;
     const deliveryState = typeof item.payload.delivery_state === 'string' ? item.payload.delivery_state : null;
-    const failureMessage = failedDelegation && typeof item.payload.message === 'string'
+    const failureMessage = failureCode === 'repeated_empty_search' && item.payload.message === EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE
+      ? EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE : failedDelegation && failureCode !== 'repeated_empty_search' && typeof item.payload.message === 'string'
       ? item.payload.message : runtimeFailurePresentation(failureCode, failureRetryable, deliveryState, failureReason).fallback;
     const scope = item.scope;
     const threadItem: ThreadItem = {

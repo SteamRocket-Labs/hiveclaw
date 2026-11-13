@@ -250,6 +250,8 @@ function translateRuntimeFailure(t: TFunction, presentation: RuntimeFailurePrese
     case 'empty_search':
       // R18a round 2: the loop guard's plain nothing-found answer.
       return t('sessionWorkbench.threadItem.failure.emptySearch', presentation.fallback);
+    case 'empty_search_summary_failed':
+      return t('sessionWorkbench.threadItem.failure.emptySearchSummaryFailed', presentation.fallback);
     case 'refused_result':
       return t('sessionWorkbench.threadItem.failure.refusedResult', presentation.fallback);
     case 'terminal_task_read':
@@ -331,8 +333,8 @@ export function ThreadItemRenderer({
     : t(`sessionWorkbench.threadItem.type.${item.item_type}`, TITLES[item.item_type]);
   const status = sourceNotice ? t('agent.chat.sourceUnavailable', 'Unavailable')
     : t(`sessionWorkbench.threadItem.status.${item.item_status}`, item.item_status);
-  const runtimeFailure = item.item_type === 'error' && item.event_type === 'runtime_failure'
-    ? runtimeFailurePresentation(item.item_data.code, item.item_data.retryable === true, item.metadata?.delivery_state, item.item_data.reason)
+  const runtimeFailure = item.item_type === 'error' && (item.event_type === 'runtime_failure' || item.item_data.code === 'repeated_empty_search')
+    ? runtimeFailurePresentation(item.item_data.code, item.item_data.retryable === true, item.metadata?.delivery_state, item.item_data.reason, item.content)
     : null;
   const visibleContent = sourceNotice
     ? t('agent.chat.groupSourcesUnavailable', 'Some source content is unavailable to you. Request access or refresh this conversation.')

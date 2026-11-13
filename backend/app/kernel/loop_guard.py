@@ -8,13 +8,11 @@ advance. Native task-status reads may also stop at the existing identical-call
 threshold when the same task's fixed terminal reason is unchanged across readers,
 or when a delegated colleague is still running. Repeated fixed non-retryable
 result refusals use that same read threshold regardless of paging arguments.
-A side-effect-free search tool
-that keeps returning typed empty results across reworded arguments may also be
-stopped after a fixed count: no external effect exists and the member's
-question has a truthful answer ("nothing found") that more searching cannot
-change — but only while the empties are consecutive, no search tool in the turn
-has produced a typed non-empty result, and the model has already been warned in
-an earlier round (same-round parallel empties only warn).
+A side-effect-free search tool that keeps returning typed empty results across
+reworded arguments may also stop at a fixed count of consecutive empties after
+the model was warned in an earlier round (same-round parallel empties only warn).
+Earlier material only changes the final texts and never removes this bound;
+the final summary reads all material, including results from the stopping round.
 """
 
 from __future__ import annotations
@@ -29,7 +27,7 @@ from uuid import UUID
 from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
 from app.services.runtime_display_status import (
     DELEGATED_TASK_RUNNING_MESSAGE, DELEGATION_RUNNING_RESULT_READ_NOTE,
-    EMPTY_SEARCH_FINAL_MESSAGE, IDENTICAL_TERMINAL_READ_MESSAGE,
+    EMPTY_SEARCH_FINAL_MESSAGE, EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE, IDENTICAL_TERMINAL_READ_MESSAGE,
     REFUSED_RESULT_READ_MESSAGE, TERMINAL_TASK_READ_PREFIX,
     is_delegation_failure_result_page, is_runtime_failure_observation,
 )
@@ -259,12 +257,7 @@ class LoopGuard:
 
     @property
     def empty_search_material_found(self) -> bool:
-        """Whether any search tool produced material in this turn (read-only).
-
-        The orchestrator consults this after a round's results are all
-        observed, so a fruitful result later in the same round can cancel a
-        stop recorded on the round's fifth empty result.
-        """
+        """Whether any search tool produced material in this turn (read-only)."""
         return self._empty_search_material_found
 
     def _observe_empty_search(self, tool_name: str, result: str) -> LoopGuardDecision | None:
@@ -276,12 +269,11 @@ class LoopGuard:
         result's typed ``status: "empty"`` is the mechanical fact; only search
         tools are counted so polling readers stay under their own rule.
 
-        R18a round 2 truthfulness gates (reviewer should-fix 3): only
-        consecutive typed-empty results from the tool count; a typed non-empty
-        result from any search tool in the turn means material exists, so the
-        rule only warns for the rest of the turn; and the turn may only be
-        stopped by an empty result observed in a model round that began after
-        the warning was delivered — same-round parallel empties only warn.
+        Only consecutive typed-empty results from the tool count. R21a keeps
+        the bound even after material was found; the final summary uses that
+        material. An empty result can stop only in a model round that began
+        after this tool's warning was delivered — same-round parallel empties
+        only warn.
 
         R18a round 3: material is a prose result (search_memory/search_clawhub
         return hits as plain text) or a typed ``ok``/``partial`` result; typed
@@ -323,13 +315,13 @@ class LoopGuard:
         if (
             count >= _abort_threshold(self.empty_search_warn_threshold)
             and check.warn_key in self._empty_search_armed
-            and not self._empty_search_material_found
         ):
             # The stop sentence is the member-facing detail, exactly like the
             # delegated-running read: the orchestrator ends the turn with it.
             stop_check = _PatternCheck(
                 reason="repeated_empty_search",
-                detail=EMPTY_SEARCH_FINAL_MESSAGE,
+                detail=(EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE if self._empty_search_material_found
+                    else EMPTY_SEARCH_FINAL_MESSAGE),
                 warn_key=f"empty_search:{tool_name}",
                 count=count,
                 warn_threshold=self.empty_search_warn_threshold,

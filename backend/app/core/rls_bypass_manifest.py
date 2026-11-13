@@ -980,7 +980,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # module source of direct_invocation_terminal_boundary_processor (X3b rebuilds a
 # pre-start delegation stop from the stored conversation messages, so the existing
 # instruction gate holds; no authorization added). Still 122 callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "1ca4938d95a95bf9c90774cad8c4123f6b4dbb6b3be788766ee3a12d0c0c83f7"
+# Land28 (X2) versus land27: still 794 entries, 1 changed hash, the module source of
+# web_chat_runtime (broadcast_web_chat_event delivers committed compatibility envelopes
+# untouched; no bypass scope or authorization touched). Still 122 callsites.
+RLS_BYPASS_SCOPES_SHA256 = "85f805de77134ac47542bd85b026a4dee2caae6b511a2ae985e89da2869ae437"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

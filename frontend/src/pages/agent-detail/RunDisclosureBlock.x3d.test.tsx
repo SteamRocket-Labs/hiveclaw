@@ -6,7 +6,7 @@ import en from '../../i18n/en.json';
 import rows from '../../test/fixtures/x3dRun19Rows.json';
 import { translateFromCatalog } from '../../test/i18nMock';
 import RunDisclosureBlock from './RunDisclosureBlock';
-import { buildRunTimelineFromMessages } from './chatDisclosureReducer';
+import { buildRunTimelineFromMessages, stepDelegationStillInProgress } from './chatDisclosureReducer';
 import { consumeSessionEnvelope, hydrateSessionTranscriptEvents, projectSessionEventStoreToMessages } from './sessionEventConsumer';
 import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } from './sessionTranscriptApplier';
 import type { AgentChatMessage, ChatTranscriptEventPayload } from './chatRuntime';
@@ -372,6 +372,56 @@ it('X3d r2-4 marks an all-canceled integration manifest with the existing stoppe
     const row = memberRow(container, '同事任务已结束');
     expect(row?.getAttribute('data-status')).toBe('cancelled');
     expect(row?.querySelector('[role="img"][aria-label="已停止"]')).toBeTruthy();
+    unmount();
+  }
+});
+
+it('X3d r3-1 uses the existing Chinese title for a retained terminal delegation notice', () => {
+  const { container } = render(<RunDisclosureBlock timeline={{ id: 'localized-notice', status: 'running', steps: [{
+    id: 'terminal-notice', kind: 'a2a', title: 'Runtime event', status: 'done', visibility: 'visible',
+    details: '同事已完成这项工作。', systemEvent: { type: 'runtime_action_started',
+      metadata: { action_kind: 'a2a_delegation', status: 'completed', runtime_task_id: 'live-task', child_session_id: 'colleague-session' } },
+  }] }} />);
+  expect(container.querySelector('.run-step-title')?.textContent).toBe('委派工作');
+  expect(container.textContent).not.toContain('Delegate work');
+});
+
+it('X3d r3-2 keeps task A folded when a new uncovered start reuses its session, with only the new start in flight', () => {
+  const completed = answeredParentDelegation();
+  const start = structuredClone(rows.delegation.find(e => e.legacy_event_type === 'runtime_action_started')!) as Event;
+  completed.splice(completed.findIndex(e => e.item_kind === 'assistant_text'), 0, start);
+  completed.push(...copy(rows.delegation.filter(e => ['runtime_action_completed', 'child_session', 'agent_task_notification'].includes(e.legacy_event_type || ''))));
+  completed.forEach((event, index) => { event.sequence = index + 1; });
+  for (const messages of projectBoth(completed)) {
+    expect(messages.filter(message => message.eventType === 'runtime_action_started')).toHaveLength(0);
+    const { model, unmount } = renderMessages(messages);
+    expect(model.header.status).toBe('complete');
+    unmount();
+  }
+
+  const next = structuredClone(start);
+  next.event_id = 'r3-start-task-b';
+  next.sequence = completed.length + 1;
+  next.payload.metadata.runtime_task_id = 'another-parent-run';
+  next.payload.parts[0].runtime_task_id = 'another-parent-run';
+  // The new parent has completed; its delegated child has no terminal.
+  const parentEnd = structuredClone(completed.find(e => e.item_kind === 'run' && e.lifecycle === 'completed')!);
+  parentEnd.event_id = 'r3-parent-b-completed';
+  parentEnd.item_id = 'r3-parent-b';
+  parentEnd.scope.run_id = parentEnd.run_id = 'another-parent-run';
+  parentEnd.sequence = next.sequence + 1;
+  for (const messages of projectBoth([...completed, next, parentEnd])) {
+    const starts = messages.filter(message => message.eventType === 'runtime_action_started');
+    expect(starts).toHaveLength(1);
+    expect(starts[0].threadItem?.metadata?.runtime_task_id).toBe('another-parent-run');
+    const { container, model, unmount } = renderMessages(messages);
+    const current = model.cells.flatMap(cell => cell.kind === 'active_run' && cell.timeline.delegationInFlight
+      ? cell.timeline.steps.filter(stepDelegationStillInProgress) : []);
+    expect(current).toHaveLength(1);
+    expect(current[0].systemEvent?.metadata.runtime_task_id).toBe('another-parent-run');
+    expect(model.header.status).toBe('running');
+    expect([...container.querySelectorAll('.run-step, .run-tool-history-item')]
+      .filter(row => row.textContent?.includes('后台执行中'))).toHaveLength(1);
     unmount();
   }
 });

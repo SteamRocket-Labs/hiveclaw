@@ -651,17 +651,20 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
   const foldedStarts = new Set<number>();
   for (const [session, starts] of startsBySession) {
     const ends = [...(terminalSessions.get(session)?.values() || [])].sort((a, b) => a - b);
-    const covered: number[] = [];
+    const covered: Array<{ index: number; terminalSequence: number }> = [];
     let nextTerminal = 0;
     // Session-only FIFO cannot identify tasks that finish out of start order.
     for (const start of starts.sort((a, b) => a.sequence - b.sequence)) {
       while (nextTerminal < ends.length && ends[nextTerminal] <= start.sequence) nextTerminal++;
-      // Keep prior starts too while a later start in this session is uncovered.
-      if (nextTerminal === ends.length) { covered.length = 0; break; }
-      covered.push(start.index);
+      // Reopen only pairs whose terminal could cover this later start.
+      if (nextTerminal === ends.length) {
+        while (covered.length && covered[covered.length - 1].terminalSequence >= start.sequence) covered.pop();
+        break;
+      }
+      covered.push({ index: start.index, terminalSequence: ends[nextTerminal] });
       nextTerminal++;
     }
-    covered.forEach(index => foldedStarts.add(index));
+    covered.forEach(({ index }) => foldedStarts.add(index));
   }
   return messages.map((message, index) => {
     if (foldedStarts.has(index)) return null;
@@ -669,6 +672,7 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
     if (message.role === 'event' && (metadata.action_kind === 'a2a_delegation' || message.eventType === 'child_session')) {
       const status = terminals.get(key(metadata.runtime_task_id || metadata.task_id));
       if (!status) return message;
+      if (message.eventType === 'runtime_action_started' && !key(metadata.child_session_id)) return null;
       const memberStatus = ['killed', 'canceled'].includes(status) ? 'cancelled' : status;
       return { ...message, eventStatus: memberStatus,
         ...(message.threadItem ? { threadItem: { ...message.threadItem, metadata: { ...metadata, status: memberStatus } } } : {}),

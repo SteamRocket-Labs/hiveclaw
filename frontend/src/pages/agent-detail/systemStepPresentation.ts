@@ -33,7 +33,7 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
     const sentence = memberToolSummarySentence({ kind: 'delegation', status: status === 'killed' ? 'cancelled' : status,
       state: status === 'completed' ? 'done' : 'not_done' }, t)!;
     return event.type === 'child_session' ? { ...step, summary: sentence, details: sentence }
-      : display(t('agent.chat.disclosure.tools.delegateWork', 'Delegate work'), sentence);
+      : display(t('agent.chat.disclosure.toolTitle.delegateWork', 'Delegate work'), sentence);
   }
   if (step.status === 'failed') {
     const actor = metadata.target_agent_name;

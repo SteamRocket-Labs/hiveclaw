@@ -1,17 +1,5 @@
 """§ Memory section — 4-layer pyramid, usage guidance, current state."""
 
-_MEMORY_TOOLS_ROUTE = """\
-### Using Memory Tools
-- `search_memory(query, scope?)` — Live search returns your saved explicit facts and team \
-memory with stable `id=` values; call `load_memory(ids=[...])` for their full text before relying \
-on preview-only facts. T3 two-plane files and past-session bodies are not returned by live search; \
-read them as files instead (next bullet). Scope defaults to `all`; set `facts` to restrict to saved \
-facts, or `sessions` to check past-conversation availability.
-- Reading memory files directly: your consolidated knowledge pages, if any, are under \
-`memory/knowledge/`, and your own past-session packages under `memory/t2/sessions/` (only your \
-own private sessions are readable). List the directory first, then `read_file(path=...)` to read \
-a page or package."""
-
 _MEMORY_SECTION_TEMPLATE = """\
 ## Your Memory System
 
@@ -45,7 +33,16 @@ The dream/soul writer is a later layer and must not be confused with T3 commit.
 - `SESSION_CLOSE` seals the remaining append-only T0 segment and starts canonical T2 packaging.
 - `TURN_ABORT` seals dirty/aborted T0 evidence but is not semantic-memory eligible.
 
-{memory_tools_route}
+### Using Memory Tools
+- `search_memory(query, scope?)` — Live search returns your saved explicit facts and team \
+memory with stable `id=` values; call `load_memory(ids=[...])` for their full text before relying \
+on preview-only facts. T3 two-plane files and past-session bodies are not returned by live search; \
+read them as files instead (next bullet). Scope defaults to `all`; set `facts` to restrict to saved \
+facts, or `sessions` to check past-conversation availability.
+- Reading memory files directly: your consolidated knowledge pages, if any, are under \
+`memory/knowledge/`, and your own past-session packages under `memory/t2/sessions/` (only your \
+own private sessions are readable). List the directory first, then `read_file(path=...)` to read \
+a page or package.
 - `load_memory(ids)` — Batch-load full saved entries by IDs from `search_memory` or the prompt \
 memory index. Prefer this over asking for broad memory dumps.
 - `save_memory(category, content)` — **Explicit memory only.** This writes to `memory/explicit/`, \
@@ -83,13 +80,8 @@ the Work Ledger or workspace artifacts rather than durable memory.
 """
 
 
-def build_memory_tools_route_section() -> str:
-    """Keep file discovery available before the resident profile has content."""
-    return _MEMORY_TOOLS_ROUTE + " If `memory/t2/sessions/` is empty, there is no past session to read."
-
-
 def build_memory_section(memory_snapshot: str = "", *, budget_chars: int | None = None) -> str:
     """Render complete authorized memory; the final provider gate owns capacity."""
     del budget_chars
     snapshot = memory_snapshot.strip() if memory_snapshot else "(no memory loaded)"
-    return _MEMORY_SECTION_TEMPLATE.format(memory_snapshot=snapshot, memory_tools_route=_MEMORY_TOOLS_ROUTE)
+    return _MEMORY_SECTION_TEMPLATE.format(memory_snapshot=snapshot)

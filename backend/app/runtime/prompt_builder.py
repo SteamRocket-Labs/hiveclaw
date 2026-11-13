@@ -509,7 +509,6 @@ def build_dynamic_prompt_suffix(
         build_memory_section,
         build_scenario_section,
     )
-    from app.runtime.prompt_sections.memory import build_memory_tools_route_section
 
     section_candidates: list[ContextSectionCandidate] = []
 
@@ -572,7 +571,7 @@ def build_dynamic_prompt_suffix(
 
     memory_budget_chars = getattr(budget_profile, "memory_budget_chars", _DEFAULT_MEMORY_SNAPSHOT_BUDGET)
 
-    # § Memory (4-layer pyramid + resident memory context). The
+    # § Memory (4-layer pyramid + current query-scoped memory context). The
     # supplied budget is recorded for observability; these bytes remain intact.
     if memory_snapshot:
         add_candidate(
@@ -583,14 +582,6 @@ def build_dynamic_prompt_suffix(
             budget_key="memory_budget_chars",
             budget_chars=memory_budget_chars,
             source_payload=memory_snapshot,
-        )
-    else:
-        add_candidate(
-            candidate_id="dynamic:runtime:memory_tools_route",
-            kind="runtime_guidance",
-            name="memory_tools_route",
-            content=build_memory_tools_route_section(),
-            platform_constant=True,
         )
 
     if session_learning_projection:

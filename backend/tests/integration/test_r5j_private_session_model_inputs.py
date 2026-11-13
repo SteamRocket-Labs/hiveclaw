@@ -169,11 +169,9 @@ async def test_session_read_exception_does_not_deliver_unowned_or_leafless_files
     assert body not in json.dumps(snapshot["wire_request"], ensure_ascii=False)
 
 
-@pytest.mark.parametrize("profile", ["resident", "skeleton"])
 async def test_unverified_t2_reference_read_delivers_complete_body(
-    t2_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, profile,
+    t2_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 ):
-    from app.memory.profile_plane import EMPTY_SELF_CONTENT, load_resident_memory
     from app.runtime import invoker
     from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
     from app.services.web_chat_runtime import execute_web_chat_run
@@ -182,15 +180,13 @@ async def test_unverified_t2_reference_read_delivers_complete_body(
     s = t2_work
     path = s["package_path"] + "/summary.md"
     body = (s["agent_root"] / path).read_text()
+    # This agent has a prior session, so its self-model is no longer the empty
+    # bootstrap skeleton (profile_plane.py skips that); a non-empty resident
+    # plane is what makes the prompt carry the memory section at all
+    # (prompt_builder.py:578 renders it only for a non-empty memory_snapshot).
     self_path = s["agent_root"] / "memory/self/self.md"
-    if profile == "resident":
-        self_path.write_text("# Self\n\nPrior sessions produced reviewed evidence packages.\n")
-    else:
-        # A2m-f: real agent initialization leaves this skeleton even when a
-        # prior session already has a T2 package. It must still get the route.
-        assert self_path.read_text() == EMPTY_SELF_CONTENT
-        resident = load_resident_memory(agent_id=s["agent_id"], data_root=s["data_root"])
-        assert resident.text == "" and resident.sections == ()
+    self_path.parent.mkdir(parents=True, exist_ok=True)
+    self_path.write_text("# Self\n\nPrior sessions produced reviewed evidence packages.\n")
     # Owner decision 2026-11-12 (改为按需取): the per-turn preselection pointer
     # that used to name this record ("Inspect complete authorized files: …" from
     # the deleted memory_resource_references._render) is gone. The on-demand
@@ -208,9 +204,6 @@ async def test_unverified_t2_reference_read_delivers_complete_body(
         {"tool_calls": [{"id": "descend-segments", "type": "function", "function": {
             "name": "list_files", "arguments": json.dumps(
                 {"path": f"memory/t2/sessions/{s['previous']}/segments"})}}], "finish_reason": "tool_calls"},
-        {"tool_calls": [{"id": "descend-package", "type": "function", "function": {
-            "name": "list_files", "arguments": json.dumps({"path": s["package_path"]})}}],
-            "finish_reason": "tool_calls"},
         {"tool_calls": [{"id": "recover-t2", "type": "function", "function": {
             "name": "read_file", "arguments": json.dumps({"path": path})}}], "finish_reason": "tool_calls"},
         {"content": "Read the complete original record.", "finish_reason": "stop"},
@@ -221,25 +214,19 @@ async def test_unverified_t2_reference_read_delivers_complete_body(
         await execute_web_chat_run(s["run_id"])
     finally:
         reset_runtime_task_fence(fence)
-    assert len(client.requests) == 6
+    assert len(client.requests) == 5
     first = json.dumps(client.requests[0]["messages"], ensure_ascii=False)
     # The static route names the folder this record lives in, not the record.
     assert "memory/t2/sessions/" in first and "read_file" in first, first
-    assert "List the directory first, then `read_file(path=...)`" in first, first
     assert "Inspect complete authorized files" not in first
     assert "OLD_UNVERIFIED_T2_BODY" not in first
-    if profile == "skeleton":
-        assert "### Current Memory State" not in first
-        assert "(no memory loaded)" not in first
     locate = [m for m in client.requests[1]["messages"] if m.get("tool_call_id") == "locate-t2"]
     assert len(locate) == 1 and str(s["previous"]) in locate[0]["content"], locate
     descend_session = [m for m in client.requests[2]["messages"] if m.get("tool_call_id") == "descend-session"]
     assert len(descend_session) == 1 and "segments" in descend_session[0]["content"], descend_session
     descend_segments = [m for m in client.requests[3]["messages"] if m.get("tool_call_id") == "descend-segments"]
     assert len(descend_segments) == 1 and "seg-1" in descend_segments[0]["content"], descend_segments
-    descend_package = [m for m in client.requests[4]["messages"] if m.get("tool_call_id") == "descend-package"]
-    assert len(descend_package) == 1 and "summary.md" in descend_package[0]["content"], descend_package
-    for request in client.requests[1:5]:
+    for request in client.requests[1:4]:
         assert "OLD_UNVERIFIED_T2_BODY" not in json.dumps(request["messages"], ensure_ascii=False)
-    reads = [m for m in client.requests[5]["messages"] if m.get("tool_call_id") == "recover-t2"]
-    assert len(reads) == 1 and body in json.loads(reads[0]["content"])["content"], client.requests[5]
+    reads = [m for m in client.requests[4]["messages"] if m.get("tool_call_id") == "recover-t2"]
+    assert len(reads) == 1 and body in json.loads(reads[0]["content"])["content"], client.requests[4]

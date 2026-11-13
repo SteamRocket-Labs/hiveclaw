@@ -1432,10 +1432,12 @@ def _member_summary_host(args: Any) -> str | None:
 def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[str, Any] | None:
     if item_kind != "tool_result":
         return None
-    # Compatibility envelopes carry the persisted tool envelope only inside
-    # payload.content; canonical payloads lift its typed fields to the top.
-    envelope: Mapping[str, Any] = {}
+    # Two payload shapes reach this projection: native V2 rows carry the raw
+    # result in payload.content with the typed tool_name/outcome beside it;
+    # legacy/compatibility envelopes carry the persisted envelope JSON inside
+    # payload.content with name/args/status/result embedded in it.
     content = payload.get("content")
+    envelope: Mapping[str, Any] = {}
     if isinstance(content, str) and content.strip():
         try:
             parsed = json.loads(content)
@@ -1453,6 +1455,7 @@ def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[
     kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
     if kind is None:
         return None
+    outcome = str(payload.get("outcome") or "").strip().lower()
     status = str(payload.get("status") or envelope.get("status") or "").strip().lower()
     args = payload.get("args")
     if not isinstance(args, Mapping):
@@ -1460,14 +1463,15 @@ def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[
     result_obj: Any = None
     result = payload.get("result")
     if not isinstance(result, str):
-        result = envelope.get("result")
+        # Native V2 payloads put the result itself in content.
+        result = content if isinstance(content, str) else envelope.get("result")
     if isinstance(result, str) and result.strip():
         try:
             parsed = json.loads(result)
         except (TypeError, ValueError):
             parsed = None
         result_obj = parsed if isinstance(parsed, Mapping) else None
-    failed = status == "failed"
+    failed = outcome == "failed" or status == "failed"
     if not failed and isinstance(result_obj, Mapping):
         # Typed fields on a structured result page: an explicit `ok: false` or
         # a refusal status states the action did not happen (read_runtime_result
@@ -1501,6 +1505,9 @@ def _apply_member_tool_summary(payload: dict[str, Any], *, item_kind: str) -> di
     clean["member_summary"] = summary
     clean["result"] = ""
     clean["content"] = ""
+    # Native V2 rows carry a second bounded copy for model-context replay.
+    if "model_visible_content" in clean:
+        clean["model_visible_content"] = ""
     replacement = clean.get("content_replacement")
     if isinstance(replacement, Mapping):
         clean["content_replacement"] = {key: value for key, value in replacement.items() if key != "inline_content"}

@@ -2487,13 +2487,19 @@ async def broadcast_web_chat_event(
     if event_payload.get("schema") == "hive.session_event" and int(event_payload.get("schema_version") or 0) == 2:
         audience = str((event_payload.get("visibility") or {}).get("audience") or "")
         if audience in {"direct_user", "participants"}:
-            # Canonical envelopes are already committed with an outbox row.
-            # Keep their bytes untouched; the outbox owns cross-instance Redis
-            # delivery and may legally redeliver the same immutable event_id.
+            # Canonical envelopes are already committed with an outbox row; the
+            # outbox owns cross-instance Redis delivery and may legally redeliver
+            # the same immutable event_id. This in-process broker send is a
+            # direct-user surface too, so it applies the exact same user
+            # projection the Redis publication boundary applies (provider-private
+            # bytes, redactions, and the X3 member tool summaries) instead of
+            # forwarding the operator envelope's bytes (X3).
+            from app.services.web_chat_stream_bus import _user_live_projection
+
             await web_chat_broker.send_session_message(
                 str(agent_id),
                 str(session_id) if session_id else None,
-                event_payload,
+                _user_live_projection(event_payload),
             )
         return
     run_id = event_payload.get("run_id") or event_payload.get("runtime_task_id") or _CURRENT_BROADCAST_RUN_ID.get()

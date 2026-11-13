@@ -133,7 +133,7 @@ describe('member tool summary through the session planes', () => {
 
   it('the compatibility plane (persisted V1 tool results) carries the summary through reload', () => {
     const reloaded = hydrateSessionTranscriptEvents(
-      [...summarizedToolPair(), compatibilityToolEnvelope() as unknown as ChatTranscriptEventPayload],
+      [...summarizedToolPair(), compatibilityToolEnvelope()] as unknown as ChatTranscriptEventPayload[],
       0,
     );
     const compat = toolMessagesOf(reloaded.messages).find((message) => message.toolName === 'search_memory');

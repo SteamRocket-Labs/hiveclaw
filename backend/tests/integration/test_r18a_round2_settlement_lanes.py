@@ -54,7 +54,7 @@ def _patch_r18a_seams(monkeypatch, seed: dict, owner_sessionmaker, client) -> No
     async def _empty(*args, **kwargs):
         return ""
 
-    async def _resolve_tenant(_agent_id):
+    async def _resolve_tenant(_agent_id, **_kwargs):
         return seed["tenant_id"]
 
     @asynccontextmanager
@@ -298,52 +298,67 @@ async def test_ruling5_effect_free_timeout_settles_failed_and_session_continues(
     assert next_status == "completed"  # the session took the next message and ran it
 
 
-async def test_ruling2a_empty_search_stop_fails_the_web_run_with_the_plain_sentence(
+async def test_ruling2a_empty_search_stop_completes_the_web_run_with_an_assistant_answer(
     owner_sessionmaker, monkeypatch, tmp_path
 ):
-    """Ruling 2(a): the stop ends the web run failed with the plain sentence,
-    no retry action, no reconciliation hold; the next message still runs."""
+    """R20b/P2: nothing found is a completed answer, with no operator hold."""
     seed = await _seed_run(
         owner_sessionmaker, tmp_path, prompt="查一下公司知识库里有没有关于「白鹭计划」的资料，没有的话直接告诉我"
     )
+    answer = "公司知识库里多次搜索都没有找到关于「白鹭计划」的相关资料。"
     client = ScriptedLLMClient([
+        *[
         {"tool_calls": [{"id": f"search-{index}", "type": "function", "function": {
             "name": "search_company_kb", "arguments": json.dumps({"query": f"白鹭计划 第{index}种说法"})}}],
          "finish_reason": "tool_calls"}
         for index in range(1, 6)
+        ],
+        {"content": answer, "finish_reason": "stop"},
     ])
     _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, client)
     await _execute_claimed_run(owner_sessionmaker, seed)
 
     status, metadata = await _run_status(owner_sessionmaker, seed["run_id"])
-    assert status == "failed"
-    assert metadata.get("error_code") == "repeated_empty_search"
-    assert metadata.get("terminal_reason") == "loop_guard"
+    # R20b/P2 supersedes the web failure card: persist the normal model answer.
+    assert status == "completed"
+    assert not metadata.get("error_code")
+    assert not metadata.get("failure_code")
     assert "session_v2_reconciliation" not in metadata
 
     failures = await _failure_events(owner_sessionmaker, seed["session_id"])
-    assert len(failures) == 1
-    payload = failures[0]
-    assert payload["failure_code"] == "repeated_empty_search"
-    assert payload["terminal_reason"] == "loop_guard"
-    assert payload["retry_safe"] is False
-    assert payload["retryable"] is False  # no retry action on the member card
-    assert payload["message"] == "多次搜索都没有找到相关资料。"
+    assert failures == []
 
     from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionModelResult
 
     async with owner_sessionmaker() as db:
+        replies = list(await db.scalars(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.run_id == seed["run_id"],
+            ChatTranscriptEvent.event_type == "assistant_text.snapshot")))
+        assert [reply.content for reply in replies] == [answer]
+        final_round = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.run_id == seed["run_id"],
+            SessionModelResult.round_id == f"{seed['run_id']}:round:6"))
+        assert final_round is not None and final_round.state == "round_committed"
+        assert replies[0].result_id == final_round.id
+        finals = list(await db.scalars(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.run_id == seed["run_id"],
+            ChatTranscriptEvent.event_type == "assistant_final.completed")))
+        assert len(finals) == 1 and finals[0].result_id == final_round.id
         reconciliations = (await db.execute(
             select(ChatTranscriptEvent.event_type).where(
                 ChatTranscriptEvent.session_id == seed["session_id"],
                 ChatTranscriptEvent.event_type == "run.needs_reconciliation"))).scalars().all()
     assert reconciliations == []
+    assert len(client.requests) == 6 and client.requests[-1]["tools"] is None
 
     next_client = ScriptedLLMClient([{"content": "好的，有别的需要随时找我。", "finish_reason": "stop"}])
     _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, next_client)
     next_run_id = await _admit_and_run_next_message(owner_sessionmaker, monkeypatch, seed, next_client)
     next_status, _ = await _run_status(owner_sessionmaker, next_run_id)
     assert next_status == "completed"
+    assert any(message["role"] == "assistant" and answer in str(message["content"])
+               for message in next_client.requests[0]["messages"])
 
 
 async def test_ruling1_effect_free_timeout_never_reaches_the_fallback_model(
@@ -410,7 +425,7 @@ async def test_ruling2b_delegated_colleague_fails_plainly_and_parent_reads_the_s
     company-knowledge search ends failed (not needs_reconciliation), and the
     parent's read of the child carries the plain sentence."""
     from app.agents import orchestrator
-    from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
+    from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
     from app.models.chat_session import ChatSession
     from app.models.runtime_task import RuntimeTask

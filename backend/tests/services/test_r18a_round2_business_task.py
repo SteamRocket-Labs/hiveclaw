@@ -40,9 +40,13 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
     plan_id = uuid4()
     child_id = uuid4()
     running_read = failure_code == "identical_running_task_read"
+    terminal_read = failure_code == "identical_terminal_task_read"
     refused_result = failure_code == "identical_refused_result_read"
-    tool_name = ("check_async_task" if running_read
+    tool_name = ("check_async_task" if running_read or terminal_read
         else "read_runtime_result" if refused_result else "search_company_kb")
+    from app.services.runtime_display_status import runtime_failure_observation
+
+    terminal_result = runtime_failure_observation("failed", {"error_code": "provider_error"})
     result_ref = f"runtime-result://{uuid4()}/" + "a" * 64
 
     task = SimpleNamespace(
@@ -86,7 +90,7 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
                     content="",
                     tool_calls=[{"id": f"search-{index}", "type": "function", "function": {
                         "name": tool_name,
-                        "arguments": json.dumps({"task_id": str(child_id)} if running_read
+                        "arguments": json.dumps({"task_id": str(child_id)} if running_read or terminal_read
                             else {"result_ref": result_ref, "offset": index * 256} if refused_result
                             else {"query": f"白鹭计划 第{index}种说法"})}}],
                     finish_reason="tool_calls",
@@ -107,6 +111,10 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
             execute_tool=lambda *_a, **_k: json.dumps(
                 {"task_id": str(child_id), "task_type": "delegation", "status": "running", "result": None}
                 if running_read else
+                # R20b: exercise the terminal-read reason itself rather than
+                # substituting its code onto an unrelated empty-search stop.
+                {"task_id": str(child_id), "task_type": "delegation", **terminal_result}
+                if terminal_read else
                 {"schema": "hive.runtime_result_page.v1", "status": "source_access_denied",
                     "result_ref": result_ref, "reason_code": "content_source_changed", "retryable": False}
                 if refused_result else {"status": "empty", "results": []}, ensure_ascii=False),
@@ -128,8 +136,7 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
         if refused_result:
             assert result.failure_code == failure_code  # This lane uses the real refusal stop.
         # The kernel stop for repeated_empty_search is real; the
-        # identical_terminal_task_read result shape is pinned by its own
-        # kernel tests — here only the executor's mapping of the code varies.
+        # read-loop results above exercise their original failure contracts.
         return SimpleNamespace(
             content=result.content,
             terminal_reason=getattr(result.terminal_reason, "value", result.terminal_reason),

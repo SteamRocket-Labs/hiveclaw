@@ -107,6 +107,8 @@ async def test_rewording_forever_model_ends_with_the_plain_sentence():
     class RewordingClient(_FakeClient):
         async def stream(self, **kwargs):
             self.calls.append(kwargs)
+            if not kwargs.get("tools"):
+                return _answer(EMPTY_SEARCH_FINAL_MESSAGE)
             return SimpleNamespace(
                 content="",
                 tool_calls=[_search_call(len(executed) + 1)],
@@ -117,16 +119,17 @@ async def test_rewording_forever_model_ends_with_the_plain_sentence():
     from app.kernel.contracts import TerminalReason
 
     client = RewordingClient([])
-    kernel = _kernel(client, execute_tool)
+    kernel = _kernel(client, execute_tool, max_tool_rounds=5)
     result = await kernel.handle(_request())
 
     assert [call["tool"] for call in executed] == ["search_company_kb"] * 5
     assert result.content == EMPTY_SEARCH_FINAL_MESSAGE
-    # R18a round 2: the stop ends as a loop-guard failure so delegated and
-    # business lanes settle too, instead of a TURN_STOP without a receipt.
-    assert result.terminal_reason is TerminalReason.LOOP_GUARD
-    assert result.failure_code == "repeated_empty_search"
+    # R20b/P2: a normal model answer replaces the failure card; the extra
+    # summary round is available even when the search used the round budget.
+    assert result.terminal_reason is TerminalReason.TURN_STOP
+    assert result.failure_code is None
     assert result.failure_retryable is False
+    assert len(client.calls) == 6 and client.calls[-1]["tools"] is None
     # The warning fired after the third empty result: the 4th model round saw
     # it (and it stays in history for the 5th), never before that.
     assert "[Loop Guard Warning]" not in _message_texts(client.calls[2])
@@ -349,6 +352,8 @@ async def test_run15_shape_with_earlier_tool_search_still_stops():
 
         async def stream(self, **kwargs):
             self.calls.append(kwargs)
+            if not kwargs.get("tools"):
+                return _answer(EMPTY_SEARCH_FINAL_MESSAGE)
             if self._first:
                 self._first = False
                 return SimpleNamespace(content="", tool_calls=[{
@@ -418,7 +423,8 @@ async def test_typed_error_then_empties_still_stops():
 
     responses = [
         _round([_call("search_company_kb", 1)]),
-        *[_round([_call("search_company_kb", index)]) for index in range(2, 20)],
+        *[_round([_call("search_company_kb", index)]) for index in range(2, 7)],
+        _answer(EMPTY_SEARCH_FINAL_MESSAGE),
     ]
     client = _FakeClient(responses)
     kernel = _kernel(client, execute_tool)

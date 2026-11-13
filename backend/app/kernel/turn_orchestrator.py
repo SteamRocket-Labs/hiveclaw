@@ -1126,18 +1126,31 @@ async def _project_loop_guard_terminal_evidence(
         "schema": "hive.loop_guard_terminal_evidence.v1",
         **decision.trace_event,
     }
+    empty_search = decision.reason == "repeated_empty_search"
+    guidance = (
+        "The searches returned no matching material. Finish this turn with a normal assistant reply "
+        "in the member's language, plainly saying that no matching material was found. "
+        "Also report any action already committed in this same turn, grounded in successful tool results. "
+        "Do not claim actions that were only proposed, denied, failed, or unknown. "
+        "Tools are withheld for this final summary; do not attempt further tool calls."
+        if empty_search else
+        "The governed runtime has recorded that this side-effect-free retry path is exhausted "
+        "without state progress. Treat this as evidence, not as a platform-authored semantic "
+        "conclusion. Decide whether another available capability can make progress or whether "
+        "to answer now; preserve uncertainty and cite the most useful recovery action."
+    )
     api_messages.append(
         _context_message(
             role="system",
             kind="runtime_reminder",
+            # R20b: this summary instruction comes from the current runtime
+            # decision, so it has no unresolved external source dependencies.
+            unbound=() if empty_search else ("context_sources_unbound",),
             content=(
                 "<loop_guard_terminal_evidence>"
                 + json.dumps(_terminal_evidence, ensure_ascii=False, sort_keys=True)
                 + "</loop_guard_terminal_evidence>\n"
-                "The governed runtime has recorded that this side-effect-free retry path is exhausted "
-                "without state progress. Treat this as evidence, not as a platform-authored semantic "
-                "conclusion. Decide whether another available capability can make progress or whether "
-                "to answer now; preserve uncertainty and cite the most useful recovery action."
+                + guidance
             ),
         )
     )
@@ -1148,7 +1161,9 @@ async def _project_loop_guard_terminal_evidence(
                 "type": "event",
                 "event_type": "loop_guard_terminal_evidence",
                 "title": "Retry evidence available",
-                "text": "The model received typed non-progress evidence with its authorized tools intact.",
+                "text": ("The model received empty-search evidence for a final summary with tools withheld."
+                    if empty_search else
+                    "The model received typed non-progress evidence with its authorized tools intact."),
                 "status": "warning",
                 **decision.trace_event,
             },
@@ -3628,17 +3643,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
                 if _loop_guard_terminal_decision is not None:
                     if _loop_guard_terminal_decision.reason in {
-                        "repeated_empty_search", "identical_terminal_task_read",
+                        "identical_terminal_task_read",
                         "identical_running_task_read", "identical_refused_result_read",
                     }:
                         # R18a round 2 (reviewer blocker 2): end through the same
-                        # failure shape as identical_terminal_task_read so every
-                        # lane settles — a TURN_STOP without a model receipt left
-                        # delegated children and business tasks fenced for
-                        # operator reconciliation. Web chat fails the run (the
-                        # member card carries the sentence via failure_code);
-                        # the delegation parent and the business member projection
-                        # map the same code to the plain sentence.
+                        # failure shape for read-loop stops so every lane settles.
                         message = _loop_guard_terminal_decision.message
                         await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, message, api_messages)
@@ -3650,6 +3659,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         result.parts = collected_parts + result.parts
                         return result
                     _loop_guard_summary_pending = True
+                    if _loop_guard_terminal_decision.reason == "repeated_empty_search":
+                        # R20b/P2: an empty search is an answer, including any
+                        # committed work. The final model round supplies the
+                        # receipt required by delegated and business settlement.
+                        tools_for_llm = []
                     await _project_loop_guard_terminal_evidence(
                         _loop_guard_terminal_decision, api_messages=api_messages,
                         _context_message=_context_message, _emit_event=_emit_event,

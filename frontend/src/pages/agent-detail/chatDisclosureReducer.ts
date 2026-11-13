@@ -524,10 +524,23 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
   if (message.role === 'tool_call') {
     // The canonical outcome (denied/aborted/cancelled/unavailable/…) states
     // the action did not happen; the step must agree with the member
-    // sentence instead of showing a completed action (X3 r2).
+    // sentence instead of showing a completed action (X3 r2). X3 r3: the
+    // typed member summary owns the same decision when a refusal page
+    // arrives on a success frame — and approval_required keeps the existing
+    // blocked mapping rather than reading as a failure.
     const outcome = String(message.eventStatus || '').toLowerCase();
-    if (['failed', 'error', 'denied', 'unavailable', 'approval_required'].includes(outcome)) return 'failed';
-    if (['cancelled', 'canceled', 'aborted'].includes(outcome)) return 'cancelled';
+    const summaryState = message.toolMemberSummary?.state;
+    if (outcome === 'approval_required') return 'blocked';
+    const notDone = ['failed', 'error', 'denied', 'unavailable'].includes(outcome)
+      || summaryState === 'not_done' || summaryState === 'unknown';
+    if (notDone || ['cancelled', 'canceled', 'aborted'].includes(outcome)) {
+      if (['cancelled', 'canceled', 'aborted'].includes(outcome)) return 'cancelled';
+      // No existing member step status distinguishes "unconfirmed": the
+      // R17b/R19b path renders the unconfirmed sentence on a step whose
+      // status otherwise stays done/failed, so failed is the existing
+      // not-done status used here.
+      return 'failed';
+    }
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking && !message.toolMeta.answered) return 'blocked';
     if (message.toolMeta?.kind === 'runtime_step') {
       const status = String(message.toolMeta.status || '').toLowerCase();

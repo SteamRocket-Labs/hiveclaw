@@ -100,6 +100,42 @@ function compatibilityToolEnvelope(): Record<string, unknown> {
   };
 }
 
+/** Ruling 5's frontend half, in the compatibility shape the backend emits:
+ * a failed web_fetch whose envelope keeps status/duration_ms/step_id and
+ * whose result slot is emptied ("" not deleted). */
+function compatibilityFailedFetchEnvelope(): Record<string, unknown> {
+  return {
+    schema: 'hive.session_event_compatibility',
+    schema_version: 1,
+    compatibility_status: 'needs_reconciliation',
+    reason: 'insufficient_legacy_scope',
+    legacy_kind: 'tool_result',
+    legacy_lifecycle: 'legacy_unknown',
+    legacy_event_type: 'tool_result',
+    legacy_item_type: 'tool_result',
+    legacy_item_status: 'succeeded',
+    event_id: 'compat-x3-failed-fetch',
+    sequence: 1,
+    tenant_id: 'tenant-1',
+    session_id: 'session-1',
+    occurred_at: '2026-11-12T00:00:03Z',
+    payload: {
+      content: JSON.stringify({
+        args: { url: 'https://deepwiki.com/react' },
+        duration_ms: 812,
+        name: 'web_fetch',
+        result: '',
+        status: 'failed',
+        step_id: 'step_9',
+        tool_call_id: 'call_x3',
+        visibility: 'collapsed',
+      }),
+      parts: [],
+      metadata: { tool_name: 'web_fetch', status: 'failed', member_summary: { kind: 'web_fetch', state: 'not_done', host: 'deepwiki.com' } },
+    },
+  };
+}
+
 function toolMessagesOf(messages: AgentChatMessage[]): AgentChatMessage[] {
   return messages.filter((message) => message.role === 'tool_call');
 }
@@ -178,18 +214,28 @@ describe('member tool summary through the session planes', () => {
       invocation_id: 'inv-running',
       payload: { tool_name: 'check_async_task', args: { task_id: 't-1' } },
     };
-    // The exact bytes the member backend emits for a running delegation check.
+    // Copied verbatim from the backend test output of
+    // serialize_session_event(..., audience="user") for a running delegation
+    // check (r3 ruling 6): content and result emptied, no raw JSON, the
+    // typed summary attached.
     const result: SessionEventV2 = {
       ...canonicalEvent(2), item_id: 'result', item_kind: 'tool_result',
       kind: 'tool_result.completed', payload_schema: 'hive.session.payload.tool_result.completed.v2',
       invocation_id: 'inv-running',
       payload: {
-        tool_name: 'check_async_task',
+        content: '',
+        content_hash: 'hhhhhhhh',
+        content_or_error_ref: 'receipt:x3',
         invocation_id: 'inv-running',
-        outcome: 'success',
-        content: JSON.stringify({ task_id: 't-1', task_type: 'delegation', status: 'running', result: null }),
         member_summary: { kind: 'colleague_result', state: 'in_progress' },
+        model_visible_content: '',
+        outcome: 'success',
         parts: [],
+        provider_request_id: 'req-x3',
+        provider_tool_use_id: 'ptu-x3',
+        result: '',
+        retryable: false,
+        tool_name: 'check_async_task',
       },
     };
     const reloaded = hydrateSessionTranscriptEvents([call, result] as unknown as ChatTranscriptEventPayload[], 0);
@@ -232,5 +278,103 @@ describe('member tool summary through the session planes', () => {
       const timeline = buildRunTimelineFromMessages(reloaded.messages);
       expect(timeline?.steps[0]?.status).toBe(expected);
     }
+  });
+
+  it('the summary state owns the step status when a refusal rides a success frame (r3 ruling 4)', () => {
+    // Copied from backend output: a stale_resource refusal page arrives with
+    // outcome success; the step must still read as failed.
+    const stale: SessionEventV2 = {
+      ...canonicalEvent(1), item_id: 'result-stale', item_kind: 'tool_result',
+      kind: 'tool_result.completed', payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      invocation_id: 'inv-stale',
+      payload: {
+        content: '', content_hash: 'hhhhhhhh', content_or_error_ref: 'receipt:x3',
+        invocation_id: 'inv-stale',
+        member_summary: { kind: 'colleague_result', state: 'not_done' },
+        model_visible_content: '', outcome: 'success', parts: [],
+        provider_request_id: 'req-x3', provider_tool_use_id: 'ptu-x3',
+        result: '', retryable: false, tool_name: 'read_runtime_result',
+      },
+    };
+    const staleTimeline = buildRunTimelineFromMessages(
+      hydrateSessionTranscriptEvents([stale] as unknown as ChatTranscriptEventPayload[], 0).messages,
+    );
+    expect(staleTimeline?.steps[0]?.status).toBe('failed');
+
+    // check_async_task forbidden page, outcome success -> failed.
+    const forbidden: SessionEventV2 = {
+      ...canonicalEvent(1), event_id: 'event-forbidden', item_id: 'result-forbidden', item_kind: 'tool_result',
+      kind: 'tool_result.completed', payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      invocation_id: 'inv-forbidden',
+      payload: {
+        content: '', content_hash: 'hhhhhhhh', content_or_error_ref: 'receipt:x3',
+        invocation_id: 'inv-forbidden',
+        member_summary: { kind: 'colleague_result', state: 'not_done' },
+        model_visible_content: '', outcome: 'success', parts: [],
+        provider_request_id: 'req-x3', provider_tool_use_id: 'ptu-x3',
+        result: '', retryable: false, tool_name: 'check_async_task',
+      },
+    };
+    const forbiddenTimeline = buildRunTimelineFromMessages(
+      hydrateSessionTranscriptEvents([forbidden] as unknown as ChatTranscriptEventPayload[], 0).messages,
+    );
+    expect(forbiddenTimeline?.steps[0]?.status).toBe('failed');
+
+    // An unknown outcome maps to failed — no existing member step status
+    // distinguishes unconfirmed (chatDisclosureReducer has no unknown
+    // mapping; RunDisclosureBlock renders the sentence on the text layer).
+    const unknown: SessionEventV2 = {
+      ...canonicalEvent(1), event_id: 'event-unknown', item_id: 'result-unknown', item_kind: 'tool_result',
+      kind: 'tool_result.completed', payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      invocation_id: 'inv-unknown',
+      payload: {
+        content: '', content_hash: 'hhhhhhhh', content_or_error_ref: 'receipt:x3',
+        invocation_id: 'inv-unknown',
+        member_summary: { kind: 'web_fetch', state: 'unknown' },
+        model_visible_content: '', outcome: 'unknown', parts: [],
+        provider_request_id: 'req-x3', provider_tool_use_id: 'ptu-x3',
+        result: '', retryable: false, tool_name: 'web_fetch',
+      },
+    };
+    const unknownTimeline = buildRunTimelineFromMessages(
+      hydrateSessionTranscriptEvents([unknown] as unknown as ChatTranscriptEventPayload[], 0).messages,
+    );
+    expect(unknownTimeline?.steps[0]?.status).toBe('failed');
+
+    // approval_required keeps the existing blocked mapping (N3).
+    const approval: SessionEventV2 = {
+      ...canonicalEvent(1), event_id: 'event-approval', item_id: 'result-approval', item_kind: 'tool_result',
+      kind: 'tool_result.completed', payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      invocation_id: 'inv-approval',
+      payload: {
+        content: '', content_hash: 'hhhhhhhh', content_or_error_ref: 'receipt:x3',
+        invocation_id: 'inv-approval',
+        member_summary: { kind: 'web_fetch', state: 'not_done' },
+        model_visible_content: '', outcome: 'approval_required', parts: [],
+        provider_request_id: 'req-x3', provider_tool_use_id: 'ptu-x3',
+        result: '', retryable: false, tool_name: 'web_fetch',
+      },
+    };
+    const approvalTimeline = buildRunTimelineFromMessages(
+      hydrateSessionTranscriptEvents([approval] as unknown as ChatTranscriptEventPayload[], 0).messages,
+    );
+    expect(approvalTimeline?.steps[0]?.status).toBe('blocked');
+  });
+
+  it('a failed compatibility fetch keeps its failed status, duration and step id (r3 ruling 6)', () => {
+    const reloaded = hydrateSessionTranscriptEvents(
+      [compatibilityFailedFetchEnvelope()] as unknown as ChatTranscriptEventPayload[],
+      0,
+    );
+    const timeline = buildRunTimelineFromMessages(reloaded.messages);
+    const step = timeline?.steps[0];
+    // The step is failed, the duration the UI reads from runtime_step meta
+    // survives, and the summary carries the not-done state.
+    expect(step?.status).toBe('failed');
+    expect(step?.durationMs).toBe(812);
+    expect((step?.details as Record<string, unknown>)?.memberSummary)
+      .toEqual({ kind: 'web_fetch', state: 'not_done', host: 'deepwiki.com' });
+    // No raw page body anywhere in the messages.
+    expect(JSON.stringify(reloaded.messages)).not.toContain('Firecrawl');
   });
 });

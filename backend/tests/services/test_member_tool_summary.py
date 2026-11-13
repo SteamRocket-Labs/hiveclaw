@@ -230,7 +230,12 @@ def test_kind_a_memory_read_drops_management_notes_and_ids() -> None:
     for leak in (MARKER, MEMORY_ID, INVOCATION_UUID, "load_memory", "scope=sessions", "读取到的记忆", "stray text part"):
         assert leak not in text, leak
     assert payload["member_summary"] == {"kind": "memory_read", "state": "done"}
-    assert json.loads(payload["content"]).get("result") is None
+    assert json.loads(payload["content"]).get("result") == ""
+    # Whole-payload check (r2 dropped it; r3 restores it on body text): the
+    # memory body itself is nowhere in the projected payload — only the kept
+    # envelope mechanics and args ride the member wire.
+    for body_fragment in ("写周报时只用三条要点", "目前只读到了部分记忆", "来源参考"):
+        assert body_fragment not in json.dumps(payload, ensure_ascii=False), body_fragment
 
 
 def test_kind_a_memory_search_member_projection() -> None:
@@ -362,6 +367,52 @@ def test_kind_context_read_summarizes_resident_prompt_pages() -> None:
     assert payload["member_summary"] == {"kind": "context_read", "state": "done"}
 
 
+def test_kind_context_read_page_not_loaded_says_not_done() -> None:
+    # R3 ruling 2: a context page that failed to load must not claim a read.
+    # Both handler shapes arrive on a success frame (outcome success).
+    for status in ("unavailable", "integrity_mismatch", "absent", "quarantined", "held"):
+        page = json.dumps({
+            "schema": "hive.agent_context_resource_page.v1",
+            "status": status,
+            "ref": "soul",
+            "retryable": True,
+        })
+        payload = _user_payload(_native_row("read_context_resource", page))
+        assert payload["member_summary"] == {"kind": "context_read", "state": "not_done"}, status
+        assert payload["content"] == ""
+    # A page's own status:"ok" stays done and hides the body.
+    ok_page = json.dumps({"schema": "hive.agent_context_resource_page.v1", "status": "ok", "ref": "soul", "content": "正文"})
+    payload = _user_payload(_native_row("read_context_resource", ok_page))
+    assert payload["member_summary"] == {"kind": "context_read", "state": "done"}
+    assert "正文" not in _result_text_view(payload)
+
+
+def test_closed_status_vocabulary_for_colleague_results() -> None:
+    # R3 ruling 1: closed sets. Every typed status maps to exactly one state;
+    # anything unlisted is unknown, whose sentence is always true.
+    cases = [
+        ("check_async_task", {"task_id": "t", "task_type": "delegation", "status": "killed", "result": "Task cancelled by parent agent"}, "not_done"),
+        ("check_async_task", {"task_type": "delegation", "status": "suspended"}, "in_progress"),
+        ("check_async_task", {"task_type": "delegation", "status": "skipped"}, "not_done"),
+        ("check_async_task", {"task_type": "delegation", "status": "needs_reconciliation"}, "unknown"),
+        ("check_async_task", {"status": "delivered"}, "in_progress"),
+        ("check_async_task", {"status": "waiting_approval"}, "in_progress"),
+        ("check_async_task", {"status": "rejected"}, "not_done"),
+        ("check_async_task", {"status": "abandoned"}, "not_done"),
+        ("check_subagent", {"status": "waiting_budget_approval"}, "in_progress"),
+        ("check_async_task", {"status": "completed", "result": None, "result_publication": {"status": "pending"}}, "in_progress"),
+        ("check_async_task", {"task_id": "w", "task_type": "workflow", "status": "running", "result": None}, "unknown"),
+        ("task_output", {"ok": True, "task": {"task_type": "workflow", "status": "running"}}, "unknown"),
+        ("check_async_task", {"status": "weird_state"}, "unknown"),
+        ("check_async_task", {"status": "ok"}, "done"),
+        ("task_output", {"ok": True, "task": {"task_type": "subagent", "status": "running"}}, "in_progress"),
+    ]
+    for tool, page, expected in cases:
+        payload = _user_payload(_native_row(tool, json.dumps(page)))
+        assert payload["member_summary"]["state"] == expected, (tool, page.get("status"), payload["member_summary"])
+        assert payload["content"] == ""
+
+
 def test_kind_e_marker_writers_all_covered() -> None:
     # The handlers that write model-only markers (memory.py 不要向用户展示 /
     # 仅供核对; team_memory_runtime.py shares the marker inside the same two
@@ -426,7 +477,9 @@ def test_legacy_row_keeps_envelope_mechanics() -> None:
     assert envelope["status"] == "failed"
     assert envelope["duration_ms"] == 812
     assert envelope["step_id"] == "step_9"
-    assert "result" not in envelope
+    # r3 N7: the result key stays as "" so an envelope of only name+result
+    # keeps its shape for the frontend envelope recognition.
+    assert envelope["result"] == ""
     assert FIRECRAWL_BODY not in _result_text_view(payload)
     assert payload["member_summary"] == {"kind": "web_fetch", "state": "not_done", "host": "deepwiki.com"}
 
@@ -443,16 +496,23 @@ def test_operator_projection_keeps_raw_bytes_for_every_kind() -> None:
         _native_row("load_memory", MEMORY_BODY),
         _native_row("web_fetch", FIRECRAWL_BODY),
     ):
-        name = row.metadata_json["v2_payload"]["tool_name"] if hasattr(row, "scope_json") else row.metadata_json["tool_name"]
+        native_row = hasattr(row, "scope_json")
+        name = row.metadata_json["v2_payload"]["tool_name"] if native_row else row.metadata_json["tool_name"]
         payload = _operator_payload(row)
         text = _result_text_view(payload)
-        # The compatibility envelope keeps the exact persisted envelope bytes
-        # (raw result embedded, JSON-escaped, inside content); the operator
-        # view must keep every leak string the member view removes.
-        assert payload.get("content") == row.content if hasattr(row, "content") else True, name
-        for fragment in (MEMORY_ID, MARKER, INVOCATION_UUID, "Syntax error", "mcp_server_id", "source_access_denied", "bounded replay copy"):
-            if hasattr(row, "content") and fragment in row.content:
-                assert fragment in text, (name, fragment)
+        if native_row:
+            # r3 N8: really assert the native raw content — the operator view
+            # keeps the durable result body (content == the raw page).
+            durable = row.metadata_json["v2_payload"]["content"]
+            assert payload.get("content") == durable, name
+            assert durable in text, name
+        else:
+            # The compatibility envelope keeps the exact persisted envelope
+            # bytes (raw result embedded, JSON-escaped, inside content).
+            assert payload.get("content") == row.content, name
+            for fragment in (MEMORY_ID, MARKER, INVOCATION_UUID, "Syntax error", "mcp_server_id", "source_access_denied"):
+                if fragment in row.content:
+                    assert fragment in text, (name, fragment)
         assert "member_summary" not in payload, name
 
 
@@ -548,6 +608,21 @@ def test_canonical_dict_envelope_projection_applies_too() -> None:
     operator = serialize_session_event(envelope, audience="operator")
     assert MEMORY_BODY in _result_text_view(operator["payload"])
     assert "member_summary" not in operator["payload"]
+
+
+def test_canonical_round_scope_row_projection() -> None:
+    # Ruling 5 (restored from round 1, failed -> state): a legacy row that
+    # carries full round scope serializes through the canonical legacy
+    # branch — the member projection applies there too.
+    row = _legacy_row("tool_search", {"query": "wiki"}, "manifest with mcp_server_id")
+    row.round_id = str(uuid4())
+    event = serialize_session_event(row, audience="user")
+    assert event["schema"] == "hive.session_event"
+    payload = event["payload"]
+    assert payload["member_summary"] == {"kind": "capability_lookup", "state": "done"}
+    assert "mcp_server_id" not in _result_text_view(payload)
+    operator = serialize_session_event(row, audience="operator")
+    assert "mcp_server_id" in _result_text_view(operator["payload"])
 
 
 def test_native_v2_row_user_and_operator_projection() -> None:

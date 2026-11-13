@@ -16,23 +16,9 @@ export interface MemberToolSummary {
   host?: string;
 }
 
-/** The exact backend tool set (MEMBER_TOOL_SUMMARY_KINDS keys). */
-const MEMBER_SUMMARY_TOOL_NAMES = new Set([
-  'search_memory', 'load_memory',
-  'read_runtime_result', 'check_async_task', 'task_output', 'check_subagent', 'list_async_tasks',
-  'web_fetch', 'advanced_web_fetch', 'anysearch_extract', 'exa_fetch', 'tavily_extract',
-  'firecrawl_fetch', 'xcrawl_scrape',
-  'web_search', 'advanced_web_search', 'anysearch_search', 'anysearch_batch_search',
-  'anysearch_get_sub_domains', 'exa_search', 'tavily_search', 'firecrawl_search',
-  'tool_search', 'discover_resources', 'list_mcp_tools', 'list_mcp_resources',
-  'inspect_mcp_tool', 'mcp_list_resources', 'mcp_list_prompts', 'search_clawhub', 'load_skill',
-  'read_context_resource',
-]);
-
-/** N4: only summarized tools take a standalone result's title from its payload. */
-export function isMemberSummarizedTool(toolName: string | null | undefined): boolean {
-  return typeof toolName === 'string' && MEMBER_SUMMARY_TOOL_NAMES.has(toolName);
-}
+/** The exact backend tool set lives in MEMBER_TOOL_SUMMARY_KINDS; the
+ * frontend holds no second copy (X3 r3): "is summarized" is observable as
+ * "the result payload carries member_summary". */
 
 const MEMBER_SUMMARY_STATES: ReadonlySet<string> = new Set(['done', 'not_done', 'in_progress', 'unknown']);
 
@@ -100,7 +86,12 @@ export function memberToolSummarySentence(summary: MemberToolSummary, t: TFuncti
   const entry = SUMMARY_KEY[summary.kind];
   if (!entry) return null;
   if (summary.state === 'in_progress') {
-    // R15b's existing sentence: a colleague still working is not a read.
+    // R15b's existing sentence — but only a colleague task can truthfully
+    // say the colleague is working; any other kind still in flight reads
+    // as unconfirmed (X3 r3).
+    if (summary.kind !== 'colleague_result') {
+      return t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.');
+    }
     return t('agent.chat.disclosure.colleagueWorking', 'The colleague is working. The result will return here.');
   }
   if (summary.state === 'unknown') {

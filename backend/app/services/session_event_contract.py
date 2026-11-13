@@ -1405,7 +1405,8 @@ MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
 
 # Structured statuses: a typed `status` field on a JSON result object of one
 # of these tools states the action was refused, aborted, or did not happen
-# (read_runtime_result refusal pages, batch-aborted fetches, stale pages).
+# (read_runtime_result refusal pages, batch-aborted fetches, stale pages,
+# cancelled/killed delegations, context pages that failed to load).
 _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES = frozenset({
     "error",
     "failed",
@@ -1421,15 +1422,44 @@ _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES = frozenset({
     "aborted",
     "cancelled",
     "stale_resource",
+    "killed",
+    "skipped",
+    "rejected",
+    "abandoned",
+    "absent",
+    "quarantined",
+    "held",
+    "integrity_mismatch",
+    "unavailable",
 })
 
-# A colleague task still working is not a read result (R15b).
+# A colleague task still working is not a read result (R15b); a page that is
+# merely delivered or waiting on approval/budget is still in flight too.
 _MEMBER_SUMMARY_IN_PROGRESS_RESULT_STATUSES = frozenset({
     "queued",
     "pending",
     "running",
     "in_progress",
+    "delivered",
+    "waiting_approval",
+    "waiting_budget_approval",
+    "suspended",
+    "resumable",
 })
+
+# Only these statuses state the action actually happened.
+_MEMBER_SUMMARY_DONE_RESULT_STATUSES = frozenset({
+    "ok",
+    "completed",
+    "complete",
+    "success",
+    "succeeded",
+    "done",
+})
+
+# "The colleague is still working" is only truthful for a colleague task;
+# any other task type still working reads as unconfirmed (X3 r3).
+_MEMBER_SUMMARY_COLLEAGUE_TASK_TYPES = frozenset({"", "delegation", "subagent"})
 
 
 def _member_summary_host(args: Any) -> str | None:
@@ -1450,48 +1480,83 @@ def _member_summary_host(args: Any) -> str | None:
     return host.strip().lower() if host else None
 
 
+def _status_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _classify_typed_status(status: str, task_type: str) -> str:
+    if status in _MEMBER_SUMMARY_DONE_RESULT_STATUSES:
+        return "done"
+    if status in _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES:
+        return "not_done"
+    if status in _MEMBER_SUMMARY_IN_PROGRESS_RESULT_STATUSES:
+        if task_type in _MEMBER_SUMMARY_COLLEAGUE_TASK_TYPES:
+            return "in_progress"
+        return "unknown"
+    # needs_reconciliation and every other non-empty typed status: the
+    # outcome could not be confirmed, and the unconfirmed sentence is
+    # always true.
+    return "unknown"
+
+
 def _member_summary_state(
     *,
     outcome: str,
     envelope_status: str,
     result_obj: Any,
-    delivery_state: str = "",
 ) -> str:
     """done | not_done | in_progress | unknown, from typed fields only.
 
-    The invocation's own typed outcome decides first; structured result pages
-    then contribute their typed status (top-level or task.status for task
-    readers). A top-level `ok: false` is never masked by an inner result
-    string. Prose is never classified.
+    Precedence: (1) the invocation's own outcome and a top-level `ok: false`
+    (never masked by an inner result string; task_output's ok:false stays
+    ahead of task.status); (2) an unknown outcome; (3) the structured page's
+    typed status — top-level, or task.status for task readers, with a
+    completed page deferring to its result_publication.status. Prose is
+    never classified.
     """
 
-    if outcome == "unknown" or delivery_state == "unknown":
+    if outcome not in {"", "success", "unknown"}:
+        return "not_done"
+    if outcome == "unknown":
         return "unknown"
-    if outcome not in {"", "success"}:
+    if isinstance(result_obj, Mapping) and result_obj.get("ok") is False:
         return "not_done"
     if envelope_status == "failed":
         return "not_done"
     if isinstance(result_obj, Mapping):
-        if result_obj.get("ok") is False:
-            return "not_done"
-        for status_source in (result_obj.get("status"), _result_task_status(result_obj)):
-            status = str(status_source or "").strip().lower()
-            if status in _MEMBER_SUMMARY_IN_PROGRESS_RESULT_STATUSES:
-                return "in_progress"
-            if status in _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES:
-                return "not_done"
+        task = result_obj.get("task")
+        task_mapping = task if isinstance(task, Mapping) else {}
+        status = _status_text(result_obj.get("status")) or _status_text(task_mapping.get("status"))
+        task_type = _status_text(
+            result_obj.get("task_type") or task_mapping.get("task_type") or ""
+        )
+        publication = result_obj.get("result_publication")
+        if status in _MEMBER_SUMMARY_DONE_RESULT_STATUSES and isinstance(publication, Mapping):
+            # A completed task whose result is not published yet: the page the
+            # model received has no result, so the publication status decides.
+            published = _status_text(publication.get("status"))
+            if published and published not in _MEMBER_SUMMARY_DONE_RESULT_STATUSES:
+                status = published
+        if status:
+            return _classify_typed_status(status, task_type)
+    # No typed status: only a clean success remains "done".
     return "done"
 
 
-def _result_task_status(result_obj: Mapping[str, Any]) -> Any:
-    task = result_obj.get("task")
-    return task.get("status") if isinstance(task, Mapping) else None
+def _member_summary_projection(
+    payload: Mapping[str, Any], *, item_kind: str
+) -> tuple[dict[str, Any], bool, Mapping[str, Any]] | None:
+    """Classify one tool_result payload for the member summary.
 
+    Returns (summary, native, envelope): native marks the native V2 shape,
+    envelope is the embedded legacy envelope (empty otherwise). Decided by
+    tool name and typed fields only; result prose is never classified.
+    """
 
-def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[str, Any] | None:
     if item_kind != "tool_result":
         return None
     native = "outcome" in payload or "invocation_id" in payload
+    envelope: Mapping[str, Any] = {}
     if native:
         # Native V2 payload: kind comes only from the typed payload tool_name;
         # content is the result body itself and is never mined for names,
@@ -1502,12 +1567,11 @@ def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[
             return None
         content = payload.get("content")
         result = content if isinstance(content, str) else None
-        args = payload.get("args") if isinstance(payload.get("args"), Mapping) else None
+        args = None
     else:
         # Legacy/compatibility shape: the persisted tool envelope is embedded
         # in payload.content with name/args/status/result inside it.
         content = payload.get("content")
-        envelope: Mapping[str, Any] = {}
         if isinstance(content, str) and content.strip():
             try:
                 parsed = json.loads(content)
@@ -1538,53 +1602,50 @@ def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[
             parsed = None
         result_obj = parsed if isinstance(parsed, Mapping) else None
     state = _member_summary_state(
-        outcome=str(payload.get("outcome") or "").strip().lower(),
-        envelope_status=str(payload.get("status") or ("" if native else envelope.get("status")) or "").strip().lower(),
+        outcome=_status_text(payload.get("outcome")),
+        envelope_status=_status_text(payload.get("status") or ("" if native else envelope.get("status"))),
         result_obj=result_obj,
-        delivery_state=str(payload.get("delivery_state") or "").strip().lower(),
     )
     summary: dict[str, Any] = {"kind": kind, "state": state}
     host = _member_summary_host(args)
     if host:
         summary["host"] = host
-    return summary
+    return summary, native, envelope
+
+
+def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[str, Any] | None:
+    projection = _member_summary_projection(payload, item_kind=item_kind)
+    return projection[0] if projection is not None else None
 
 
 def _apply_member_tool_summary(payload: dict[str, Any], *, item_kind: str) -> dict[str, Any]:
     """Drop the raw result bytes of a member-summarized tool from the user view.
 
     The typed summary replaces the raw result content, replayed inline content,
-    and text parts. Idempotent: an already-projected payload returns as is.
-    Typed mechanics the UI relies on (envelope name/args/status, ids for
-    pairing, durations, step ids, artifact parts) stay in the member view.
+    and text parts. Idempotent: an already-projected native payload (summary
+    present, content emptied) returns as is. Typed mechanics the UI relies on
+    (envelope name/args/status, ids for pairing, durations, step ids, artifact
+    parts) stay in the member view.
     """
 
-    if isinstance(payload.get("member_summary"), Mapping):
+    if isinstance(payload.get("member_summary"), Mapping) and payload.get("content") == "":
         return payload
-    native = "outcome" in payload or "invocation_id" in payload
-    envelope: Mapping[str, Any] = {}
-    if not native:
-        content = payload.get("content")
-        if isinstance(content, str) and content.strip():
-            try:
-                parsed = json.loads(content)
-            except (TypeError, ValueError):
-                parsed = None
-            if isinstance(parsed, Mapping):
-                envelope = parsed
-    summary = _member_tool_summary(payload, item_kind=item_kind)
-    if summary is None:
+    projection = _member_summary_projection(payload, item_kind=item_kind)
+    if projection is None:
         return payload
+    summary, native, envelope = projection
     clean = dict(payload)
     clean["member_summary"] = summary
     clean["result"] = ""
     if native or not envelope:
         clean["content"] = ""
     else:
-        # Legacy rows keep their envelope mechanics: the envelope minus its
-        # raw result (and any replayed inline content) serializes back into
-        # content so name, args, status, duration_ms and step_id survive.
-        projected_envelope = {key: value for key, value in envelope.items() if key != "result"}
+        # Legacy rows keep their envelope mechanics: the envelope with its raw
+        # result emptied (and any replayed inline content removed) serializes
+        # back into content so name, args, status, duration_ms and step_id
+        # survive — an envelope of only name+result keeps its shape too.
+        projected_envelope = dict(envelope)
+        projected_envelope["result"] = ""
         replacement = projected_envelope.get("content_replacement")
         if isinstance(replacement, Mapping):
             projected_envelope["content_replacement"] = {

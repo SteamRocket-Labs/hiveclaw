@@ -9,7 +9,7 @@ import {
   type TranscriptReplayState,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
-import { isMemberSummarizedTool, memberToolSummaryFromRecord } from './memberToolSummary';
+import { memberToolSummaryFromRecord } from './memberToolSummary';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
 import type { SessionMessageStore } from './sessionMessageStore';
@@ -408,11 +408,13 @@ function projectCanonicalItem(
   }
   if (item.kind === 'tool_call' || item.kind === 'tool_result') {
     // N4: the write-side tool_name on result payloads is the only new source
-    // of standalone-result titles; keep it limited to the summarized set so
-    // every other tool keeps its old title.
+    // of standalone-result titles. "Is summarized" is read off the payload
+    // itself (it carries member_summary), not a second frontend tool list;
+    // every non-summarized tool keeps its old title.
     const directName = (recordValue(item.payload) ?? {}).tool_name;
     const directPayloadName = typeof directName === 'string' ? directName : undefined;
-    const envelopePayload = item.kind === 'tool_result' && directPayloadName && !isMemberSummarizedTool(directPayloadName)
+    const carriesMemberSummary = (recordValue(item.payload) ?? {}).member_summary !== undefined;
+    const envelopePayload = item.kind === 'tool_result' && directPayloadName && !carriesMemberSummary
       ? { ...item.payload, tool_name: undefined }
       : item.payload;
     const toolEnvelope = persistedToolEnvelope(envelopePayload);

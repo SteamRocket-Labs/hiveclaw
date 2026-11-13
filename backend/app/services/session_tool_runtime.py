@@ -1208,6 +1208,10 @@ async def complete_tool_invocation(
                     "invocation_id": str(invocation.id),
                     "provider_request_id": invocation.provider_request_id,
                     "provider_tool_use_id": invocation.provider_tool_use_id,
+                    # Typed mechanical fact mirrored from the paired tool_call
+                    # item: the member-view projection decides the plain per-
+                    # tool summary by tool name without a read-side join (X3).
+                    "tool_name": invocation.tool_name,
                     "outcome": outcome,
                     "retryable": retryable,
                     "content": content,

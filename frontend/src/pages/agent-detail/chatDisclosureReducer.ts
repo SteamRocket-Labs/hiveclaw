@@ -522,7 +522,25 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
   const live = (status: RunStepStatus): RunStepStatus =>
     status === 'running' && !allowLiveRunning ? 'interrupted' : status;
   if (message.role === 'tool_call') {
-    if (message.eventStatus === 'failed' || message.eventStatus === 'error') return 'failed';
+    // The canonical outcome (denied/aborted/cancelled/unavailable/…) states
+    // the action did not happen; the step must agree with the member
+    // sentence instead of showing a completed action (X3 r2). X3 r3: the
+    // typed member summary owns the same decision when a refusal page
+    // arrives on a success frame — and approval_required keeps the existing
+    // blocked mapping rather than reading as a failure.
+    const outcome = String(message.eventStatus || '').toLowerCase();
+    const summaryState = message.toolMemberSummary?.state;
+    if (outcome === 'approval_required') return 'blocked';
+    const notDone = ['failed', 'error', 'denied', 'unavailable'].includes(outcome)
+      || summaryState === 'not_done' || summaryState === 'unknown';
+    if (notDone || ['cancelled', 'canceled', 'aborted'].includes(outcome)) {
+      if (['cancelled', 'canceled', 'aborted'].includes(outcome)) return 'cancelled';
+      // No existing member step status distinguishes "unconfirmed": the
+      // R17b/R19b path renders the unconfirmed sentence on a step whose
+      // status otherwise stays done/failed, so failed is the existing
+      // not-done status used here.
+      return 'failed';
+    }
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking && !message.toolMeta.answered) return 'blocked';
     if (message.toolMeta?.kind === 'runtime_step') {
       const status = String(message.toolMeta.status || '').toLowerCase();
@@ -696,6 +714,7 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
         args: message.toolArgs,
         result: message.toolResult,
         rawResult: message.toolRawResult,
+        memberSummary: message.toolMemberSummary,
         executionResult: message.sessionItem?.payload?.code_execution_result,
         meta: message.toolMeta,
       },

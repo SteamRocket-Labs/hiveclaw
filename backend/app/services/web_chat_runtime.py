@@ -2488,12 +2488,24 @@ async def broadcast_web_chat_event(
         audience = str((event_payload.get("visibility") or {}).get("audience") or "")
         if audience in {"direct_user", "participants"}:
             # Canonical envelopes are already committed with an outbox row.
-            # Keep their bytes untouched; the outbox owns cross-instance Redis
-            # delivery and may legally redeliver the same immutable event_id.
+            # Their committed bytes are delivered untouched, with one member
+            # exception (X3): a tool_result carries model-facing result bytes
+            # the direct-user socket must never see, so every tool_result goes
+            # through the same user projection the Redis publication boundary
+            # applies (idempotent, so redelivery from either plane carries the
+            # same bytes). Every other envelope keeps its committed bytes; the
+            # outbox may legally redeliver the same immutable event_id.
+            from app.services.web_chat_stream_bus import _user_live_projection
+
+            delivered = (
+                _user_live_projection(event_payload)
+                if str(event_payload.get("item_kind") or "") == "tool_result"
+                else event_payload
+            )
             await web_chat_broker.send_session_message(
                 str(agent_id),
                 str(session_id) if session_id else None,
-                event_payload,
+                delivered,
             )
         return
     run_id = event_payload.get("run_id") or event_payload.get("runtime_task_id") or _CURRENT_BROADCAST_RUN_ID.get()

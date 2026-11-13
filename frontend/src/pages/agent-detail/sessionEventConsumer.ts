@@ -9,6 +9,7 @@ import {
   type TranscriptReplayState,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
+import { memberToolSummaryFromRecord } from './memberToolSummary';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
 import type { SessionMessageStore } from './sessionMessageStore';
@@ -406,7 +407,17 @@ function projectCanonicalItem(
     };
   }
   if (item.kind === 'tool_call' || item.kind === 'tool_result') {
-    const toolEnvelope = persistedToolEnvelope(item.payload);
+    // N4: the write-side tool_name on result payloads is the only new source
+    // of standalone-result titles. "Is summarized" is read off the payload
+    // itself (it carries member_summary), not a second frontend tool list;
+    // every non-summarized tool keeps its old title.
+    const directName = (recordValue(item.payload) ?? {}).tool_name;
+    const directPayloadName = typeof directName === 'string' ? directName : undefined;
+    const carriesMemberSummary = (recordValue(item.payload) ?? {}).member_summary !== undefined;
+    const envelopePayload = item.kind === 'tool_result' && directPayloadName && !carriesMemberSummary
+      ? { ...item.payload, tool_name: undefined }
+      : item.payload;
+    const toolEnvelope = persistedToolEnvelope(envelopePayload);
     const pairedResult = item.kind === 'tool_call'
       ? toolResultByCall.get(item.id) || (item.invocationId ? toolResultByCall.get(item.invocationId) : undefined)
       : item;
@@ -444,6 +455,11 @@ function projectCanonicalItem(
       toolStatus: pairedResult || item.terminal ? 'done' : 'running',
       toolResult: normalized.displayResult,
       toolRawResult: normalized.raw,
+      // X3: the member projection carries a typed summary instead of the raw
+      // result for summarized tools; the expanded step renders it verbatim.
+      toolMemberSummary: memberToolSummaryFromRecord(
+        toolEnvelope.member_summary ?? pairedEnvelope?.member_summary,
+      ) || undefined,
       artifacts: extractArtifactParts(pairedResult?.payload ?? item.payload),
       toolMeta: normalized.toolMeta,
       eventType: item.kind,
@@ -1022,7 +1038,14 @@ export function compatibilityProjectionEvent(event: SessionCompatibilityEvent): 
       : {}),
     content: sessionPayloadContent(payload),
     parts: Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : [],
-    metadata: recordValue(payload.metadata) || {},
+    metadata: {
+      ...(recordValue(payload.metadata) || {}),
+      // X3: keep the backend's typed member-tool summary reachable for the
+      // legacy projector, which reads it from event.metadata.
+      ...(memberToolSummaryFromRecord(payload.member_summary)
+        ? { member_summary: payload.member_summary as Record<string, unknown> }
+        : {}),
+    },
   };
 }
 

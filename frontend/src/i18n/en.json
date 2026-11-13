@@ -2924,7 +2924,28 @@
         "workflowProposalReadyGoal": "Dynamic Workflow proposal ready: {{goal}}",
         "workflowProposalReady": "Dynamic Workflow proposal ready.",
         "workflowPreviewConfirm": "Workflow preview ready — review and confirm this exact run.",
-        "workflowPreviewReady": "Workflow preview ready."
+        "workflowPreviewReady": "Workflow preview ready.",
+        "memberSummary": {
+          "memorySearch": "Searched memory",
+          "memorySearchFailed": "Memory could not be read this time",
+          "memoryRead": "Read memory",
+          "memoryReadFailed": "Memory could not be read this time",
+          "colleagueResult": "Read a colleague's result",
+          "colleagueResultFailed": "The colleague's result could not be read this time",
+          "taskList": "Checked the running tasks",
+          "taskListFailed": "The task list could not be read this time",
+          "webFetch": "Opened a web page",
+          "webFetchHost": "Opened the web page {{host}}",
+          "webFetchFailed": "The web page did not open",
+          "webSearch": "Searched the web",
+          "webSearchFailed": "The web search did not complete",
+          "capabilityLookup": "Looked up available capabilities",
+          "capabilityLookupFailed": "The capability lookup did not complete",
+          "skillLoad": "Loaded a skill",
+          "skillLoadFailed": "The skill did not load",
+          "contextRead": "Read work context",
+          "contextReadFailed": "Couldn't read work context this time"
+        }
       },
       "workLedger": {
         "title": "Work in progress",

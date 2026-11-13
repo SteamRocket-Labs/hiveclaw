@@ -1354,6 +1354,318 @@ _LEGACY_TOOL_ENVELOPE_FIELDS = (
 )
 
 
+# X3: an expanded member step for these tools shows one plain sentence instead
+# of the model-facing result bytes (memory management notes and ids, colleague
+# result refusal pages, whole web pages, capability manifests with server ids).
+# The sentence is decided by the tool name, the step status, and typed fields
+# only; result prose is never read or classified. The summary is computed at
+# member-view serialization time: the operator envelope and the durable row
+# (the model's input) stay byte-identical. Compatibility rows' outbox envelope
+# stores this user projection at write time (chat_transcript).
+MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
+    # a) memory search / read / load
+    "search_memory": "memory_search",
+    "load_memory": "memory_read",
+    # b) runtime / colleague result readers
+    "read_runtime_result": "colleague_result",
+    "check_async_task": "colleague_result",
+    "task_output": "colleague_result",
+    "check_subagent": "colleague_result",
+    "list_async_tasks": "task_list",
+    # c) web fetch / search, including provider variants
+    "web_fetch": "web_fetch",
+    "advanced_web_fetch": "web_fetch",
+    "anysearch_extract": "web_fetch",
+    "exa_fetch": "web_fetch",
+    "tavily_extract": "web_fetch",
+    "firecrawl_fetch": "web_fetch",
+    "xcrawl_scrape": "web_fetch",
+    "web_search": "web_search",
+    "advanced_web_search": "web_search",
+    "anysearch_search": "web_search",
+    "anysearch_batch_search": "web_search",
+    "anysearch_get_sub_domains": "web_search",
+    "exa_search": "web_search",
+    "tavily_search": "web_search",
+    "firecrawl_search": "web_search",
+    # d) tool lookup / deferred loading and its MCP + skills equivalents
+    "tool_search": "capability_lookup",
+    "discover_resources": "capability_lookup",
+    "list_mcp_tools": "capability_lookup",
+    "list_mcp_resources": "capability_lookup",
+    "inspect_mcp_tool": "capability_lookup",
+    "mcp_list_resources": "capability_lookup",
+    "mcp_list_prompts": "capability_lookup",
+    "search_clawhub": "capability_lookup",
+    "load_skill": "skill_load",
+    # resident prompt pages (soul, company information, organization): the
+    # same class of model-facing text as run 9's system-instruction leak
+    "read_context_resource": "context_read",
+}
+
+# Structured statuses: a typed `status` field on a JSON result object of one
+# of these tools states the action was refused, aborted, or did not happen
+# (read_runtime_result refusal pages, batch-aborted fetches, stale pages,
+# cancelled/killed delegations, context pages that failed to load).
+_MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES = frozenset({
+    "error",
+    "failed",
+    "not_found",
+    "denied",
+    "forbidden",
+    "authority_denied",
+    "source_access_denied",
+    "source_unavailable",
+    "infrastructure_unavailable",
+    "integrity_error",
+    "invalid_arguments",
+    "aborted",
+    "cancelled",
+    "stale_resource",
+    "killed",
+    "skipped",
+    "rejected",
+    "abandoned",
+    "absent",
+    "quarantined",
+    "held",
+    "integrity_mismatch",
+    "unavailable",
+})
+
+# A colleague task still working is not a read result (R15b); a page that is
+# merely delivered or waiting on approval/budget is still in flight too.
+_MEMBER_SUMMARY_IN_PROGRESS_RESULT_STATUSES = frozenset({
+    "queued",
+    "pending",
+    "running",
+    "in_progress",
+    "delivered",
+    "waiting_approval",
+    "waiting_budget_approval",
+    "suspended",
+    "resumable",
+})
+
+# Only these statuses state the action actually happened.
+_MEMBER_SUMMARY_DONE_RESULT_STATUSES = frozenset({
+    "ok",
+    "completed",
+    "complete",
+    "success",
+    "succeeded",
+    "done",
+})
+
+# "The colleague is still working" is only truthful for a colleague task;
+# any other task type still working reads as unconfirmed (X3 r3).
+_MEMBER_SUMMARY_COLLEAGUE_TASK_TYPES = frozenset({"", "delegation", "subagent"})
+
+
+def _member_summary_host(args: Any) -> str | None:
+    """Plain host of a fetched page, taken only from the typed url argument."""
+    if not isinstance(args, Mapping):
+        return None
+    url = args.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        host = urlparse(url.strip()).hostname
+    except ValueError:
+        return None
+    # urlparse returns None for scheme-less URLs ("example.com/x"), bare
+    # schemes ("http://") and non-host schemes ("mailto:a@b.c").
+    return host.strip().lower() if host else None
+
+
+def _status_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _classify_typed_status(status: str, task_type: str) -> str:
+    if status in _MEMBER_SUMMARY_DONE_RESULT_STATUSES:
+        return "done"
+    if status in _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES:
+        return "not_done"
+    if status in _MEMBER_SUMMARY_IN_PROGRESS_RESULT_STATUSES:
+        if task_type in _MEMBER_SUMMARY_COLLEAGUE_TASK_TYPES:
+            return "in_progress"
+        return "unknown"
+    # needs_reconciliation and every other non-empty typed status: the
+    # outcome could not be confirmed, and the unconfirmed sentence is
+    # always true.
+    return "unknown"
+
+
+def _member_summary_state(
+    *,
+    outcome: str,
+    envelope_status: str,
+    result_obj: Any,
+) -> str:
+    """done | not_done | in_progress | unknown, from typed fields only.
+
+    Precedence: (1) the invocation's own outcome and a top-level `ok: false`
+    (never masked by an inner result string; task_output's ok:false stays
+    ahead of task.status); (2) an unknown outcome; (3) the structured page's
+    typed status — top-level, or task.status for task readers, with a
+    completed page deferring to its result_publication.status. Prose is
+    never classified.
+    """
+
+    if outcome not in {"", "success", "unknown"}:
+        return "not_done"
+    if outcome == "unknown":
+        return "unknown"
+    if isinstance(result_obj, Mapping) and result_obj.get("ok") is False:
+        return "not_done"
+    if envelope_status == "failed":
+        return "not_done"
+    if isinstance(result_obj, Mapping):
+        task = result_obj.get("task")
+        task_mapping = task if isinstance(task, Mapping) else {}
+        status = _status_text(result_obj.get("status")) or _status_text(task_mapping.get("status"))
+        task_type = _status_text(
+            result_obj.get("task_type") or task_mapping.get("task_type") or ""
+        )
+        publication = result_obj.get("result_publication")
+        if status in _MEMBER_SUMMARY_DONE_RESULT_STATUSES and isinstance(publication, Mapping):
+            # A completed task whose result is not published yet: the page the
+            # model received has no result, so the publication status decides.
+            published = _status_text(publication.get("status"))
+            if published and published not in _MEMBER_SUMMARY_DONE_RESULT_STATUSES:
+                status = published
+        if status:
+            return _classify_typed_status(status, task_type)
+    # No typed status: only a clean success remains "done".
+    return "done"
+
+
+def _member_summary_projection(
+    payload: Mapping[str, Any], *, item_kind: str
+) -> tuple[dict[str, Any], bool, Mapping[str, Any]] | None:
+    """Classify one tool_result payload for the member summary.
+
+    Returns (summary, native, envelope): native marks the native V2 shape,
+    envelope is the embedded legacy envelope (empty otherwise). Decided by
+    tool name and typed fields only; result prose is never classified.
+    """
+
+    if item_kind != "tool_result":
+        return None
+    native = "outcome" in payload or "invocation_id" in payload
+    envelope: Mapping[str, Any] = {}
+    if native:
+        # Native V2 payload: kind comes only from the typed payload tool_name;
+        # content is the result body itself and is never mined for names,
+        # args, or statuses beyond the structured result's typed fields.
+        tool_name = _text(payload.get("tool_name")) or ""
+        kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
+        if kind is None:
+            return None
+        content = payload.get("content")
+        result = content if isinstance(content, str) else None
+        args = None
+    else:
+        # Legacy/compatibility shape: the persisted tool envelope is embedded
+        # in payload.content with name/args/status/result inside it.
+        content = payload.get("content")
+        if isinstance(content, str) and content.strip():
+            try:
+                parsed = json.loads(content)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, Mapping):
+                envelope = parsed
+        tool_name = (
+            _text(payload.get("tool_name"))
+            or _text(payload.get("name"))
+            or _text(envelope.get("name"))
+            or _text(envelope.get("tool_name"))
+            or ""
+        )
+        kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
+        if kind is None:
+            return None
+        embedded_result = envelope.get("result")
+        result = embedded_result if isinstance(embedded_result, str) else (content if isinstance(content, str) else None)
+        args = payload.get("args")
+        if not isinstance(args, Mapping):
+            args = envelope.get("args")
+    result_obj: Any = None
+    if isinstance(result, str) and result.strip():
+        try:
+            parsed = json.loads(result)
+        except (TypeError, ValueError):
+            parsed = None
+        result_obj = parsed if isinstance(parsed, Mapping) else None
+    state = _member_summary_state(
+        outcome=_status_text(payload.get("outcome")),
+        envelope_status=_status_text(payload.get("status") or ("" if native else envelope.get("status"))),
+        result_obj=result_obj,
+    )
+    summary: dict[str, Any] = {"kind": kind, "state": state}
+    host = _member_summary_host(args)
+    if host:
+        summary["host"] = host
+    return summary, native, envelope
+
+
+def _member_tool_summary(payload: Mapping[str, Any], *, item_kind: str) -> dict[str, Any] | None:
+    projection = _member_summary_projection(payload, item_kind=item_kind)
+    return projection[0] if projection is not None else None
+
+
+def _apply_member_tool_summary(payload: dict[str, Any], *, item_kind: str) -> dict[str, Any]:
+    """Drop the raw result bytes of a member-summarized tool from the user view.
+
+    The typed summary replaces the raw result content, replayed inline content,
+    and text parts. Idempotent: an already-projected native payload (summary
+    present, content emptied) returns as is. Typed mechanics the UI relies on
+    (envelope name/args/status, ids for pairing, durations, step ids, artifact
+    parts) stay in the member view.
+    """
+
+    if isinstance(payload.get("member_summary"), Mapping) and payload.get("content") == "":
+        return payload
+    projection = _member_summary_projection(payload, item_kind=item_kind)
+    if projection is None:
+        return payload
+    summary, native, envelope = projection
+    clean = dict(payload)
+    clean["member_summary"] = summary
+    clean["result"] = ""
+    if native or not envelope:
+        clean["content"] = ""
+    else:
+        # Legacy rows keep their envelope mechanics: the envelope with its raw
+        # result emptied (and any replayed inline content removed) serializes
+        # back into content so name, args, status, duration_ms and step_id
+        # survive — an envelope of only name+result keeps its shape too.
+        projected_envelope = dict(envelope)
+        projected_envelope["result"] = ""
+        replacement = projected_envelope.get("content_replacement")
+        if isinstance(replacement, Mapping):
+            projected_envelope["content_replacement"] = {
+                key: value for key, value in replacement.items() if key != "inline_content"
+            }
+        clean["content"] = json.dumps(projected_envelope, ensure_ascii=False, sort_keys=True)
+    # Native V2 rows carry a second bounded copy for model-context replay.
+    if "model_visible_content" in clean:
+        clean["model_visible_content"] = ""
+    replacement = clean.get("content_replacement")
+    if isinstance(replacement, Mapping):
+        clean["content_replacement"] = {key: value for key, value in replacement.items() if key != "inline_content"}
+    parts = clean.get("parts")
+    if isinstance(parts, list):
+        clean["parts"] = [
+            part for part in parts if isinstance(part, Mapping) and part.get("type") == "artifact"
+        ]
+    return clean
+
+
 def _legacy_tool_payload(row: Any, metadata: Mapping[str, Any]) -> dict[str, Any]:
     """Lift the exact persisted tool envelope into canonical payload fields.
 
@@ -1565,7 +1877,7 @@ def _redacted_legacy_payload(
     return payload, redacted_fields
 
 
-def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str, Any]:
+def _serialize_session_event_for_audience(row: Any, *, audience: str) -> dict[str, Any]:
     """Serialize a V2 row, or explicitly adapt a legacy row without semantic guessing."""
 
     if isinstance(row, dict) and row.get("schema") == SESSION_EVENT_SCHEMA:
@@ -1702,6 +2014,21 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
     event["payload"], redacted_fields = _redacted_legacy_payload(payload, visibility_authority, audience)
     if redacted_fields:
         event["visibility"]["redacted_fields"] = redacted_fields
+    return event
+
+
+def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str, Any]:
+    """Serialize one session event for an audience.
+
+    The single user-audience exit for the X3 member tool summaries: every
+    branch (native V2 row, canonical dict envelope, compatibility envelope,
+    legacy full-scope row) funnels through here, so live delivery, hydration,
+    reconcile, SSE and group history all see the same projection.
+    """
+
+    event = _serialize_session_event_for_audience(row, audience=audience)
+    if audience != "operator" and str(event.get("item_kind") or event.get("legacy_kind") or "") == "tool_result":
+        event["payload"] = _apply_member_tool_summary(event["payload"], item_kind="tool_result")
     return event
 
 

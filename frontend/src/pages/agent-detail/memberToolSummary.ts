@@ -1,4 +1,5 @@
 import type { TFunction } from 'i18next';
+import { toolFailureForDisplay } from './toolFailurePresentation';
 
 /**
  * X3: expanded member steps for a fixed tool set show one plain sentence, not
@@ -16,7 +17,6 @@ export interface MemberToolSummary {
   host?: string;
   filename?: string;
   found?: boolean;
-  count?: number;
   errorClass?: string;
   status?: string;
   taskId?: string;
@@ -29,16 +29,18 @@ export function memberFilename(value: unknown): string | undefined {
     ? name : undefined;
 }
 
+/** Compatibility-only display fallback when no backend summary exists. */
+export function memberHostFromUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || /[\s\\]/.test(value.trim())) return undefined;
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) ? url.hostname : undefined;
+  } catch { return undefined; }
+}
+
 /** Native result rows keep arguments on the paired call, not on the result. */
 export function memberSummaryWithArgs(summary: MemberToolSummary, args?: Record<string, unknown>): MemberToolSummary {
   const result = { ...summary };
-  if (summary.kind === 'web_fetch' && typeof args?.url === 'string') {
-    delete result.host;
-    try {
-      const url = new URL(args.url);
-      if (['http:', 'https:'].includes(url.protocol) && !/[\s\\]/.test(args.url.trim())) result.host = url.hostname;
-    } catch { /* Missing or invalid typed URLs have no host. */ }
-  }
   if (summary.kind === 'file_read') result.filename = memberFilename(summary.filename || args?.path || args?.file_path);
   return result;
 }
@@ -58,9 +60,9 @@ export function memberToolSummaryFromRecord(value: unknown): MemberToolSummary |
   if (typeof record.host === 'string' && record.host.trim()) summary.host = record.host.trim();
   summary.filename = memberFilename(record.filename);
   if (typeof record.found === 'boolean') summary.found = record.found;
-  if (typeof record.count === 'number' && Number.isInteger(record.count) && record.count >= 0) summary.count = record.count;
   for (const [field, source] of [['errorClass', 'error_class'], ['status', 'status'], ['taskId', 'task_id']] as const) {
-    if (typeof record[source] === 'string') summary[field] = record[source];
+    const value = record[source] ?? record[field];
+    if (typeof value === 'string') summary[field] = value;
   }
   return summary;
 }
@@ -117,7 +119,11 @@ const FALLBACK: Record<SummarySentenceKey, string> = {
  */
 export function memberToolSummarySentence(summary: MemberToolSummary, t: TFunction): string | null {
   const extra = (key: string, fallback: string, values?: Record<string, unknown>) => t(`agent.chat.toolResults.memberSummary.${key}`, fallback, values);
+  if (summary.state === 'unknown') return t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.');
   if (summary.kind === 'delegation') {
+    if (summary.errorClass && !summary.taskId) {
+      return toolFailureForDisplay({ ok: false, error_class: summary.errorClass }, t, 'failed');
+    }
     if (summary.status === 'cancelled') return extra('delegationStopped', 'Stopped; the colleague did not finish this work.');
     if (summary.state === 'done') return extra('delegationDone', 'The colleague has finished.');
     if (summary.state === 'not_done') return extra('delegationFailed', 'The colleague did not finish this work.');
@@ -134,8 +140,7 @@ export function memberToolSummarySentence(summary: MemberToolSummary, t: TFuncti
   }
   if (summary.kind === 'file_list') {
     if (summary.state !== 'done') return extra('fileListFailed', 'The folder could not be listed.');
-    return summary.count === undefined ? extra('fileList', 'Listed the files in the folder')
-      : extra('fileListCount', 'Listed {{count}} files in the folder', { count: summary.count });
+    return extra('fileList', 'Listed the files in the folder');
   }
   if (summary.kind === 'file_read') {
     if (summary.errorClass === 'auth_or_permission') return t('agent.chat.disclosure.failure.permission', 'You do not have permission to complete this operation.');
@@ -153,10 +158,6 @@ export function memberToolSummarySentence(summary: MemberToolSummary, t: TFuncti
       return t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.');
     }
     return t('agent.chat.disclosure.colleagueWorking', 'The colleague is working. The result will return here.');
-  }
-  if (summary.state === 'unknown') {
-    // The existing unconfirmed-outcome sentence (R17b/R19b tool output).
-    return t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.');
   }
   if (summary.state === 'not_done') {
     if (summary.kind === 'web_fetch' && summary.host) return extra('webFetchFailedHost', 'The web page {{host}} did not open', { host: summary.host });

@@ -1654,12 +1654,8 @@ def _member_summary_projection(
         filename = _member_summary_filename(args)
         if filename:
             summary["filename"] = filename
-        if state == "not_done" and result_obj and isinstance(result_obj.get("error_class"), str):
-            summary["error_class"] = result_obj["error_class"]
-    if kind == "file_list" and result_obj:
-        count = result_obj.get("file_count")
-        if type(count) is int and count >= 0:
-            summary["count"] = count
+    if kind in {"file_read", "delegation"} and state == "not_done" and result_obj and isinstance(result_obj.get("error_class"), str):
+        summary["error_class"] = result_obj["error_class"]
     if kind == "delegation" and result_obj:
         summary["status"] = "cancelled" if typed_status in {"killed", "cancelled"} else typed_status
     if (kind == "delegation" or (kind == "colleague_result" and state == "in_progress")) and result_obj:
@@ -2133,6 +2129,14 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
     event = _serialize_session_event_for_audience(row, audience=audience)
     if audience != "operator" and str(event.get("item_kind") or event.get("legacy_kind") or "") == "tool_result":
         event["payload"] = _apply_member_tool_summary(event["payload"], item_kind="tool_result")
+    elif audience != "operator" and event.get("item_kind") == "tool_call":
+        # Native results keep their arguments on the paired call. Project its
+        # host here too; this never changes the operator or persisted payload.
+        payload = event["payload"]
+        if MEMBER_TOOL_SUMMARY_KINDS.get(payload.get("tool_name")) == "web_fetch":
+            host = _member_summary_host(payload.get("args"))
+            if host:
+                payload["host"] = host
     elif audience != "operator":
         event["payload"] = _member_system_payload(event["payload"], event_type=str(
             event.get("legacy_event_type") or event.get("item_kind") or ""

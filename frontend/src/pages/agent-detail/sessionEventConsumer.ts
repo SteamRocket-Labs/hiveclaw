@@ -459,6 +459,7 @@ function projectCanonicalItem(
       // result for summarized tools; the expanded step renders it verbatim.
       toolMemberSummary: (() => {
         const summary = memberToolSummaryFromRecord(toolEnvelope.member_summary ?? pairedEnvelope?.member_summary);
+        if (summary?.kind === 'web_fetch' && !summary.host && typeof toolEnvelope.host === 'string') summary.host = toolEnvelope.host;
         return summary ? memberSummaryWithArgs(summary, toolArgs) : undefined;
       })(),
       artifacts: extractArtifactParts(pairedResult?.payload ?? item.payload),
@@ -602,7 +603,7 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
 function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatMessage[] {
   const terminals = new Map<string, string>();
   const key = (value: unknown) => typeof value === 'string' ? value.replaceAll('-', '').toLowerCase() : '';
-  const terminal = (value: unknown) => ['completed', 'failed', 'killed', 'cancelled', 'blocked', 'skipped'].includes(String(value));
+  const terminal = (value: unknown) => ['completed', 'failed', 'error', 'killed', 'cancelled', 'blocked', 'skipped'].includes(String(value));
   const metadataOf = (message: AgentChatMessage) => message.threadItem?.metadata || message.sessionItem?.payload || {};
   for (const message of messages) {
     const metadata = metadataOf(message);
@@ -628,11 +629,20 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
         ...(message.sessionItem ? { sessionItem: { ...message.sessionItem, payload: { ...metadata, status: memberStatus } } } : {}) };
     }
     const waitingRead = message.toolMemberSummary?.kind === 'colleague_result' && message.toolMemberSummary.state === 'in_progress';
-    if (message.role !== 'tool_call' || (!waitingRead && !['delegate_to_agent', 'send_message_to_agent'].includes(message.toolName || ''))) return message;
-    let page: Record<string, unknown> = {};
-    try { page = recordValue(JSON.parse(message.toolRawResult || message.toolResult || '{}')) || {}; } catch { /* No typed task id. */ }
-    const status = terminals.get(key(message.toolMemberSummary?.taskId || page.task_id || page.runtime_task_id));
-    if (!status) return message;
+    const legacyReader = !message.toolMemberSummary && ['check_async_task', 'task_output', 'list_async_tasks'].includes(message.toolName || '');
+    if (message.role !== 'tool_call' || (!waitingRead && !legacyReader && !['delegate_to_agent', 'send_message_to_agent'].includes(message.toolName || ''))) return message;
+    let taskIds: unknown[] = message.toolMemberSummary?.taskId ? [message.toolMemberSummary.taskId] : [];
+    if (!taskIds.length) {
+      try {
+        const page = JSON.parse(message.toolRawResult || message.toolResult || '{}');
+        const tasks = Array.isArray(page) ? page : [recordValue(page)?.task ?? page];
+        taskIds = tasks.map(task => recordValue(task)?.task_id || recordValue(task)?.runtime_task_id);
+      } catch { /* Compatibility records may have no typed task id. */ }
+    }
+    const statuses = taskIds.map(id => terminals.get(key(id)));
+    if (!statuses.length || statuses.some(status => !status)) return message;
+    const status = statuses.find(status => ['failed', 'error'].includes(status!))
+      || statuses.find(status => status !== 'completed') || 'completed';
     return { ...message, toolMemberSummary: { ...message.toolMemberSummary, kind: 'delegation',
       state: status === 'completed' ? 'done' : 'not_done', status: status === 'killed' ? 'cancelled' : status } };
   });

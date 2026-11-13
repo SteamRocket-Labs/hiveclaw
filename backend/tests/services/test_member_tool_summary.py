@@ -690,9 +690,20 @@ def test_x3b_list_files_drops_the_production_raw_text_without_inventing_a_count(
     assert json.dumps(_operator_payload(row), sort_keys=True) == before
 
 
-def test_x3b_list_count_comes_only_from_a_typed_field():
-    payload = _user_payload(_native_row("list_files", '{"status":"ok","file_count":29}'))
-    assert payload["member_summary"]["count"] == 29
+def test_x3br2_failed_delegation_without_task_keeps_typed_error():
+    row = _native_row("delegate_to_agent", '<tool_error>{"ok":false,"error_class":"not_found"}</tool_error>')
+    before = _operator_payload(row)
+    assert _user_payload(row)["member_summary"]["error_class"] == "not_found"
+    assert _operator_payload(row) == before
+
+
+def test_x3br2_native_call_projects_authoritative_host_without_touching_operator():
+    row = _native_row("web_fetch", "", args={"url": "https://例子.测试/path?secret=value"})
+    row.item_kind, row.event_type = "tool_call", "tool_call.completed"
+    row.payload_schema = "hive.session.payload.tool_call.completed.v2"
+    before = _operator_payload(row)
+    assert _user_payload(row)["host"] == "例子.测试"
+    assert _operator_payload(row) == before
 
 
 @pytest.mark.parametrize("url", X3B_ROWS["web_urls"])

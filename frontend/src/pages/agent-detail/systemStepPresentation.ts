@@ -28,11 +28,12 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
   const display = (title: string, summary?: string): RunStepSnapshot => ({ ...step, title, titleIsLocalized: true, summary, details: summary });
   const delegation = metadata.action_kind === 'a2a_delegation' || (event.type === 'child_session' && String(metadata.reason || '').startsWith('delegation_'));
   if (delegation && (['killed', 'cancelled'].includes(String(metadata.status))
-    || (event.type === 'runtime_action_started' && ['completed', 'failed', 'blocked'].includes(String(metadata.status))))) {
+    || (event.type === 'runtime_action_started' && ['completed', 'failed', 'error', 'blocked', 'skipped'].includes(String(metadata.status))))) {
     const status = String(metadata.status);
     const sentence = memberToolSummarySentence({ kind: 'delegation', status: status === 'killed' ? 'cancelled' : status,
       state: status === 'completed' ? 'done' : 'not_done' }, t)!;
-    return display(t('agent.chat.disclosure.tools.delegateWork', 'Delegate work'), sentence);
+    return event.type === 'child_session' ? { ...step, summary: sentence, details: sentence }
+      : display(t('agent.chat.disclosure.tools.delegateWork', 'Delegate work'), sentence);
   }
   if (step.status === 'failed') {
     const actor = metadata.target_agent_name;

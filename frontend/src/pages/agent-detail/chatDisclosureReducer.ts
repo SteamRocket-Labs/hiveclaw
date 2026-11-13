@@ -1,5 +1,5 @@
 import { isStreamingAssistantMessage, type AgentChatMessage } from './chatRuntime';
-import { memberFilename } from './memberToolSummary';
+import { memberFilename, memberHostFromUrl } from './memberToolSummary';
 
 export type RunStepKind =
   | 'reasoning'
@@ -308,13 +308,15 @@ function summarizeFileTool(message: AgentChatMessage): string {
 }
 
 function summarizeSearchTool(message: AgentChatMessage): string {
-  const target = stringArg(message, ['query', 'url', 'domain']);
+  const url = stringArg(message, ['url']);
+  if (url) return message.toolMemberSummary ? message.toolMemberSummary.host || '' : memberHostFromUrl(url) || '';
+  const target = stringArg(message, ['query', 'domain']);
   return target ? compactText(target, 120) : '';
 }
 
 function summarizeToolMessage(message: AgentChatMessage): string {
   const name = (message.toolName || '').toLowerCase();
-  if (message.toolMemberSummary) return '';
+  if (message.toolMemberSummary?.kind === 'web_fetch') return message.toolMemberSummary.host || '';
   // Step summaries carry only the member's own material (file names, queries,
   // model-authored labels). Command lines and tool receipts stay collapsed in
   // the step details (B2): the default layer shows the action and its state.
@@ -532,7 +534,7 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
     const summaryState = message.toolMemberSummary?.state;
     const envelopeStatus = message.toolMeta?.kind === 'runtime_step' ? message.toolMeta.status : '';
     if (message.toolMemberSummary?.status === 'cancelled' || ['killed', 'cancelled', 'canceled'].includes(String(envelopeStatus))) return 'cancelled';
-    if (message.toolMemberSummary?.status === 'blocked') return 'blocked';
+    if (['blocked', 'skipped'].includes(message.toolMemberSummary?.status || '')) return 'blocked';
     if (outcome === 'approval_required') return 'blocked';
     const notDone = ['failed', 'error', 'denied', 'unavailable'].includes(outcome)
       || summaryState === 'not_done' || summaryState === 'unknown';
@@ -568,7 +570,7 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
   if (message.role === 'event') {
     const status = String(message.eventStatus || '').toLowerCase();
     if (status === 'running' || status === 'in_progress' || status === 'pending') return live('running');
-    if (status === 'blocked' || status === 'approval_required' || status === 'session_permission_required') return 'blocked';
+    if (status === 'blocked' || status === 'skipped' || status === 'approval_required' || status === 'session_permission_required') return 'blocked';
     if (status === 'failed' || status === 'error') return 'failed';
     if (status === 'cancelled' || status === 'canceled' || status === 'killed') return 'cancelled';
   }
@@ -755,10 +757,12 @@ function getTimestampMs(value?: string): number | null {
 }
 
 function getTimelineStatus(steps: RunStepSnapshot[], hasAnswer: boolean): RunTimelineSnapshot['status'] {
+  if (steps.length > 0 && steps.every((step) => step.status === 'cancelled')) return 'cancelled';
   if (hasAnswer) return 'done';
   if (steps.some((step) => step.status === 'failed')) return 'failed';
   if (steps.some((step) => step.status === 'blocked')) return 'blocked';
   if (steps.some((step) => step.status === 'running')) return 'running';
+  if (steps.some((step) => step.status === 'cancelled')) return 'cancelled';
   if (steps.some((step) => step.status === 'interrupted')) return 'interrupted';
   if (steps.length > 0 || hasAnswer) return 'done';
   return 'idle';

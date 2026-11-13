@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import en from '../../i18n/en.json';
 import zh from '../../i18n/zh.json';
 import rows from '../../test/fixtures/x3bMemberRows.json';
@@ -16,9 +18,10 @@ const locale = vi.hoisted(() => ({ language: 'zh' as 'zh' | 'en' }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({
   t: (key: string, fallback?: string, values?: Record<string, unknown>) =>
     translateFromCatalog(locale.language === 'zh' ? zh : en, key, fallback, values),
+  i18n: { language: locale.language },
 }) }));
 vi.mock('./AgentWorkspaceSection', () => ({ default: () => null }));
-afterEach(() => { cleanup(); locale.language = 'zh'; });
+afterEach(() => { cleanup(); locale.language = 'zh'; window.localStorage.clear(); });
 
 function expand(container: HTMLElement) {
   for (const button of container.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]')) fireEvent.click(button);
@@ -86,7 +89,7 @@ function native(sequence: number, kind: string, payload: Record<string, unknown>
 }
 
 it.each(rows.web_urls)('recovers only the typed host of a native fetch through reload: %s', url => {
-  const events = [native(1, 'tool_call', { tool_name: 'web_fetch', args: { url } }),
+  const events = [native(1, 'tool_call', { tool_name: 'web_fetch', args: { url }, host: url.split('/')[2] }),
     native(2, 'tool_result', { tool_name: 'web_fetch', outcome: 'success', content: '',
       member_summary: { kind: 'web_fetch', state: url.includes('.invalid') ? 'not_done' : 'done' } })];
   const messages = hydrateSessionTranscriptEvents(events as never, 0).messages;
@@ -126,21 +129,7 @@ it('counts only successful file reads, including reloaded content_source_changed
   safe(container.textContent || '');
 });
 
-it.each(['completed', 'failed', 'killed'])('updates earlier delegation rows to %s live and after reload', status => {
-  const task = '120e98ce-d9e6-5e29-a707-7992e369a745';
-  const events = [
-    { id: 'delegate', sequence: 1, event_type: 'tool_result', run_id: 'parent-run', created_at: '2026-11-13T09:51:21Z',
-      content: JSON.stringify({ name: 'delegate_to_agent', args: { agent_name: '同事' }, status: 'done',
-        result: JSON.stringify({ ok: true, operation: 'delegate', status: 'running', task_id: task }) }),
-      metadata: { member_summary: { kind: 'delegation', state: 'in_progress', task_id: task } } },
-    { id: 'started', sequence: 2, event_type: 'runtime_action_started', run_id: 'parent-run', content: '已委派给 同事，后台执行中。',
-      metadata: { status: 'running', action_kind: 'a2a_delegation', runtime_task_id: task, target_agent_name: '同事' } },
-    { id: 'check', sequence: 3, event_type: 'tool_result', run_id: 'parent-run', created_at: '2026-11-13T09:51:22Z',
-      content: JSON.stringify({ name: 'check_async_task', args: { task_id: task }, status: 'done', result: '' }),
-      metadata: { member_summary: { kind: 'colleague_result', state: 'in_progress', task_id: task } } },
-    { id: 'terminal', sequence: 4, event_type: 'child_session', run_id: 'child-run', content: status === 'killed' ? rows.cancel : '同事结果',
-      metadata: { status, reason: 'delegation_terminal', runtime_task_id: task, to_agent_name: '同事' } },
-  ];
+function projectBoth(events: unknown[]) {
   const reload = hydrateSessionTranscriptEvents(events as never, 0).messages;
   let live: ReturnType<typeof hydrateSessionTranscriptEvents>['messages'] = [];
   const deps: SessionTranscriptApplierDeps = {
@@ -155,7 +144,25 @@ it.each(['completed', 'failed', 'killed'])('updates earlier delegation rows to %
   for (const event of events) {
     applyTranscriptToSessionRuntime(deps, 'agent', 'session', event as ChatTranscriptEventPayload, true);
   }
-  for (const messages of [live, reload]) {
+  return [live, reload];
+}
+
+it.each(['completed', 'failed', 'killed', 'skipped', 'error'])('updates earlier delegation rows to %s live and after reload', status => {
+  const task = '120e98ce-d9e6-5e29-a707-7992e369a745';
+  const events = [
+    { id: 'delegate', sequence: 1, event_type: 'tool_result', run_id: 'parent-run', created_at: '2026-11-13T09:51:21Z',
+      content: JSON.stringify({ name: 'delegate_to_agent', args: { agent_name: '同事' }, status: 'done',
+        result: JSON.stringify({ ok: true, operation: 'delegate', status: 'running', task_id: task }) }),
+      metadata: { member_summary: { kind: 'delegation', state: 'in_progress', task_id: task } } },
+    { id: 'started', sequence: 2, event_type: 'runtime_action_started', run_id: 'parent-run', content: '已委派给 同事，后台执行中。',
+      metadata: { status: 'running', action_kind: 'a2a_delegation', runtime_task_id: task, target_agent_name: '同事' } },
+    { id: 'check', sequence: 3, event_type: 'tool_result', run_id: 'parent-run', created_at: '2026-11-13T09:51:22Z',
+      content: JSON.stringify({ name: 'check_async_task', args: { task_id: task }, status: 'done', result: '' }),
+      metadata: { member_summary: { kind: 'colleague_result', state: 'in_progress', task_id: task } } },
+    { id: 'terminal', sequence: 4, event_type: 'child_session', run_id: 'child-run', content: status === 'killed' ? rows.cancel : '同事结果',
+      metadata: { status, reason: 'delegation_terminal', runtime_task_id: task, to_agent_name: '同事' } },
+  ];
+  for (const messages of projectBoth(events)) {
     const { container, unmount } = renderSteps(buildRunTimelineFromMessages(messages).steps);
     expect(container.textContent).not.toContain('后台执行中');
     expect(container.textContent).not.toContain('同事正在处理');
@@ -184,5 +191,133 @@ it.each(['zh', 'en'] as const)('localizes file card types in %s for uploads and 
   ]} agentId="agent" onOpenArtifact={vi.fn()} />);
   const types = [...container.querySelectorAll('.chat-artifact-meta')].map(node => node.textContent);
   expect(types).toEqual(language === 'zh' ? ['Markdown 文档 · 5 KB', 'CSV 表格 · 100 B', '文件 · 200 B']
-    : ['markdown · 5 KB', 'csv · 100 B', 'File · 200 B']);
+    // Round 2 restores the original English extension; Chinese stays localized.
+    : ['markdown · 5 KB', 'csv · 100 B', 'custom · 200 B']);
+});
+
+it('x3br2 keeps all 75 collapsed KB queries distinguishable', () => {
+  const messages = Array.from({ length: 75 }, (_, index) => ({ id: `kb-${index}`, role: 'tool_call', content: '',
+    toolName: 'search_personal_kb', toolStatus: 'done', toolArgs: { query: `2026 SaaS research ${index}` },
+    toolMemberSummary: { kind: 'personal_kb_search', state: 'done', found: false } }));
+  const { container } = render(<RunDisclosureBlock timeline={{ ...buildRunTimelineFromMessages(messages as never), status: 'running' }} />);
+  fireEvent.click(container.querySelector('.run-tool-group-toggle')!);
+  const buttons = [...container.querySelectorAll('.run-tool-history-toggle')];
+  expect(buttons).toHaveLength(75);
+  expect(new Set(buttons.map(button => button.textContent)).size).toBe(75);
+  buttons.forEach((button, index) => {
+    expect(button.textContent).toContain(`2026 SaaS research ${index}`);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+it('x3br2 keeps typed file and memory details on collapsed rows', () => {
+  const messages = [
+    { toolName: 'web_search', toolArgs: { query: '2026 SaaS' }, toolMemberSummary: { kind: 'web_search', state: 'done' } },
+    { toolName: 'search_memory', toolArgs: { query: 'weekly report format' }, toolMemberSummary: { kind: 'memory_search', state: 'done' } },
+    { toolName: 'read_file', toolArgs: { path: 'workspace/uploads/sales-run18.csv' }, toolMemberSummary: { kind: 'file_read', state: 'done' } },
+  ].map((message, index) => ({ ...message, id: `typed-${index}`, role: 'tool_call', content: '', toolStatus: 'done' }));
+  const { container } = render(<RunDisclosureBlock timeline={{ ...buildRunTimelineFromMessages(messages as never), status: 'running' }} />);
+  const summaries = [...container.querySelectorAll('.run-tool-history-summary')].map(node => node.textContent);
+  expect(summaries).toEqual(['2026 SaaS', 'weekly report format', 'sales-run18.csv']);
+  safe(container.textContent || '');
+});
+
+it('x3br2 preserves the backend host exactly instead of normalizing it again', () => {
+  const { container } = renderSteps([{ ...step('done'), kind: 'tool', details: { toolName: 'web_fetch',
+    args: { url: 'http://例子.测试/path?q=value' }, memberSummary: { kind: 'web_fetch', state: 'done', host: '例子.测试' } } }]);
+  expect(container.querySelector('p')?.textContent).toBe('打开了网页 例子.测试');
+  expect(container.textContent).not.toContain('xn--');
+});
+
+it('x3br2 preserves the backend call host on native reload', () => {
+  const events = [native(1, 'tool_call', { tool_name: 'web_fetch', args: { url: 'http://例子.测试/path' }, host: '例子.测试' }),
+    native(2, 'tool_result', { tool_name: 'web_fetch', outcome: 'success', content: '', member_summary: { kind: 'web_fetch', state: 'done' } })];
+  const { container } = renderSteps(buildRunTimelineFromMessages(hydrateSessionTranscriptEvents(events as never).messages).steps);
+  expect(container.querySelector('p')?.textContent).toBe('打开了网页 例子.测试');
+  expect(container.querySelector('.run-tool-history-summary')?.textContent).toBe('例子.测试');
+});
+
+it('x3br2 distinguishes a delegation that was never sent', () => {
+  const events = [native(1, 'tool_result', { tool_name: 'delegate_to_agent', outcome: 'failed', content: '',
+    member_summary: { kind: 'delegation', state: 'not_done', error_class: 'not_found' } })];
+  const { container } = renderSteps(buildRunTimelineFromMessages(hydrateSessionTranscriptEvents(events as never).messages).steps);
+  expect(container.querySelector('p')?.textContent).toBe('没有找到要使用的内容。');
+  expect(container.textContent).not.toContain('同事没有完成');
+});
+
+it.each(['zh', 'en'] as const)('x3br2 makes an unknown outcome accessible as unconfirmed in %s', language => {
+  locale.language = language;
+  for (const presentation of ['surface', 'tool_history'] as const) {
+    const { container, unmount } = renderSteps([{ ...step('failed', presentation), details: { toolName: 'search_personal_kb',
+      memberSummary: { kind: 'personal_kb_search', state: 'unknown' } } }]);
+    const label = language === 'zh' ? '结果尚未确认。' : 'The outcome is unconfirmed.';
+    expect(container.querySelector(`[role="img"][aria-label="${label}"]`)).toBeTruthy();
+    expect(container.querySelector('[role="img"][aria-label="未完成"], [role="img"][aria-label="Not completed"]')).toBeNull();
+    if (presentation === 'tool_history') expect(container.querySelector('.run-tool-group-toggle')?.getAttribute('aria-label')).toContain(label);
+    unmount();
+  }
+});
+
+it.each(['failed', 'cancelled', 'blocked'] as const)('x3br2 includes %s status in the group accessible name', status => {
+  const { container } = renderSteps([step(status)]);
+  const label = status === 'failed' ? '未完成' : status === 'cancelled' ? '已停止' : '等待处理';
+  expect(container.querySelector('.run-tool-group-toggle')?.getAttribute('aria-label')).toContain(label);
+});
+
+function stopEvents() {
+  const metadata = { reason: 'delegation_terminal', status: 'killed', runtime_task_id: 'stop-task',
+    child_session_id: 'colleague-session', to_agent: 'colleague', to_agent_name: '同事' };
+  return [
+    { id: 'stop-runtime', sequence: 1, event_type: 'runtime_action_failed', content: '已停止，同事没有完成这项工作。',
+      metadata: { ...metadata, action_kind: 'a2a_delegation', target_agent_name: '同事' } },
+    { id: 'stop-child', sequence: 2, event_type: 'child_session', content: '已停止，同事没有完成这项工作。', metadata },
+  ];
+}
+
+it.each([false, true])('x3br2 labels a cancellation-only block stopped live and after reload (answer: %s)', hasAnswer => {
+  for (const messages of projectBoth(stopEvents())) {
+    const timeline = buildRunTimelineFromMessages(messages, hasAnswer
+      ? { answer: { id: 'stop-answer', role: 'assistant', content: '这项工作已停止。' } } : {});
+    expect(timeline.status).toBe('cancelled');
+    const { container, unmount } = render(<RunDisclosureBlock timeline={timeline} />);
+    expect(container.querySelector('.run-disclosure-title')?.textContent).toBe('已停止');
+    unmount();
+  }
+});
+
+it('x3br2 keeps one stopped child row and its authorized colleague link', () => {
+  window.localStorage.setItem('current_tenant_id', 'tenant');
+  const client = new QueryClient();
+  client.setQueryData(['agents', 'tenant'], [{ id: 'colleague' }]);
+  const timeline = buildRunTimelineFromMessages(hydrateSessionTranscriptEvents(stopEvents() as never).messages);
+  const { container } = render(<QueryClientProvider client={client}><MemoryRouter>
+    <RunDisclosureBlock timeline={timeline} viewerOwnsSession />
+  </MemoryRouter></QueryClientProvider>);
+  expand(container);
+  expect(container.querySelectorAll('[data-testid="run-disclosure-step"]')).toHaveLength(1);
+  expect(container.querySelectorAll('a[href="/agents/colleague/sessions/colleague-session"]')).toHaveLength(1);
+  expect(container.textContent?.split('已停止，同事没有完成这项工作。').length).toBe(2);
+});
+
+it('x3br2 builds the memory receipt from typed content, not result text', () => {
+  const { container } = renderSteps([{ ...step('done'), kind: 'tool', details: { toolName: 'save_memory',
+    args: { content: 'Remember this exact preference.' }, result: 'Provenance hint: private result', rawResult: 'PRIVATE_RAW' } }]);
+  expect(container.querySelector('p')?.textContent).toBe('已记住：Remember this exact preference.');
+  expect(container.textContent).not.toMatch(/Provenance|PRIVATE_RAW/);
+});
+
+it.each(['check_async_task', 'task_output', 'list_async_tasks'].flatMap(reader =>
+  ['completed', 'killed'].map(status => [reader, status])))('x3br2 overrides legacy %s observations when the colleague is %s', (reader, status) => {
+  const task = { task_id: 'legacy-task', task_type: 'delegation', status: 'running' };
+  const events = [{ id: 'legacy-check', sequence: 1, event_type: 'tool_result',
+    content: JSON.stringify({ name: reader, status: 'done', result: JSON.stringify(reader === 'list_async_tasks' ? [task]
+      : reader === 'task_output' ? { ok: true, task } : task) }) },
+  { id: 'legacy-terminal', sequence: 2, event_type: 'child_session', content: status === 'killed' ? rows.cancel : '同事结果',
+    metadata: { reason: 'delegation_terminal', status, runtime_task_id: task.task_id } }];
+  for (const messages of projectBoth(events)) {
+    const { container, unmount } = renderSteps(buildRunTimelineFromMessages(messages).steps);
+    expect(container.textContent).not.toContain('同事正在处理');
+    expect(container.textContent).toContain(status === 'completed' ? '同事已完成' : '已停止');
+    unmount();
+  }
 });

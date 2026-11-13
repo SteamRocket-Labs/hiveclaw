@@ -55,7 +55,8 @@ describe.each([['zh', 'zh'] as const, ['en', 'en'] as const])('member tool summa
     locale.language = language;
     const text = stepText({
       id: 'fetch', kind: 'search', title: 'Fetch web page', status: 'done', visibility: 'visible',
-      summary: 'https://deepwiki.com/react',
+      // Round 2: the reducer owns collapsed-argument sanitization.
+      summary: 'deepwiki.com',
       details: {
         toolName: 'web_fetch',
         args: { url: 'https://deepwiki.com/react' },
@@ -64,6 +65,7 @@ describe.each([['zh', 'zh'] as const, ['en', 'en'] as const])('member tool summa
       },
     });
     expect(text).toContain(language === 'zh' ? '打开了网页 deepwiki.com' : 'Opened the web page deepwiki.com');
+    expect(text).not.toContain('https://');
     for (const leak of ['Firecrawl', 'Syntax error', '[Packages]']) {
       expect(text).not.toContain(leak);
     }
@@ -286,16 +288,13 @@ it('a context read renders its sentence (r2 ruling 8)', () => {
 
 it('an unknown summary kind falls back to a sentence without raw output (X3b item 2)', () => {
   locale.language = 'zh';
-  const { container } = render(<RunDisclosureBlock timeline={{ id: 'run', status: 'running', steps: [{
-    id: 'future', kind: 'search', title: 'Fetch web page', status: 'done', visibility: 'visible',
-    summary: 'https://example.com/new-variant',
-    details: {
-      toolName: 'web_fetch',
-      args: { url: 'https://example.com/new-variant' },
-      result: 'date,line\n2026-11-01,35', rawResult: 'date,line\n2026-11-01,35',
-      memberSummary: { kind: 'a_future_kind', state: 'done' },
-    },
-  }] }} />);
+  // Round 2 sanitizes arguments in the reducer only. Exercise that real path
+  // rather than injecting an invalid snapshot containing a full URL summary.
+  const timeline = buildRunTimelineFromMessages([{ id: 'future', role: 'tool_call', content: '',
+    toolName: 'web_fetch', toolStatus: 'done', toolArgs: { url: 'https://example.com/new-variant' },
+    toolResult: 'date,line\n2026-11-01,35', toolRawResult: 'date,line\n2026-11-01,35',
+    toolMemberSummary: { kind: 'a_future_kind', state: 'done' } }]);
+  const { container } = render(<RunDisclosureBlock timeline={{ ...timeline, status: 'running' }} />);
   expand(container);
   // Version skew keeps a usable action sentence while X3b forbids raw output.
   expect(container.textContent).toContain('读取网页。已返回结果');

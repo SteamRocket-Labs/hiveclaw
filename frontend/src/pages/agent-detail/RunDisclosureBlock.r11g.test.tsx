@@ -42,7 +42,8 @@ it.each([
 
 it.each([
   ['write_file', { path: 'workspace/sales-report-sales-run8.md' }, '✅ Written to workspace/sales-report-sales-run8.md (3123 chars)', '已写入文件「sales-report-sales-run8.md」。'],
-  ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。', '保存记忆。已返回结果'],
+  // Round 2 restores the member receipt using typed args.content, not raw result prose.
+  ['save_memory', { content: '用户的 E2E 测试代号是 白鹭-8。' }, 'Saved memory [user] (user): 用户的 E2E 测试代号是 白鹭-8。', '已记住：用户的 E2E 测试代号是 白鹭-8。'],
 ] as const)('shows a non-command %s sentence without mutating the model payload (X3b item 2)', (toolName, toolArgs, toolResult, sentence) => {
   const message: AgentChatMessage = { id: toolName, role: 'tool_call', content: '', toolName, toolArgs, toolResult, toolStatus: 'done' };
   const before = JSON.stringify(message);
@@ -67,9 +68,8 @@ it.each([
   const timeline = buildRunTimelineFromMessages([message]);
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
   expand(container);
-  // X3b item 2 forbids save_memory's raw receipt too; writes use typed paths.
-  expect(container.querySelector('p')?.textContent).toBe(toolName === 'write_file' ? text : '保存记忆。已返回结果');
-  if (toolName === 'save_memory') expect(container.textContent).not.toContain(text);
+  // Round 2 restores the existing receipt: writes use typed paths and memory uses typed content.
+  expect(container.querySelector('p')?.textContent).toBe(text);
   expect(container.textContent).not.toMatch(/Written to|Saved memory|workspace|106|model_visible_text/);
   expect(JSON.stringify(message)).toBe(before);
   expect((timeline.steps[0].details as { rawResult: string }).rawResult).toBe(JSON.stringify(envelope));

@@ -328,20 +328,41 @@ async def _execute_committed_provider_round(
     emit_event: Any,
     attempt_state: dict[str, Any],
     previous_result_receipt: dict[str, Any] | None,
+    final_reply_only: bool = False,
 ) -> dict[str, Any]:
     """Own one Provider request/result fence without owning Agent semantics."""
 
-    reasoning_kwargs = support.build_reasoning_kwargs(
-        active_model,
-        tools_enabled=bool(tools_for_llm),
-    )
     request_temperature = support.resolve_temperature(active_model)
     provider = str(getattr(active_model, "provider", "") or "")
     model = str(getattr(active_model, "model", "") or "")
+    request_tools = tools_for_llm
+    request_options: dict[str, Any] = {}
+    if final_reply_only:
+        from app.services.llm_client import get_provider_spec
+
+        # R20b round 3: Anthropic needs definitions for historical tool blocks.
+        # Keep the shared tool set intact; this request cannot execute tools.
+        spec = get_provider_spec(provider)
+        if spec is not None and spec.protocol == "anthropic":
+            request_options["tool_choice"] = {"type": "none"}
+        else:
+            request_tools = []
+        stream_messages = [*stream_messages, support._context_message(
+            role="system", kind="runtime_reminder", unbound=(),
+            content=("Finish this turn with a normal assistant reply in the member's language, "
+                "plainly saying that no matching material was found. "
+                "Also report any action already committed in this same turn, grounded in successful tool results. "
+                "Do not claim actions that were only proposed, denied, failed, or unknown. "
+                "This is the final reply for this turn. Any tool call you return will not run."),
+        )]
+    reasoning_kwargs = {
+        **support.build_reasoning_kwargs(active_model, tools_enabled=bool(request_tools)),
+        **request_options,
+    }
     provider_idempotency_supported = bool(getattr(client, "supports_request_idempotency", False))
     wire_request = {
         "messages": support._llm_messages_to_dicts(stream_messages),
-        "tools": tools_for_llm,
+        "tools": request_tools,
         "temperature": request_temperature,
         "max_tokens": max_tokens,
         "reasoning": dict(reasoning_kwargs),
@@ -353,7 +374,7 @@ async def _execute_committed_provider_round(
             request.model_request_prepare(
                 round_index=logical_round_index,
                 messages=stream_messages,
-                tools=tools_for_llm or None,
+                tools=request_tools or None,
                 provider=provider,
                 model=model,
                 wire_request=wire_request,
@@ -397,7 +418,7 @@ async def _execute_committed_provider_round(
         )
         provider_prompt_ledger = support.build_provider_prompt_ledger(
             messages=stream_messages,
-            tools=tools_for_llm or None,
+            tools=request_tools or None,
             provider=provider,
             model=model,
             round_index=logical_round_index,
@@ -440,7 +461,7 @@ async def _execute_committed_provider_round(
         client,
         cancel_event=request.cancel_event,
         messages=stream_messages,
-        tools=tools_for_llm or None,
+        tools=request_tools or None,
         temperature=request_temperature,
         max_tokens=max_tokens,
         on_chunk=emit_chunk,
@@ -448,8 +469,19 @@ async def _execute_committed_provider_round(
         **reasoning_kwargs,
     )
     base_physical_response = _provider_response_payload(response)
+    continuation_client, continuation_prepare = client, request.model_request_prepare
+    if final_reply_only and request_tools:
+        from types import SimpleNamespace
+
+        # R20b round 4/I5: output continuations retain Anthropic's history definitions too.
+        continuation_client = SimpleNamespace(stream=lambda **kw: client.stream(**{**kw, "tools": request_tools}))
+        if continuation_prepare is not None:
+            def prepare_continuation(**payload):
+                return request.model_request_prepare(**{**payload, "tools": request_tools,
+                    "wire_request": {**payload["wire_request"], "tools": request_tools}})
+            continuation_prepare = prepare_continuation
     response, continuation_receipts = await support._continue_after_output_cap(
-        client=client,
+        client=continuation_client,
         response=response,
         stream_messages=stream_messages,
         cancel_event=request.cancel_event,
@@ -458,11 +490,16 @@ async def _execute_committed_provider_round(
         on_thinking=emit_thinking,
         reasoning_kwargs=reasoning_kwargs,
         round_index=logical_round_index,
-        model_request_prepare=request.model_request_prepare,
+        model_request_prepare=continuation_prepare,
         provider=provider,
         model=model,
         provider_idempotency_supported=provider_idempotency_supported,
     )
+    if final_reply_only and (response.tool_calls or not str(response.content or "").strip()):
+        # Settle every physical response before rejecting this summary's tools or empty output.
+        return {"response": response, "provider_request_id": provider_request_id,
+            "llm_started_ms": llm_started_ms, "discarded_summary": True,
+            "continuation_receipts": continuation_receipts}
     has_model_output = bool(response.tool_calls) or bool(isinstance(response.content, str) and response.content.strip())
     if not has_model_output:
         return {
@@ -518,7 +555,7 @@ async def _execute_committed_provider_round(
 
     provider_prompt_ledger = support.build_provider_prompt_ledger(
         messages=stream_messages,
-        tools=tools_for_llm or None,
+        tools=request_tools or None,
         provider=provider,
         model=model,
         round_index=logical_round_index,
@@ -534,7 +571,7 @@ async def _execute_committed_provider_round(
             "provider": provider,
             "model": model,
             "round": logical_round_index,
-            "tool_count": len(tools_for_llm),
+            "tool_count": len(request_tools),
             "tool_call_count": len(response.tool_calls or []),
             "usage": response.usage or {},
             "provider_prompt_ledger": provider_prompt_ledger,
@@ -552,7 +589,7 @@ async def _execute_committed_provider_round(
             "event_type": "provider_call_ledger",
             "provider_prompt_ledger": provider_prompt_ledger,
             "cache_metrics": cache_metrics.as_log_dict(),
-            "tool_count": len(tools_for_llm),
+            "tool_count": len(request_tools),
             "tool_call_count": len(response.tool_calls or []),
             "visibility": "debug",
         }
@@ -593,19 +630,26 @@ async def _finalize_model_response(
     _flush_buffered_chunks: Any,
     _emit_event: Any,
     _record_new_token_usage: Any,
+    final_reply_only: bool = False,
 ) -> InvocationResult | None:
     """Finalize authorized output; None means the Stop hook requested another round."""
-    InvocationResult = support.InvocationResult
     LLMMessage = support.LLMMessage
     _llm_messages_to_dicts = support._llm_messages_to_dicts
     _emit_runtime_hook = support._emit_runtime_hook
-    build_done_event = support.build_done_event
 
     final_content = response.content
     final_content, _source_permission_allowed = await _enforce_generated_source_permissions(final_content)
     if _source_permission_allowed:
         await _flush_buffered_chunks()
-    if (logical_round_index < max_rounds
+    complete_response = partial(
+        _completed_model_response,
+        support=support, request=request, response=response, runtime_config=runtime_config,
+        api_messages=api_messages, logical_round_index=logical_round_index,
+        accumulated_tokens=accumulated_tokens, tools_for_llm=tools_for_llm,
+        collected_parts=collected_parts, last_model_result_receipt=last_model_result_receipt,
+        final_content=final_content, _record_new_token_usage=_record_new_token_usage,
+    )
+    if ((logical_round_index < max_rounds or final_reply_only)
         and provider_request_id
         and (last_model_result_receipt or {}).get("provider_request_id") == provider_request_id
         and (last_model_result_receipt or {}).get("continuation", {}).get("verdict") == "continue"):
@@ -616,6 +660,9 @@ async def _finalize_model_response(
             reasoning_signature=getattr(response, "reasoning_signature", None),
             source_ref=f"session-provider-result:{provider_request_id}"))
         return None
+    if final_reply_only:
+        # R20b round 4: pending input can continue normally; summary Stop hooks cannot.
+        return await complete_response()
     from app.runtime.hooks import HookEvent
 
     _session_source = request.session_context.source if request.session_context else "runtime"
@@ -812,12 +859,23 @@ async def _finalize_model_response(
         return None
     elif request.session_context is not None:
         request.session_context.metadata.pop("stop_hook_active", None)
+    return await complete_response()
+
+
+async def _completed_model_response(
+    *, support: Any, request: Any, response: Any, runtime_config: Any,
+    api_messages: list[Any], logical_round_index: int, accumulated_tokens: int,
+    tools_for_llm: list[dict[str, Any]], collected_parts: list[dict[str, Any]],
+    last_model_result_receipt: dict[str, Any] | None, final_content: str,
+    _record_new_token_usage: Any,
+) -> InvocationResult:
     # Subagent runs execute under the parent's agent_id but are
     # clean specialists (standalone prompt): their INTERNAL
     # transcript is not the parent's behavior. The conclusion
     # reaches the parent's memory through the parent's own main
     # session (the spawn tool result) — persisting/extracting the
     # subagent session too would double-count it as tool noise.
+    _session_source = request.session_context.source if request.session_context else "runtime"
     _memory_isolated = _session_source == "subagent"
     await _record_new_token_usage()
 
@@ -830,7 +888,7 @@ async def _finalize_model_response(
         response_complete_payload = {
             "agent_id": request.agent_id,
             "session_id": request.memory_session_id,
-            "messages": _llm_messages_to_dicts(api_messages[1:]),
+            "messages": support._llm_messages_to_dicts(api_messages[1:]),
             "source": _session_source,
             "metadata": {
                 "last_response": final_content or "",
@@ -842,13 +900,13 @@ async def _finalize_model_response(
             },
         }
 
-    return InvocationResult(
+    return support.InvocationResult(
         content=final_content,
         tokens_used=accumulated_tokens,
         final_tools=tools_for_llm,
         reasoning_signature=getattr(response, "reasoning_signature", None),
         parts=collected_parts
-        + build_done_event(
+        + support.build_done_event(
             final_content,
             thinking=response.reasoning_content,
         )["parts"],
@@ -1126,18 +1184,27 @@ async def _project_loop_guard_terminal_evidence(
         "schema": "hive.loop_guard_terminal_evidence.v1",
         **decision.trace_event,
     }
+    empty_search = decision.reason == "repeated_empty_search"
+    guidance = (
+        "The searches returned no matching material."
+        if empty_search else
+        "The governed runtime has recorded that this side-effect-free retry path is exhausted "
+        "without state progress. Treat this as evidence, not as a platform-authored semantic "
+        "conclusion. Decide whether another available capability can make progress or whether "
+        "to answer now; preserve uncertainty and cite the most useful recovery action."
+    )
     api_messages.append(
         _context_message(
             role="system",
             kind="runtime_reminder",
+            # R20b: these facts come from the current runtime decision,
+            # so they have no unresolved external source dependencies.
+            unbound=() if empty_search else ("context_sources_unbound",),
             content=(
                 "<loop_guard_terminal_evidence>"
                 + json.dumps(_terminal_evidence, ensure_ascii=False, sort_keys=True)
                 + "</loop_guard_terminal_evidence>\n"
-                "The governed runtime has recorded that this side-effect-free retry path is exhausted "
-                "without state progress. Treat this as evidence, not as a platform-authored semantic "
-                "conclusion. Decide whether another available capability can make progress or whether "
-                "to answer now; preserve uncertainty and cite the most useful recovery action."
+                + guidance
             ),
         )
     )
@@ -1148,7 +1215,9 @@ async def _project_loop_guard_terminal_evidence(
                 "type": "event",
                 "event_type": "loop_guard_terminal_evidence",
                 "title": "Retry evidence available",
-                "text": "The model received typed non-progress evidence with its authorized tools intact.",
+                "text": ("The model received empty-search evidence for its final reply; tool calls will not run."
+                    if empty_search else
+                    "The model received typed non-progress evidence with its authorized tools intact."),
                 "status": "warning",
                 **decision.trace_event,
             },
@@ -2060,6 +2129,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         # round's tool results are appended.
         _tool_terminal_signal: str | None = None
         _loop_guard_summary_pending = False
+        _empty_search_summary_pending = False
+        _empty_search_summary_used = False
+        _summary_input_continuation_pending = False
         _loop_guard_terminal_decision: LoopGuardDecision | None = None
         try:
             client = self._deps.create_client(active_model)
@@ -2086,10 +2158,18 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         try:
             initial_round_index = max(0, int(request.initial_round_index or 0))
             remaining_rounds = max(0, max_rounds - initial_round_index)
-            for round_i in range(remaining_rounds + 1):
+            for round_i in range(remaining_rounds + 2):
                 logical_round_index = initial_round_index + round_i + 1
-                if round_i >= remaining_rounds and not _loop_guard_summary_pending:
+                if round_i >= remaining_rounds and not (
+                    _summary_input_continuation_pending
+                    or (_loop_guard_summary_pending and round_i == remaining_rounds)
+                ):
                     break
+                _summary_input_continuation_pending = False
+                final_empty_search_reply = _empty_search_summary_pending
+                _empty_search_summary_pending = False
+                if final_empty_search_reply:
+                    _loop_guard_summary_pending = False
                 if request.cancel_event and request.cancel_event.is_set():
                     await _record_new_token_usage()
                     await self._persist_before_exit(request, runtime_config, "*[Generation stopped]*", api_messages)
@@ -2100,7 +2180,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         final_tools=tools_for_llm,
                         collected_parts=collected_parts,
                     )
-                if request.round_input_bind is not None:
+                if not final_empty_search_reply and request.round_input_bind is not None:
                     bound_round_inputs = _mid_run_items_to_user_messages(
                         await _maybe_await(request.round_input_bind(logical_round_index))
                     )
@@ -2118,7 +2198,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 },
                             }
                         )
-                if request.mid_run_message_drain is not None:
+                if not final_empty_search_reply and request.mid_run_message_drain is not None:
                     try:
                         drained = _mid_run_items_to_user_messages(await _maybe_await(request.mid_run_message_drain()))
                     except Exception as drain_exc:
@@ -2263,11 +2343,14 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             emit_event=_emit_event,
                             attempt_state=provider_attempt_state,
                             previous_result_receipt=last_model_result_receipt,
+                            final_reply_only=final_empty_search_reply,
                         )
                         response = provider_round["response"]
                         provider_request_id = provider_round["provider_request_id"]
                         llm_started_ms = int(provider_round["llm_started_ms"])
                         round_settled_tool_results = dict(provider_round.get("settled_tool_results") or {})
+                        if provider_round.get("discarded_summary"):
+                            break
                         if provider_round["empty"]:
                             return await _finalize_empty_provider_response(
                                 self=self,
@@ -2838,6 +2921,29 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             tokens_used=accumulated_tokens,
                         )
 
+                if provider_round.get("discarded_summary"):
+                    for physical in [{"provider_request_id": provider_request_id, "continuation_index": 0},
+                                     *provider_round.get("continuation_receipts", [])]:
+                        if request.model_request_fail is not None and physical["provider_request_id"] is not None:
+                            await _maybe_await(request.model_request_fail(
+                                round_index=logical_round_index, provider_request_id=physical["provider_request_id"],
+                                continuation_index=physical["continuation_index"],
+                                error_class="repeated_empty_search", delivery_state="response_received",
+                                retry_safe=True,
+                            ))
+                    accumulated_tokens += self._deps.extract_usage_tokens(response.usage) or 0
+                    round_charge_key["key"] = provider_request_id
+                    from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
+
+                    await _record_new_token_usage()
+                    await self._persist_before_exit(request, runtime_config, EMPTY_SEARCH_FINAL_MESSAGE, api_messages)
+                    result = _build_error_result(
+                        EMPTY_SEARCH_FINAL_MESSAGE, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
+                        terminal_reason=TerminalReason.LOOP_GUARD, failure_code="repeated_empty_search",
+                    )
+                    result.parts = collected_parts + result.parts
+                    return result
+
                 if provider_round.get("sealed_replay"):
                     # Committed-round sealed replay: the resume baseline already
                     # owns this round's usage for truthful turn totals/budget,
@@ -2918,6 +3024,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         collected_parts=collected_parts,
                         last_model_result_receipt=last_model_result_receipt,
                         max_rounds=max_rounds,
+                        final_reply_only=final_empty_search_reply,
                         _enforce_generated_source_permissions=_enforce_generated_source_permissions,
                         _flush_buffered_chunks=_flush_buffered_chunks,
                         _emit_event=_emit_event,
@@ -2925,6 +3032,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     )
                     if final_result is not None:
                         return final_result
+                    if final_empty_search_reply:
+                        # Only a committed continue verdict can defer this summary's completion.
+                        _summary_input_continuation_pending = True
                     continue
                 # Tier 1-4: recover from DeepSeek-V4 style concatenated tool_call args
                 # so every payload becomes its own executable tool_call before history is
@@ -3308,7 +3418,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if result_loop_decision:
                             if result_loop_decision.severity == "warn":
                                 await _inject_loop_guard_warning(result_loop_decision)
-                            else:
+                            elif (_loop_guard_terminal_decision is None
+                                or _loop_guard_terminal_decision.reason == "repeated_empty_search"):
                                 _loop_guard_terminal_decision = result_loop_decision
                         await _apply_tool_expansion(tool_name, effective_args, _executed)
                         _raw_result, _model_result = _tool_result_views(result, _side_effects)
@@ -3513,7 +3624,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if result_loop_decision:
                             if result_loop_decision.severity == "warn":
                                 await _inject_loop_guard_warning(result_loop_decision)
-                            else:
+                            elif (_loop_guard_terminal_decision is None
+                                or _loop_guard_terminal_decision.reason == "repeated_empty_search"):
                                 _loop_guard_terminal_decision = result_loop_decision
 
                         await _apply_tool_expansion(tool_name, args, executed)
@@ -3628,17 +3740,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
                 if _loop_guard_terminal_decision is not None:
                     if _loop_guard_terminal_decision.reason in {
-                        "repeated_empty_search", "identical_terminal_task_read",
+                        "identical_terminal_task_read",
                         "identical_running_task_read", "identical_refused_result_read",
-                    }:
+                    } or (_loop_guard_terminal_decision.reason == "repeated_empty_search" and _empty_search_summary_used):
                         # R18a round 2 (reviewer blocker 2): end through the same
-                        # failure shape as identical_terminal_task_read so every
-                        # lane settles — a TURN_STOP without a model receipt left
-                        # delegated children and business tasks fenced for
-                        # operator reconciliation. Web chat fails the run (the
-                        # member card carries the sentence via failure_code);
-                        # the delegation parent and the business member projection
-                        # map the same code to the plain sentence.
+                        # failure shape for read-loop stops so every lane settles.
                         message = _loop_guard_terminal_decision.message
                         await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, message, api_messages)
@@ -3650,6 +3756,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         result.parts = collected_parts + result.parts
                         return result
                     _loop_guard_summary_pending = True
+                    if _loop_guard_terminal_decision.reason == "repeated_empty_search":
+                        # R20b round 4: only one summary round per turn; a later
+                        # empty-search abort uses the failure exit above.
+                        _empty_search_summary_used = _empty_search_summary_pending = True
                     await _project_loop_guard_terminal_evidence(
                         _loop_guard_terminal_decision, api_messages=api_messages,
                         _context_message=_context_message, _emit_event=_emit_event,

@@ -1,16 +1,4 @@
-"""R18a round 2 ruling 2(c) + round 3 ruling 3: business-task lane.
-
-What each lane shows for a run stopped by the empty-search guard: the outcome
-is FAILED (never NEEDS_RECONCILIATION); for failure_code repeated_empty_search
-the member-facing summary is the plain sentence 「多次搜索都没有找到相关资料。」
-and the outcome is not retryable (the member projection therefore offers no
-retry). The running-task-read stop (R19a) and the refused-result stop (R19b,
-source-neutral) also have plain copy and no retry; other codes —
-identical_terminal_task_read, tool_round_limit, provider errors — keep their
-English summary and retry. A
-parent reading the business RuntimeTask through runtime_failure_observation
-still sees the generic sentence (error_code sits under metadata.outcome;
-pre-existing, report-only)."""
+"""R20b summary completion and the unchanged R18a business read-stop contracts."""
 
 from __future__ import annotations
 
@@ -24,13 +12,55 @@ from tests.services.test_task_executor import _FakeSession, _fake_resolve_tenant
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_empty_search_guard_summary_is_a_completed_business_answer(
+    owner_sessionmaker, monkeypatch, tmp_path,
+):
+    from sqlalchemy import select
+
+    from app.models.session_v2 import SessionModelResult
+    from app.services.business_task_runtime import project_business_task
+    from app.services.session_control_plane import _runtime_task_user_blocker
+    from tests.integration.test_r20b_empty_search_summary import ANSWER, _run_business_empty_search_summary
+
+    case = await _run_business_empty_search_summary(owner_sessionmaker, monkeypatch, tmp_path)
+    task, run = case["task"], case["run"]
+    outcome = run.metadata_json["outcome"]
+
+    # R20b/P2: displayed state matches the summary; its receipt settles the lane (R18a round 2 blocker 2).
+    assert run.status == "completed" and outcome["status"] == "succeeded"
+    # R20b/P2: the completed summary has no failure code (R18a round 2 blocker 2).
+    assert outcome["error_code"] is None and not run.metadata_json.get("failure_code")
+    # R20b/P2: the summary settles the lane through normal completion (R18a round 2 blocker 2).
+    assert outcome["terminal_reason"] == "turn_stop"
+    # R20b/P2: the member receives the completed summary answer (R18a round 2 blocker 2).
+    assert task.last_result == ANSWER
+    assert outcome["retryable"] is False
+    assert _runtime_task_user_blocker(run) is None
+    assert "session_v2_reconciliation" not in run.metadata_json
+    assert outcome["response_complete_payload"]
+    async with owner_sessionmaker() as db:
+        summary = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.run_id == run.id,
+            SessionModelResult.round_id == f"{run.id}:round:6"))
+        assert summary is not None and summary.state == "round_committed"
+        assert summary.seal_json["response"]["content"] == ANSWER
+    assert len(case["client"].requests) == 6 and case["client"].requests[-1]["tools"] is None
+
+    # Keep the existing member-projection checks on the persisted outcome.
+    projection = project_business_task(task=task, runtime_task=run)
+    assert projection["recovery_message"] == outcome["summary"]
+    assert projection["actions"]["can_retry"] is outcome["retryable"]
+    assert projection["recovery_state"] != "retry_available"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure_code", [
-    "repeated_empty_search", "identical_terminal_task_read",
+    "identical_terminal_task_read",
     "identical_running_task_read", "identical_refused_result_read",
 ])
-async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, failure_code):
+async def test_read_loop_guard_stop_is_a_plain_business_failure(monkeypatch, failure_code):
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
-    from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
     from app.services.task_executor import TaskExecutionStatus, execute_task
 
     task_id = uuid4()
@@ -40,9 +70,12 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
     plan_id = uuid4()
     child_id = uuid4()
     running_read = failure_code == "identical_running_task_read"
+    terminal_read = failure_code == "identical_terminal_task_read"
     refused_result = failure_code == "identical_refused_result_read"
-    tool_name = ("check_async_task" if running_read
-        else "read_runtime_result" if refused_result else "search_company_kb")
+    tool_name = "check_async_task" if running_read or terminal_read else "read_runtime_result"
+    from app.services.runtime_display_status import runtime_failure_observation
+
+    terminal_result = runtime_failure_observation("failed", {"error_code": "provider_error"})
     result_ref = f"runtime-result://{uuid4()}/" + "a" * 64
 
     task = SimpleNamespace(
@@ -70,8 +103,7 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
                 _FakeSession([task])]
 
     async def fake_invoke_agent(request):
-        """Run the real kernel's empty-search, running-read or refused-result
-        loop, then project its result into the invoker shape the executor consumes."""
+        """Run the real read-loop guard and project its result into the executor input."""
         search_index = iter(range(1, 20))
 
         class RewordingClient:
@@ -86,9 +118,8 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
                     content="",
                     tool_calls=[{"id": f"search-{index}", "type": "function", "function": {
                         "name": tool_name,
-                        "arguments": json.dumps({"task_id": str(child_id)} if running_read
-                            else {"result_ref": result_ref, "offset": index * 256} if refused_result
-                            else {"query": f"白鹭计划 第{index}种说法"})}}],
+                        "arguments": json.dumps({"task_id": str(child_id)} if running_read or terminal_read
+                            else {"result_ref": result_ref, "offset": index * 256})}}],
                     finish_reason="tool_calls",
                     usage={"prompt_tokens": 10, "completion_tokens": 5},
                     model="gpt-4.1",
@@ -107,9 +138,13 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
             execute_tool=lambda *_a, **_k: json.dumps(
                 {"task_id": str(child_id), "task_type": "delegation", "status": "running", "result": None}
                 if running_read else
+                # R20b: exercise the terminal-read reason itself rather than
+                # substituting its code onto an unrelated empty-search stop.
+                {"task_id": str(child_id), "task_type": "delegation", **terminal_result}
+                if terminal_read else
                 {"schema": "hive.runtime_result_page.v1", "status": "source_access_denied",
-                    "result_ref": result_ref, "reason_code": "content_source_changed", "retryable": False}
-                if refused_result else {"status": "empty", "results": []}, ensure_ascii=False),
+                    "result_ref": result_ref, "reason_code": "content_source_changed", "retryable": False},
+                ensure_ascii=False),
             persist_memory=lambda **_k: None,
             record_token_usage=lambda *_a, **_k: None,
             get_max_tokens=lambda *_a, **_k: 2048,
@@ -127,13 +162,14 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
             assert result.failure_code == "identical_running_task_read"
         if refused_result:
             assert result.failure_code == failure_code  # This lane uses the real refusal stop.
-        # The kernel stop for repeated_empty_search is real; the
-        # identical_terminal_task_read result shape is pinned by its own
-        # kernel tests — here only the executor's mapping of the code varies.
+        if terminal_read:
+            # R20b round 3: verify the real terminal-read reason instead of masking it in the projection.
+            assert result.failure_code == failure_code
+        # Each read-loop result keeps its original failure contract.
         return SimpleNamespace(
             content=result.content,
             terminal_reason=getattr(result.terminal_reason, "value", result.terminal_reason),
-            failure_code=failure_code,
+            failure_code=result.failure_code,
             failure_delivery_state=result.failure_delivery_state,
             failure_retryable=result.failure_retryable,
             parts=list(result.parts or []),
@@ -164,12 +200,7 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
     assert outcome.error_code == failure_code
     assert outcome.terminal_reason == "loop_guard"
 
-    if failure_code == "repeated_empty_search":
-        # Ruling 3: the member summary is the plain sentence and the outcome is
-        # not retryable — a retry would rerun the whole task.
-        assert outcome.summary == EMPTY_SEARCH_FINAL_MESSAGE
-        assert outcome.retryable is False
-    elif failure_code == "identical_refused_result_read":
+    if failure_code == "identical_refused_result_read":
         # Approval, remote, subagent and creation results are also refused; the
         # summary must be source-neutral and must not rerun the whole task.
         assert outcome.summary == "这份结果这次没法安全读取，我没能继续。你可以让我重新安排这项工作。"
@@ -212,6 +243,6 @@ async def test_empty_search_guard_stop_is_a_plain_business_failure(monkeypatch, 
     projection = project_business_task(task=projected_task, runtime_task=runtime)
     assert projection["recovery_message"] == outcome.summary
     assert projection["actions"]["can_retry"] is outcome.retryable
-    if failure_code in {"repeated_empty_search", "identical_running_task_read", "identical_refused_result_read"}:
+    if failure_code in {"identical_running_task_read", "identical_refused_result_read"}:
         # No plain guard stop offers a retry of the whole task.
         assert projection["recovery_state"] != "retry_available"

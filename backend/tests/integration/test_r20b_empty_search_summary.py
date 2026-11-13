@@ -534,10 +534,12 @@ async def test_summary_output_cap_tool_call_is_discarded_and_all_requests_settle
     assert failures[0]["message"] == ANSWER and failures[0]["retryable"] is False
 
 
+@pytest.mark.parametrize("max_rounds", [30, 6])
 async def test_member_input_arriving_at_the_guard_is_answered_by_the_normal_continuation(
-    owner_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker, monkeypatch, tmp_path, max_rounds,
 ):
     import app.runtime.invoker as invoker
+    from app.kernel import RuntimeConfig
     from app.models.runtime_task import RuntimeTask
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.session_v2 import SessionModelResult, SessionTurnInput
@@ -551,6 +553,10 @@ async def test_member_input_arriving_at_the_guard_is_answered_by_the_normal_cont
     next_answer = "新问题已收到，现在为你答复。"
     client = ScriptedLLMClient([*_search_rounds(), {"content": ANSWER}, {"content": next_answer}])
     _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, client)
+    async def runtime_config(_agent_id):
+        return RuntimeConfig(tenant_id=seed["tenant_id"], max_tool_rounds=max_rounds)
+
+    monkeypatch.setattr(invoker, "_resolve_runtime_config", runtime_config)
     execute = invoker.execute_tool
     input_id = uuid4()
     new_request = "请处理我刚发来的新问题。"
@@ -587,8 +593,16 @@ async def test_member_input_arriving_at_the_guard_is_answered_by_the_normal_cont
     assert len(client.requests) == 7
     assert client.requests[5]["tools"] is None
     assert client.requests[6]["tools"] == client.requests[0]["tools"]
-    assert new_request not in json.dumps(client.requests[5]["messages"], ensure_ascii=False)
-    assert new_request in json.dumps(client.requests[6]["messages"], ensure_ascii=False)
+    summary_wire = json.dumps(client.requests[5]["messages"], ensure_ascii=False)
+    continuation_wire = json.dumps(client.requests[6]["messages"], ensure_ascii=False)
+    assert "This is the final reply for this turn." in summary_wire
+    assert "Any tool call you return will not run." in summary_wire
+    # R20b round 5/SF2A: the compiled normal request contains facts, without summary-only instructions.
+    assert "This is the final reply for this turn." not in continuation_wire
+    assert "Any tool call you return will not run." not in continuation_wire
+    assert "The searches returned no matching material." in continuation_wire
+    assert new_request not in summary_wire
+    assert new_request in continuation_wire
     assert any(m["role"] == "assistant" and m["content"] == ANSWER for m in client.requests[6]["messages"])
     async with owner_sessionmaker() as db:
         run = await db.get(RuntimeTask, seed["run_id"])
@@ -601,6 +615,13 @@ async def test_member_input_arriving_at_the_guard_is_answered_by_the_normal_cont
         assert len(models) == 7 and all(m.state == "round_committed" for m in models)
         summary = models[5]
         assert summary.seal_json["continuation"]["verdict"] == "continue"
+        prepared_messages = summary.model_request_snapshot_json["wire_request"]["messages"]
+        def normalize(messages):
+            return [{k: v for k, v in m.items() if v is not None} for m in messages]
+        assert normalize(prepared_messages) == normalize(client.requests[5]["messages"])
+        reminders = [m for m in prepared_messages if "Any tool call you return will not run." in str(m.get("content"))]
+        assert len(reminders) == 1
+        assert "有一项上下文暂时无法核实" not in reminders[0]["content"]
         assert any(o["kind"] == "pending_input" for o in summary.seal_json["continuation"]["pending_obligations"])
         assert models[6].seal_json["continuation"]["verdict"] == "terminal_candidate"
         replies = list(await db.scalars(select(ChatTranscriptEvent).where(

@@ -78,6 +78,10 @@ async def test_pending_input_continues_with_tools_and_cannot_start_a_second_summ
     assert len(client.calls) == 7
     assert bound_rounds == [1, 2, 3, 4, 5, 7] and len(drains) == 6
     assert client.calls[5]["tools"] is None and client.calls[6]["tools"] == client.calls[0]["tools"]
+    assert "will not run" in _message_texts(client.calls[5])
+    # R20b round 5/SF2A: only the summary request receives the final-reply instruction.
+    assert "will not run" not in _message_texts(client.calls[6])
+    assert "final reply" not in _message_texts(client.calls[6])
     assert new_request not in _message_texts(client.calls[5])
     assert new_request in _message_texts(client.calls[6]) and pending == []
     assert result.final_tools
@@ -85,6 +89,8 @@ async def test_pending_input_continues_with_tools_and_cannot_start_a_second_summ
     assert sum(event.get("part", {}).get("event_type") == "loop_guard_terminal_evidence" for event in events) == 1
     if search_again:
         assert executed == ["search_company_kb"] * 6
+        # R20b round 5/nit 3: the retained count aborts on exactly one further empty search.
+        assert len(executed) - 5 == 1
         assert result.terminal_reason is TerminalReason.LOOP_GUARD
         assert result.failure_code == "repeated_empty_search" and not result.failure_retryable
         assert result.content == EMPTY_SEARCH_FINAL_MESSAGE
@@ -290,3 +296,185 @@ async def test_summary_protocol_payload_is_scoped_across_normal_retries_and_cont
             assert snapshot["wire_request"]["reasoning"]["tool_choice"] == {"type": "none"}
         else:
             assert not snapshot["tools"] and snapshot["wire_request"]["tools"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("search_first", [False, True])
+async def test_read_loop_abort_keeps_priority_over_same_round_empty_search(monkeypatch, parallel, search_first):
+    import app.kernel.engine as support
+    from app.services.runtime_display_status import runtime_failure_observation
+
+    task_id = "11111111-2222-4333-8444-555555555555"
+    executed, events = [], []
+    terminal = {"task_id": task_id, "task_type": "delegation",
+        **runtime_failure_observation("failed", {"error_code": "provider_error"})}
+
+    async def execute(name, *_a, **_k):
+        executed.append(name)
+        return EMPTY_RESULT if name == "search_company_kb" else json.dumps(terminal)
+
+    monkeypatch.setattr(support, "_is_concurrency_safe_tool", lambda _name: parallel)
+    rounds = []
+    for index in range(1, 6):
+        read = {"id": f"read-{index}", "function": {
+            "name": "check_async_task", "arguments": json.dumps({"task_id": task_id})}}
+        calls = [_search_call(index), read] if search_first else [read, _search_call(index)]
+        rounds.append(_round(calls))
+    client = _FakeClient([*rounds, _answer("An empty-search summary must not replace the read failure")])
+    request = _request()
+    request.on_event = lambda event: events.append(event)
+    result = await _kernel(client, execute, tools=("search_company_kb", "check_async_task")).handle(request)
+    assert result.terminal_reason is TerminalReason.LOOP_GUARD
+    assert result.failure_code == "identical_terminal_task_read"
+    assert len(client.calls) == 5 and len(executed) == 10
+    assert not any(event.get("part", {}).get("event_type") == "loop_guard_terminal_evidence" for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_rounds,outcome", [(6, "text"), (5, "text"), (6, "tool")])
+async def test_pending_input_gets_one_normal_continuation_at_the_round_cap(max_rounds, outcome):
+    pending, bound, executed, persisted = [], [], [], []
+    new_request, new_answer = "Read the new member's file", "The new question was answered"
+
+    async def execute(name, *_a, **_k):
+        executed.append(name)
+        if len(executed) == 5:
+            pending.append({"role": "user", "content": new_request})
+        return EMPTY_RESULT if name == "search_company_kb" else "New file contents"
+
+    async def bind(index):
+        bound.append(index)
+        items = list(pending)
+        pending.clear()
+        return items
+
+    def commit(**payload):
+        content = payload["response"].get("content")
+        if content:
+            persisted.append({"role": "assistant", "content": content})
+        return {"provider_request_id": payload["provider_request_id"], "continuation": {
+            "verdict": "continue" if payload["round_index"] == 6 else "terminal_candidate",
+            "pending_obligations": [{"kind": "pending_input"}] if payload["round_index"] == 6 else []}}
+
+    continued = _answer(new_answer) if outcome == "text" else _round([{
+        "id": "read-new-file", "function": {"name": "read_file", "arguments": '{"path":"workspace/new.md"}'}}])
+    client = _FakeClient([*[_round([_search_call(i)]) for i in range(1, 6)],
+        _answer(EMPTY_SEARCH_FINAL_MESSAGE), continued, _answer("No further round is allowed")])
+    request = _request()
+    request.round_input_bind = bind
+    request.model_request_prepare = lambda **p: f"provider-{p['round_index']}"
+    request.model_response_commit = commit
+    result = await _kernel(client, execute, max_tool_rounds=max_rounds,
+        tools=("search_company_kb", "read_file")).handle(request)
+    # R20b round 5/SF3: the one-shot slot covers summaries at M and M+1.
+    assert bound == [1, 2, 3, 4, 5, 7] and pending == []
+    assert len(client.calls) == 7
+    assert client.calls[5]["tools"] is None and client.calls[6]["tools"] == client.calls[0]["tools"]
+    assert new_request not in _message_texts(client.calls[5])
+    assert new_request in _message_texts(client.calls[6])
+    if outcome == "text":
+        assert result.terminal_reason is TerminalReason.TURN_STOP
+        assert result.failure_code is None and result.content == new_answer
+        assert persisted == [{"role": "assistant", "content": EMPTY_SEARCH_FINAL_MESSAGE},
+            {"role": "assistant", "content": new_answer}]
+        assert executed == ["search_company_kb"] * 5
+    else:
+        assert result.terminal_reason is TerminalReason.TOOL_BUDGET
+        assert result.failure_code == "tool_round_limit"
+        assert executed == ["search_company_kb"] * 5 + ["read_file"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generic_guard", [False, True])
+async def test_extra_range_slot_requires_the_summary_input_continuation_flag(monkeypatch, generic_guard):
+    import app.kernel.engine as support
+    from app.kernel.loop_guard import LoopGuardDecision
+
+    executed = []
+    observe = support.LoopGuard.observe_tool_result
+
+    async def execute(name, *_a, **_k):
+        executed.append(name)
+        return '{"status":"ok","results":[{"id":"found"}]}'
+
+    def observe_result(self, *args, **kwargs):
+        decision = observe(self, *args, **kwargs)
+        if generic_guard and len(executed) >= 2:
+            return LoopGuardDecision(reason="repeated_tool_failure", message="No progress",
+                trace_event={"reason": "repeated_tool_failure"})
+        return decision
+
+    monkeypatch.setattr(support.LoopGuard, "observe_tool_result", observe_result)
+    client = _FakeClient([_round([_search_call(i)]) for i in range(1, 5)])
+    result = await _kernel(client, execute, max_tool_rounds=2).handle(_request())
+    # R20b round 5/SF3: even a sticky generic summary flag only retains its original single extra slot.
+    assert len(client.calls) == len(executed) == 2 + int(generic_guard)
+    assert result.terminal_reason is TerminalReason.TOOL_BUDGET
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_site", ["model_request_fail", "persist"])
+async def test_discard_settlement_errors_propagate_without_fallback(monkeypatch, failure_site):
+    client = _FakeClient([*[_round([_search_call(i)]) for i in range(1, 6)],
+        _answer(""), _answer("Fallback must not run")])
+    kernel = _kernel(client, lambda *_a, **_k: EMPTY_RESULT)
+    created = []
+
+    def create(model):
+        created.append(model.model)
+        return client
+
+    async def fail(**_payload):
+        if failure_site == "model_request_fail":
+            raise ValueError("discard settlement failed")
+        return "failed"
+
+    async def persist(*_a, **_k):
+        raise ValueError("discard persistence failed")
+
+    monkeypatch.setattr(kernel._deps, "create_client", create)
+    if failure_site == "persist":
+        monkeypatch.setattr(kernel, "_persist_before_exit", persist)
+    request = _request()
+    request.fallback_model = SimpleNamespace(provider="openai", model="fallback")
+    request.model_request_prepare = lambda **p: f"provider-{p['round_index']}"
+    request.model_request_fail = fail
+    with pytest.raises(ValueError, match="discard (settlement|persistence) failed"):
+        await kernel.handle(request)
+    assert len(client.calls) == 6 and created == ["local"]
+
+
+@pytest.mark.asyncio
+async def test_summary_ptl_retry_keeps_tools_withheld_and_reapplies_its_instruction(monkeypatch):
+    import app.kernel.engine as support
+    from app.services.llm_client import LLMError
+
+    class Client(_FakeClient):
+        async def stream(self, **kwargs):
+            if len(self.calls) == 5:
+                self.calls.append(kwargs)
+                raise LLMError("maximum context length exceeded", delivery_state="rejected", http_status=400)
+            return await super().stream(**kwargs)
+
+    compressed, prepared = [], []
+
+    async def compress(_compressor, messages, **kwargs):
+        if kwargs["instructions"] == "prompt_too_long_full_compress_first":
+            compressed.append(True)
+            return [{"role": "user", "content": "Prior searches returned no material."}]
+        return messages
+
+    monkeypatch.setattr(support, "_compress_messages_with_lifecycle_hooks", compress)
+    client = Client([*[_round([_search_call(i)]) for i in range(1, 6)], _answer(EMPTY_SEARCH_FINAL_MESSAGE)])
+    request = _request()
+    request.model_request_prepare = lambda **p: prepared.append(p) or f"provider-{len(prepared)}"
+    result = await _kernel(client, lambda *_a, **_k: EMPTY_RESULT).handle(request)
+    assert compressed == [True] and len(client.calls) == 7
+    assert result.terminal_reason is TerminalReason.TURN_STOP
+    for call in client.calls[5:]:
+        assert call["tools"] is None
+        assert "Any tool call you return will not run." in _message_texts(call)
+    for snapshot in prepared[5:]:
+        assert snapshot["tools"] is None
+        assert "Any tool call you return will not run." in json.dumps(snapshot["wire_request"]["messages"])

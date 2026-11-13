@@ -347,6 +347,14 @@ async def _execute_committed_provider_round(
             request_options["tool_choice"] = {"type": "none"}
         else:
             request_tools = []
+        stream_messages = [*stream_messages, support._context_message(
+            role="system", kind="runtime_reminder", unbound=(),
+            content=("Finish this turn with a normal assistant reply in the member's language, "
+                "plainly saying that no matching material was found. "
+                "Also report any action already committed in this same turn, grounded in successful tool results. "
+                "Do not claim actions that were only proposed, denied, failed, or unknown. "
+                "This is the final reply for this turn. Any tool call you return will not run."),
+        )]
     reasoning_kwargs = {
         **support.build_reasoning_kwargs(active_model, tools_enabled=bool(request_tools)),
         **request_options,
@@ -1178,11 +1186,7 @@ async def _project_loop_guard_terminal_evidence(
     }
     empty_search = decision.reason == "repeated_empty_search"
     guidance = (
-        "The searches returned no matching material. Finish this turn with a normal assistant reply "
-        "in the member's language, plainly saying that no matching material was found. "
-        "Also report any action already committed in this same turn, grounded in successful tool results. "
-        "Do not claim actions that were only proposed, denied, failed, or unknown. "
-        "This is the final reply for this turn. Any tool call you return will not run."
+        "The searches returned no matching material."
         if empty_search else
         "The governed runtime has recorded that this side-effect-free retry path is exhausted "
         "without state progress. Treat this as evidence, not as a platform-authored semantic "
@@ -1193,8 +1197,8 @@ async def _project_loop_guard_terminal_evidence(
         _context_message(
             role="system",
             kind="runtime_reminder",
-            # R20b: this summary instruction comes from the current runtime
-            # decision, so it has no unresolved external source dependencies.
+            # R20b: these facts come from the current runtime decision,
+            # so they have no unresolved external source dependencies.
             unbound=() if empty_search else ("context_sources_unbound",),
             content=(
                 "<loop_guard_terminal_evidence>"
@@ -2127,6 +2131,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         _loop_guard_summary_pending = False
         _empty_search_summary_pending = False
         _empty_search_summary_used = False
+        _summary_input_continuation_pending = False
         _loop_guard_terminal_decision: LoopGuardDecision | None = None
         try:
             client = self._deps.create_client(active_model)
@@ -2153,10 +2158,14 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         try:
             initial_round_index = max(0, int(request.initial_round_index or 0))
             remaining_rounds = max(0, max_rounds - initial_round_index)
-            for round_i in range(remaining_rounds + 1):
+            for round_i in range(remaining_rounds + 2):
                 logical_round_index = initial_round_index + round_i + 1
-                if round_i >= remaining_rounds and not _loop_guard_summary_pending:
+                if round_i >= remaining_rounds and not (
+                    _summary_input_continuation_pending
+                    or (_loop_guard_summary_pending and round_i == remaining_rounds)
+                ):
                     break
+                _summary_input_continuation_pending = False
                 final_empty_search_reply = _empty_search_summary_pending
                 _empty_search_summary_pending = False
                 if final_empty_search_reply:
@@ -2341,27 +2350,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         llm_started_ms = int(provider_round["llm_started_ms"])
                         round_settled_tool_results = dict(provider_round.get("settled_tool_results") or {})
                         if provider_round.get("discarded_summary"):
-                            for physical in [{"provider_request_id": provider_request_id, "continuation_index": 0},
-                                             *provider_round.get("continuation_receipts", [])]:
-                                if request.model_request_fail is not None and physical["provider_request_id"] is not None:
-                                    await _maybe_await(request.model_request_fail(
-                                        round_index=logical_round_index, provider_request_id=physical["provider_request_id"],
-                                        continuation_index=physical["continuation_index"],
-                                        error_class="repeated_empty_search", delivery_state="response_received",
-                                        retry_safe=True,
-                                    ))
-                            accumulated_tokens += self._deps.extract_usage_tokens(response.usage) or 0
-                            round_charge_key["key"] = provider_request_id
-                            from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
-
-                            await _record_new_token_usage()
-                            await self._persist_before_exit(request, runtime_config, EMPTY_SEARCH_FINAL_MESSAGE, api_messages)
-                            result = _build_error_result(
-                                EMPTY_SEARCH_FINAL_MESSAGE, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
-                                terminal_reason=TerminalReason.LOOP_GUARD, failure_code="repeated_empty_search",
-                            )
-                            result.parts = collected_parts + result.parts
-                            return result
+                            break
                         if provider_round["empty"]:
                             return await _finalize_empty_provider_response(
                                 self=self,
@@ -2932,6 +2921,29 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             tokens_used=accumulated_tokens,
                         )
 
+                if provider_round.get("discarded_summary"):
+                    for physical in [{"provider_request_id": provider_request_id, "continuation_index": 0},
+                                     *provider_round.get("continuation_receipts", [])]:
+                        if request.model_request_fail is not None and physical["provider_request_id"] is not None:
+                            await _maybe_await(request.model_request_fail(
+                                round_index=logical_round_index, provider_request_id=physical["provider_request_id"],
+                                continuation_index=physical["continuation_index"],
+                                error_class="repeated_empty_search", delivery_state="response_received",
+                                retry_safe=True,
+                            ))
+                    accumulated_tokens += self._deps.extract_usage_tokens(response.usage) or 0
+                    round_charge_key["key"] = provider_request_id
+                    from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
+
+                    await _record_new_token_usage()
+                    await self._persist_before_exit(request, runtime_config, EMPTY_SEARCH_FINAL_MESSAGE, api_messages)
+                    result = _build_error_result(
+                        EMPTY_SEARCH_FINAL_MESSAGE, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
+                        terminal_reason=TerminalReason.LOOP_GUARD, failure_code="repeated_empty_search",
+                    )
+                    result.parts = collected_parts + result.parts
+                    return result
+
                 if provider_round.get("sealed_replay"):
                     # Committed-round sealed replay: the resume baseline already
                     # owns this round's usage for truthful turn totals/budget,
@@ -3020,6 +3032,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     )
                     if final_result is not None:
                         return final_result
+                    if final_empty_search_reply:
+                        # Only a committed continue verdict can defer this summary's completion.
+                        _summary_input_continuation_pending = True
                     continue
                 # Tier 1-4: recover from DeepSeek-V4 style concatenated tool_call args
                 # so every payload becomes its own executable tool_call before history is
@@ -3403,7 +3418,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if result_loop_decision:
                             if result_loop_decision.severity == "warn":
                                 await _inject_loop_guard_warning(result_loop_decision)
-                            else:
+                            elif (_loop_guard_terminal_decision is None
+                                or _loop_guard_terminal_decision.reason == "repeated_empty_search"):
                                 _loop_guard_terminal_decision = result_loop_decision
                         await _apply_tool_expansion(tool_name, effective_args, _executed)
                         _raw_result, _model_result = _tool_result_views(result, _side_effects)
@@ -3608,7 +3624,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if result_loop_decision:
                             if result_loop_decision.severity == "warn":
                                 await _inject_loop_guard_warning(result_loop_decision)
-                            else:
+                            elif (_loop_guard_terminal_decision is None
+                                or _loop_guard_terminal_decision.reason == "repeated_empty_search"):
                                 _loop_guard_terminal_decision = result_loop_decision
 
                         await _apply_tool_expansion(tool_name, args, executed)

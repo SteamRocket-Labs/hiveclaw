@@ -1206,7 +1206,13 @@ function toolResultFromTranscriptEvent(event: ChatTranscriptEventPayload): {
       memberSummary: memberToolSummaryFromRecord(meta.member_summary),
     };
   }
-  return { toolName: metadataToolName, result: content };
+  return {
+    toolName: metadataToolName,
+    result: content,
+    // X3: with the raw envelope emptied by the member projection, the typed
+    // summary rides on metadata (compatibility envelopes).
+    memberSummary: memberToolSummaryFromRecord(event.metadata?.member_summary),
+  };
 }
 
 export function applyTranscriptEvent(

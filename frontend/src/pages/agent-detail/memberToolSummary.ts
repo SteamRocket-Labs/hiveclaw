@@ -16,6 +16,7 @@ export interface MemberToolSummary {
   state: MemberToolSummaryState;
   host?: string;
   filename?: string;
+  appLabel?: string;
   found?: boolean;
   errorClass?: string;
   status?: string;
@@ -41,7 +42,9 @@ export function memberHostFromUrl(value: unknown): string | undefined {
 /** Native result rows keep arguments on the paired call, not on the result. */
 export function memberSummaryWithArgs(summary: MemberToolSummary, args?: Record<string, unknown>): MemberToolSummary {
   const result = { ...summary };
-  if (summary.kind === 'file_read') result.filename = memberFilename(summary.filename || args?.path || args?.file_path);
+  if (summary.kind === 'file_read' || summary.kind === 'file_write' || summary.kind === 'file_edit') {
+    result.filename = memberFilename(summary.filename || args?.path || args?.file_path);
+  }
   return result;
 }
 
@@ -59,6 +62,9 @@ export function memberToolSummaryFromRecord(value: unknown): MemberToolSummary |
   const summary: MemberToolSummary = { kind: record.kind, state: record.state as MemberToolSummaryState };
   if (typeof record.host === 'string' && record.host.trim()) summary.host = record.host.trim();
   summary.filename = memberFilename(record.filename);
+  // X3c: the trusted connection label a company MCP row names (backend-resolved).
+  const appLabel = record.app_label ?? record.appLabel;
+  if (typeof appLabel === 'string' && appLabel.trim()) summary.appLabel = appLabel.trim();
   if (typeof record.found === 'boolean') summary.found = record.found;
   for (const [field, source] of [['errorClass', 'error_class'], ['status', 'status'], ['taskId', 'task_id']] as const) {
     const value = record[source] ?? record[field];
@@ -147,6 +153,27 @@ export function memberToolSummarySentence(summary: MemberToolSummary, t: TFuncti
     if (summary.state !== 'done') return extra('fileReadFailed', 'The file was not read this time.');
     return summary.filename ? extra('fileReadNamed', 'Read the file “{{filename}}”', { filename: summary.filename })
       : extra('fileRead', 'Read a file');
+  }
+  // X3c: a successful write/edit row names the file (base name only).
+  if (summary.kind === 'file_write') {
+    if (summary.state !== 'done') return extra('fileWriteFailed', 'The file was not written this time.');
+    return summary.filename ? extra('fileWriteNamed', 'Wrote the file “{{filename}}”', { filename: summary.filename })
+      : extra('fileWrite', 'Wrote a file');
+  }
+  if (summary.kind === 'file_edit') {
+    if (summary.state !== 'done') return extra('fileEditFailed', 'The file was not edited this time.');
+    return summary.filename ? extra('fileEditNamed', 'Edited the file “{{filename}}”', { filename: summary.filename })
+      : extra('fileEdit', 'Edited a file');
+  }
+  // X3c: a company MCP row names the trusted connection label — never the
+  // remote tool name or description.
+  if (summary.kind === 'mcp_app') {
+    if (summary.state === 'not_done') return summary.appLabel
+      ? extra('mcpAppFailedNamed', 'The connected app “{{app}}” did not complete this time', { app: summary.appLabel })
+      : extra('mcpAppFailed', 'The connected app did not complete this time');
+    return summary.appLabel
+      ? extra('mcpAppNamed', 'Used the connected app “{{app}}”', { app: summary.appLabel })
+      : extra('mcpApp', 'Used a connected app');
   }
   const entry = SUMMARY_KEY[summary.kind];
   if (!entry) return null;

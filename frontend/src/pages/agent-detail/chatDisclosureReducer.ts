@@ -331,6 +331,9 @@ function stringArg(message: AgentChatMessage, keys: string[]): string {
 }
 
 function summarizeFileTool(message: AgentChatMessage): string {
+  // X3c: native rows keep no args; the typed member summary owns the name.
+  const fromSummary = message.toolMemberSummary?.filename;
+  if (fromSummary) return compactText(fromSummary, 120);
   const target = stringArg(message, ['path', 'file_path', 'target_path', 'source_path', 'name']);
   const filename = memberFilename(target);
   return filename ? compactText(filename, 120) : '';
@@ -346,6 +349,8 @@ function summarizeSearchTool(message: AgentChatMessage): string {
 function summarizeToolMessage(message: AgentChatMessage): string {
   const name = (message.toolName || '').toLowerCase();
   if (message.toolMemberSummary?.kind === 'web_fetch') return message.toolMemberSummary.host || '';
+  // X3c: the collapsed MCP row names the trusted connection label.
+  if (message.toolMemberSummary?.kind === 'mcp_app') return message.toolMemberSummary.appLabel || '';
   // Step summaries carry only the member's own material (file names, queries,
   // model-authored labels). Command lines and tool receipts stay collapsed in
   // the step details (B2): the default layer shows the action and its state.
@@ -574,6 +579,18 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
       // status otherwise stays done/failed, so failed is the existing
       // not-done status used here.
       return 'failed';
+    }
+    // X3c: a command that ran (outcome success) still failed when its typed
+    // execution result says so — a non-zero exit or a timeout is not done.
+    // Decided from the typed payload field only, never from output text;
+    // a zero exit stays done.
+    const execution = message.sessionItem?.payload?.code_execution_result;
+    if (execution && typeof execution === 'object' && !Array.isArray(execution)) {
+      const record = execution as { exit_code?: unknown; timed_out?: unknown };
+      if (record.timed_out === true
+        || (typeof record.exit_code === 'number' && Number.isFinite(record.exit_code) && record.exit_code !== 0)) {
+        return 'failed';
+      }
     }
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking && !message.toolMeta.answered) return 'blocked';
     if (message.toolMeta?.kind === 'runtime_step') {

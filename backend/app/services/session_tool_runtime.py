@@ -26,6 +26,48 @@ UNRESOLVED_TOOL_EFFECT_STATES = frozenset({"effect_started", "needs_reconciliati
 TOOL_EFFECT_RECONCILIATION_TASK_STATUSES = frozenset({"failed", "needs_reconciliation"})
 
 
+async def _member_target_for_invocation(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """The typed member-safe target stored on the tool_result payload (X3c).
+
+    Production member-view events never carry the arguments (a native
+    tool_call has only args_hash, a native tool_result has no args), so the
+    row's file name, fetch host or connected-app label must be derived here —
+    from the typed arguments or the tool's trusted connection — and read back
+    at serialization without a per-event lookup. Result text is never read.
+    """
+
+    from app.services.session_event_contract import member_safe_tool_target
+
+    target = member_safe_tool_target(tool_name, arguments)
+    if target is not None:
+        return target
+    if not tool_name.startswith("mcp"):
+        return None
+    from app.models.tool import Tool
+
+    row = await db.execute(
+        select(Tool.mcp_server_name, Tool.mcp_server_url).where(
+            Tool.name == tool_name,
+            Tool.type == "mcp",
+            or_(Tool.tenant_id == tenant_id, Tool.tenant_id.is_(None)),
+        )
+    )
+    connection = row.first()
+    if connection is None:
+        return None
+    from app.services.mcp_metadata_trust import trusted_connection_label
+
+    # The same trusted-only label G4c shows (never the remote tool name or
+    # description); mcp__ / legacy mcp_ naming both start with "mcp".
+    return {"app_label": trusted_connection_label(connection.mcp_server_name, connection.mcp_server_url)}
+
+
 def permission_run_session_clause(session_id):
     """Native controls belong to the task type's pinned execution session."""
     return or_(
@@ -1173,6 +1215,12 @@ async def complete_tool_invocation(
     command_payload = {"code_execution_result": {
         "exit_code": command_result.get("exit_code"), "timed_out": command_result.get("timed_out"),
     }} if isinstance(command_result, Mapping) else {}
+    member_target = await _member_target_for_invocation(
+        db,
+        tenant_id=tenant_id,
+        tool_name=invocation.tool_name,
+        arguments=effective_payload,
+    )
     drafts.extend(
         [
             SessionEventDraft(
@@ -1217,6 +1265,10 @@ async def complete_tool_invocation(
                     "content": content,
                     "content_hash": content_hash,
                     **command_payload,
+                    # X3c: member-safe target (fetch host / base file name /
+                    # trusted MCP connection label) derived from the typed
+                    # arguments here; the member summary reads only this.
+                    **({"member_target": member_target} if member_target else {}),
                     **({"metadata": knowledge_metadata} if knowledge_metadata else {}),
                     # Bounded provider projection for session replay into model
                     # context; absent means the durable content is the projection.

@@ -294,6 +294,9 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
     if (['write_file', 'fs_write'].includes(toolName || '') && step.status === 'done' && file) {
       return <p>{t('agent.chat.toolResults.memberSummary.fileWriteNamed', 'Wrote the file “{{filename}}”.', { filename: file })}</p>;
     }
+    if (toolName === 'edit_file' && step.status === 'done' && file) {
+      return <p>{t('agent.chat.toolResults.memberSummary.fileEditNamed', 'Edited the file “{{filename}}”.', { filename: file })}</p>;
+    }
     const status = outcome === 'unknown' ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
       : outcome === 'done' ? t('agent.chat.disclosure.resultSucceeded', 'Succeeded')
       : outcome === 'failed' || step.status === 'failed'

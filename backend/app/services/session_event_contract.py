@@ -1371,6 +1371,10 @@ MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
     "read_file": "file_read",
     "fs_read": "file_read",
     "read_document": "file_read",
+    # X3c: a successful write/edit row names the file too (base name only).
+    "write_file": "file_write",
+    "fs_write": "file_write",
+    "edit_file": "file_edit",
     "delegate_to_agent": "delegation",
     "send_message_to_agent": "delegation",
     # a) memory search / read / load
@@ -1510,6 +1514,30 @@ def _member_summary_filename(args: Any) -> str | None:
     return name
 
 
+def member_safe_tool_target(tool_name: str, args: Any) -> dict[str, Any] | None:
+    """The member-safe target of one tool call, from the typed arguments only.
+
+    X3c: the write path knows the typed arguments when it persists the native
+    tool_result event; production's member-view payloads never carry them (a
+    native tool_call has only args_hash, a native tool_result has no args), so
+    the read-side projection alone can no longer name the file or the host.
+    This pure helper derives exactly what the row may name — the fetch host or
+    the base file name, both already member-safe rules — and the persistence
+    path stores it as the typed ``member_target``. It returns None for tools
+    with no member-safe target; the MCP app label is resolved separately from
+    the trusted connection (Tool.type == 'mcp'), never from arguments.
+    """
+
+    kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
+    if kind == "web_fetch":
+        host = _member_summary_host(args)
+        return {"host": host} if host else None
+    if kind in {"file_read", "file_write", "file_edit"}:
+        filename = _member_summary_filename(args)
+        return {"filename": filename} if filename else None
+    return None
+
+
 def _status_text(value: Any) -> str:
     return str(value or "").strip().lower()
 
@@ -1587,6 +1615,11 @@ def _member_summary_projection(
         return None
     native = "outcome" in payload or "invocation_id" in payload
     envelope: Mapping[str, Any] = {}
+    # X3c: the persistence path stores the member-safe target (fetch host,
+    # base file name, MCP app label) as a typed field when the typed
+    # arguments are in hand; production native payloads carry no args.
+    member_target = payload.get("member_target")
+    member_target = member_target if isinstance(member_target, Mapping) else {}
     if native:
         # Native V2 payload: kind comes only from the typed payload tool_name;
         # content is the result body itself and is never mined for names,
@@ -1631,11 +1664,20 @@ def _member_summary_projection(
         except (TypeError, ValueError):
             parsed = None
         result_obj = parsed if isinstance(parsed, Mapping) else None
-        if kind == "file_read" and not error_envelope:
-            result_obj = None  # A JSON file's contents are data, not a tool status.
+        if kind in {"file_read", "file_write", "file_edit", "mcp_app"} and not error_envelope:
+            # A JSON file's contents are data, not a tool status; a write
+            # receipt's body is the same class; a remote MCP body is
+            # untrusted data that never decides the member sentence.
+            result_obj = None
     typed_status = _status_text(result_obj.get("status")) if result_obj else ""
     if kind is None and tool_name.startswith("search_") and typed_status:
         kind = "record_search"
+    app_label = _text(member_target.get("app_label"))
+    if kind is None and app_label:
+        # X3c: a company MCP tool row names the trusted connection label the
+        # persistence path resolved from Tool.type == 'mcp' — never the
+        # remote tool name or description.
+        kind = "mcp_app"
     if kind is None:
         return None
     state = _member_summary_state(
@@ -1648,12 +1690,23 @@ def _member_summary_projection(
         if _status_text(payload.get("outcome")) != "unknown":
             summary.update(state="done", found=typed_status != "empty")
     host = _member_summary_host(args) if kind == "web_fetch" else None
+    if not host and kind == "web_fetch":
+        # X3c: native rows carry the member-safe host the write path derived
+        # from the typed url argument (production payloads have no args).
+        host = _text(member_target.get("host"))
     if host:
         summary["host"] = host
-    if kind == "file_read":
+    if kind in {"file_read", "file_write", "file_edit"}:
         filename = _member_summary_filename(args)
+        if not filename:
+            # X3c: the stored target is platform-written; the member-safe
+            # rules (base name, no UUID-shaped name) still apply on read.
+            stored = _text(member_target.get("filename"))
+            filename = _member_summary_filename({"path": stored}) if stored else None
         if filename:
             summary["filename"] = filename
+    if kind == "mcp_app":
+        summary["app_label"] = app_label
     if kind in {"file_read", "delegation"} and state == "not_done" and result_obj and isinstance(result_obj.get("error_class"), str):
         summary["error_class"] = result_obj["error_class"]
     if kind == "delegation" and result_obj:

@@ -197,6 +197,11 @@ def test_registry_kinds_are_complete_and_stable() -> None:
         "read_file": "file_read",
         "fs_read": "file_read",
         "read_document": "file_read",
+        # X3c adds the write/edit kinds: a successful write or edit row names
+        # the file by its base name only, like a read row.
+        "write_file": "file_write",
+        "fs_write": "file_write",
+        "edit_file": "file_edit",
         "delegate_to_agent": "delegation",
         "send_message_to_agent": "delegation",
         "search_memory": "memory_search",

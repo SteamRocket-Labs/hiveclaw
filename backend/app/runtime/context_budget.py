@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-_DEFAULT_SYSTEM_PROMPT_CHAR_BUDGET = 60000
 _SYSTEM_PROMPT_CONTEXT_RATIO = 0.20
 _CHARS_PER_TOKEN = 3.5
 _MIN_SYSTEM_PROMPT_BUDGET = 15000
@@ -32,6 +31,9 @@ def compute_system_prompt_budget(context_window_tokens: int | None) -> int:
         return _DEFAULT_SYSTEM_PROMPT_CHAR_BUDGET
     budget_chars = int(context_window_tokens * _SYSTEM_PROMPT_CONTEXT_RATIO * _CHARS_PER_TOKEN)
     return max(_MIN_SYSTEM_PROMPT_BUDGET, min(budget_chars, _MAX_SYSTEM_PROMPT_BUDGET))
+
+
+_DEFAULT_SYSTEM_PROMPT_CHAR_BUDGET = compute_system_prompt_budget(128_000)
 
 
 @dataclass(frozen=True, slots=True, init=False)

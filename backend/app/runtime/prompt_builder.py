@@ -808,7 +808,7 @@ def assemble_runtime_prompt(
 
     Args:
         context_window_tokens: Model's context window in tokens. When provided,
-            the budget scales proportionally instead of using the fixed 60K default.
+            the budget scales proportionally instead of assuming a 128K-token window.
     """
     import logging
 

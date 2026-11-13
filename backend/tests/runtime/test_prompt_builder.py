@@ -10,14 +10,19 @@ class TestModelAwareBudget:
 
     def test_default_budget_when_no_context_window(self) -> None:
         from app.runtime.prompt_builder import _compute_system_prompt_budget
+        from app.runtime.context_budget import compute_system_prompt_budget
 
+        # A2m-f: ordinary resident memory exceeded the old 60K fallback before
+        # any model call. An undeclared window now uses the 128K-window budget.
         budget = _compute_system_prompt_budget(None)
-        assert budget == 60000
+        assert budget == 89600
+        assert budget == compute_system_prompt_budget(128000)
 
     def test_default_budget_when_zero(self) -> None:
         from app.runtime.prompt_builder import _compute_system_prompt_budget
 
-        assert _compute_system_prompt_budget(0) == 60000
+        # Zero is the same undeclared-window case as None, not a zero quota.
+        assert _compute_system_prompt_budget(0) == 89600
 
     def test_small_model_gets_floor_budget(self) -> None:
         from app.runtime.prompt_builder import _compute_system_prompt_budget

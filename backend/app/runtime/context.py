@@ -96,10 +96,6 @@ class RuntimeAssemblyState:
     activation_events: list[dict[str, Any]] = field(default_factory=list)
     available_deferred_tool_candidates: list[Any] = field(default_factory=list)
     available_deferred_tools: list[str] = field(default_factory=list)
-    # G4c r2: transient per-round handoff — the agent tool-surface load records the
-    # reachable company MCP connections it derived in-memory, and prompt assembly
-    # reads them back. Never hydrated from session metadata.
-    company_mcp_connections: list[tuple[str, str]] = field(default_factory=list, repr=False)
     skill_catalog_ranking: list[dict[str, Any]] = field(default_factory=list)
     skill_catalog_ranking_inputs: dict[str, Any] = field(default_factory=dict)
 
@@ -111,14 +107,6 @@ class RuntimeAssemblyState:
         self.compiled_context_sources[key] = tuple(deepcopy(sources))
         self.compiled_context_unbound[key] = tuple(unbound)
         self.compiled_context_sections[key] = tuple(deepcopy(sections))
-
-    def record_company_mcp_connections(self, pairs: Any) -> None:
-        """G4c r2: store the ``(trusted_connection_label, endpoint_host)`` pairs the
-        agent tool-surface load derived in-memory; consumed by prompt assembly in the
-        same round. Invalidates nothing — a later round's load overwrites the list."""
-        self.company_mcp_connections = [
-            (str(label), str(host)) for label, host in (pairs or ()) if str(host or "").strip()
-        ]
 
     def context_sections_for(self, *, agent_id: Any, content: str):
         import hashlib

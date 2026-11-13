@@ -1825,20 +1825,34 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
                 # connection label used elsewhere (a pasted URL with ?key= or a
                 # registry/bot display name falls back to the validated host).
                 # Pending servers stay listed and auth_status is unchanged.
+                from sqlalchemy import exists as sa_exists, orm as sa_orm
+
                 from app.services.mcp_metadata_trust import trusted_connection_label
                 from app.services.tool_search_manifest import company_application_needs_member_connection
 
+                # G4c r3 (N4): read only whether an OAuth block EXISTS, never the
+                # config_json values (they hold encrypted tokens and client
+                # secrets). S3: a parent server that already has member child
+                # accounts (token-paste shape, parent_server_id children) needs a
+                # member account even though its own row looks like DeepWiki.
+                _member_account = sa_orm.aliased(MCPServer, name="member_account")
+                rows = (await db.execute(select(
+                    MCPServer.id, MCPServer.name, MCPServer.auth_status, MCPServer.status,
+                    MCPServer.config_json.has_key("oauth").label("has_oauth"),
+                    sa_exists(select(_member_account.id).where(
+                        _member_account.parent_server_id == MCPServer.id)).label("has_member_account"),
+                    MCPServer.server_url).where(
+                    MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id.is_(None)).order_by(
+                    MCPServer.name, MCPServer.id))).all()
                 company_applications = [{"name": trusted_connection_label(name, server_url),
                     "mcp_server_id": str(server_id), "auth_status": auth_status,
                     # G4c: a connected server that needs no sign-in (auth_status
-                    # "none", no OAuth config) is usable directly — only a server
-                    # whose member credential is genuinely missing or broken asks
-                    # the member to connect an account.
-                    "connect_if_account_needed": company_application_needs_member_connection(status, auth_status, config_json)}
-                    for server_id, name, auth_status, status, config_json, server_url in await db.execute(select(
-                        MCPServer.id, MCPServer.name, MCPServer.auth_status, MCPServer.status, MCPServer.config_json,
-                        MCPServer.server_url).where(
-                        MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id.is_(None)).order_by(MCPServer.name, MCPServer.id))]
+                    # "none", no OAuth config, no member child accounts) is usable
+                    # directly — only a server whose member credential is genuinely
+                    # missing or broken asks the member to connect an account.
+                    "connect_if_account_needed": company_application_needs_member_connection(
+                        status, auth_status, bool(has_oauth), bool(has_member_account))}
+                    for server_id, name, auth_status, status, has_oauth, has_member_account, server_url in rows]
     deferred_names = [name for name, _connection_label in deferred_tools]
     capture = getattr(authority_scope, "skill_inputs", None)
     if capture is not None:

@@ -412,21 +412,31 @@ def _render_active_tool_groups(
 def _company_connections_block(company_connections: list[tuple[str, str]] | None) -> str:
     """G4c (run 17 step 7c): name each reachable company application by its
     trusted label and validated host with the tool_search route, so a member's
-    words ("用 DeepWiki 查一下") reach the service even before any search. The
-    pairs ride the agent tool-surface load (``get_agent_tools_for_llm`` derives
-    them in-memory) — no tool schemas are loaded here."""
-    if not company_connections:
+    words ("用 DeepWiki 查一下") reach the service even before any search.
+
+    G4c r3: the pairs ride the per-turn deferred-catalog enumeration (the same
+    approval-gated MCP listing tool_search uses), refreshed once per model turn.
+    Connections without a validated host (``unidentified-endpoint``) are not
+    named — same rule as the tool_search listing suffix. The wording claims
+    nothing about load state: an ``always_load`` connection's tools may already
+    be callable this turn."""
+    pairs = [
+        (connection_label, endpoint_host)
+        for connection_label, endpoint_host in (company_connections or [])
+        if str(endpoint_host or "").strip() and endpoint_host != "unidentified-endpoint"
+    ]
+    if not pairs:
         return ""
     lines = [
         "## Company Applications",
-        "Company applications installed for this team. Their tools are NOT loaded here:",
+        "Company applications installed for this team:",
     ]
-    for connection_label, endpoint_host in company_connections:
+    for connection_label, endpoint_host in pairs:
         lines.append(f"- {connection_label} ({endpoint_host})")
     lines.append(
         "When the member names one of these applications, load its tools with `tool_search` "
-        "(query the application name or host shown here) and call them for the work; "
-        "do not browse the application's website instead."
+        "(query the application name or host shown here) — unless they are already callable — "
+        "and call them for the work; do not browse the application's website instead."
     )
     return "\n".join(lines)
 
@@ -701,19 +711,22 @@ def build_dynamic_prompt_suffix(
                 deferred_candidates,
                 budget_chars=min(tool_groups_budget, 1600),
             )
-    # G4c r2: same section candidate as the deferred index (no new budget
-    # competitor); appended content only. Rendered even when the deferred index
-    # itself is empty, so the connections do not depend on builtin candidates.
-    connections_block = _company_connections_block(company_connections)
-    if connections_block:
-        deferred_tools_section = (
-            f"{deferred_tools_section}\n\n{connections_block}" if deferred_tools_section else connections_block
-        )
     add_candidate(
         candidate_id="dynamic:tools:available_deferred_tools",
         kind="tools",
         name="available_deferred_tools",
         content=deferred_tools_section,
+        budget_key="active_tool_groups_budget_chars",
+        budget_chars=min(tool_groups_budget, 1600),
+    )
+    # G4c r3 (S1): the Company Applications section is its OWN ledger candidate
+    # (tenant registry data, sources recorded explicitly empty by the kernel —
+    # see turn_orchestrator) instead of hiding inside the deferred catalog.
+    add_candidate(
+        candidate_id="dynamic:tools:company_connections",
+        kind="tools",
+        name="company_connections",
+        content=_company_connections_block(company_connections),
         budget_key="active_tool_groups_budget_chars",
         budget_chars=min(tool_groups_budget, 1600),
     )

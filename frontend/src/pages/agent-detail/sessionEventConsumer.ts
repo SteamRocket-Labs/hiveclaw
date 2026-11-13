@@ -1,6 +1,8 @@
 import {
   applyTranscriptEvent,
+  agentChatMessageRunId,
   createEmptyTranscriptReplayState,
+  isSameSessionRunId,
   extractArtifactParts,
   type AgentChatMessage,
   type ChatTranscriptEventPayload,
@@ -901,16 +903,20 @@ export function mergeCanonicalTerminalMessages(
       !message.sessionItem || canonicalMessageRunId(message) === terminalRunId
     ))
     : canonical;
-  const canonicalFinal = [...canonicalRun].reverse().find(isRenderedAssistantAnswer);
   // X2 C: only the terminal run's own answer may move to the tail. An earlier
   // run's answer inside the retained live tail keeps its event-sequence
   // position — re-appending it below the newer run's content would reorder a
   // finished paragraph under a later failure card and duplicate its bytes.
   const answerBelongsToTerminalRun = (message: AgentChatMessage): boolean => {
     if (!terminalRunId) return true;
-    const runId = canonicalMessageRunId(message);
-    return runId == null || runId === terminalRunId;
+    // X2 r2 C: decide the run with the full identity chain (session item
+    // scope, runtime task id, thread item run id) so a legacy answer frame
+    // carrying an earlier run's id keeps its position instead of moving below
+    // the terminal run's content.
+    const runId = agentChatMessageRunId(message);
+    return runId == null || isSameSessionRunId(runId, terminalRunId);
   };
+  const canonicalFinal = [...canonicalRun].reverse().find((message) => isRenderedAssistantAnswer(message) && answerBelongsToTerminalRun(message));
   const liveFinal = [...liveTail].reverse().find((message) => isRenderedAssistantAnswer(message) && answerBelongsToTerminalRun(message));
   const terminalAnswer = [canonicalFinal, liveFinal].find((candidate) => (
     candidate && !prefix.some((existing) => messagesShareIdentity(existing, candidate))

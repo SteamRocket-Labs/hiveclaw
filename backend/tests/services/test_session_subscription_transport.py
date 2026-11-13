@@ -255,6 +255,61 @@ async def test_broker_keeps_ranked_legacy_catchup_and_live_delivery_on_one_safe_
 
 
 @pytest.mark.asyncio
+async def test_broker_projects_ranked_compatibility_envelopes_onto_the_delivery_cursor() -> None:
+    """X2 r2 item 4: a live compatibility envelope (an unmapped legacy runtime
+    event such as tool_group_activation) carries a ranked storage sequence too.
+    Without the delivery projection the member socket receives a non-safe
+    integer, drops the frame, and the block's rows differ between live and
+    reload."""
+    broker = WebChatBroker()
+    socket = _Socket()
+    storage_watermark = 1_777_000_000_090_000_000
+    await broker.begin_session_subscription("agent-1", socket, "session-1")
+
+    await broker.send_session_message(
+        "agent-1",
+        "session-1",
+        {
+            "schema": "hive.session_event",
+            "schema_version": 2,
+            "event_id": "event-3",
+            "sequence": storage_watermark + 1,
+        },
+    )
+    await broker.send_session_message(
+        "agent-1",
+        "session-1",
+        {
+            "schema": "hive.session_event_compatibility",
+            "schema_version": 1,
+            "compatibility_status": "needs_reconciliation",
+            "reason": "unmapped_legacy_kind",
+            "event_id": "legacy-4",
+            "sequence": storage_watermark + 2,
+            "legacy_event_type": "tool_group_activation",
+            "payload": {"content": "Activated runtime tool groups for this task.", "parts": [], "metadata": {}},
+        },
+    )
+
+    await broker.activate_session_subscription(
+        socket,
+        delivered_through_sequence=storage_watermark,
+        delivered_through_delivery_sequence=2,
+    )
+    # The compatibility envelope projects onto the same dense delivery cursor
+    # as the V2 envelope, keeps its committed bytes, and records the storage
+    # sequence for redelivery dedupe.
+    assert [frame["event_id"] for frame in socket.sent] == ["event-3", "legacy-4"]
+    assert [frame["sequence"] for frame in socket.sent] == [3, 4]
+    assert [frame["storage_sequence"] for frame in socket.sent] == [
+        str(storage_watermark + 1),
+        str(storage_watermark + 2),
+    ]
+    assert socket.sent[-1]["schema"] == "hive.session_event_compatibility"
+    assert socket.sent[-1]["legacy_event_type"] == "tool_group_activation"
+
+
+@pytest.mark.asyncio
 async def test_live_buffer_overflow_is_typed_and_recovers_from_durable_cursor_instead_of_silent_drop() -> None:
     broker = WebChatBroker(live_buffer_limit=2)
     socket = _Socket()

@@ -104,21 +104,25 @@ export function toolCallPair(sequence: number, runId: string, toolName: string, 
 }
 
 export function runtimeFailure(sequence: number, runId: string, occurredAt: string, reasonCode = 'identical_refused_result_read'): ChatTranscriptEventPayload {
+  // Production writes the failure run-scoped (web_chat_runtime.py) and it can
+  // sequence before run.failed; it carries no started_at, so the typed start
+  // falls back to the run item's own first event (X2 r2 item 7).
   return envelope({ sequence, itemKind: 'runtime_failure', kind: 'runtime_failure.recorded', lifecycle: 'recorded', itemId: `failure-${sequence}`,
     payload: { status: 'failed', terminal_reason: reasonCode, failure_code: reasonCode, retryable: true,
       message: '这份结果这次没法安全读取，我没能继续。' },
-    occurredAt, runId, actor: { type: 'runtime' } });
+    occurredAt, runId, actor: { type: 'runtime' },
+    scope: { level: 'run', session_id: SESSION, thread_id: SESSION, turn_id: 'turn-x2', run_id: runId } });
 }
 
 /** The compatibility envelope the backend serializer returns for an unmapped
  * legacy runtime event (run 18's 「准备所需功能」 and 「运行状态」 rows). */
-export function compatibilityEnvelope(sequence: number, legacyEventType: string, content: string, metadata: Record<string, unknown> = {}, occurredAt = '2026-11-13T09:21:36.5Z'): ChatTranscriptEventPayload {
+export function compatibilityEnvelope(sequence: number, legacyEventType: string, content: string, metadata: Record<string, unknown> = {}, occurredAt = '2026-11-13T09:21:36.5Z', payloadExtra: Record<string, unknown> = {}): ChatTranscriptEventPayload {
   return {
     schema: 'hive.session_event_compatibility', schema_version: 1, compatibility_status: 'needs_reconciliation',
     reason: 'unmapped_legacy_kind', event_id: `legacy-${sequence}`, sequence,
     legacy_kind: 'legacy_unknown', legacy_lifecycle: 'legacy_unknown',
     legacy_event_type: legacyEventType, legacy_item_type: 'event', legacy_item_status: 'succeeded',
-    payload: { content, parts: [{ type: 'event', event_type: legacyEventType, title: 'Runtime event', text: content, status: 'info' }], metadata: { ...metadata, content } },
+    payload: { content, parts: [{ type: 'event', event_type: legacyEventType, title: 'Runtime event', text: content, status: 'info' }], metadata: { ...metadata, content }, ...payloadExtra },
     occurred_at: occurredAt,
   } as unknown as ChatTranscriptEventPayload;
 }
@@ -196,8 +200,8 @@ export function reloadPage(events: ChatTranscriptEventPayload[], fromSequence: n
   return hydrateSessionTranscriptEvents(events.filter(event => Number(event.sequence) >= fromSequence), fromSequence - 1).messages;
 }
 
-export function timelineFor(messages: AgentChatMessage[], activeRunStatus: string | null = null) {
-  return buildThreadTimeline({ messages, activeSession: { id: SESSION }, isWaiting: false, isStreaming: false, activeRunStatus });
+export function timelineFor(messages: AgentChatMessage[], activeRunStatus: string | null = null, activeSession: Record<string, unknown> = { id: SESSION }) {
+  return buildThreadTimeline({ messages, activeSession: activeSession as never, isWaiting: false, isStreaming: false, activeRunStatus });
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +239,28 @@ it('x2a: the step count equals the expandable rows, live and after reload (run 1
   }
 });
 
+it('x2a: a prose row whose display text is empty is neither rendered nor counted', () => {
+  const events: ChatTranscriptEventPayload[] = [
+    userInput(1, '生成报告', '2026-11-13T09:15:13.704Z'),
+    runLifecycle(2, 'run-x2', 'queued', '2026-11-13T09:15:14Z'),
+    runLifecycle(3, 'run-x2', 'running', '2026-11-13T09:15:14.2Z'),
+    assistantEvent(4, 'assistant_text', 'snapshot', 'run-x2', 'text-1', { content: '**DELIVERABLE**: report.md', phase: 'unknown' }, '2026-11-13T09:15:20Z'),
+    assistantEvent(5, 'assistant_final', 'completed', 'run-x2', 'final-1', { content: '报告已生成：report.md。' }, '2026-11-13T09:15:26Z'),
+    runLifecycle(6, 'run-x2', 'completed', '2026-11-13T09:15:26.4Z'),
+  ];
+  for (const messages of projectBoth(events)) {
+    const model = timelineFor(messages);
+    const run = model.cells.find(cell => cell.kind === 'active_run');
+    if (run?.kind !== 'active_run') throw new Error('missing run cell');
+    const { container, unmount } = renderBlock(run.timeline);
+    // The DELIVERABLE marker line strips to empty display text: the row
+    // renders nothing, so the count must not include it either.
+    expect(renderedRowTitles(container)).toEqual([]);
+    expect(headerText(container)).not.toMatch(/\d+\s*个步骤/);
+    unmount();
+  }
+});
+
 it('x2a: a block with nothing to expand shows no step count (run 18 hello)', () => {
   const answer = '你好，test123!我是你的助理';
   const events: ChatTranscriptEventPayload[] = [
@@ -261,10 +287,10 @@ it('x2a: a block with nothing to expand shows no step count (run 18 hello)', () 
 // terminal time, identical live and after reload, frozen at the terminal.
 // ---------------------------------------------------------------------------
 
-const B_RUN = 'run-reads';
-const B_INPUT_AT = '2026-11-13T09:44:27.000Z';
-const B_RUN_QUEUED_AT = '2026-11-13T09:46:46.800Z';
-const B_TERMINAL_AT = '2026-11-13T09:47:21.800Z';
+export const B_RUN = 'run-reads';
+export const B_INPUT_AT = '2026-11-13T09:44:27.000Z';
+export const B_RUN_QUEUED_AT = '2026-11-13T09:46:46.800Z';
+export const B_TERMINAL_AT = '2026-11-13T09:47:21.800Z';
 
 export function failedReadsTurnEvents(withStatusRow: boolean): ChatTranscriptEventPayload[] {
   const events: ChatTranscriptEventPayload[] = [
@@ -415,6 +441,36 @@ it('x2c: a paragraph written before the failure card renders above it, live and 
   }
 });
 
+
+it('x2c: a legacy answer bound to an earlier run stays above the later failure card', () => {
+  const paragraph = '我先把这项任务交给「同事」，拿到它的三条建议后再整理给你。';
+  const events: ChatTranscriptEventPayload[] = [
+    userInput(1, '把结果整理成三条建议', B_INPUT_AT),
+    runLifecycle(2, 'run-x2', 'queued', '2026-11-13T09:44:27.3Z'),
+    runLifecycle(3, 'run-x2', 'running', '2026-11-13T09:44:27.6Z'),
+    // The persisted legacy answer row: a compatibility envelope whose
+    // legacy_run_id binds it to the earlier run. It has no session item, and
+    // the failed run has no canonical final of its own.
+    compatibilityEnvelope(4, 'assistant_message', paragraph, {}, '2026-11-13T09:44:34.8Z', { legacy_run_id: 'run-x2' }),
+    runLifecycle(5, 'run-x2', 'completed', '2026-11-13T09:44:34.9Z'),
+    runLifecycle(6, B_RUN, 'queued', B_RUN_QUEUED_AT),
+    runLifecycle(7, B_RUN, 'running', B_RUN_QUEUED_AT),
+    ...toolCallPair(8, B_RUN, 'read_runtime_result', { task_id: 'colleague-task' }, { member_summary: { kind: 'colleague_result', state: 'not_done', task_id: 'colleague-task' }, outcome: 'failed' }, '2026-11-13T09:47:20Z', 'failed'),
+    runtimeFailure(10, B_RUN, B_TERMINAL_AT),
+    runLifecycle(11, B_RUN, 'failed', B_TERMINAL_AT, { reason_code: 'identical_refused_result_read' }),
+  ];
+  const [live, reload] = projectBoth(events);
+  for (const [label, messages] of [['live', live], ['reload', reload]] as const) {
+    const paragraphCopies = messages.filter(message => (message.content || '').includes('我先把这项任务交给')).length;
+    const paragraphAt = messages.findIndex(message => (message.content || '').includes('我先把这项任务交给'));
+    const failureAt = messages.findIndex(message => /没法安全读取|couldn.t be read safely/.test(message.content || ''));
+    expect(paragraphAt, `${label}: paragraph present`).toBeGreaterThanOrEqual(0);
+    expect(failureAt, `${label}: failure card present`).toBeGreaterThanOrEqual(0);
+    expect(paragraphAt, `${label}: paragraph above the failure card`).toBeLessThan(failureAt);
+    expect(paragraphCopies, `${label}: the paragraph renders once`).toBe(1);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // D. No flicker: on reload the colleague block's first rendered status is its
 // final status; no provisional done while older pages are still loading.
@@ -437,25 +493,54 @@ export function cancelledColleagueEvents(): ChatTranscriptEventPayload[] {
   ];
 }
 
-it('x2d: the colleague block never renders a provisional done during a load that ends cancelled', () => {
+it('x2d: every reload prefix renders the final status or no status (run 18 cancelled colleague)', () => {
   const events = cancelledColleagueEvents();
-  const seen: string[] = [];
-  const harness = makeLiveSocketHarness();
-  for (const event of events) {
-    harness.deliver(event);
-    for (const cell of timelineFor(harness.live()).cells) {
+  const settledStatuses = new Map<string, string>();
+  for (const cell of timelineFor(hydrateSessionTranscriptEvents(events, 0).messages).cells) {
+    if (cell.kind !== 'active_run' || !cell.runId) continue;
+    const { container } = render(<RunDisclosureBlock timeline={cell.timeline} />);
+    settledStatuses.set(cell.runId, container.querySelector('.run-disclosure-title')?.textContent || '');
+  }
+  expect([...settledStatuses.values()]).toContain('已停止');
+  // The incremental hydration publishes each newest-first page before older
+  // pages merge; for every prefix, each block renders its final status or
+  // nothing at all — never a provisional one the same load overturns.
+  for (let prefix = 2; prefix <= events.length; prefix += 1) {
+    for (const cell of timelineFor(reloadPage(events, prefix)).cells) {
       if (cell.kind !== 'active_run') continue;
-      seen.push(cell.timeline.status);
-      const { container, unmount } = render(<RunDisclosureBlock timeline={cell.timeline} />);
-      expect(container.querySelector('.run-disclosure-title')?.textContent,
-        `a mid-load state must not show a provisional 完成 (statuses so far: ${seen.join(',')})`).not.toBe('完成');
-      unmount();
+      const { container } = render(<RunDisclosureBlock timeline={cell.timeline} />);
+      const title = container.querySelector('.run-disclosure-title')?.textContent || '';
+      const final = cell.runId ? settledStatuses.get(cell.runId) : undefined;
+      expect(
+        !title || (final !== undefined && title === final),
+        `prefix from sequence ${prefix}, cell ${cell.runId || cell.id}: rendered ${JSON.stringify(title)}, final ${JSON.stringify(final)}`,
+      ).toBe(true);
     }
   }
-  // The same events settle cancelled through reload hydration.
+});
+
+it('x2d: every reload prefix renders the final status or no status (handoff while the colleague works)', () => {
+  const events = handoffWhileColleagueWorksEvents();
   const settled = timelineFor(hydrateSessionTranscriptEvents(events, 0).messages);
-  const statuses = settled.cells.filter(cell => cell.kind === 'active_run').map(cell => cell.kind === 'active_run' ? cell.timeline.status : '');
-  expect(statuses).toContain('cancelled');
+  const settledStatuses = new Map<string, string>();
+  for (const cell of settled.cells) {
+    if (cell.kind !== 'active_run' || !cell.runId) continue;
+    const { container } = render(<RunDisclosureBlock timeline={cell.timeline} />);
+    settledStatuses.set(cell.runId, container.querySelector('.run-disclosure-title')?.textContent || '');
+  }
+  expect([...settledStatuses.values()]).toContain('运行中');
+  for (let prefix = 2; prefix <= events.length; prefix += 1) {
+    for (const cell of timelineFor(reloadPage(events, prefix)).cells) {
+      if (cell.kind !== 'active_run') continue;
+      const { container } = render(<RunDisclosureBlock timeline={cell.timeline} />);
+      const title = container.querySelector('.run-disclosure-title')?.textContent || '';
+      const final = cell.runId ? settledStatuses.get(cell.runId) : undefined;
+      expect(
+        !title || (final !== undefined && title === final),
+        `prefix from sequence ${prefix}, cell ${cell.runId || cell.id}: rendered ${JSON.stringify(title)}, final ${JSON.stringify(final)}`,
+      ).toBe(true);
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -485,7 +570,17 @@ it('x2e: the parent handoff block does not say 完成 while the colleague still 
     if (handoff?.kind !== 'active_run') throw new Error('missing handoff run cell');
     const { container, unmount } = render(<RunDisclosureBlock timeline={handoff.timeline} />);
     expect(container.querySelector('.run-disclosure-title')?.textContent).not.toBe('完成');
+    // X2 r2 item 1: the label is presentation only — the model status stays
+    // the parent run's own terminal status.
+    expect(handoff.timeline.status).toBe('done');
+    expect(container.querySelector('[data-testid="run-disclosure-block"]')?.getAttribute('data-status')).toBe('done');
     unmount();
+  }
+  // The conversation header follows the same presentation rule for the
+  // latest turn (X2 r2 item 1); the sidebar keeps the server status.
+  for (const messages of projectBoth(handoffWhileColleagueWorksEvents())) {
+    const model = timelineFor(messages);
+    expect(model.header.status).not.toBe('complete');
   }
 });
 
@@ -499,6 +594,56 @@ it('x2e: once the colleague finishes, the handoff block settles (control)', () =
     expect(handoff.timeline.status).toBe('done');
   }
 });
+
+it('x2e: a group session keeps the parent block and header on their true status (the receipt can never arrive)', () => {
+  // Group history holds local V1 rows without a remote ref for every reader
+  // (shared_group_history), so the colleague's terminal receipt never reaches
+  // this session — the in-flight label must not apply there.
+  for (const messages of projectBoth(handoffWhileColleagueWorksEvents())) {
+    const model = timelineFor(messages, null, { id: SESSION, audience_kind: 'group' });
+    const handoff = model.cells.find(cell => cell.kind === 'active_run');
+    if (handoff?.kind !== 'active_run') throw new Error('missing handoff run cell');
+    expect(handoff.timeline.status).toBe('done');
+    const { container, unmount } = render(<RunDisclosureBlock timeline={handoff.timeline} />);
+    expect(container.querySelector('.run-disclosure-title')?.textContent).toBe('完成');
+    unmount();
+    expect(model.header.status).toBe('complete');
+  }
+});
+
+it('x2e: a second run after the handoff behaves as if there were no handoff', () => {
+  const task = 'live-task';
+  const events: ChatTranscriptEventPayload[] = [
+    ...handoffWhileColleagueWorksEvents(),
+    userInput(11, '顺便查一下今天的日期', '2026-11-13T09:45:10Z'),
+    runLifecycle(12, 'run-second', 'queued', '2026-11-13T09:45:10.5Z'),
+    runLifecycle(13, 'run-second', 'running', '2026-11-13T09:45:10.8Z'),
+    ...toolCallPair(14, 'run-second', 'get_current_time', {}, { member_summary: { kind: 'time', state: 'done' } }, '2026-11-13T09:45:12Z'),
+    assistantEvent(16, 'assistant_final', 'completed', 'run-second', 'second-final', { content: '今天是 11 月 13 日。' }, '2026-11-13T09:45:14Z'),
+    runLifecycle(17, 'run-second', 'completed', '2026-11-13T09:45:14.5Z'),
+  ];
+  for (const messages of projectBoth(events)) {
+    const model = timelineFor(messages);
+    const secondRun = model.cells.find(cell => cell.kind === 'active_run'
+      && cell.runId === 'run-second' && cell.timeline.steps.length > 0);
+    if (secondRun?.kind !== 'active_run') throw new Error('missing second run cell');
+    // The second run's own block, the conversation header and the placeholder
+    // behave exactly as they would without the earlier handoff.
+    expect(secondRun.timeline.status).toBe('done');
+    const { container, unmount } = render(<RunDisclosureBlock timeline={secondRun.timeline} />);
+    expect(container.querySelector('.run-disclosure-title')?.textContent).toBe('完成');
+    unmount();
+    expect(model.header.status).toBe('complete');
+    expect(model.cells.some(cell => cell.kind === 'active_run'
+      && (cell.timeline.status === 'running' || cell.timeline.status === 'blocked')
+      && cell.runId === 'run-second')).toBe(false);
+    // The earlier handoff block keeps its own per-block label.
+    const handoff = model.cells.find(cell => cell.kind === 'active_run' && cell.runId === 'run-x2');
+    if (handoff?.kind !== 'active_run') throw new Error('missing handoff cell');
+    expect(handoff.timeline.status).toBe('done');
+  }
+});
+
 
 // ---------------------------------------------------------------------------
 // F. One stop row: one member stop gives one 「已停止…」 row per delegated
@@ -532,3 +677,27 @@ it('x2f: one member stop shows one stopped sentence per delegated task, live and
     }
   }
 });
+
+it('x2f: one stopped sentence without a child_session row, live and after reload', () => {
+  const task = 'stop-task-nochild';
+  const events: ChatTranscriptEventPayload[] = [
+    userInput(1, '请同事帮我写周报', '2026-11-13T09:51:14Z'),
+    runLifecycle(2, 'run-x2', 'queued', '2026-11-13T09:51:15Z'),
+    runLifecycle(3, 'run-x2', 'running', '2026-11-13T09:51:15.4Z'),
+    ...toolCallPair(4, 'run-x2', 'delegate_to_agent', { agent_name: '同事', task: '写周报' }, { member_summary: { kind: 'delegation', state: 'in_progress', task_id: task } }, '2026-11-13T09:51:21.5Z'),
+    compatibilityEnvelope(6, 'runtime_action_started', '已委派给 同事，后台执行中。', { status: 'running', action_kind: 'a2a_delegation', runtime_task_id: task, target_agent_name: '同事' }, '2026-11-13T09:51:21.6Z'),
+    compatibilityEnvelope(7, 'runtime_action_failed', '已停止，同事没有完成这项工作。', { action_kind: 'a2a_delegation', status: 'killed', runtime_task_id: task, target_agent_name: '同事' }, '2026-11-13T09:51:26.2Z'),
+    runLifecycle(8, 'run-x2', 'cancelled', '2026-11-13T09:51:27.5Z'),
+  ];
+  for (const messages of projectBoth(events)) {
+    const model = timelineFor(messages);
+    for (const cell of model.cells) {
+      if (cell.kind !== 'active_run') continue;
+      const { container, unmount } = renderBlock(cell.timeline);
+      const occurrences = (container.textContent || '').split('已停止，同事没有完成这项工作。').length - 1;
+      expect(occurrences, `exactly one stopped row, got ${occurrences}:\n${container.textContent}`).toBe(1);
+      unmount();
+    }
+  }
+});
+

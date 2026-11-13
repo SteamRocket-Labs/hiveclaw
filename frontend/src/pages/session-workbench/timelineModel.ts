@@ -6,6 +6,7 @@ import {
   buildRunTimelineFromMessages,
   isAssistantAnswer as isRenderableAssistantAnswer,
   isDisclosureStepMessage,
+  stepDelegationStillInProgress,
   type RunStepSnapshot,
   type RunTimelineSnapshot,
 } from '../agent-detail/chatDisclosureReducer';
@@ -1641,8 +1642,8 @@ function buildRunCell(
   const runId = messageRunId(answer?.message)
     ?? visibleSourceMessages.map((entry) => messageRunId(entry.message)).find((value): value is string => Boolean(value));
   // The final answer renders as its own message right below the block; an
-  // in-run prose copy with the same bytes is marked so the renderer skips the
-  // repeat while the step still counts toward the block's own records.
+  // in-run prose copy with the same bytes is marked so the renderer drops the
+  // repeat — it neither renders nor counts toward the block's rows (X2 A).
   const markedSteps = answer
     ? markStepsRepeatingAnswer(timeline.steps, answer.message)
     : timeline.steps;
@@ -1814,6 +1815,9 @@ function ensureOpenRunDisclosureContinuity(
     const cell = cells[index];
     if (cell.kind !== 'active_run') continue;
     if (cell.timeline.status !== 'running' && cell.timeline.status !== 'blocked') continue;
+    // X2 r2 D: a mid-load cell with unknown totals renders nothing — its
+    // fabricated placeholder row must not appear either.
+    if (cell.totalsUnknown || cell.timeline.statusUnknown) continue;
     if (cell.timeline.steps.some((step) => step.presentation !== 'external')) return;
 
     const title = cell.timeline.status === 'blocked'
@@ -2119,48 +2123,14 @@ function isCanonicalRunTerminal(message: AgentChatMessage): boolean {
     || (item?.kind === 'runtime_failure' && item.scope.level === 'run' && item.lifecycle === 'recorded');
 }
 
+function isFiniteTimelineTime(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
 function runAwaitsApproval(messages: AgentChatMessage[], runId?: string | null): boolean {
   return Boolean(runId && messages.some(message => message.sessionItem?.kind === 'run'
     && isSameSessionRunId(messageRunId(message), runId)
     && terminalRuntimePhaseForSessionEvent('run', message.sessionItem.lifecycle, message.sessionItem.payload) === 'awaiting_approval'));
-}
-
-/** X2 D/E: a delegated task with no terminal receipt yet — the colleague may
- * still be working. The typed terminal rewrite in the projection
- * (`projectMemberDelegationStates`) clears both signals once the child's
- * terminal arrives, so this can never latch a resolved delegation. */
-function delegatedWorkStillInProgress(message: AgentChatMessage): boolean {
-  const summary = (message as { toolMemberSummary?: { kind?: string; state?: string } }).toolMemberSummary;
-  if (summary?.kind === 'delegation' && summary.state === 'in_progress') return true;
-  if (message.role !== 'event') return false;
-  const metadata = message.threadItem?.metadata || message.sessionItem?.payload || {};
-  const delegation = metadata.action_kind === 'a2a_delegation'
-    || (message.eventType === 'child_session' && String(metadata.reason || '').startsWith('delegation_'));
-  if (!delegation) return false;
-  // The compatibility-plane projection stamps eventStatus with the thread
-  // item's generic status ('succeeded'); the delegation's typed status lives
-  // in the metadata until the terminal rewrite carries it into eventStatus —
-  // so a terminal eventStatus decides, and otherwise the metadata does.
-  const eventStatus = String(message.eventStatus || '');
-  const status = ['completed', 'failed', 'error', 'killed', 'cancelled', 'canceled', 'denied', 'unavailable'].includes(eventStatus)
-    ? eventStatus
-    : String(metadata.status || eventStatus || '');
-  return ['running', 'in_progress', 'pending', 'queued'].includes(status);
-}
-
-/** X2 D: a delegated task whose receipt says it ended without success. While
- * the parent run's own terminal is not loaded, a step-derived done would be a
- * provisional done that the parent terminal overturns. */
-function delegatedWorkEndedWithoutSuccess(message: AgentChatMessage): boolean {
-  const summary = (message as { toolMemberSummary?: { kind?: string; state?: string; status?: string } }).toolMemberSummary;
-  if (summary?.kind === 'delegation' && summary.state === 'not_done') return true;
-  if (message.role !== 'event') return false;
-  const metadata = message.threadItem?.metadata || message.sessionItem?.payload || {};
-  const delegation = metadata.action_kind === 'a2a_delegation'
-    || (message.eventType === 'child_session' && String(metadata.reason || '').startsWith('delegation_'));
-  if (!delegation) return false;
-  const status = String(metadata.status || message.eventStatus || '');
-  return ['killed', 'cancelled', 'canceled', 'failed', 'error', 'denied', 'unavailable'].includes(status);
 }
 
 
@@ -2176,6 +2146,17 @@ function applyCanonicalRunTerminalEvidence(
   const firstSequence = messages.reduce((first, message) => Math.min(first,
     message.sessionItem?.first_sequence ?? message.threadItem?.sequence ?? Infinity), Infinity);
   const startsMidTurn = Number.isFinite(firstSequence) && firstSequence > 1;
+  // X2 r2 B: the run item's own first event time — the typed start a terminal
+  // without payload.started_at falls back to. Items whose first loaded event
+  // is the terminal itself carry no start evidence and are excluded.
+  const runStartByRunId = new Map<string, string>();
+  for (const message of messages) {
+    const item = message.sessionItem;
+    if (item?.kind !== 'run' || !isFiniteTimelineTime(item.occurredAt)) continue;
+    if (item.first_sequence >= item.last_sequence) continue;
+    const runId = messageRunId(message);
+    if (runId && !runStartByRunId.has(runId)) runStartByRunId.set(runId, item.occurredAt);
+  }
   const terminalByRunId = new Map<string, { sequence: number; startedAt: string; runtimeStartedAt?: string; clockUnknown?: boolean; completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
   messages.forEach((message) => {
     const item = message.sessionItem;
@@ -2200,17 +2181,7 @@ function applyCanonicalRunTerminalEvidence(
   return cells.map((cell, index) => {
     if (cell.kind !== 'active_run') return cell;
     const runId = cell.runId || (cell.sourceMessages.length > 0 ? normalizeSessionRunId(sessionRunId) : null);
-    if (!runId) {
-      // X2 D: an unbound process cell (compatibility-plane delegation rows)
-      // must not paint a done that a later terminal in the same load
-      // overturns; keep it live while its delegated work is unresolved.
-      if (cell.timeline.status === 'done'
-        && cell.sourceMessages.some(entry => delegatedWorkStillInProgress(entry.message)
-          || delegatedWorkEndedWithoutSuccess(entry.message))) {
-        return { ...cell, timeline: { ...cell.timeline, status: 'running', completedAt: undefined, durationIsFinal: false } };
-      }
-      return cell;
-    }
+    if (!runId) return cell;
     const terminal = terminalByRunId.get(runId);
     const nativeReplyPendingTerminal = !terminal && messages.some(message => message.sessionItem?.kind === 'assistant_final'
       && message.sessionItem.completedEventId && message.sessionItem.payload?.legacy !== true
@@ -2221,35 +2192,20 @@ function applyCanonicalRunTerminalEvidence(
     const task = runtimeTasks.find(task => isSameSessionRunId(readString(task, ['runtime_task_id', 'id'], ''), runId));
     const taskStatus = task && runtimeStatusKey(readString(task, ['status'], ''));
     const canonicalStatus = terminal?.status || (awaitingApproval ? 'waiting' : taskStatus || liveStatus);
-    // X2 D/E: while a delegated colleague is still working, a block that
-    // would otherwise read 完成 claims work that is not done. The platform's
-    // own vocabulary maps the delegated turn (waiting_for_child) to 运行中,
-    // so the block presents running until the colleague's terminal receipt
-    // lands — which also keeps an incremental newest-first reload from
-    // painting a provisional done that a later page overturns ( run 18).
-    const delegatedWorkInFlight = cell.sourceMessages.some(entry => delegatedWorkStillInProgress(entry.message));
-    const status = canonicalStatus === 'done' && delegatedWorkInFlight ? 'running'
-      : canonicalStatus ? (canonicalStatus === 'waiting' ? 'blocked' : canonicalStatus === 'stopped' ? 'cancelled'
-        : canonicalStatus === 'done' ? 'done' : canonicalStatus) : terminal?.status;
+    const status = canonicalStatus ? (canonicalStatus === 'waiting' ? 'blocked' : canonicalStatus === 'stopped' ? 'cancelled'
+      : canonicalStatus === 'done' ? 'done' : canonicalStatus) : terminal?.status;
     if (nativeReplyPendingTerminal && (!canonicalStatus || canonicalStatus === 'done')) return { ...cell, runId,
       timeline: { ...cell.timeline, status: 'running', completedAt: undefined, durationIsFinal: false } };
-    if (!status) {
-      // X2 D: no authoritative status source yet — a step-derived done is a
-      // provisional done while the delegated work is unresolved or ended
-      // without success (run 18 step 6: done → cancelled within one load).
-      if (cell.timeline.status === 'done'
-        && cell.sourceMessages.some(entry => delegatedWorkStillInProgress(entry.message)
-          || delegatedWorkEndedWithoutSuccess(entry.message))) {
-        return { ...cell, runId, timeline: { ...cell.timeline, status: 'running', completedAt: undefined, durationIsFinal: false } };
-      }
-      return cell;
-    }
+    if (!status) return cell;
     // X2 B: a terminal run's duration comes from the run's own typed start
     // (payload started_at, else the run item's first event) to its typed
-    // terminal time — computed the same way live and after reload. The
-    // accepted-input/queued clock may only anchor a run with no typed start.
-    const runTypedStartedAt = terminal?.runtimeStartedAt || terminal?.startedAt || '';
-    const startedAt = (runTypedStartedAt && Number.isFinite(Date.parse(runTypedStartedAt)) ? runTypedStartedAt : undefined)
+    // terminal time — computed the same way live and after reload. A run
+    // still in flight keeps the accepted-input/queued clock: re-anchoring the
+    // live clock at the run start would move the visible jump from the
+    // terminal to the run start (X2 r2 item 8 trade-off, not taken).
+    const runTypedStartedAt = terminal?.runtimeStartedAt || terminal?.startedAt
+      || runStartByRunId.get(runId) || '';
+    const startedAt = (terminal && runTypedStartedAt && Number.isFinite(Date.parse(runTypedStartedAt)) ? runTypedStartedAt : undefined)
       || [cell.timeline.startedAt,
         ...(!terminal ? [readString(task ?? {}, ['started_at', 'created_at'], '')] : [])]
         .filter((value): value is string => Boolean(value && Number.isFinite(Date.parse(value))))
@@ -2265,8 +2221,10 @@ function applyCanonicalRunTerminalEvidence(
       ? Math.max(completedAtMs - startedAtMs, 0)
       : cell.timeline.durationMs;
     // A newest-first page may begin halfway through this finished run. Its
-    // totals are unknown until the existing backfill reaches the input; keep
-    // the block visible without publishing partial counts or a partial clock.
+    // totals are unknown until the existing backfill reaches the input; the
+    // block renders neither a status, a count nor a clock (X2 r2 D: the
+    // first rendered status of a block is its final status), and its first
+    // appearance waits for the page that completes the turn.
     const totalsUnknown = startsMidTurn && (firstUserCell < 0 || index < firstUserCell);
     return {
       ...cell,
@@ -2277,11 +2235,12 @@ function applyCanonicalRunTerminalEvidence(
         ...cell.timeline,
         status,
         startedAt: totalsUnknown ? undefined : startedAt,
-        completedAt: Number.isFinite(completedAtMs) ? new Date(completedAtMs).toISOString() : undefined,
+        completedAt: totalsUnknown ? undefined : Number.isFinite(completedAtMs) ? new Date(completedAtMs).toISOString() : undefined,
         durationMs: totalsUnknown ? undefined : durationMs,
         steps: totalsUnknown ? [] : cell.timeline.steps,
         summary: totalsUnknown ? undefined : cell.timeline.summary,
         durationIsFinal: Boolean(terminal || Number.isFinite(taskCompletedAtMs)),
+        ...(totalsUnknown ? { statusUnknown: true as const } : {}),
       },
     };
   });
@@ -2495,23 +2454,41 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       : unresolvedUserTurn
         ? 'running'
         : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus, input.runtimePhase);
-
-  return {
-    cells: applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle, sessionWorkbench?.runtime_tasks,
+  // X2 r2 E: while the latest turn's block shows the running label because a
+  // colleague is still working on its delegated task, the conversation header
+  // must not say 完成 either. Presentation only, latest turn only — the
+  // model statuses, the placeholder and the sidebar's server status stay as
+  // they are. Group sessions never receive the colleague's terminal receipt
+  // for local V1 rows (shared_group_history), so the label must not apply
+  // there or a finished block would read 运行中 for good.
+  const delegationReceiptExpected = String(input.activeSession?.audience_kind || '') !== 'group';
+  const settledCells = applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle, sessionWorkbench?.runtime_tasks,
       sessionRunId)
       .map(cell => terminalStatePending && cell.kind === 'active_run'
-        && cell.sourceMessages.some(({ index }) => index > latestUserIndex)
+        && cell.sourceMessages.some(({ index }) => index > latestUserMessageIndex(input.messages))
         && (!headerRunId || !cell.runId || isSameSessionRunId(cell.runId, headerRunId))
         && cell.timeline.status === 'done'
         ? { ...cell, timeline: { ...cell.timeline, status: 'running' as const }, phase: undefined }
         : cell)
+      .map(cell => (cell.kind === 'active_run' && delegationReceiptExpected
+        && cell.timeline.status === 'done' && !cell.timeline.statusUnknown
+        && cell.timeline.steps.some(stepDelegationStillInProgress))
+        ? { ...cell, timeline: { ...cell.timeline, delegationInFlight: true } }
+        : cell);
+  const lastUserCell = settledCells.map(cell => cell.kind === 'user_turn' ? 1 : 0).lastIndexOf(1);
+  const latestTurnHandoffInFlight = headerStatus === 'complete'
+    && settledCells.slice(lastUserCell + 1).some(cell => cell.kind === 'active_run'
+      && cell.timeline.delegationInFlight);
+
+  return {
+    cells: settledCells
       .filter(cell => cell.kind !== 'active_run' || cell.timeline.status !== 'done'
         || cell.totalsUnknown
         || cell.timeline.steps.length > 0
         || cell.sourceMessages.some(({ message }) => message.artifacts?.length)),
     header: {
       title: getSessionTitle(input.activeSession),
-      status: headerStatus,
+      status: latestTurnHandoffInFlight ? 'running' as const : headerStatus,
       ...(pendingSendState === 'queued' ? { phase: 'queued' } : {}),
       modelLabel: runtimeSummary?.model?.label || runtimeSummary?.model?.name || null,
       ...(guidance ? { guidance } : {}),

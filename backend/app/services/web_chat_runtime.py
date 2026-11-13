@@ -2493,7 +2493,10 @@ async def broadcast_web_chat_event(
         # destroys the envelope schema, so the live socket drops the row as an
         # unknown 'event' frame and a finished block's step count changes
         # across a reload. Deliver the committed bytes untouched, exactly like
-        # the canonical V2 branch below.
+        # the canonical V2 branch below. This branch trusts its caller to pass
+        # user-audience bytes: the only producer (the run orchestrator's
+        # runtime_event port) serializes with audience="user", the same
+        # projection the reload endpoint and the outbox forwarder serve.
         await web_chat_broker.send_session_message(
             str(agent_id),
             str(session_id) if session_id else None,

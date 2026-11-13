@@ -103,8 +103,11 @@ it('keeps a completed run while older transcript pages are loading without publi
   expect(partial.startedAt).toBeUndefined();
   expect(partial.durationMs).toBeUndefined();
   expect(partial.summary).toBeUndefined();
+  // X2 r2 D: a mid-load block renders neither a status, a count nor a clock —
+  // the first rendered status of a block is its final status — so the partial
+  // page publishes no block at all until the page that completes the run.
   const view = render(<RunDisclosureBlock timeline={partial} />);
-  expect(view.getAllByTestId('run-disclosure-block')).toHaveLength(1);
+  expect(view.queryAllByTestId('run-disclosure-block')).toHaveLength(0);
   const complete = runs(build([], { messages: project(events) }))[0].timeline;
   expect(complete.steps).toHaveLength(69);
   expect(complete.durationMs).toBe(897_000);
@@ -127,8 +130,9 @@ it('keeps the hello block when the newest transcript page starts inside its run'
   expect(runs(partial)[0].timeline.durationMs).toBeUndefined();
   expect(runs(partial)[0].timeline.summary).toBeUndefined();
   expect(partial.cells.filter(cell => cell.kind === 'assistant_final')).toHaveLength(1);
+  // X2 r2 D: same as above — no provisional block header on a partial page.
   const view = render(<RunDisclosureBlock timeline={runs(partial)[0].timeline} />);
-  expect(view.getAllByTestId('run-disclosure-block')).toHaveLength(1);
+  expect(view.queryAllByTestId('run-disclosure-block')).toHaveLength(0);
   const complete = build([], { messages: project(events) });
   expect(runs(complete)).toHaveLength(1);
   expect(runs(complete)[0].timeline.steps.map(step => step.id)).toEqual(['hello-text']);

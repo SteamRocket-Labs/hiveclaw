@@ -87,6 +87,15 @@ export interface RunTimelineSnapshot {
   durationMs?: number;
   /** The run terminal or runtime row supplies the exact duration. */
   durationIsFinal?: boolean;
+  /** Presentation-only (X2 r2 D): the loaded page starts mid-turn, so this
+   * block's evidence is incomplete — render no status, count or clock until
+   * the page that completes the turn arrives. The model status is unchanged. */
+  statusUnknown?: boolean;
+  /** Presentation-only (X2 r2 E): the block is done, but it still holds a
+   * delegation whose colleague may be working for this reader — the header
+   * shows the existing running label instead of the done label. The model
+   * status is unchanged. */
+  delegationInFlight?: boolean;
   summary?: RunAggregateSummary;
   steps: RunStepSnapshot[];
   answerMessageId?: string;
@@ -228,6 +237,21 @@ const DEDICATED_TOOL_CARD_META_KINDS = new Set([
   'user_clarification',
   'workflow_preview',
 ]);
+
+/** X2 r2 E: this step still reports a delegated task as in progress for this
+ * reader — the colleague may be working. The typed terminal rewrite
+ * (`projectMemberDelegationStates`) clears both signals once the child's
+ * terminal receipt reaches this session, so the label never outlives real
+ * evidence the reader can see. */
+export function stepDelegationStillInProgress(step: RunStepSnapshot): boolean {
+  const summary = (step.details as { memberSummary?: { kind?: string; state?: string } } | null)?.memberSummary;
+  if (summary?.kind === 'delegation' && summary.state === 'in_progress') return true;
+  const event = step.systemEvent;
+  if (!event || event.type !== 'runtime_action_started') return false;
+  const metadata = event.metadata || {};
+  if (metadata.action_kind !== 'a2a_delegation') return false;
+  return ['running', 'in_progress', 'pending', 'queued'].includes(String(metadata.status || step.status || ''));
+}
 
 export function isDedicatedToolCardMessage(message: AgentChatMessage): boolean {
   if (message.role !== 'tool_call') return false;

@@ -47,9 +47,8 @@ async def test_nested_colleague_consult_returns_the_next_reply_inline(
     async with owner_sessionmaker() as db:
         child_agent = await db.get(Agent, seed["child_agent_id"])
         child_model = await db.get(LLMModel, child_agent.primary_model_id)
-        # Every production model row carries a context window (llm_window_readonly.out,
-        # 2026-11-11); without one an agent falls back to the 60000-character default
-        # budget, which R16b's language reminder now exceeds by a few hundred characters.
+        # Keep this nested handoff on a declared 256K window, independently
+        # of the fallback budget used by models without a declared window.
         parent_model = await db.get(LLMModel, (await db.get(Agent, seed["agent_id"])).primary_model_id)
         parent_model.max_input_tokens = child_model.max_input_tokens = 256_000
         next_model = LLMModel(id=uuid4(), tenant_id=seed["tenant_id"], provider="openai",

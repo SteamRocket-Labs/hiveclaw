@@ -23,10 +23,12 @@ def test_empty_memory_has_a_static_route_without_a_resident_snapshot():
     assert "### Using Memory Tools" in suffix
     assert "under `memory/knowledge/`" in suffix and "under `memory/t2/sessions/`" in suffix
     assert "List the directory first, then `read_file(path=...)`" in suffix
-    # Grok review: the route names two directories, so an empty-directory
-    # hint may only speak about the session folder it is true for.
-    assert "If `memory/t2/sessions/` is empty, there is no past session to read." in suffix
+    # Grok reviews 1 and 2: no empty-folder claim is true here. An empty
+    # memory/knowledge/ says nothing about sessions, and an empty
+    # memory/t2/sessions/ says nothing about readable T0 source.md files or
+    # search_memory(scope=sessions), so the route makes no such claim.
     assert "nothing to recall" not in suffix
+    assert "no past session to read" not in suffix
     assert "### Current Memory State" not in suffix and "(no memory loaded)" not in suffix
     assert all(entry["name"] != "memory_snapshot" for entry in ledger)
     route = next(entry for entry in ledger if entry["name"] == "memory_tools_route")

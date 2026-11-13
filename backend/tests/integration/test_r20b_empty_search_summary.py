@@ -432,7 +432,7 @@ async def test_delegated_empty_search_answer_reaches_the_parent_continuation(
         owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
 
 
-async def _assert_discarded_summary(owner_sessionmaker, run_id, *, failure_code="repeated_empty_search"):
+async def _assert_discarded_summary(owner_sessionmaker, run_id, *, failure_code="repeated_empty_search", summary_requests=1):
     from app.models.plaza import PlazaPost
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionModelResult, SessionToolInvocation
@@ -449,19 +449,21 @@ async def _assert_discarded_summary(owner_sessionmaker, run_id, *, failure_code=
         assert "session_v2_reconciliation" not in run.metadata_json
         models = list(await db.scalars(select(SessionModelResult).where(
             SessionModelResult.run_id == run_id).order_by(SessionModelResult.round_id)))
-        assert len(models) == 6 and all(row.state == "round_committed" for row in models[:5])
-        summary = models[-1]
-        assert summary.state == "failed" and summary.reconciliation_owner is None
-        if failure_code == "repeated_empty_search":
-            assert summary.seal_json == {"delivery_state": "response_received",
-                "error_class": "repeated_empty_search", "retry_safe": True}
-        else:
-            assert summary.seal_json["error_class"] == failure_code
-            assert summary.seal_json["delivery_state"] == ("unknown" if failure_code == "timeout" else "rejected")
+        # R20b round 4/I1': a summary can contain physical output-cap continuation requests.
+        assert len(models) == 5 + summary_requests and all(row.state == "round_committed" for row in models[:5])
+        for summary in models[5:]:
+            assert summary.state == "failed" and summary.reconciliation_owner is None
+            if failure_code == "repeated_empty_search":
+                assert summary.seal_json == {"delivery_state": "response_received",
+                    "error_class": "repeated_empty_search", "retry_safe": True}
+            else:
+                assert summary.seal_json["error_class"] == failure_code
+                assert summary.seal_json["delivery_state"] == ("unknown" if failure_code == "timeout" else "rejected")
         invocations = list(await db.scalars(select(SessionToolInvocation).where(
             SessionToolInvocation.run_id == run_id)))
         assert len(invocations) == 5
-        assert not any(row.provider_request_id == summary.provider_request_id for row in invocations)
+        assert not any(row.provider_request_id in {model.provider_request_id for model in models[5:]}
+            for row in invocations)
         assert list(await db.scalars(select(PlazaPost).where(PlazaPost.tenant_id == run.tenant_id))) == []
 
 
@@ -516,19 +518,38 @@ async def test_discarded_summary_settles_the_actual_provider_request_without_too
         assert len(client.requests) == 6
 
 
-async def test_member_input_arriving_at_the_guard_is_left_for_the_next_turn(
+async def test_summary_output_cap_tool_call_is_discarded_and_all_requests_settle(
+    owner_sessionmaker, monkeypatch, tmp_path,
+):
+    seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="公司知识库有没有报销标准？")
+    client = ScriptedLLMClient([*_search_rounds(), {"content": "Partial summary", "finish_reason": "length"},
+        {"tool_calls": [{"id": "must-not-publish-after-cap", "type": "function", "function": {
+            "name": "plaza_create_post", "arguments": '{"content":"Duplicate"}'}}], "finish_reason": "tool_calls"}])
+    _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, client)
+    await _execute_claimed_run(owner_sessionmaker, seed)
+    assert len(client.requests) == 7 and all(request["tools"] is None for request in client.requests[5:])
+    await _assert_discarded_summary(owner_sessionmaker, seed["run_id"], summary_requests=2)
+    failures = await _failure_events(owner_sessionmaker, seed["session_id"])
+    assert len(failures) == 1 and failures[0]["failure_code"] == "repeated_empty_search"
+    assert failures[0]["message"] == ANSWER and failures[0]["retryable"] is False
+
+
+async def test_member_input_arriving_at_the_guard_is_answered_by_the_normal_continuation(
     owner_sessionmaker, monkeypatch, tmp_path,
 ):
     import app.runtime.invoker as invoker
     from app.models.runtime_task import RuntimeTask
-    from app.models.session_v2 import SessionTurnInput
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionModelResult, SessionTurnInput
+    from app.services.session_control_plane import _runtime_task_user_blocker
     from app.models.user import User
     from app.services.session_human_input import queue_admitted_human_input
     from app.services.session_input_admission import run_user_prompt_admission
     from app.services.session_v2_persistence import accept_human_input, resolve_session_mutation_authority
 
     seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="查公司知识库里的报销标准。")
-    client = ScriptedLLMClient([*_search_rounds(), {"content": ANSWER}])
+    next_answer = "新问题已收到，现在为你答复。"
+    client = ScriptedLLMClient([*_search_rounds(), {"content": ANSWER}, {"content": next_answer}])
     _patch_r18a_seams(monkeypatch, seed, owner_sessionmaker, client)
     execute = invoker.execute_tool
     input_id = uuid4()
@@ -558,12 +579,42 @@ async def test_member_input_arriving_at_the_guard_is_left_for_the_next_turn(
 
     monkeypatch.setattr(invoker, "execute_tool", search)
     await _execute_claimed_run(owner_sessionmaker, seed)
-    assert len(client.requests) == 6
-    assert new_request not in json.dumps(client.requests[-1]["messages"], ensure_ascii=False)
+    status, metadata = await _run_status(owner_sessionmaker, seed["run_id"])
+    assert status == "completed"
+    assert not metadata.get("error_code") and not metadata.get("failure_code")
+    assert "session_v2_reconciliation" not in metadata
+    # R20b round 4/I3': one summary round is followed by a normal input-answering round.
+    assert len(client.requests) == 7
+    assert client.requests[5]["tools"] is None
+    assert client.requests[6]["tools"] == client.requests[0]["tools"]
+    assert new_request not in json.dumps(client.requests[5]["messages"], ensure_ascii=False)
+    assert new_request in json.dumps(client.requests[6]["messages"], ensure_ascii=False)
+    assert any(m["role"] == "assistant" and m["content"] == ANSWER for m in client.requests[6]["messages"])
     async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeTask, seed["run_id"])
+        assert _runtime_task_user_blocker(run) is None
         pending = await db.get(SessionTurnInput, input_id)
-        assert pending.status == "queued" and pending.bound_round_id is None
-    await _assert_final(owner_sessionmaker, seed["run_id"], ANSWER, 6)
+        assert pending.status == "applied"
+        assert pending.bound_round_id == f"{seed['run_id']}:round:7"
+        models = list(await db.scalars(select(SessionModelResult).where(
+            SessionModelResult.run_id == run.id).order_by(SessionModelResult.round_id)))
+        assert len(models) == 7 and all(m.state == "round_committed" for m in models)
+        summary = models[5]
+        assert summary.seal_json["continuation"]["verdict"] == "continue"
+        assert any(o["kind"] == "pending_input" for o in summary.seal_json["continuation"]["pending_obligations"])
+        assert models[6].seal_json["continuation"]["verdict"] == "terminal_candidate"
+        replies = list(await db.scalars(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.run_id == run.id, ChatTranscriptEvent.event_type == "assistant_text.snapshot")
+            .order_by(ChatTranscriptEvent.sequence)))
+        # R20b round 4/P2: persist both the search answer and the new member's answer.
+        assert [reply.content for reply in replies] == [ANSWER, next_answer]
+        assert [reply.result_id for reply in replies] == [summary.id, models[6].id]
+        finals = list(await db.scalars(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.run_id == run.id, ChatTranscriptEvent.event_type == "assistant_final.completed")))
+        assert len(finals) == 1 and finals[0].result_id == models[6].id
+        assert not list(await db.scalars(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.run_id == run.id, ChatTranscriptEvent.event_type == "run.needs_reconciliation")))
+    assert await _failure_events(owner_sessionmaker, seed["session_id"]) == []
 
 
 @pytest.mark.parametrize("lane", ["business", "delegation"])

@@ -1,4 +1,4 @@
-"""R20b round 3: the final empty-search reply is one bounded provider call."""
+"""R20b round 4: one tool-free summary round, then normal pending-input continuation."""
 
 import json
 from types import SimpleNamespace
@@ -39,13 +39,15 @@ async def test_invalid_summary_never_executes_tools_or_uses_the_empty_provider_e
 
 
 @pytest.mark.asyncio
-async def test_summary_does_not_bind_or_drain_a_new_member_message_and_next_turn_has_tools():
-    pending = []
-    bound_rounds, drains = [], []
+@pytest.mark.parametrize("search_again", [False, True])
+async def test_pending_input_continues_with_tools_and_cannot_start_a_second_summary(search_again):
+    pending, executed, bound_rounds, drains, events = [], [], [], [], []
+    new_request = "Answer the new question"
 
-    async def execute(*_a, **_k):
-        if len(client.calls) == 5:
-            pending.append({"role": "user", "content": "Publish the new request"})
+    async def execute(name, *_a, **_k):
+        executed.append(name)
+        if len(executed) == 5:
+            pending.append({"role": "user", "content": new_request})
         return EMPTY_RESULT
 
     async def bind(index):
@@ -58,45 +60,60 @@ async def test_summary_does_not_bind_or_drain_a_new_member_message_and_next_turn
         drains.append(True)
         return []
 
-    client = _FakeClient([*[_round([_search_call(i)]) for i in range(1, 6)], _answer(EMPTY_SEARCH_FINAL_MESSAGE)])
+    def commit(**payload):
+        return {"provider_request_id": payload["provider_request_id"], "continuation": {
+            "verdict": "continue" if payload["round_index"] == 6 else "terminal_candidate",
+            "pending_obligations": [{"kind": "pending_input"}] if payload["round_index"] == 6 else []}}
+
+    continued = _round([_search_call(6)]) if search_again else _answer("The new question was answered")
+    client = _FakeClient([*[_round([_search_call(i)]) for i in range(1, 6)],
+        _answer(EMPTY_SEARCH_FINAL_MESSAGE), continued])
     request = _request()
     request.round_input_bind, request.mid_run_message_drain = bind, drain
+    request.model_request_prepare = lambda **k: f"provider-{k['round_index']}"
+    request.model_response_commit = commit
+    request.on_event = lambda event: events.append(event)
     result = await _kernel(client, execute).handle(request)
-    assert result.terminal_reason is TerminalReason.TURN_STOP
-    assert bound_rounds == [1, 2, 3, 4, 5] and len(drains) == 5
-    assert "Publish the new request" not in _message_texts(client.calls[-1])
-    assert pending == [{"role": "user", "content": "Publish the new request"}]
+    # R20b round 4/I3': the summary skips input; round seven resumes the normal tool surface.
+    assert len(client.calls) == 7
+    assert bound_rounds == [1, 2, 3, 4, 5, 7] and len(drains) == 6
+    assert client.calls[5]["tools"] is None and client.calls[6]["tools"] == client.calls[0]["tools"]
+    assert new_request not in _message_texts(client.calls[5])
+    assert new_request in _message_texts(client.calls[6]) and pending == []
     assert result.final_tools
-
-    next_client = _FakeClient([_answer("The new request was answered")])
-    next_request = _request()
-    next_request.messages = list(pending)
-    next_result = await _kernel(next_client, execute).handle(next_request)
-    assert next_client.calls[0]["tools"]
-    assert "Publish the new request" in _message_texts(next_client.calls[0])
-    assert next_result.content == "The new request was answered"
+    # R20b round 4/I1': a later guard abort never gets another summary round.
+    assert sum(event.get("part", {}).get("event_type") == "loop_guard_terminal_evidence" for event in events) == 1
+    if search_again:
+        assert executed == ["search_company_kb"] * 6
+        assert result.terminal_reason is TerminalReason.LOOP_GUARD
+        assert result.failure_code == "repeated_empty_search" and not result.failure_retryable
+        assert result.content == EMPTY_SEARCH_FINAL_MESSAGE
+    else:
+        assert executed == ["search_company_kb"] * 5
+        assert result.terminal_reason is TerminalReason.TURN_STOP
+        assert result.content == "The new question was answered"
 
 
 @pytest.mark.asyncio
-async def test_summary_cannot_continue_for_a_stop_hook_or_receipt_verdict(monkeypatch):
+async def test_summary_skips_stop_hook_continuation(monkeypatch):
     import app.kernel.engine as support
 
-    async def stop(*_a, **_k):
+    stops = []
+
+    async def stop(event, *_a, **_k):
+        if event == "stop":
+            stops.append(True)
         return SimpleNamespace(block=True, prevent_continuation=False, reason="Try again", stop_reason="")
 
     monkeypatch.setattr(support, "_emit_runtime_hook", stop)
     client = _FakeClient([*[_round([_search_call(i)]) for i in range(1, 6)], _answer(EMPTY_SEARCH_FINAL_MESSAGE)])
-    request = _request()
-    request.model_request_prepare = lambda **k: f"provider-{k['round_index']}"
-    request.model_response_commit = lambda **k: {
-        "provider_request_id": k["provider_request_id"], "continuation": {"verdict": "continue"}}
-    result = await _kernel(client, lambda *_a, **_k: EMPTY_RESULT).handle(request)
-    assert len(client.calls) == 6
+    result = await _kernel(client, lambda *_a, **_k: EMPTY_RESULT).handle(_request())
+    assert len(client.calls) == 6 and stops == []
     assert result.content == EMPTY_SEARCH_FINAL_MESSAGE and result.terminal_reason is TerminalReason.TURN_STOP
 
 
 @pytest.mark.asyncio
-async def test_guard_does_not_start_an_auxiliary_compaction_provider_call(monkeypatch):
+async def test_summary_uses_normal_preflight_and_periodic_compaction(monkeypatch):
     import app.kernel.engine as support
 
     executed, compression_sites = [], []
@@ -117,31 +134,43 @@ async def test_guard_does_not_start_an_auxiliary_compaction_provider_call(monkey
     monkeypatch.setattr(support, "prepare_session_context_for_request", preflight)
     client = _FakeClient([*[_round([_search_call(i)]) for i in range(1, 7)], _answer(EMPTY_SEARCH_FINAL_MESSAGE)])
     result = await _kernel(client, execute).handle(_request())
-    # R20b round 3: malformed + five empty results reach the periodic-compaction boundary.
     assert len(executed) == 6 and len(client.calls) == 7
     assert result.content == EMPTY_SEARCH_FINAL_MESSAGE
-    assert compression_sites and not [site for site in compression_sites if site[0] >= 6]
+    # R20b round 4/I1' restores normal round machinery; the old compression ban no longer applies.
+    assert (6, "mid_loop_context_compaction") in compression_sites
+    assert (6, "request_preflight_context_compaction") in compression_sites
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error", ["HTTP 400 context length exceeded", "HTTP 503 unavailable"])
-async def test_summary_model_error_cannot_retry_compression_or_the_fallback_model(error):
+async def test_summary_fallback_stays_tool_free_and_discards_its_tool_call():
     from app.services.llm_client import LLMError
 
     class Client(_FakeClient):
         async def stream(self, **kwargs):
             if len(self.calls) == 5:
                 self.calls.append(kwargs)
-                raise LLMError(error, delivery_state="rejected")
+                raise LLMError("HTTP 503 temporarily unavailable", delivery_state="rejected", http_status=503)
             return await super().stream(**kwargs)
 
-    client = Client([_round([_search_call(i)]) for i in range(1, 6)])
+    client = Client([*[_round([_search_call(i)]) for i in range(1, 6)], _round([{
+        "id": "fallback-must-not-publish", "function": {
+            "name": "plaza_create_post", "arguments": '{"content":"Duplicate"}'}}])])
+    executed, events = [], []
+
+    async def execute(name, *_a, **_k):
+        executed.append(name)
+        return EMPTY_RESULT
+
     request = _request()
     request.fallback_model = SimpleNamespace(provider="openai", model="fallback")
-    result = await _kernel(client, lambda *_a, **_k: EMPTY_RESULT).handle(request)
-    assert len(client.calls) == 6
-    assert result.terminal_reason is TerminalReason.PROVIDER_ERROR
-    assert result.failure_code and result.failure_code != "repeated_empty_search"
+    request.on_event = lambda event: events.append(event)
+    result = await _kernel(client, execute).handle(request)
+    # R20b round 4/I1': fallback is inside the summary round, with the same tool isolation.
+    assert len(client.calls) == 7 and all(call["tools"] is None for call in client.calls[5:])
+    assert any(event.get("type") == "runtime_fallback" for event in events)
+    assert executed == ["search_company_kb"] * 5
+    assert result.terminal_reason is TerminalReason.LOOP_GUARD
+    assert result.failure_code == "repeated_empty_search" and not result.failure_retryable
 
 
 @pytest.mark.asyncio
@@ -174,19 +203,19 @@ async def test_member_stop_during_the_summary_uses_the_cancel_path():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["anthropic", "minimax"])
-@pytest.mark.parametrize("summary_outcome", ["stop", "output_cap", "error"])
-async def test_summary_protocol_payload_is_scoped_and_sent_once(provider, summary_outcome):
-    payloads = []
+@pytest.mark.parametrize("summary_outcome", ["stop", "output_cap", "retry"])
+async def test_summary_protocol_payload_is_scoped_across_normal_retries_and_continuations(provider, summary_outcome):
+    payloads, prepared = [], []
 
     class Response:
-        headers = {}
+        headers = {"retry-after": "0"}
 
         @property
         def status_code(self):
-            return 503 if len(payloads) == 6 and summary_outcome == "error" else 200
+            return 429 if len(payloads) == 6 and summary_outcome == "retry" else 200
 
         async def aiter_bytes(self):
-            yield b"provider unavailable"
+            yield b"rate limited"
 
         async def __aenter__(self):
             return self
@@ -202,24 +231,26 @@ async def test_summary_protocol_payload_is_scoped_and_sent_once(provider, summar
                     {"type": "content_block_delta", "index": 0, "delta": {
                         "type": "input_json_delta", "partial_json": json.dumps({"query": f"question {index}"})}}]
                     if index < 6 else [{"type": "content_block_delta", "index": 0,
-                        "delta": {"type": "text_delta", "text": EMPTY_SEARCH_FINAL_MESSAGE}}])
+                        "delta": {"type": "text_delta", "text": (EMPTY_SEARCH_FINAL_MESSAGE if index == 6 or summary_outcome == "retry"
+                            else "摘要已完成。")}}])
                 blocks.append({"type": "message_delta", "delta": {
-                    "stop_reason": "tool_use" if index < 6 else ("max_tokens" if summary_outcome == "output_cap" else "end_turn")}, "usage": {"output_tokens": 5}})
+                    "stop_reason": "tool_use" if index < 6 else ("max_tokens" if summary_outcome == "output_cap" and index == 6 else "end_turn")}, "usage": {"output_tokens": 5}})
                 for block in blocks:
                     yield "event: " + block["type"]
                     yield "data: " + json.dumps(block)
             else:
                 delta = ({"tool_calls": [{"index": 0, **_search_call(index)}]}
-                    if index < 6 else {"content": EMPTY_SEARCH_FINAL_MESSAGE})
+                    if index < 6 else {"content": (EMPTY_SEARCH_FINAL_MESSAGE if index == 6 or summary_outcome == "retry"
+                        else "摘要已完成。")})
                 yield "data: " + json.dumps({"choices": [{"delta": delta,
-                    "finish_reason": "tool_calls" if index < 6 else ("length" if summary_outcome == "output_cap" else "stop")}],
+                    "finish_reason": "tool_calls" if index < 6 else ("length" if summary_outcome == "output_cap" and index == 6 else "stop")}],
                     "usage": {"total_tokens": 5}})
                 yield "data: [DONE]"
 
     class Transport:
         def stream(self, *_a, **kwargs):
             payloads.append(kwargs["json"])
-            assert len(payloads) <= 6, "The final summary must not retry or continue after an output cap"
+            assert len(payloads) <= 7, "The scripted summary must finish within one retry or continuation"
             return Response()
 
     client = (AnthropicClient(api_key="local", model="claude-local") if provider == "anthropic"
@@ -233,22 +264,29 @@ async def test_summary_protocol_payload_is_scoped_and_sent_once(provider, summar
     try:
         request = _request()
         request.model.provider = provider
+        request.model_request_prepare = lambda **p: prepared.append(p) or f"provider-{len(prepared)}"
         result = await _kernel(client, lambda *_a, **_k: EMPTY_RESULT).handle(request)
     finally:
         monkeypatch.undo()
 
-    if summary_outcome == "error":
-        assert result.terminal_reason is TerminalReason.PROVIDER_ERROR
-    else:
-        assert result.content == EMPTY_SEARCH_FINAL_MESSAGE
-    assert len(payloads) == 6
+    assert result.terminal_reason is TerminalReason.TURN_STOP
+    assert result.content == EMPTY_SEARCH_FINAL_MESSAGE + ("摘要已完成。" if summary_outcome == "output_cap" else "")
+    # R20b round 4/I1' allows the normal physical retry or output-cap continuation.
+    assert len(payloads) == (6 if summary_outcome == "stop" else 7)
     assert all(payload["tools"] for payload in payloads[:5])
-    summary = payloads[-1]
-    if provider == "anthropic":
-        assert summary["tools"] == payloads[-2]["tools"]
-        assert summary["tool_choice"] == {"type": "none"}
-        assert any(block.get("type") == "tool_result" for message in summary["messages"]
-            if isinstance(message["content"], list) for block in message["content"])
-    else:
-        assert "tools" not in summary and "tool_choice" not in summary
-    assert "_http_max_attempts" not in summary
+    for summary in payloads[5:]:
+        if provider == "anthropic":
+            assert summary["tools"] == payloads[4]["tools"]
+            assert summary["tool_choice"] == {"type": "none"}
+            assert any(block.get("type") == "tool_result" for message in summary["messages"]
+                if isinstance(message["content"], list) for block in message["content"])
+        else:
+            assert "tools" not in summary and "tool_choice" not in summary
+        assert "_http_max_attempts" not in summary
+    for snapshot in [p for p in prepared if p["round_index"] == 6]:
+        if provider == "anthropic":
+            assert snapshot["tools"] == prepared[0]["tools"]
+            assert snapshot["wire_request"]["tools"] == prepared[0]["tools"]
+            assert snapshot["wire_request"]["reasoning"]["tool_choice"] == {"type": "none"}
+        else:
+            assert not snapshot["tools"] and snapshot["wire_request"]["tools"] == []

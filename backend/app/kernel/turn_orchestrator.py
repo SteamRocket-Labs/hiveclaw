@@ -347,7 +347,6 @@ async def _execute_committed_provider_round(
             request_options["tool_choice"] = {"type": "none"}
         else:
             request_tools = []
-        request_options["_http_max_attempts"] = 1
     reasoning_kwargs = {
         **support.build_reasoning_kwargs(active_model, tools_enabled=bool(request_tools)),
         **request_options,
@@ -462,28 +461,37 @@ async def _execute_committed_provider_round(
         **reasoning_kwargs,
     )
     base_physical_response = _provider_response_payload(response)
+    continuation_client, continuation_prepare = client, request.model_request_prepare
+    if final_reply_only and request_tools:
+        from types import SimpleNamespace
+
+        # R20b round 4/I5: output continuations retain Anthropic's history definitions too.
+        continuation_client = SimpleNamespace(stream=lambda **kw: client.stream(**{**kw, "tools": request_tools}))
+        if continuation_prepare is not None:
+            def prepare_continuation(**payload):
+                return request.model_request_prepare(**{**payload, "tools": request_tools,
+                    "wire_request": {**payload["wire_request"], "tools": request_tools}})
+            continuation_prepare = prepare_continuation
+    response, continuation_receipts = await support._continue_after_output_cap(
+        client=continuation_client,
+        response=response,
+        stream_messages=stream_messages,
+        cancel_event=request.cancel_event,
+        active_model=active_model,
+        on_chunk=emit_chunk,
+        on_thinking=emit_thinking,
+        reasoning_kwargs=reasoning_kwargs,
+        round_index=logical_round_index,
+        model_request_prepare=continuation_prepare,
+        provider=provider,
+        model=model,
+        provider_idempotency_supported=provider_idempotency_supported,
+    )
     if final_reply_only and (response.tool_calls or not str(response.content or "").strip()):
-        # Do not seal tool calls that will never run (or invent an empty final).
-        # The caller settles this known response through model_request_fail.
+        # Settle every physical response before rejecting this summary's tools or empty output.
         return {"response": response, "provider_request_id": provider_request_id,
-            "llm_started_ms": llm_started_ms, "discarded_summary": True}
-    continuation_receipts = []
-    if not final_reply_only:
-        response, continuation_receipts = await support._continue_after_output_cap(
-            client=client,
-            response=response,
-            stream_messages=stream_messages,
-            cancel_event=request.cancel_event,
-            active_model=active_model,
-            on_chunk=emit_chunk,
-            on_thinking=emit_thinking,
-            reasoning_kwargs=reasoning_kwargs,
-            round_index=logical_round_index,
-            model_request_prepare=request.model_request_prepare,
-            provider=provider,
-            model=model,
-            provider_idempotency_supported=provider_idempotency_supported,
-        )
+            "llm_started_ms": llm_started_ms, "discarded_summary": True,
+            "continuation_receipts": continuation_receipts}
     has_model_output = bool(response.tool_calls) or bool(isinstance(response.content, str) and response.content.strip())
     if not has_model_output:
         return {
@@ -625,17 +633,15 @@ async def _finalize_model_response(
     final_content, _source_permission_allowed = await _enforce_generated_source_permissions(final_content)
     if _source_permission_allowed:
         await _flush_buffered_chunks()
-    if final_reply_only:
-        # R20b round 3: the guard already chose the terminal boundary. Neither
-        # continuation verdicts nor Stop hooks may start another round here.
-        return await _completed_model_response(
-            support=support, request=request, response=response, runtime_config=runtime_config,
-            api_messages=api_messages, logical_round_index=logical_round_index,
-            accumulated_tokens=accumulated_tokens, tools_for_llm=tools_for_llm,
-            collected_parts=collected_parts, last_model_result_receipt=last_model_result_receipt,
-            final_content=final_content, _record_new_token_usage=_record_new_token_usage,
-        )
-    if (logical_round_index < max_rounds
+    complete_response = partial(
+        _completed_model_response,
+        support=support, request=request, response=response, runtime_config=runtime_config,
+        api_messages=api_messages, logical_round_index=logical_round_index,
+        accumulated_tokens=accumulated_tokens, tools_for_llm=tools_for_llm,
+        collected_parts=collected_parts, last_model_result_receipt=last_model_result_receipt,
+        final_content=final_content, _record_new_token_usage=_record_new_token_usage,
+    )
+    if ((logical_round_index < max_rounds or final_reply_only)
         and provider_request_id
         and (last_model_result_receipt or {}).get("provider_request_id") == provider_request_id
         and (last_model_result_receipt or {}).get("continuation", {}).get("verdict") == "continue"):
@@ -646,6 +652,9 @@ async def _finalize_model_response(
             reasoning_signature=getattr(response, "reasoning_signature", None),
             source_ref=f"session-provider-result:{provider_request_id}"))
         return None
+    if final_reply_only:
+        # R20b round 4: pending input can continue normally; summary Stop hooks cannot.
+        return await complete_response()
     from app.runtime.hooks import HookEvent
 
     _session_source = request.session_context.source if request.session_context else "runtime"
@@ -842,13 +851,7 @@ async def _finalize_model_response(
         return None
     elif request.session_context is not None:
         request.session_context.metadata.pop("stop_hook_active", None)
-    return await _completed_model_response(
-        support=support, request=request, response=response, runtime_config=runtime_config,
-        api_messages=api_messages, logical_round_index=logical_round_index,
-        accumulated_tokens=accumulated_tokens, tools_for_llm=tools_for_llm,
-        collected_parts=collected_parts, last_model_result_receipt=last_model_result_receipt,
-        final_content=final_content, _record_new_token_usage=_record_new_token_usage,
-    )
+    return await complete_response()
 
 
 async def _completed_model_response(
@@ -2123,6 +2126,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         _tool_terminal_signal: str | None = None
         _loop_guard_summary_pending = False
         _empty_search_summary_pending = False
+        _empty_search_summary_used = False
         _loop_guard_terminal_decision: LoopGuardDecision | None = None
         try:
             client = self._deps.create_client(active_model)
@@ -2266,8 +2270,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 # Apply capability-driven cache hints.
                 ptl_retries = 0
                 while True:
-                    if not final_empty_search_reply:
-                        await _prepare_api_messages_for_request()
+                    await _prepare_api_messages_for_request()
                     stream_messages = _clone_api_messages(api_messages)
                     if _transient_reminders:
                         stream_messages = stream_messages + [
@@ -2338,12 +2341,15 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         llm_started_ms = int(provider_round["llm_started_ms"])
                         round_settled_tool_results = dict(provider_round.get("settled_tool_results") or {})
                         if provider_round.get("discarded_summary"):
-                            if request.model_request_fail is not None and provider_request_id is not None:
-                                await _maybe_await(request.model_request_fail(
-                                    round_index=logical_round_index, provider_request_id=provider_request_id,
-                                    error_class="repeated_empty_search", delivery_state="response_received",
-                                    retry_safe=True,
-                                ))
+                            for physical in [{"provider_request_id": provider_request_id, "continuation_index": 0},
+                                             *provider_round.get("continuation_receipts", [])]:
+                                if request.model_request_fail is not None and physical["provider_request_id"] is not None:
+                                    await _maybe_await(request.model_request_fail(
+                                        round_index=logical_round_index, provider_request_id=physical["provider_request_id"],
+                                        continuation_index=physical["continuation_index"],
+                                        error_class="repeated_empty_search", delivery_state="response_received",
+                                        retry_safe=True,
+                                    ))
                             accumulated_tokens += self._deps.extract_usage_tokens(response.usage) or 0
                             round_charge_key["key"] = provider_request_id
                             from app.services.runtime_display_status import EMPTY_SEARCH_FINAL_MESSAGE
@@ -2508,14 +2514,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             await self._persist_before_exit(request, runtime_config, f"[LLM Error] {exc}", api_messages)
                             return _classified_llm_error_result(
                                 _build_error_result, user_msg, accumulated_tokens, error_classification, delivery_state
-                            )
-                        if final_empty_search_reply:
-                            # R20b round 3: even a rejected summary gets no PTL retry or fallback model call.
-                            await _record_new_token_usage()
-                            await self._persist_before_exit(request, runtime_config, f"[LLM Error] {exc}", api_messages)
-                            return _classified_llm_error_result(
-                                _build_error_result, _humanize_llm_error(exc), accumulated_tokens,
-                                error_classification, delivery_state,
                             )
                         # ── PTL reactive retry: full compress first → mechanical round-group fallback ──
                         if _is_prompt_too_long(exc) and ptl_retries < _PTL_MAX_RETRIES:
@@ -2881,8 +2879,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             str(exc),
                         )
                         if (
-                            not final_empty_search_reply
-                            and fallback_model is not None
+                            fallback_model is not None
                             and active_model is request.model
                             and not should_surface_without_model_fallback(exc)
                         ):
@@ -3728,7 +3725,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     if _loop_guard_terminal_decision.reason in {
                         "identical_terminal_task_read",
                         "identical_running_task_read", "identical_refused_result_read",
-                    }:
+                    } or (_loop_guard_terminal_decision.reason == "repeated_empty_search" and _empty_search_summary_used):
                         # R18a round 2 (reviewer blocker 2): end through the same
                         # failure shape for read-loop stops so every lane settles.
                         message = _loop_guard_terminal_decision.message
@@ -3743,9 +3740,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         return result
                     _loop_guard_summary_pending = True
                     if _loop_guard_terminal_decision.reason == "repeated_empty_search":
-                        # R20b round 3: one final call skips new input binding,
-                        # retries, output continuation, tools and Stop-hook retries.
-                        _empty_search_summary_pending = True
+                        # R20b round 4: only one summary round per turn; a later
+                        # empty-search abort uses the failure exit above.
+                        _empty_search_summary_used = _empty_search_summary_pending = True
                     await _project_loop_guard_terminal_evidence(
                         _loop_guard_terminal_decision, api_messages=api_messages,
                         _context_message=_context_message, _emit_event=_emit_event,
@@ -3761,11 +3758,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         _tool_terminal_signal,
                         response.content or "",
                     )
-
-                # R20b round 3: compaction can call another model. The only
-                # provider call after this guard is the final reply itself.
-                if _empty_search_summary_pending:
-                    continue
 
                 # ── L1: Time-based microcompact — clear old tool results ──
                 # Clear tool results older than 60min, always keep the 5 most recent.

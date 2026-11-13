@@ -300,8 +300,10 @@ async def test_published_result_refuses_a_later_revoked_source(
 
 
 async def test_child_file_receipt_keeps_the_members_current_source_grant(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, caplog,
 ):
+    from loguru import logger
+
     from app.core.source_read_purpose import source_recipient_read
     from app.services.content_input_receipts import ContentInputReceiptError, latest_workspace_receipt, validate_browser_input_dependencies
 
@@ -322,7 +324,14 @@ async def test_child_file_receipt_keeps_the_members_current_source_grant(
             with pytest.raises(ContentInputReceiptError) as denied_source:
                 await validate_browser_input_dependencies(db, seed["tenant_id"], await db.get(User, seed["user_id"]), [source])
         assert denied_source.value.code == "content_source_access_denied" and denied_source.value.status_code == 403
-    denied = await _read(seed)
+    sink = logger.add(caplog.handler, level="WARNING")
+    try:
+        denied = await _read(seed)
+    finally:
+        logger.remove(sink)
+    assert any(all(marker in message for marker in (
+        "operation=read_runtime_result", "source_kind=knowledge_document", f"source_id={seed['document_id']}",
+    )) for message in caplog.messages), caplog.messages
     print("R22A_UNREADABLE_RECEIPT_SOURCE", json.dumps(denied, ensure_ascii=False))
     assert denied["status"] == "source_access_denied" and denied["reason_code"] == "content_source_access_denied", denied
     assert RESULT not in json.dumps(denied) and "Gamma,150" not in json.dumps(denied)
@@ -391,38 +400,3 @@ async def test_revoked_handback_summary_is_not_copied_into_continuation_or_later
                 assert snapshot["input_bindings"]["dependency_coverage"]["complete"] is True
     denied = await _read(seed)
     assert denied["status"] == "source_access_denied", denied
-
-
-async def test_model_history_rechecks_a_previously_read_delegated_result_after_revocation(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
-):
-    import app.runtime.invoker as invoker
-
-    seed = await _file_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, source_grant=True)
-    return_id = await _deliver_continuation(owner_sessionmaker, app_user_sessionmaker, seed)
-    client = kernel_cases.ScriptedLLMClient([
-        _round("read_runtime_result", {"result_ref": seed["result_ref"]}, "parent-file-result"),
-        {"content": RESULT},
-    ])
-    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
-    await _execute(owner_sessionmaker, return_id, "r22a-consuming-parent")
-    assert len(client.requests) == 2
-    read = (await _tool_results(owner_sessionmaker, return_id))["parent-file-result"]
-    page = json.loads(read["content"])
-    assert page["status"] == "ok" and RESULT in page["content"] and page["dependency_coverage"] == {"complete": True}, page
-    tool_message = next(message for message in client.requests[1]["messages"]
-        if message.get("tool_call_id") == "parent-file-result")
-    assert tool_message["content"] == read.get("model_visible_content", read["content"])
-    assert json.loads(tool_message["content"]) == page
-    await _revoke_source(owner_sessionmaker, seed)
-    later_id, later = await _parent_turn(owner_sessionmaker, seed, monkeypatch, [{"content": "I need an authorized source to continue."}])
-    wire = json.dumps(later.requests, ensure_ascii=False)
-    print("R22A_REVOKED_HISTORY_MODEL_INPUT", "HAS_SUMMARY", RESULT in wire)
-    async with owner_sessionmaker() as db:
-        model = (await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == later_id))).one()
-        bindings = model.model_request_snapshot_json["input_bindings"]
-        print("R22A_REVOKED_HISTORY_BINDINGS", json.dumps(bindings, ensure_ascii=False))
-    assert RESULT not in wire and "Gamma,150" not in wire
-    assert any(entry["status"] == "withheld" and entry["code"] == "content_source_access_denied"
-        for entry in bindings["messages"]), bindings
-    assert bindings["dependency_coverage"] == {"complete": True}

@@ -227,7 +227,7 @@ async def _published_owned_delegation_input(
             )
             return bound == pointer and (bound["content_input_receipt_id"] is None
                 or uuid.UUID(bound["content_input_receipt_id"]) in receipt_ids
-                or bound["content_input_receipt_id"] in input_receipt_ids)
+                or uuid.UUID(bound["content_input_receipt_id"]) in input_receipt_ids)
         except (ContentInputReceiptError, KeyError, TypeError, ValueError):
             return False
     if kind == "session_command":
@@ -920,7 +920,9 @@ async def _validate_runtime_result_sources(db, request, result_object, *, user=N
         )
     # Native file reads retain their exact carrier in this inventory even when
     # no file is returned. Its sources still pass the member reader below.
-    input_receipt_ids = frozenset(ref["source_id"] for ref in dependencies if ref["source_kind"] == "workspace_artifact")
+    input_receipt_ids = frozenset(
+        uuid.UUID(ref["source_id"]) for ref in dependencies if ref["source_kind"] == "workspace_artifact"
+    )
     for dependency in dependencies:
         published = (first_task or published_return) and (
             dependency["source_kind"] == "workspace_artifact"

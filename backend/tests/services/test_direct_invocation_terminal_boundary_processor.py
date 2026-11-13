@@ -132,7 +132,8 @@ async def _async_value(value):
     return value
 
 
-@pytest.mark.parametrize("case", ["origin_killed", "origin_skipped", "origin_failed", "no_origin", "empty", "none"])
+@pytest.mark.parametrize("case", ["origin_killed", "origin_skipped", "origin_failed", "no_origin", "empty", "none",
+    "empty_no_reason", "text_last", "none_last", "number_last"])
 async def test_x3br2_pre_start_projection_respects_instruction_gate(owner_sessionmaker, monkeypatch, case):
     from unittest.mock import AsyncMock
     from app.database import tenant_scoped_session
@@ -147,7 +148,9 @@ async def test_x3br2_pre_start_projection_respects_instruction_gate(owner_sessio
     task_id, child_id = uuid.uuid4(), uuid.uuid4()
     instruction = "  Preserve this exact delegated instruction.\nPrivate task content.\n"
     origin = case.startswith("origin_")
-    messages = [] if case in {"empty", "none"} else [{"role": "user", "content": instruction}]
+    malformed = {"text_last": ["text"], "none_last": [None], "number_last": [1]}
+    messages = malformed.get(case, [] if case in {"empty", "none", "empty_no_reason"} else [{"role": "user", "content": instruction}])
+    no_reason = case == "empty_no_reason" or case in malformed
     if origin:
         messages[0]["a2a_instruction_origin"] = {"parent_session_id": str(seeded.parent_session_id), "tool_call_item_id": str(uuid.uuid4())}
     status = case.removeprefix("origin_") if origin else "killed"
@@ -158,7 +161,7 @@ async def test_x3br2_pre_start_projection_respects_instruction_gate(owner_sessio
             root_session_id=str(seeded.parent_session_id), completed_at=datetime.now(UTC),
             prompt=None if case == "none" else "" if case == "empty" else "The prompt copy must not replace stored messages.",
             result_summary="Task cancelled by parent agent", terminal_boundary_generation=1,
-            metadata_json={"conversation_messages": messages, "terminal_reason": "task_killed"})
+            metadata_json={"conversation_messages": messages, **({} if no_reason else {"terminal_reason": "task_killed"})})
         db.add(task)
         await db.flush()
         db.add(ChatSession(id=child_id, tenant_id=seeded.tenant_id, agent_id=seeded.child_agent_id,
@@ -190,7 +193,7 @@ async def test_x3br2_pre_start_projection_respects_instruction_gate(owner_sessio
     async with tenant_scoped_session(seeded.tenant_id, session_factory=owner_sessionmaker) as db:
         rows = list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == child_id)))
         users = [row for row in rows if row.event_type == "user_message"]
-        expected = [] if origin or case in {"empty", "none"} else [instruction]
+        expected = [instruction] if case == "no_origin" else []
         assert [row.content for row in users] == expected
         assert all("Complete the delegated task" not in row.content for row in rows)
         published = {str(call.kwargs["transcript_event_id"]) for call in bridge.await_args_list}
@@ -203,6 +206,13 @@ async def test_x3br2_pre_start_projection_respects_instruction_gate(owner_sessio
         if status == "killed":
             visible = [serialize_session_event(row, audience="user")["payload"]["content"] for row in rows if row.event_type != "user_message"]
             assert visible == ["已停止，同事没有完成这项工作。"]
+        if no_reason:
+            parents = list(await db.scalars(select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.session_id == seeded.parent_session_id,
+                ChatTranscriptEvent.run_id == task_id,
+                ChatTranscriptEvent.event_type == "child_session")))
+            assert len(parents) == 1
+            assert parents[0].metadata_json["reason"] == "delegation_terminal"
         task = await db.get(RuntimeTask, task_id)
         assert task.metadata_json["conversation_messages"] == messages
         assert json.dumps(boundary.direct_terminal_authority_snapshot(task), sort_keys=True, default=str) == snapshot

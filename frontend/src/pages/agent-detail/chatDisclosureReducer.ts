@@ -757,7 +757,6 @@ function getTimestampMs(value?: string): number | null {
 }
 
 function getTimelineStatus(steps: RunStepSnapshot[], hasAnswer: boolean): RunTimelineSnapshot['status'] {
-  if (steps.length > 0 && steps.every((step) => step.status === 'cancelled')) return 'cancelled';
   if (hasAnswer) return 'done';
   if (steps.some((step) => step.status === 'failed')) return 'failed';
   if (steps.some((step) => step.status === 'blocked')) return 'blocked';

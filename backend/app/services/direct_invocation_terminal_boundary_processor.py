@@ -734,7 +734,8 @@ async def _project_delegation_parent_completion(
     if projected_status == "skipped":
         projected_status = "blocked"
     reason = str(payload.get("parent_projection_reason") or "").strip() or None
-    has_instruction = bool(request.conversation_messages and request.conversation_messages[-1].get("content"))
+    last_message = request.conversation_messages[-1] if request.conversation_messages else None
+    has_instruction = isinstance(last_message, dict) and bool(last_message.get("content"))
     if material.event_kind == "runtime_terminal" and has_instruction:
         receipt = await _project_delegation_request_terminal_to_parent(
             request=request,
@@ -757,7 +758,7 @@ async def _project_delegation_parent_completion(
             task_id=str(material.runtime_task_id),
             status=projected_status,
             summary=material.result_summary,
-            reason=reason,
+            reason=reason or "delegation_terminal",
             required=True,
             session_factory=session_factory,
         )

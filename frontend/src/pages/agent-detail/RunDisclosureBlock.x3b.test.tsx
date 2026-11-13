@@ -13,6 +13,7 @@ import { buildRunTimelineFromMessages, type RunStepSnapshot } from './chatDisclo
 import { hydrateSessionTranscriptEvents } from './sessionEventConsumer';
 import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } from './sessionTranscriptApplier';
 import type { ChatTranscriptEventPayload } from './chatRuntime';
+import { buildThreadTimeline } from '../session-workbench/timelineModel';
 
 const locale = vi.hoisted(() => ({ language: 'zh' as 'zh' | 'en' }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({
@@ -274,13 +275,16 @@ function stopEvents() {
   ];
 }
 
-it.each([false, true])('x3br2 labels a cancellation-only block stopped live and after reload (answer: %s)', hasAnswer => {
+it.each([false, true])('x3br3 labels cancelled-step blocks by answer presence live and after reload (answer: %s)', hasAnswer => {
   for (const messages of projectBoth(stopEvents())) {
     const timeline = buildRunTimelineFromMessages(messages, hasAnswer
       ? { answer: { id: 'stop-answer', role: 'assistant', content: '这项工作已停止。' } } : {});
-    expect(timeline.status).toBe('cancelled');
+    // controller ruling X3b r3 item 2: an answered block treats cancelled steps like failed ones
+    expect(timeline.status).toBe(hasAnswer ? 'done' : 'cancelled');
     const { container, unmount } = render(<RunDisclosureBlock timeline={timeline} />);
-    expect(container.querySelector('.run-disclosure-title')?.textContent).toBe('已停止');
+    expect(container.querySelector('.run-disclosure-title')?.textContent).toBe(hasAnswer ? '完成' : '已停止');
+    expand(container);
+    expect(container.querySelector('[role="img"][aria-label="已停止"]')).toBeTruthy();
     unmount();
   }
 });
@@ -299,11 +303,58 @@ it('x3br2 keeps one stopped child row and its authorized colleague link', () => 
   expect(container.textContent?.split('已停止，同事没有完成这项工作。').length).toBe(2);
 });
 
-it('x3br2 builds the memory receipt from typed content, not result text', () => {
+it('x3br2 keeps a generic memory receipt without a structural success signal', () => {
   const { container } = renderSteps([{ ...step('done'), kind: 'tool', details: { toolName: 'save_memory',
     args: { content: 'Remember this exact preference.' }, result: 'Provenance hint: private result', rawResult: 'PRIVATE_RAW' } }]);
-  expect(container.querySelector('p')?.textContent).toBe('已记住：Remember this exact preference.');
+  // Controller ruling X3b r3 item 1: typed content alone cannot attest a saved memory.
+  expect(container.querySelector('p')?.textContent).toBe('保存记忆。已返回结果');
+  expect(container.textContent).not.toContain('已记住');
   expect(container.textContent).not.toMatch(/Provenance|PRIVATE_RAW/);
+});
+
+it.each([
+  ['held', 'X', '[Held] medium: needs review'],
+  ['rejected', 'X', '[Rejected] high: cannot store'],
+  ['error', '', '[Error] content is required'],
+  ['success', 'X', '已记住：X'],
+] as const)('x3br3 never claims an unconfirmed memory save (%s), live and after reload', (_case, content, result) => {
+  // Production persists the envelope's text, not its ToolContentEnvelope identity.
+  const events = [{ id: 'save-memory', sequence: 1, event_type: 'tool_result', run_id: 'parent-run',
+    content: JSON.stringify({ name: 'save_memory', args: { content }, status: 'done', result,
+      content_replacement: { schema: 'content_replacement_record.v1', replacement_applied: _case === 'success',
+        inline_content: _case === 'success' ? 'Saved memory [user] (user): X' : result } }) }];
+  for (const messages of projectBoth(events)) {
+    const before = JSON.stringify(messages);
+    const { container, unmount } = renderSteps(buildRunTimelineFromMessages(messages).steps);
+    expect(container.querySelector('p')?.textContent).toBe('保存记忆。已返回结果');
+    expect(container.textContent).not.toContain('已记住');
+    expect(container.textContent).not.toMatch(/\[Held\]|\[Rejected\]|\[Error\]|Saved memory/);
+    expect(JSON.stringify(messages)).toBe(before);
+    unmount();
+  }
+});
+
+it('x3br3 keeps a member-cancelled run stopped live and after reload', () => {
+  const events = [
+    native(1, 'tool_call', { tool_name: 'delegate_to_agent', args: { task: '请同事处理这项工作。' } }),
+    native(2, 'tool_result', { tool_name: 'delegate_to_agent', outcome: 'success', content: '',
+      member_summary: { kind: 'delegation', state: 'not_done', task_id: 'stop-task', status: 'cancelled' } }),
+    native(3, 'assistant_final', { content: '已请同事处理。' }),
+    { ...native(4, 'run', { status: 'cancelled' }), item_id: 'run', kind: 'run.cancelled', lifecycle: 'cancelled',
+      payload_schema: 'hive.session.payload.run.cancelled.v2',
+      scope: { level: 'run', session_id: 'session', thread_id: 'session', turn_id: 'turn', run_id: 'run' } },
+  ];
+  for (const messages of projectBoth(events)) {
+    const model = buildThreadTimeline({ messages, activeSession: { id: 'session', title: 'Stopped run' },
+      isWaiting: false, isStreaming: false, activeRunStatus: null });
+    const run = model.cells.find(cell => cell.kind === 'active_run' && cell.runId === 'run');
+    expect(run?.kind).toBe('active_run');
+    if (run?.kind !== 'active_run') throw new Error('Expected the cancelled run');
+    expect(run.timeline.status).toBe('cancelled');
+    const { container, unmount } = render(<RunDisclosureBlock timeline={run.timeline} />);
+    expect(container.querySelector('.run-disclosure-title')?.textContent).toBe('已停止');
+    unmount();
+  }
 });
 
 it.each(['check_async_task', 'task_output', 'list_async_tasks'].flatMap(reader =>

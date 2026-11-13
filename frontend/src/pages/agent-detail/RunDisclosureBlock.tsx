@@ -284,9 +284,6 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
     if (['write_file', 'fs_write'].includes(toolName || '') && step.status === 'done' && file) {
       return <p>{t('agent.chat.toolResults.memberSummary.fileWriteNamed', 'Wrote the file “{{filename}}”.', { filename: file })}</p>;
     }
-    if (toolName === 'save_memory' && step.status === 'done' && typeof details?.args?.content === 'string') {
-      return <p>{t('agent.chat.toolResults.memberSummary.memorySaved', 'Remembered: {{content}}', { content: details.args.content.trim() })}</p>;
-    }
     const status = outcome === 'unknown' ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
       : outcome === 'done' ? t('agent.chat.disclosure.resultSucceeded', 'Succeeded')
       : outcome === 'failed' || step.status === 'failed'

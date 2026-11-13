@@ -589,9 +589,11 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                         del rows[key]
             source_key = tuple(source[key] for key in ("source_kind", "source_id", "source_version")) if source else None
             try:
-                if group_principal is not None:
+                if group_principal is not None or source is not None and source["source_kind"] == "runtime_result":
                     scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
-                    await _validate_input_dependencies(db, tenant_id, dependencies, runtime_request=group_principal)
+                    await _validate_input_dependencies(
+                        db, tenant_id, dependencies, runtime_request=group_principal or memory_principal
+                    )
                 await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
                 if source is not None and source["source_kind"] == "explicit_memory" and memory_readers:
                     readers, inherited_indexes = {}, []

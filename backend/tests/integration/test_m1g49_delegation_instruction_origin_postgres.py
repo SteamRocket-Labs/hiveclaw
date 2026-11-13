@@ -3743,11 +3743,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             canonical_sources = await load_canonical_result_sources(db, result_object)
             assert canonical_sources
         from app.services import runtime_result_sources
+        from app.tools.runtime import ToolExecutionRequest
 
         validate_sources = runtime_result_sources._validate_input_dependencies
 
         async def observe_return_sources(*args, **kwargs):
-            if kwargs.get("runtime_request") is not None:
+            if isinstance(kwargs.get("runtime_request"), ToolExecutionRequest):
                 observed["return_request"] = kwargs["runtime_request"]
             return await validate_sources(*args, **kwargs)
 
@@ -5051,13 +5052,13 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             native_result_validator = runtime_result_sources.validate_runtime_result_sources
 
             async def controlled_source_denial(db, request, result_object, **kwargs):
+                tool_call_id = getattr(getattr(request, "context", None), "tool_call_id", None)
                 if (
                     historical_creation_case
-                    and request is not None
-                    and request.context.tool_call_id == "parent-read-creation"
+                    and tool_call_id == "parent-read-creation"
                 ):
                     return False  # The original native page predates canonical creation-source support.
-                if request is not None and request.context.tool_call_id == "parent-read-result-denied":
+                if tool_call_id == "parent-read-result-denied":
                     raise ContentInputReceiptError("content_source_access_denied", "Controlled source denial.", 403)
                 return await native_result_validator(db, request, result_object, **kwargs)
 

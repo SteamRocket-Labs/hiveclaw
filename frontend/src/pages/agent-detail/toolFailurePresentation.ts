@@ -78,13 +78,12 @@ export function toolOutputForDisplay(details: unknown, t: TFunction, status: Run
   if (typeof raw !== 'string') return summary(raw);
   try { return summary(JSON.parse(raw)); } catch { /* Memory producers also return headings followed by JSON lines. */ }
   if (!projectLines) return null;
-  let projected = false;
-  const lines = raw.split(/\r?\n/).map(line => {
+  const notices = raw.split(/\r?\n/).flatMap(line => {
     try {
       const text = summary(JSON.parse(line));
-      if (text) { projected = true; return text; }
-    } catch { /* Preserve ordinary tool output. */ }
-    return line;
+      if (text) return [text];
+    } catch { /* Only known typed notices reach the member disclosure. */ }
+    return [];
   });
-  return projected ? lines.join('\n') : null;
+  return notices.length ? notices.join('\n') : null;
 }

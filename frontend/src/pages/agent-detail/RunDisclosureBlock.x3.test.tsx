@@ -213,7 +213,7 @@ it('a summarized tool exposes no way to view the raw text (no raw fold)', () => 
   expect(container.querySelectorAll('.run-tool-history-toggle, .run-step-toggle').length).toBeLessThan(2);
 });
 
-it('a step without a typed summary keeps the production display (owner ruling 11-10)', () => {
+it('a step without a typed summary shows a sentence without raw output (X3b item 2)', () => {
   locale.language = 'zh';
   const { container } = render(<RunDisclosureBlock timeline={{ id: 'run', status: 'running', steps: [{
     id: 'file', kind: 'file', title: 'Read file', status: 'done', visibility: 'visible',
@@ -222,7 +222,9 @@ it('a step without a typed summary keeps the production display (owner ruling 11
       result: 'date,sales\n2026-11-01,35', rawResult: 'date,sales\n2026-11-01,35' },
   }] }} />);
   expand(container);
-  expect(container.textContent).toContain('2026-11-01,35');
+  // X3b replaces the earlier raw-output ruling for member disclosure rows.
+  expect(container.textContent).toContain('读取了文件「sales.csv」');
+  expect(container.textContent).not.toContain('2026-11-01,35');
 });
 
 it('a colleague still working renders the R15b sentence, not a read (r2 ruling 2)', () => {
@@ -282,7 +284,7 @@ it('a context read renders its sentence (r2 ruling 8)', () => {
   expect(text).toContain('查看了工作资料');
 });
 
-it('an unknown summary kind falls back to the production display instead of an empty sentence (r2 ruling 9)', () => {
+it('an unknown summary kind falls back to a sentence without raw output (X3b item 2)', () => {
   locale.language = 'zh';
   const { container } = render(<RunDisclosureBlock timeline={{ id: 'run', status: 'running', steps: [{
     id: 'future', kind: 'search', title: 'Fetch web page', status: 'done', visibility: 'visible',
@@ -295,6 +297,8 @@ it('an unknown summary kind falls back to the production display instead of an e
     },
   }] }} />);
   expand(container);
-  // Version skew: an unrecognized kind must not hide the step's result.
-  expect(container.textContent).toContain('2026-11-01,35');
+  // Version skew keeps a usable action sentence while X3b forbids raw output.
+  expect(container.textContent).toContain('读取网页。已返回结果');
+  expect(container.textContent).not.toContain('2026-11-01,35');
+  expect(container.textContent).not.toContain('https://');
 });

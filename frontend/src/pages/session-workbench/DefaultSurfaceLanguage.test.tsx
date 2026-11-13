@@ -634,7 +634,9 @@ describe('default screen language (B2)', () => {
     fireEvent.click(screen.getByRole('button', { name: /联系同事/ }));
     expect(document.body.textContent).not.toMatch(/read_context_resource|call_mcp_tool|send_message_to_agent|MCP RESULT|INDEX CONTENT|weather|toolName|rawResult/);
     expect(document.body.textContent).not.toMatch(/private_content|tool_name|"ref"/);
-    expect(screen.getAllByText('对方数字员工暂不可用')).toHaveLength(1);
+    // X3b item 2: the member fallback is a typed status sentence, never raw prose.
+    expect(screen.getAllByText('联系同事。操作未能完成，结果尚未确认。')).toHaveLength(1);
+    expect(document.body.textContent).not.toContain('对方数字员工暂不可用');
     expect((timeline.steps[2].details as { result: string }).result).toBe('对方数字员工暂不可用');
     expect(findInternalWords(visibleSurface(document.body.innerHTML))).toEqual([]);
     cleanup();

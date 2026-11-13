@@ -2683,7 +2683,9 @@
           "subagentRunning": "{{name}} is working in the background.",
           "filesUpdated": "Updated {{count}} files",
           "filesUpdated_one": "Updated {{count}} file",
-          "filesUpdated_other": "Updated {{count}} files"
+          "filesUpdated_other": "Updated {{count}} files",
+          "colleagueEnded": "The colleague task has ended",
+          "noResultKept": "There is no result to view; this conversation did not continue."
         },
         "failure": {
           "tokenBudget": "This turn used up its usage budget and did not finish.",
@@ -2767,7 +2769,10 @@
         "elapsedMinutesSeconds": "{{minutes}}m {{seconds}}s",
         "memoryUnavailable": "This part of the conversation history is temporarily unavailable. Please try again later.",
         "memoryPartial": "Only some memories are available. Unavailable memories cannot support conclusions; please try again later.",
-        "openColleagueConversation": "Open this colleague's conversation"
+        "openColleagueConversation": "Open this colleague's conversation",
+        "failedMarker": "Not completed",
+        "stoppedMarker": "Stopped",
+        "blockedMarker": "Needs attention"
       },
       "artifacts": {
         "viewSource": "View source",
@@ -2809,7 +2814,20 @@
         "withdrawOriginalConfirm": "Stop future use of this original? Working files stay unchanged. History and retained data are not deleted.",
         "withdrawOriginalFailed": "Could not confirm withdrawal. Check Original status before retrying.",
         "originalStatusFailed": "Could not load source status. Retry Original status.",
-        "retainedOriginal": "Inspect retained original"
+        "retainedOriginal": "Inspect retained original",
+        "fileTypes": {
+          "other": "File",
+          "markdown": "markdown",
+          "md": "md",
+          "csv": "csv",
+          "text": "text",
+          "txt": "txt",
+          "office": "office",
+          "pdf": "pdf",
+          "image": "image",
+          "download": "download",
+          "html": "html"
+        }
       },
       "toolResults": {
         "talkToCreatedBot": "Talk to it",
@@ -2944,7 +2962,24 @@
           "skillLoad": "Loaded a skill",
           "skillLoadFailed": "The skill did not load",
           "contextRead": "Read work context",
-          "contextReadFailed": "Couldn't read work context this time"
+          "contextReadFailed": "Couldn't read work context this time",
+          "personalSearch": "Searched personal materials",
+          "companySearch": "Searched company materials",
+          "recordSearch": "Searched materials",
+          "searchEmpty": "{{action}}; no related content was found.",
+          "searchFound": "{{action}}; found related content.",
+          "searchFailed": "{{action}}; the search did not complete.",
+          "fileList": "Listed the files in the folder",
+          "fileListCount": "Listed {{count}} files in the folder",
+          "fileListFailed": "The folder could not be listed.",
+          "fileWriteNamed": "Wrote the file “{{filename}}”.",
+          "fileRead": "Read a file",
+          "fileReadNamed": "Read the file “{{filename}}”",
+          "fileReadFailed": "The file was not read this time.",
+          "webFetchFailedHost": "The web page {{host}} did not open",
+          "delegationStopped": "Stopped; the colleague did not finish this work.",
+          "delegationDone": "The colleague has finished this work.",
+          "delegationFailed": "The colleague did not finish this work."
         }
       },
       "workLedger": {

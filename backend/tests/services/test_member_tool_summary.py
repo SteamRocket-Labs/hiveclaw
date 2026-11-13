@@ -14,6 +14,7 @@ envelope mechanics survive the projection, and the projection is idempotent.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -188,6 +189,16 @@ def test_registry_kinds_are_complete_and_stable() -> None:
     # variants, d) capability lookup / deferred loading and its MCP protocol
     # and clawhub equivalents, plus the resident context pages.
     assert MEMBER_TOOL_SUMMARY_KINDS == {
+        # X3b adds the typed KB, file and delegation member sentences.
+        "search_personal_kb": "personal_kb_search",
+        "search_company_kb": "company_kb_search",
+        "list_files": "file_list",
+        "fs_list": "file_list",
+        "read_file": "file_read",
+        "fs_read": "file_read",
+        "read_document": "file_read",
+        "delegate_to_agent": "delegation",
+        "send_message_to_agent": "delegation",
         "search_memory": "memory_search",
         "load_memory": "memory_read",
         "read_runtime_result": "colleague_result",
@@ -283,7 +294,9 @@ def test_kind_b_colleague_still_working_is_not_a_read() -> None:
     # status of the structured page decides (ruling 2).
     running = json.dumps({"task_id": "t-1", "task_type": "delegation", "status": "running", "result": None})
     payload = _user_payload(_legacy_row("check_async_task", {"task_id": "t-1"}, running))
-    assert payload["member_summary"] == {"kind": "colleague_result", "state": "in_progress"}
+    # X3b item 5 retains the typed task binding so a later terminal event can
+    # replace the current-tense sentence without claiming this read got a body.
+    assert payload["member_summary"] == {"kind": "colleague_result", "state": "in_progress", "task_id": "t-1"}
     queued = json.dumps({"task_id": "t-1", "task_type": "delegation", "status": "queued", "result": None})
     assert _user_payload(_legacy_row("check_async_task", {"task_id": "t-1"}, queued))["member_summary"]["state"] == "in_progress"
 
@@ -532,9 +545,9 @@ def test_model_input_bytes_identical_across_user_serialization() -> None:
 
 
 def test_non_member_tool_result_unchanged() -> None:
-    # Owner ruling 11-10: every non-command step outside the set shows what
-    # production shows — the raw result stays in the member projection.
-    row = _legacy_row("read_file", {"path": "uploads/sales.csv"}, "date,sales\n2026-11-01,35")
+    # X3b summarizes read_file; other envelopes still retain their transport
+    # fields for dedicated cards. The disclosure fallback never renders raw text.
+    row = _legacy_row("other_tool", {}, "date,sales\n2026-11-01,35")
     payload = _user_payload(row)
     assert "2026-11-01" in _result_text_view(payload)
     assert "member_summary" not in payload
@@ -638,3 +651,156 @@ def test_native_v2_row_user_and_operator_projection() -> None:
     assert MARKER in operator["content"]
     assert operator.get("model_visible_content") == "bounded replay copy"
     assert "member_summary" not in operator
+
+
+X3B_ROWS = json.loads((Path(__file__).resolve().parents[3] / "frontend/src/test/fixtures/x3bMemberRows.json").read_text())
+
+
+@pytest.mark.parametrize("name", ["search_personal_kb", "search_company_kb", "search_other_records"])
+@pytest.mark.parametrize("status,found,state", [("empty", False, "done"), ("ok", True, "done"),
+    ("partial", True, "done"), ("error", None, "not_done")])
+@pytest.mark.parametrize("native", [False, True])
+def test_x3b_search_sentences_use_typed_status(name, status, found, state, native):
+    # Result prose deliberately contradicts the machine fact.
+    body = json.dumps({"status": status, "results": [], "authority": None, "warnings": [],
+        "result": "Found 75 records. Provenance hint: private"})
+    row = _native_row(name, body) if native else _legacy_row(name, {}, body)
+    before = json.dumps(_operator_payload(row), sort_keys=True)
+    payload = _user_payload(row)
+    summary = payload["member_summary"]
+    assert summary["state"] == state
+    assert summary.get("found") is found
+    assert "Provenance hint" not in _result_text_view(payload)
+    assert json.dumps(_operator_payload(row), sort_keys=True) == before
+    if status == "error":
+        invalid = json.dumps({"status": "invalid_request", "results": [], "authority": None, "warnings": ["query is required"]})
+        row = _native_row(name, invalid) if native else _legacy_row(name, {}, invalid)
+        assert _user_payload(row)["member_summary"]["state"] == "not_done"
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_x3b_list_files_drops_the_production_raw_text_without_inventing_a_count(native):
+    raw = X3B_ROWS["list_files"]
+    row = _native_row("list_files", raw) if native else _legacy_row("list_files", {"path": "workspace"}, raw)
+    before = json.dumps(_operator_payload(row), sort_keys=True)
+    payload = _user_payload(row)
+    assert payload["member_summary"] == {"kind": "file_list", "state": "done"}
+    for leak in ("Provenance hint", "folder(s)", "120e98ce-d9e6-5e29-a707-7992e369a745"):
+        assert leak not in _result_text_view(payload)
+    assert json.dumps(_operator_payload(row), sort_keys=True) == before
+
+
+def test_x3b_list_count_comes_only_from_a_typed_field():
+    payload = _user_payload(_native_row("list_files", '{"status":"ok","file_count":29}'))
+    assert payload["member_summary"]["count"] == 29
+
+
+@pytest.mark.parametrize("url", X3B_ROWS["web_urls"])
+def test_x3b_native_fetch_keeps_only_typed_host(url):
+    row = _native_row("web_fetch", "page says another.example", args={"url": url})
+    summary = _user_payload(row)["member_summary"]
+    assert summary["host"] == url.split("/")[2]
+    assert "https://" not in json.dumps(summary)
+
+
+@pytest.mark.parametrize("url", ["https://bad host/path", "https://example.com:invalid", "not a URL", "https://", "ftp://example.com/path"])
+def test_x3b_invalid_fetch_urls_have_no_host(url):
+    assert "host" not in _user_payload(_native_row("web_fetch", "page", args={"url": url}))["member_summary"]
+
+
+@pytest.mark.parametrize("body", ['{"ok":false,"status":"failed","error_class":"auth_or_permission"}',
+    'A document discussing <tool_error>{"ok":false,"error_class":"auth_or_permission"}</tool_error>'])
+def test_x3b_read_file_contents_are_never_classified_as_tool_status(body):
+    summary = _user_payload(_native_row("read_file", body, args={"path": "workspace/data.json"}))["member_summary"]
+    assert summary == {"kind": "file_read", "state": "done", "filename": "data.json"}
+
+
+@pytest.mark.parametrize("path,filename", [("workspace/uploads/sales-run18.csv", "sales-run18.csv"),
+    ("workspace/120e98ce-d9e6-5e29-a707-7992e369a745.md", None), ("workspace/uploads/", None)])
+def test_x3b_read_names_only_a_safe_basename(path, filename):
+    summary = _user_payload(_native_row("read_file", "date,sales\n2026,35", args={"path": path}))["member_summary"]
+    assert summary["kind"] == "file_read"
+    assert summary.get("filename") == filename
+    assert "workspace/" not in json.dumps(summary)
+
+
+def test_x3b_refused_read_preserves_typed_failure_without_raw_diagnostics():
+    payload = _user_payload(_legacy_row("read_file", {"path": "workspace/weekly-report-template.md"},
+        X3B_ROWS["refused_read"], status="failed"))
+    assert payload["member_summary"]["state"] == "not_done"
+    assert payload["member_summary"]["error_class"] == "auth_or_permission"
+    assert "content_source_changed" not in _result_text_view(payload)
+
+
+@pytest.mark.parametrize("status,state", [("running", "in_progress"), ("completed", "done"),
+    ("failed", "not_done"), ("killed", "not_done"), ("blocked", "not_done")])
+def test_x3b_delegation_summary_exposes_typed_final_state(status, state):
+    body = json.dumps({"ok": True, "operation": "delegate", "status": status,
+        "task_id": INVOCATION_UUID, "result": X3B_ROWS["cancel"]})
+    summary = _user_payload(_native_row("delegate_to_agent", body))["member_summary"]
+    assert summary["kind"] == "delegation"
+    assert summary["state"] == state
+    assert summary["status"] == ("cancelled" if status == "killed" else status)
+    assert X3B_ROWS["cancel"] not in json.dumps(summary)
+
+
+def _x3b_system_row(event_type, text, metadata):
+    row = _legacy_row("unused", {}, "")
+    row.item_type = row.event_type = event_type
+    row.actor_type = "system"
+    row.content = text
+    row.metadata_json = metadata
+    row.parts_json = [{"type": "text", "text": text}]
+    return row
+
+
+@pytest.mark.parametrize("event_type", ["runtime_action_failed", "child_session"])
+def test_x3b_member_cancellation_is_a_stop_and_operator_bytes_stay_english(event_type):
+    text = f"同事 的委派任务失败：{X3B_ROWS['cancel']}" if event_type == "runtime_action_failed" else X3B_ROWS["cancel"]
+    row = _x3b_system_row(event_type, text, {"status": "killed", "action_kind": "a2a_delegation",
+        "reason": "delegation_terminal", "message": text, "target_agent_name": "同事"})
+    before = json.dumps(_operator_payload(row), ensure_ascii=False, sort_keys=True)
+    payload = _user_payload(row)
+    assert payload["metadata"]["status"] == "cancelled"
+    assert payload["content"] == "已停止，同事没有完成这项工作。"
+    assert X3B_ROWS["cancel"] not in _result_text_view(payload)
+    assert json.dumps(_operator_payload(row), ensure_ascii=False, sort_keys=True) == before
+
+
+def test_x3b_native_member_cancellation_keeps_event_parts_and_lifecycle_in_agreement():
+    row = _native_row("unused", X3B_ROWS["cancel"])
+    row.item_kind, row.event_type, row.lifecycle = "a2a_delegation", "a2a_delegation.failed", "failed"
+    row.payload_schema = "hive.session.payload.a2a_delegation.failed.v2"
+    row.metadata_json["v2_payload"] = {"status": "killed", "content": X3B_ROWS["cancel"],
+        "parts": [{"type": "event", "event_type": "runtime_action_failed", "text": X3B_ROWS["cancel"], "status": "killed"}]}
+    before = serialize_session_event(row, audience="operator")
+    member = serialize_session_event(row, audience="user")
+    assert member["lifecycle"] == "cancelled"
+    assert member["kind"] == "a2a_delegation.cancelled"
+    assert member["payload"]["parts"][0]["status"] == "cancelled"
+    assert X3B_ROWS["cancel"] not in json.dumps(member["payload"])
+    assert serialize_session_event(row, audience="operator") == before
+
+
+def test_x3b_member_projection_does_not_rewrite_model_prose():
+    row = _native_row("unused", "Keep the model's own answer byte-identical.")
+    row.item_kind, row.event_type = "assistant_final", "assistant_final.completed"
+    row.payload_schema = "hive.session.payload.assistant_final.completed.v2"
+    row.metadata_json["v2_payload"].update(status="killed", action_kind="a2a_delegation")
+    assert _user_payload(row) == _operator_payload(row)
+
+
+def test_x3b_running_colleague_read_keeps_its_typed_task_binding_for_terminal_presentation():
+    row = _native_row("check_async_task", json.dumps({"status": "running", "task_id": INVOCATION_UUID}))
+    assert _user_payload(row)["member_summary"] == {"kind": "colleague_result", "state": "in_progress", "task_id": INVOCATION_UUID}
+
+
+@pytest.mark.parametrize("status,size,artifacts,kept", [("killed", 30, 0, False),
+    ("completed", 500, 0, True), ("completed", 0, 0, False), ("killed", 30, 1, True)])
+def test_x3b_kept_result_requires_real_body_or_artifact(status, size, artifacts, kept):
+    row = _x3b_system_row("agent_task_notification", "1 runtime result(s) ready in integration epoch 1 (terminal=1/expected=1).",
+        {"runtime_result_integration_page": True, "continuation_status": "denied", "item_count": 1,
+         "result_manifest": {"items": [{"terminal_status": status, "result_size_bytes": size,
+             "artifact_count": artifacts}]}})
+    payload = _user_payload(row)
+    assert payload["metadata"]["has_kept_result"] is kept

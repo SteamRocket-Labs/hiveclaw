@@ -8,6 +8,7 @@ RUNTIME_LIMIT_MESSAGES = {
 }
 TERMINAL_TASK_READ_PREFIX = "任务结果未变化，已停止本次处理："
 DELEGATED_TASK_RUNNING_MESSAGE = "同事正在处理，结果回来后会在这里继续。"
+DELEGATED_TASK_CANCELLED_MESSAGE = "已停止，同事没有完成这项工作。"
 BUSINESS_DELEGATED_TASK_RUNNING_MESSAGE = "同事还在处理，这次我先停下了。同事完成后，结果会回到这项任务的对话里。"
 # R18a: the loop guard's empty-search stop. True for the only input that
 # produces it — several searches in one turn all returned nothing.

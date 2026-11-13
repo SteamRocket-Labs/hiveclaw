@@ -79,10 +79,9 @@ it('does not interpret a code fragment in a successful result as a typed failure
   }] }} />);
   fireEvent.click(container.querySelector('.run-tool-group-toggle') as HTMLElement);
   fireEvent.click(container.querySelector('.run-tool-history-toggle') as HTMLButtonElement);
-  // owner ruling 11-10: non-command results show as on 2182d216
-  expect(container.querySelector('p')?.textContent).toBe(result);
-  // owner ruling 11-10: non-command results show as on 2182d216
-  expect(container.textContent).toContain(result);
+  // X3b item 2 replaces raw prose with a successful action sentence.
+  expect(container.querySelector('p')?.textContent).toBe('处理请求。已返回结果');
+  expect(container.textContent).not.toContain(result);
   expect(details.result).toBe(result);
   expect(container.textContent).not.toContain('操作等待超时');
   expect(container.textContent).not.toContain('请稍后再试');
@@ -96,7 +95,9 @@ it('uses the terminal step status for a successful plain-text result', () => {
   }] }} />);
   fireEvent.click(container.querySelector('.run-tool-group-toggle') as HTMLElement);
   fireEvent.click(container.querySelector('.run-tool-history-toggle') as HTMLButtonElement);
-  expect(container.textContent).toContain(result.replace(/\s+/g, ' '));
+  // X3b item 2 forbids raw fallback text, even for a successful step.
+  expect(container.querySelector('p')?.textContent).toBe('处理请求。已返回结果');
+  expect(container.textContent).not.toContain(result.replace(/\s+/g, ' '));
   expect(details.result).toBe(result);
   expect(container.textContent).not.toContain('操作等待超时');
   expect(container.textContent).not.toContain('请稍后再试');

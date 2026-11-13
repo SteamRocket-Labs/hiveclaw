@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import copy
 import json
+import re
 from typing import Any, Iterable, Mapping
 
 
@@ -1363,6 +1364,15 @@ _LEGACY_TOOL_ENVELOPE_FIELDS = (
 # (the model's input) stay byte-identical. Compatibility rows' outbox envelope
 # stores this user projection at write time (chat_transcript).
 MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
+    "search_personal_kb": "personal_kb_search",
+    "search_company_kb": "company_kb_search",
+    "list_files": "file_list",
+    "fs_list": "file_list",
+    "read_file": "file_read",
+    "fs_read": "file_read",
+    "read_document": "file_read",
+    "delegate_to_agent": "delegation",
+    "send_message_to_agent": "delegation",
     # a) memory search / read / load
     "search_memory": "memory_search",
     "load_memory": "memory_read",
@@ -1410,6 +1420,7 @@ MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
 _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES = frozenset({
     "error",
     "failed",
+    "blocked",
     "not_found",
     "denied",
     "forbidden",
@@ -1419,6 +1430,7 @@ _MEMBER_SUMMARY_NOT_DONE_RESULT_STATUSES = frozenset({
     "infrastructure_unavailable",
     "integrity_error",
     "invalid_arguments",
+    "invalid_request",
     "aborted",
     "cancelled",
     "stale_resource",
@@ -1472,12 +1484,30 @@ def _member_summary_host(args: Any) -> str | None:
     try:
         from urllib.parse import urlparse
 
-        host = urlparse(url.strip()).hostname
+        parsed = urlparse(url.strip())
+        if re.search(r"[\s\\]", url.strip()):
+            return None
+        parsed.port  # Reject a malformed typed port as an invalid URL.
+        host = parsed.hostname if parsed.scheme in {"http", "https"} else None
     except ValueError:
         return None
     # urlparse returns None for scheme-less URLs ("example.com/x"), bare
     # schemes ("http://") and non-host schemes ("mailto:a@b.c").
     return host.strip().lower() if host else None
+
+
+def _member_summary_filename(args: Any) -> str | None:
+    if not isinstance(args, Mapping):
+        return None
+    path = args.get("path") or args.get("file_path")
+    if not isinstance(path, str) or not path or path.endswith(("/", "\\")):
+        return None
+    name = re.split(r"[/\\]", path)[-1]
+    if not name or name in {".", ".."} or re.search(
+        r"(?i)[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}", name
+    ):
+        return None
+    return name
 
 
 def _status_text(value: Any) -> str:
@@ -1521,7 +1551,7 @@ def _member_summary_state(
         return "unknown"
     if isinstance(result_obj, Mapping) and result_obj.get("ok") is False:
         return "not_done"
-    if envelope_status == "failed":
+    if envelope_status in {"failed", "cancelled", "blocked", "killed", "aborted", "denied"}:
         return "not_done"
     if isinstance(result_obj, Mapping):
         task = result_obj.get("task")
@@ -1563,11 +1593,9 @@ def _member_summary_projection(
         # args, or statuses beyond the structured result's typed fields.
         tool_name = _text(payload.get("tool_name")) or ""
         kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
-        if kind is None:
-            return None
         content = payload.get("content")
         result = content if isinstance(content, str) else None
-        args = None
+        args = payload.get("args")
     else:
         # Legacy/compatibility shape: the persisted tool envelope is embedded
         # in payload.content with name/args/status/result inside it.
@@ -1587,8 +1615,6 @@ def _member_summary_projection(
             or ""
         )
         kind = MEMBER_TOOL_SUMMARY_KINDS.get(tool_name)
-        if kind is None:
-            return None
         embedded_result = envelope.get("result")
         result = embedded_result if isinstance(embedded_result, str) else (content if isinstance(content, str) else None)
         args = payload.get("args")
@@ -1596,20 +1622,53 @@ def _member_summary_projection(
             args = envelope.get("args")
     result_obj: Any = None
     if isinstance(result, str) and result.strip():
+        # A native refusal envelope is typed JSON even when preceded by a
+        # human sentence. Only the exact envelope fields decide the summary.
+        error_envelope = "<tool_error>" in result and (result.startswith("❌") or result.lstrip().startswith("<tool_error>"))
+        body = result.split("<tool_error>", 1)[1].split("</tool_error>", 1)[0] if error_envelope else result
         try:
-            parsed = json.loads(result)
+            parsed = json.loads(body)
         except (TypeError, ValueError):
             parsed = None
         result_obj = parsed if isinstance(parsed, Mapping) else None
+        if kind == "file_read" and not error_envelope:
+            result_obj = None  # A JSON file's contents are data, not a tool status.
+    typed_status = _status_text(result_obj.get("status")) if result_obj else ""
+    if kind is None and tool_name.startswith("search_") and typed_status:
+        kind = "record_search"
+    if kind is None:
+        return None
     state = _member_summary_state(
         outcome=_status_text(payload.get("outcome")),
         envelope_status=_status_text(payload.get("status") or ("" if native else envelope.get("status"))),
         result_obj=result_obj,
     )
     summary: dict[str, Any] = {"kind": kind, "state": state}
-    host = _member_summary_host(args)
+    if tool_name.startswith("search_") and typed_status in {"empty", "ok", "partial"} and state != "not_done":
+        if _status_text(payload.get("outcome")) != "unknown":
+            summary.update(state="done", found=typed_status != "empty")
+    host = _member_summary_host(args) if kind == "web_fetch" else None
     if host:
         summary["host"] = host
+    if kind == "file_read":
+        filename = _member_summary_filename(args)
+        if filename:
+            summary["filename"] = filename
+        if state == "not_done" and result_obj and isinstance(result_obj.get("error_class"), str):
+            summary["error_class"] = result_obj["error_class"]
+    if kind == "file_list" and result_obj:
+        count = result_obj.get("file_count")
+        if type(count) is int and count >= 0:
+            summary["count"] = count
+    if kind == "delegation" and result_obj:
+        summary["status"] = "cancelled" if typed_status in {"killed", "cancelled"} else typed_status
+    if (kind == "delegation" or (kind == "colleague_result" and state == "in_progress")) and result_obj:
+        task_id = result_obj.get("task_id") or result_obj.get("runtime_task_id")
+        task = result_obj.get("task")
+        if not task_id and isinstance(task, Mapping):
+            task_id = task.get("task_id") or task.get("id")
+        if isinstance(task_id, str):
+            summary["task_id"] = task_id
     return summary, native, envelope
 
 
@@ -2017,6 +2076,51 @@ def _serialize_session_event_for_audience(row: Any, *, audience: str) -> dict[st
     return event
 
 
+def _member_system_payload(payload: dict[str, Any], *, event_type: str) -> dict[str, Any]:
+    """Present typed delegation stops and kept-result facts without rewriting storage."""
+    if event_type.startswith("assistant_"):
+        return payload
+    metadata = payload.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else payload
+    integration = metadata.get("runtime_result_integration_page") is True or metadata.get("task_type") == "runtime_result_integration"
+    cancelled = _status_text(metadata.get("status")) in {"killed", "cancelled", "canceled"} and (
+        (event_type.startswith("runtime_action_") and metadata.get("action_kind") == "a2a_delegation")
+        or event_type in {"child_session", "a2a_delegation", "a2a_receipt"}
+    )
+    if not integration and not cancelled:
+        return payload
+    clean = copy.deepcopy(payload)
+    target = clean["metadata"] if isinstance(clean.get("metadata"), dict) else clean
+    if integration:
+        manifest = metadata.get("result_manifest")
+        items = manifest.get("items", []) if isinstance(manifest, Mapping) else []
+        target["has_kept_result"] = any(
+            isinstance(item, Mapping) and (
+                (type(item.get("artifact_count")) is int and item["artifact_count"] > 0)
+                or (item.get("terminal_status") == "completed" and type(item.get("result_size_bytes")) is int
+                    and item["result_size_bytes"] > 0)
+            ) for item in items
+        )
+    if cancelled:
+        from app.services.runtime_display_status import DELEGATED_TASK_CANCELLED_MESSAGE
+
+        target["status"] = "cancelled"
+        clean["content"] = DELEGATED_TASK_CANCELLED_MESSAGE
+        for record in (clean, target):
+            for field_name in ("message", "summary", "display_content", "error"):
+                if field_name in record:
+                    record[field_name] = DELEGATED_TASK_CANCELLED_MESSAGE
+        for part in clean.get("parts") or []:
+            if isinstance(part, dict) and part.get("type") in {"text", "event"}:
+                part["text"] = DELEGATED_TASK_CANCELLED_MESSAGE
+                if part.get("type") == "event":
+                    part["status"] = "cancelled"
+                    for field_name in ("message", "summary", "display_content", "error"):
+                        if field_name in part:
+                            part[field_name] = DELEGATED_TASK_CANCELLED_MESSAGE
+    return clean
+
+
 def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str, Any]:
     """Serialize one session event for an audience.
 
@@ -2029,6 +2133,16 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
     event = _serialize_session_event_for_audience(row, audience=audience)
     if audience != "operator" and str(event.get("item_kind") or event.get("legacy_kind") or "") == "tool_result":
         event["payload"] = _apply_member_tool_summary(event["payload"], item_kind="tool_result")
+    elif audience != "operator":
+        event["payload"] = _member_system_payload(event["payload"], event_type=str(
+            event.get("legacy_event_type") or event.get("item_kind") or ""
+        ))
+        payload = event["payload"]
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else payload
+        if metadata.get("status") == "cancelled" and event.get("item_kind") in {"a2a_delegation", "a2a_receipt"}:
+            event["lifecycle"] = "cancelled"
+            event["kind"] = f"{event['item_kind']}.cancelled"
+            event["payload_schema"] = f"hive.session.payload.{event['item_kind']}.cancelled.v2"
     return event
 
 

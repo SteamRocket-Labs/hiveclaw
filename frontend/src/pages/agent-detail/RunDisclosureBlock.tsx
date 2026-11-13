@@ -9,6 +9,9 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconCircleCheck,
+  IconCircleX,
+  IconPlayerStop,
+  IconAlertCircle,
   IconFileText,
   IconHelp,
   IconLoader2,
@@ -22,7 +25,7 @@ import { assistantReplyForDisplay } from './CanonicalCardAssistantSupplement';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { toolOutputForDisplay } from './toolFailurePresentation';
-import { memberToolSummaryFromRecord, memberToolSummarySentence } from './memberToolSummary';
+import { memberFilename, memberToolSummaryFromRecord, memberToolSummarySentence, memberSummaryWithArgs } from './memberToolSummary';
 import { useAuthStore } from '../../stores';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import { isKeptResultStep, presentSystemStep } from './systemStepPresentation';
@@ -157,8 +160,16 @@ function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string |
   return running && !Number.isNaN(parsed) ? i18n.t('agent.chat.disclosure.elapsedSeconds', '{{seconds}}s', { seconds: 0 }) : '';
 }
 
-function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
+function StepIcon({ kind, running, status }: { kind: RunStepKind; running: boolean; status?: RunStepSnapshot['status'] }) {
+  const { t } = useTranslation();
   const size = 14;
+  if (status === 'failed' || status === 'cancelled' || status === 'blocked') {
+    const label = status === 'cancelled' ? t('agent.chat.disclosure.stoppedMarker', 'Stopped')
+      : status === 'blocked' ? t('agent.chat.disclosure.blockedMarker', 'Needs attention')
+        : t('agent.chat.disclosure.failedMarker', 'Not completed');
+    const Marker = status === 'cancelled' ? IconPlayerStop : status === 'blocked' ? IconAlertCircle : IconCircleX;
+    return <span role="img" aria-label={label}><Marker size={size} stroke={2.1} aria-hidden="true" /></span>;
+  }
   if (running) {
     return <IconLoader2 size={size} stroke={2.2} className="session-tui-step-spinner" />;
   }
@@ -222,13 +233,13 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
     const toolName = toolNameOf(step);
     // X3: summarized tools show one plain sentence in place of the raw result
     // the model saw. There is deliberately no way to view the raw text here.
-    // An unknown kind yields no sentence and falls through to the existing
-    // display (version skew must not hide a step behind an empty paragraph).
+    // An unknown kind falls through to a plain action/status sentence.
     const memberSummary = memberToolSummaryFromRecord(
       (step.details as { memberSummary?: unknown } | null)?.memberSummary,
     );
     if (memberSummary) {
-      const memberSentence = memberToolSummarySentence(memberSummary, t);
+      const args = (step.details as { args?: Record<string, unknown> } | null)?.args;
+      const memberSentence = memberToolSummarySentence(memberSummaryWithArgs(memberSummary, args), t);
       if (memberSentence) return <p>{memberSentence}</p>;
     }
     const toolDetails = step.details as { rawResult?: unknown; result?: unknown } | null;
@@ -250,26 +261,17 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
     const summary = command && outcome !== null ? null : toolOutputForDisplay(step.details, t, step.status, !command);
     if (summary) return <p>{summary}</p>;
     const details = step.details as { args?: Record<string, unknown>; result?: unknown } | null;
-    const result = typeof step.details === 'string' ? step.details : details?.result;
-    // Raw non-command tool text can reach members as on production; backend per-tool member summaries will replace it.
-    if (!command && typeof result === 'string' && result.trim()) {
-      try {
-        JSON.parse(result);
-      } catch {
-        // Non-command steps show exactly what production shows (R11g /
-        // X1-r2 ruling 2); per-tool member summaries are a later slice.
-        const lines = result.trim().split(/\r?\n/);
-        return <p>{lines.map((line, index) => (
-          <React.Fragment key={index}>
-            {index > 0 && <br />}
-            <PastedCredentialText content={line} />
-            {line && index < lines.length - 1 && ' '}
-          </React.Fragment>
-        ))}</p>;
-      }
-    }
     const path = step.kind === 'file' ? details?.args?.path ?? details?.args?.file_path : null;
-    const file = typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).pop() : undefined;
+    const file = memberFilename(path);
+    if (['list_files', 'fs_list'].includes(toolName || '')) {
+      return <p>{memberToolSummarySentence({ kind: 'file_list', state: step.status === 'done' ? 'done' : 'not_done' }, t)}</p>;
+    }
+    if (['read_file', 'fs_read', 'read_document'].includes(toolName || '') && step.status === 'done') {
+      return <p>{memberToolSummarySentence({ kind: 'file_read', state: 'done', filename: file }, t)}</p>;
+    }
+    if (['write_file', 'fs_write'].includes(toolName || '') && step.status === 'done' && file) {
+      return <p>{t('agent.chat.toolResults.memberSummary.fileWriteNamed', 'Wrote the file “{{filename}}”.', { filename: file })}</p>;
+    }
     const status = outcome === 'unknown' ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
       : outcome === 'done' ? t('agent.chat.disclosure.resultSucceeded', 'Succeeded')
       : outcome === 'failed' || step.status === 'failed'
@@ -304,15 +306,16 @@ function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepS
   const [expanded, setExpanded] = React.useState(false);
   const hasDetails = hasStepDetails(step);
   const preview = resultPreview && step.systemEvent?.type === 'child_session' && typeof step.details === 'string'
-    ? step.details : step.summary;
+    ? step.details : toolStepSummary(step);
   return (
     <div
       data-testid="run-disclosure-step"
       data-presentation={getRunStepPresentation(step)}
+      data-status={step.status}
       className={getRunStepPresentation(step) === 'surface' ? 'run-step is-surfaced' : 'run-step'}
     >
       <span className={running ? 'run-step-icon is-running' : 'run-step-icon'}>
-        <StepIcon kind={step.kind} running={running} />
+        <StepIcon kind={step.kind} running={running} status={step.status} />
       </span>
       <div className="run-step-body">
         <button
@@ -436,7 +439,13 @@ function localizedAggregateSummary(
 
 function toolStepLabel(step: RunStepSnapshot, t: TFunction): string {
   const title = localizedToolTitle(step, t);
-  return step.summary ? `${title} · ${step.summary}` : title;
+  const summary = toolStepSummary(step);
+  return summary ? `${title} · ${summary}` : title;
+}
+
+function toolStepSummary(step: RunStepSnapshot): string | undefined {
+  return memberToolSummaryFromRecord((step.details as { memberSummary?: unknown } | null)?.memberSummary)
+    ? undefined : step.summary;
 }
 
 function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
@@ -451,10 +460,11 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
   const hasDetails = hasStepDetails(step);
+  const summary = toolStepSummary(step);
   const row = (
     <>
       <span className={step.status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
-        <StepIcon kind={step.kind} running={step.status === 'running'} />
+        <StepIcon kind={step.kind} running={step.status === 'running'} status={step.status} />
       </span>
       <span className="run-tool-history-title">
         {localizedToolTitle(step, t)}
@@ -462,7 +472,7 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
           <span className="run-tool-history-status">{t('agent.chat.disclosure.interruptedBadge', 'Interrupted')}</span>
         )}
       </span>
-      {step.summary && <span className="run-tool-history-summary">{step.summary}</span>}
+      {summary && <span className="run-tool-history-summary">{summary}</span>}
     </>
   );
 
@@ -509,7 +519,7 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
         aria-label={historyLabel}
       >
         <span className={status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
-          <StepIcon kind={currentStep.kind} running={status === 'running'} />
+          <StepIcon kind={currentStep.kind} running={status === 'running'} status={status} />
         </span>
         <span className="run-tool-group-label">{label}</span>
         <IconChevronRight className="run-tool-group-chevron" size={13} stroke={2.2} aria-hidden="true" />

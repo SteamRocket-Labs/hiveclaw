@@ -31,7 +31,7 @@ it.each(['send_message_to_agent', 'save_memory', 'unknown_tool'])(
   },
 );
 
-it('shows a plain-text failure reason once when a generic step is expanded', () => {
+it('shows a status sentence once when an unsummarized failure is expanded (X3b item 2)', () => {
   const { container } = render(<RunDisclosureBlock timeline={{ id: 'failed-run', status: 'failed', steps: [{
     id: 'failed-tool', kind: 'tool', title: 'Working', status: 'failed', visibility: 'visible',
     details: { toolName: 'send_message_to_agent', args: { agent_id: 'private-id' },
@@ -40,7 +40,9 @@ it('shows a plain-text failure reason once when a generic step is expanded', () 
   const row = container.querySelector('.run-step-toggle') as HTMLButtonElement;
   expect(container.textContent).not.toContain('对方数字员工暂不可用');
   fireEvent.click(row);
-  expect(screen.getAllByText('对方数字员工暂不可用')).toHaveLength(1);
+  // X3b item 2 uses the typed failed state instead of raw failure prose.
+  expect(screen.getAllByText('联系同事。操作未能完成，结果尚未确认。')).toHaveLength(1);
+  expect(container.textContent).not.toContain('对方数字员工暂不可用');
   expect(container.querySelectorAll('p')).toHaveLength(1);
   expect(container.textContent).not.toMatch(/send_message_to_agent|agent_id|rawResult|internal_error|private-/);
 });

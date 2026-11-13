@@ -132,6 +132,35 @@ async def _async_value(value):
     return value
 
 
+async def test_x3b_cancel_before_start_recovers_verbatim_instruction_without_changing_boundary(monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.agents import orchestrator
+    from app.services import direct_invocation_terminal_boundary_processor as boundary
+
+    item = _claimed(event_kind="runtime_terminal", terminal_status="killed")
+    task = _runtime_task(task_type="delegation", status="killed")
+    # A terminal projection has no model response or first user message yet.
+    task.id, task.tenant_id = item.runtime_task_id, item.tenant_id
+    task.root_user_id, task.parent_session_id = uuid.uuid4(), str(uuid.uuid4())
+    task.child_agent_name, task.depth, task.trace_id = "同事", 1, "trace"
+    task.result_summary = "Task cancelled by parent agent"
+    task.prompt = "  请复盘这份任务，保留原始任务的空格与换行。\n" + "任务内容" * 178 + "\n"
+    snapshot = boundary.direct_terminal_projection_payload(task)
+    monkeypatch.setattr(boundary, "validate_direct_terminal_boundary", AsyncMock(return_value=item.binding))
+    monkeypatch.setattr(boundary, "_build_direct_terminal_spec", AsyncMock(return_value=SimpleNamespace(
+        terminal_event=None, event_kind="runtime_terminal", source="agent", response_payload=None)))
+    material = await boundary._load_terminal_material(SimpleNamespace(scalar=AsyncMock(return_value=task)), item)
+    projected = AsyncMock(return_value={"projected": True})
+    monkeypatch.setattr(orchestrator, "_project_delegation_request_terminal_to_parent", projected)
+    await boundary._project_delegation_parent_completion(material)
+    request = projected.await_args.kwargs["request"]
+    assert orchestrator._delegation_user_message(request.conversation_messages) == task.prompt
+    assert "Complete the delegated task" not in request.conversation_messages[0]["content"]
+    # No prompt is added to the persisted boundary/snapshot or its hash input.
+    assert material.projection_payload == snapshot
+    assert boundary.direct_terminal_projection_payload(task) == snapshot
+
+
 async def test_runtime_terminal_returns_receipt_without_hooks_or_t0(monkeypatch) -> None:
     from app.services.direct_invocation_terminal_boundary_processor import (
         DirectInvocationTerminalBoundaryProcessor,

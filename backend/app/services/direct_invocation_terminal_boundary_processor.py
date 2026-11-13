@@ -73,6 +73,8 @@ class _DirectTerminalMaterial:
     task_metadata: dict[str, Any] = field(default_factory=dict)
     projection_payload: dict[str, Any] = field(default_factory=dict)
     result_summary: str = ""
+    # Transient member-conversation material, never part of the sealed boundary.
+    delegation_prompt: str | None = None
 
 
 async def _project_trigger_dream(material: _DirectTerminalMaterial) -> None:
@@ -680,6 +682,7 @@ async def _load_terminal_material(
         task_metadata=metadata,
         projection_payload=direct_terminal_projection_payload(task),
         result_summary=str(task.result_summary or ""),
+        delegation_prompt=getattr(task, "prompt", None) if task.task_type == "delegation" else None,
     )
 
 
@@ -711,6 +714,8 @@ async def _project_delegation_parent_completion(
             "tenant_id": payload.get("tenant_id") or str(material.tenant_id),
             "target_agent_id": payload.get("to_agent"),
             "interaction_type": payload.get("interaction_type") or "delegation",
+            **({"conversation_messages": [{"role": "user", "content": material.delegation_prompt}]}
+               if material.delegation_prompt is not None else {}),
             "target_artifact_path": payload.get("target_artifact_path"),
             "target_artifacts": payload.get("target_artifacts"),
             "edit_mode": payload.get("edit_mode"),

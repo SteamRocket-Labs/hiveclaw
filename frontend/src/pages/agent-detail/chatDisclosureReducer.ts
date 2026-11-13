@@ -1,4 +1,5 @@
 import { isStreamingAssistantMessage, type AgentChatMessage } from './chatRuntime';
+import { memberFilename } from './memberToolSummary';
 
 export type RunStepKind =
   | 'reasoning'
@@ -300,13 +301,10 @@ function stringArg(message: AgentChatMessage, keys: string[]): string {
   return '';
 }
 
-function basename(path: string): string {
-  return path.split('/').filter(Boolean).pop() || path;
-}
-
 function summarizeFileTool(message: AgentChatMessage): string {
   const target = stringArg(message, ['path', 'file_path', 'target_path', 'source_path', 'name']);
-  return target ? compactText(basename(target), 120) : '';
+  const filename = memberFilename(target);
+  return filename ? compactText(filename, 120) : '';
 }
 
 function summarizeSearchTool(message: AgentChatMessage): string {
@@ -316,6 +314,7 @@ function summarizeSearchTool(message: AgentChatMessage): string {
 
 function summarizeToolMessage(message: AgentChatMessage): string {
   const name = (message.toolName || '').toLowerCase();
+  if (message.toolMemberSummary) return '';
   // Step summaries carry only the member's own material (file names, queries,
   // model-authored labels). Command lines and tool receipts stay collapsed in
   // the step details (B2): the default layer shows the action and its state.
@@ -341,7 +340,8 @@ function summarizeToolMessage(message: AgentChatMessage): string {
   if (FILE_TOOL_NAMES.has(name)) return summarizeFileTool(message);
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeSearchTool(message);
   const path = stringArg(message, ['path', 'file_path', 'target_path', 'source_path']);
-  if (path) return compactText(basename(path), 120);
+  const filename = memberFilename(path);
+  if (filename) return compactText(filename, 120);
   return '';
 }
 
@@ -530,6 +530,9 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
     // blocked mapping rather than reading as a failure.
     const outcome = String(message.eventStatus || '').toLowerCase();
     const summaryState = message.toolMemberSummary?.state;
+    const envelopeStatus = message.toolMeta?.kind === 'runtime_step' ? message.toolMeta.status : '';
+    if (message.toolMemberSummary?.status === 'cancelled' || ['killed', 'cancelled', 'canceled'].includes(String(envelopeStatus))) return 'cancelled';
+    if (message.toolMemberSummary?.status === 'blocked') return 'blocked';
     if (outcome === 'approval_required') return 'blocked';
     const notDone = ['failed', 'error', 'denied', 'unavailable'].includes(outcome)
       || summaryState === 'not_done' || summaryState === 'unknown';
@@ -559,7 +562,7 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
       return live('running');
     }
     if (status === 'failed' || status === 'error') return 'failed';
-    if (status === 'cancelled' || status === 'canceled') return 'cancelled';
+    if (status === 'cancelled' || status === 'canceled' || status === 'killed') return 'cancelled';
     return 'done';
   }
   if (message.role === 'event') {
@@ -567,7 +570,7 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
     if (status === 'running' || status === 'in_progress' || status === 'pending') return live('running');
     if (status === 'blocked' || status === 'approval_required' || status === 'session_permission_required') return 'blocked';
     if (status === 'failed' || status === 'error') return 'failed';
-    if (status === 'cancelled' || status === 'canceled') return 'cancelled';
+    if (status === 'cancelled' || status === 'canceled' || status === 'killed') return 'cancelled';
   }
   return 'done';
 }
@@ -741,7 +744,7 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
     visibility: 'collapsed',
     blocking: status === 'blocked',
     presentation: getEventStepPresentation(message, kind, status),
-    systemEvent: { type: message.eventType || '', metadata: message.threadItem?.metadata || {} },
+    systemEvent: { type: message.eventType || '', metadata: message.threadItem?.metadata || message.sessionItem?.payload || {} },
   };
 }
 
@@ -779,7 +782,7 @@ export function buildRunAggregateSummary(steps: RunStepSnapshot[]): RunAggregate
   // counted completed action ("Searched the web N times") inside a stopped run.
   const completed = steps.filter((step) => step.status !== 'interrupted');
   const hiddenProcessTools = completed.filter((step) => step.presentation === 'tool_history');
-  const files = completed.filter((step) => step.presentation !== 'external'
+  const files = completed.filter((step) => step.status === 'done' && step.presentation !== 'external'
     && ['read_file', 'fs_read', 'read_document'].includes(String((step.details as { toolName?: string } | null)?.toolName))).length;
   const searches = hiddenProcessTools.filter((step) => step.kind === 'search').length;
   const commands = hiddenProcessTools.filter((step) => step.kind === 'command').length;

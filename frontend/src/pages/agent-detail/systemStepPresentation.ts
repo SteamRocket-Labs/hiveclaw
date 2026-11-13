@@ -1,12 +1,21 @@
 import type { TFunction } from 'i18next';
 import { runtimeStatusLabel } from './runtimeStatus';
 import type { RunStepSnapshot } from './chatDisclosureReducer';
+import { memberToolSummarySentence } from './memberToolSummary';
 
 export function isKeptResultStep(step: RunStepSnapshot): boolean {
   const event = step.systemEvent;
   return event?.type === 'agent_task_notification'
     && (event.metadata.runtime_result_integration_page === true || event.metadata.task_type === 'runtime_result_integration')
-    && ['denied', 'needs_reconciliation'].includes(String(event.metadata.continuation_status));
+    && ['denied', 'needs_reconciliation'].includes(String(event.metadata.continuation_status))
+    && hasKeptResult(event.metadata);
+}
+
+function hasKeptResult(metadata: Record<string, unknown>): boolean {
+  if (typeof metadata.has_kept_result === 'boolean') return metadata.has_kept_result;
+  const manifest = metadata.result_manifest as { items?: Array<{ terminal_status?: string; result_size_bytes?: number; artifact_count?: number }> } | undefined;
+  return (manifest?.items || []).some(item => (item.artifact_count || 0) > 0
+    || (item.terminal_status === 'completed' && (item.result_size_bytes || 0) > 0));
 }
 
 // Match only known producer templates. Unmatched sentences and model prose
@@ -17,6 +26,14 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
   const metadata = event.metadata;
   const text = typeof step.details === 'string' ? step.details : step.summary || '';
   const display = (title: string, summary?: string): RunStepSnapshot => ({ ...step, title, titleIsLocalized: true, summary, details: summary });
+  const delegation = metadata.action_kind === 'a2a_delegation' || (event.type === 'child_session' && String(metadata.reason || '').startsWith('delegation_'));
+  if (delegation && (['killed', 'cancelled'].includes(String(metadata.status))
+    || (event.type === 'runtime_action_started' && ['completed', 'failed', 'blocked'].includes(String(metadata.status))))) {
+    const status = String(metadata.status);
+    const sentence = memberToolSummarySentence({ kind: 'delegation', status: status === 'killed' ? 'cancelled' : status,
+      state: status === 'completed' ? 'done' : 'not_done' }, t)!;
+    return display(t('agent.chat.disclosure.tools.delegateWork', 'Delegate work'), sentence);
+  }
   if (step.status === 'failed') {
     const actor = metadata.target_agent_name;
     const prefix = event.type === 'runtime_action_failed' && metadata.action_kind === 'a2a_delegation'
@@ -36,12 +53,15 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
     metadata.runtime_result_integration_page === true || metadata.task_type === 'runtime_result_integration'
   ) && /^\d+ runtime result\(s\) ready in integration epoch \d+ \(terminal=\d+\/expected=\d+\)\.(?: Parent continuation denied: .+)?$/.test(text)) {
     const count = metadata.item_count;
-    const title = typeof count === 'number' && Number.isInteger(count) && count >= 0
+    const stopped = ['denied', 'needs_reconciliation'].includes(String(metadata.continuation_status));
+    const title = stopped && !hasKeptResult(metadata)
+      ? t('agent.chat.disclosure.system.colleagueEnded', 'The colleague task has ended')
+      : typeof count === 'number' && Number.isInteger(count) && count >= 0
       ? t('agent.chat.disclosure.system.resultsReceived', 'Received {{count}} task results', { count })
       : t('agent.chat.disclosure.system.resultsAvailable', 'Task results received');
-    const review = isKeptResultStep(step)
+    const review = stopped ? hasKeptResult(metadata)
       ? t('agent.chat.disclosure.system.resultsKept', 'Results are kept for review; this conversation did not continue.')
-      : undefined;
+      : t('agent.chat.disclosure.system.noResultKept', 'There is no result to view; this conversation did not continue.') : undefined;
     return display(title, review);
   }
   if (event.type === 'team_member' && typeof metadata.member_name === 'string'

@@ -202,7 +202,9 @@ async def test_tool_search_still_finds_authorized_mcp_and_never_denied_names(
 ):
     n = native_workspace
     await _mcp_rows(n, owner_sessionmaker)
-    _, output = await _tool_round(n, app_user_sessionmaker, "tool_search", {"query": "r7e"})
+    # G4c: name fragments shorter than five characters are noise, so the query is
+    # the shared name prefix, which also matches the denied tool's name.
+    _, output = await _tool_round(n, app_user_sessionmaker, "tool_search", {"query": "mcp_r7e"})
     assert "mcp_r7e_reachable" in output, output
     assert "mcp_r7e_denied" not in output, output
     snapshot = await _next_request(n, app_user_sessionmaker)

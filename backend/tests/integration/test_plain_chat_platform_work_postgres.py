@@ -319,9 +319,14 @@ async def test_recovered_memory_source_restores_the_ready_index(
 
     n = memory_dag
     original = list(n.receipts[9].dependencies_json)
+    # R20a: a platform Skill file pinned to a prior package version now binds to
+    # the running package's bytes in the same lineage, so an unknown version of
+    # that kind no longer withholds. A member-owned context resource is still
+    # checked exactly, so it carries the unavailable version here.
+    resource = next(dep for dep in n.shared if dep["source_kind"] == "agent_context_resource")
     async with owner_sessionmaker() as writer:
         row = await writer.get(ContentInputReceipt, n.receipts[9].id)
-        row.dependencies_json = [*original, {**n.shared[0], "source_version": "unavailable-version"}]
+        row.dependencies_json = [*original, {**resource, "source_version": "unavailable-version"}]
         await writer.commit()
 
     withheld = await resolve(n)

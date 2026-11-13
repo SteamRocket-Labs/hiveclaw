@@ -969,7 +969,11 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # runtime_notification_outbox, runtime_task_claim_service); R18a settles an effect-free
 # unknown delivery as failed (session_model_round). G4b, X1 and A2m-f touch no
 # bypass-reachable function. Still 122 callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "c05a6a397cd616becbbabab31fd3768334e91cc98a4669cadd490cc67de87c77"
+# Land25 (X3) versus land24: still 794 entries, 3 changed hashes. X3 stores tool_name in
+# the native V2 result payload (complete_tool_invocation and the module source of
+# session_tool_runtime) and projects in-process tool results for members (module source
+# of web_chat_runtime). Still 122 callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "605efb311385c7739eeccbe00f1661999f96f608501cdd73be3b3dba8c5c689d"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -327,15 +327,15 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
             files, source_revision_id = content["files"], str(revision.id)
     else:
         files, source_revision_id = content["platform_skill_sources"], str(revision.id)
-    # Keep every original file claim frozen. Missing defaults may be recognized
-    # as exact current application bytes, without attesting their copy history.
+    # Stored claims bind only while equal to the running package. Files matching
+    # the running package bind to the same lineage without attesting copy history.
     bundled = (
         _bundled_platform_skill_hashes()
         if source_path is None
         else _bundled_platform_skill_hashes(source_path=source_path)
     )
     matching = original_platform_skill_hashes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id), bundled=bundled)
-    files = {**matching, **files}
+    files = {**files, **matching}
     candidates = {}
     for path, digest in files.items():
         if source_path is not None and path != source_path:
@@ -645,8 +645,19 @@ async def validate_skill_file_dependency(db, tenant_id, dependency, *, user, run
         ) from exc
     if dependency["source_kind"] == "agent_platform_skill_file":
         sources = await _platform_skill_sources(db, tenant_id, agent_id, source_path=path)
-        _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / path, dependency["source_version"])
-        if sources.get(path) != (str(revision_id), dependency["source_version"]):
+        selected = sources.get(path)
+        version = dependency["source_version"]
+        source_file = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / path
+        try:
+            _validate_source_bytes(source_file, version)
+        except ContentInputReceiptError as exc:
+            if exc.code != "content_source_changed" or selected is None or selected[0] != str(revision_id):
+                raise
+            # An old closure may pin the prior package. The same platform
+            # lineage can disclose only bytes proven by the running package.
+            version = selected[1]
+            _validate_source_bytes(source_file, version)
+        if selected != (str(revision_id), version):
             raise ContentInputReceiptError(
                 "content_source_unavailable", "The platform Skill lacks an original package witness.", 503
             )

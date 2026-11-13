@@ -539,31 +539,39 @@ async def push_default_skills_to_existing_agents():
         pushed = 0
         updated = 0
         unchanged = 0
+        failed = 0
         for agent in agents:
-            agent_dir = agent_manager._agent_dir(agent.id)
-            install_counts = await asyncio.to_thread(
-                _push_default_skill_packages_to_agent,
-                agent_dir=agent_dir,
-                default_skills=default_skills,
-            )
-            pushed += install_counts["pushed"]
-            updated += install_counts["updated"]
-            unchanged += install_counts["unchanged"]
-            legacy_removed = await asyncio.to_thread(remove_legacy_flat_skill_files, agent_dir)
-            if legacy_removed:
-                updated += len(legacy_removed)
-                logger.info(
-                    "[SkillSeeder] Removed legacy flat skill files for agent {}: {}",
-                    agent.id,
-                    ", ".join(legacy_removed),
+            try:
+                agent_dir = agent_manager._agent_dir(agent.id)
+                install_counts = await asyncio.to_thread(
+                    _push_default_skill_packages_to_agent,
+                    agent_dir=agent_dir,
+                    default_skills=default_skills,
+                )
+                pushed += install_counts["pushed"]
+                updated += install_counts["updated"]
+                unchanged += install_counts["unchanged"]
+                legacy_removed = await asyncio.to_thread(remove_legacy_flat_skill_files, agent_dir)
+                if legacy_removed:
+                    updated += len(legacy_removed)
+                    logger.info(
+                        "[SkillSeeder] Removed legacy flat skill files for agent {}: {}",
+                        agent.id,
+                        ", ".join(legacy_removed),
+                    )
+            except Exception as exc:
+                failed += 1
+                logger.warning(
+                    "[SkillSeeder] Default Skill startup failed for agent {}: {}", agent.id, type(exc).__name__
                 )
 
-        if pushed or updated:
+        if pushed or updated or failed:
             logger.info(
-                "[SkillSeeder] Default Skill startup result: {} pushed, {} updated, {} unchanged",
+                "[SkillSeeder] Default Skill startup result: {} pushed, {} updated, {} unchanged, {} failed",
                 pushed,
                 updated,
                 unchanged,
+                failed,
             )
         else:
             logger.info(

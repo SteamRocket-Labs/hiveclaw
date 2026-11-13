@@ -1028,7 +1028,7 @@
       },
       "extensions": {
         "title": "插件目录",
-        "description": "统一管理 MCP 服务器、插件、技能、子代理、连接器和租户级能力安装。"
+        "description": "为公司安装和管理应用连接、插件与技能。"
       },
       "runtime_budgets": {
         "title": "运行保护",
@@ -4590,6 +4590,10 @@
       "mcpRevokeApproval": "撤销批准",
       "mcpEditPurpose": "修改用途",
       "canonicalDescription": "审核后的工具用途",
+      "mcpConnectionWithHost": "{{name}}（{{host}}）",
+      "mcpDefaultPurpose": "{{connection}}提供的工具 {{tool}}。助手只看到平台生成的默认说明，服务方的原始说明未采用。",
+      "mcpAssistantOriginal": "助手看到的原文",
+      "mcpVersionDetails": "查看版本标识",
       "deleteConnector": "删除连接器",
       "import": "导入",
       "importFailed": "导入失败",

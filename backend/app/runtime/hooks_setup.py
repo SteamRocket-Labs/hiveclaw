@@ -30,6 +30,8 @@ from app.runtime.hooks import (
 from app.memory.t0.ledger import append_t0_session_event, seal_t0_session_segment
 from app.services.pending_reply_service import OUTBOUND_TOOL_NAMES
 from app.services.session_memory import (
+    _mark_deterministic_fallback,
+    build_session_memory_payload_from_messages,
     build_session_memory_payload_with_llm,
     update_session_memory,
     write_compaction_summary,
@@ -40,6 +42,7 @@ _DEFAULT_HOOK_REGISTRY = hook_registry
 _T2_BACKGROUND_TASKS: dict[str, asyncio.Task[None]] = {}
 _REQUIRED_TURN_BOUNDARY_MARKER = "required_terminal_boundary_projected"
 _REQUIRED_RESPONSE_COMPLETE_MARKER = "required_response_complete_projected"
+AUX_PROJECTION_TIMEOUT_SECONDS = 3.0
 
 
 # ── Logging-only handlers (Phase 0, kept for events without active handler) ──
@@ -113,7 +116,9 @@ def _has_committed_response_receipt(ctx: HookContext) -> bool:
     )
 
 
-async def _project_on_response(ctx: HookContext) -> dict[str, object] | None:
+async def _project_on_response(
+    ctx: HookContext, *, auxiliary_deadline: float | None = None,
+) -> dict[str, object] | None:
     """RESPONSE_COMPLETE → update volatile session projection only.
 
     Durable T2 is now built only from sealed T0 segments. This avoids the old
@@ -132,7 +137,9 @@ async def _project_on_response(ctx: HookContext) -> dict[str, object] | None:
     logger.info(
         "[Hooks] RESPONSE_COMPLETE: agent=%s source=%s turn=%s projection_only=true", ctx.agent_id, ctx.source, turn
     )
-    return await _project_committed_response_session_memory(ctx, agent_id, ctx.messages or [])
+    return await _project_committed_response_session_memory(
+        ctx, agent_id, ctx.messages or [], auxiliary_deadline=auxiliary_deadline,
+    )
 
 
 def _agent_data_root() -> Path:
@@ -185,6 +192,8 @@ async def _project_committed_response_session_memory(
     ctx: HookContext,
     agent_id: uuid.UUID,
     messages: list[dict],
+    *,
+    auxiliary_deadline: float | None = None,
 ) -> dict[str, object]:
     """Commit the volatile session projection exactly once per response receipt."""
 
@@ -221,12 +230,20 @@ async def _project_committed_response_session_memory(
         # Async model/database work must not hold the synchronous asset lock:
         # another task may need it for load_skill or terminal projection.
         # Recheck the durable receipt after building, before writing any bytes.
-        payload = await build_session_memory_payload_with_llm(
-            messages,
-            metadata=_session_memory_metadata(ctx),
-            agent_id=agent_id,
-            tenant_id=ctx.metadata.get("tenant_id"),
-        )
+        try:
+            async with asyncio.timeout_at(auxiliary_deadline):
+                payload = await build_session_memory_payload_with_llm(
+                    messages,
+                    metadata=_session_memory_metadata(ctx),
+                    agent_id=agent_id,
+                    tenant_id=ctx.metadata.get("tenant_id"),
+                )
+        except TimeoutError:
+            logger.warning("[Hooks] aux_projection_timeout projection=session_memory")
+            payload = _mark_deterministic_fallback(
+                build_session_memory_payload_from_messages(messages, metadata=_session_memory_metadata(ctx)),
+                reason="model_failure:TimeoutError",
+            )
     logger.info(
         "[Hooks] RESPONSE_COMPLETE session projection %s agent=%s session=%s revision=%d",
         "replay" if receipt.idempotent_replay else "committed",
@@ -361,7 +378,9 @@ def _fast_reflection_source_ref(ctx: HookContext) -> str:
     return base_ref
 
 
-async def _fast_reflection_on_response(ctx: HookContext) -> dict[str, object] | None:
+async def _fast_reflection_on_response(
+    ctx: HookContext, *, auxiliary_deadline: float | None = None,
+) -> dict[str, object] | None:
     """RESPONSE_COMPLETE → durable candidate creation for strong correction signals."""
     if ctx.metadata.get(_REQUIRED_RESPONSE_COMPLETE_MARKER):
         return None
@@ -388,13 +407,18 @@ async def _fast_reflection_on_response(ctx: HookContext) -> dict[str, object] | 
     if replay is not None:
         return {**replay, "source_ref": _fast_reflection_source_ref(ctx)}
     tenant_id = metadata.get("tenant_id")
-    classification = await _run_fast_reflection_learning_brain(
-        agent_id=agent_id,
-        tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
-        session_id=str(ctx.session_id or ""),
-        messages=messages,
-        metadata=metadata,
-    )
+    try:
+        async with asyncio.timeout_at(auxiliary_deadline):
+            classification = await _run_fast_reflection_learning_brain(
+                agent_id=agent_id,
+                tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
+                session_id=str(ctx.session_id or ""),
+                messages=messages,
+                metadata=metadata,
+            )
+    except TimeoutError:
+        logger.warning("[Hooks] aux_projection_timeout projection=fast_reflection")
+        classification = None
     if classification is not None:
         metadata["fast_reflection_classification"] = classification
     result = await _create_fast_reflection_candidate(
@@ -452,8 +476,13 @@ async def project_committed_response_complete(ctx: HookContext) -> dict[str, obj
         raise ValueError("committed RESPONSE_COMPLETE projection requires an authoritative receipt")
     if _parse_agent_id(ctx) is None or not str(ctx.session_id or "").strip():
         raise ValueError("committed RESPONSE_COMPLETE projection requires Agent and session authority")
+    # One wall-time budget for auxiliary work, not for asset commits. Timing
+    # out the whole join could detach a to_thread write after delivery.
+    auxiliary_deadline = asyncio.get_running_loop().time() + AUX_PROJECTION_TIMEOUT_SECONDS
     session_projection, fast_reflection = await asyncio.gather(
-        _project_on_response(ctx), _fast_reflection_on_response(ctx), return_exceptions=True,
+        _project_on_response(ctx, auxiliary_deadline=auxiliary_deadline),
+        _fast_reflection_on_response(ctx, auxiliary_deadline=auxiliary_deadline),
+        return_exceptions=True,
     )
     if isinstance(session_projection, BaseException) and isinstance(fast_reflection, BaseException):
         logger.warning("[Hooks] Required fast reflection also failed error_type=%s", type(fast_reflection).__name__)

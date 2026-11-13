@@ -210,14 +210,21 @@ def _auxiliary(monkeypatch, delayed_sessions, seconds):
                 session = str((payload.get("metadata") or {}).get("session_id") or "")
             if self.phase and session:
                 session = str(UUID(session))
-            started = datetime.now(UTC)
-            if self.phase and session in delayed_sessions:
-                await asyncio.sleep(seconds)
-            result = await super().stream(**kwargs)
+            observation = {"phase": self.phase, "session_id": session,
+                "started_at": datetime.now(UTC).isoformat(), "status": "pending"}
             if self.phase:
-                observations.append({"phase": self.phase, "session_id": session,
-                    "started_at": started.isoformat(), "finished_at": datetime.now(UTC).isoformat()})
-            return result
+                observations.append(observation)
+            try:
+                if self.phase and session in delayed_sessions:
+                    await asyncio.sleep(seconds)
+                result = await super().stream(**kwargs)
+                observation["status"] = "completed"
+                return result
+            except asyncio.CancelledError:
+                observation["status"] = "cancelled"
+                raise
+            finally:
+                observation["finished_at"] = datetime.now(UTC).isoformat()
 
         async def complete(self, **kwargs):
             return await self.stream(**kwargs)
@@ -290,7 +297,8 @@ async def test_parent_starts_before_memory_and_web_joins_both_projections(
     assert worker._settings().RUNTIME_TASK_CLAIM_POLL_SECONDS == 1.0
     running = asyncio.create_task(worker.start_runtime_task_worker_loop())
     try:
-        # Hang guard only; the measured 5 s and 30–40 s assertions below are unchanged.
+        # Hang guard only. R24a bounds auxiliary work instead of waiting 30 s;
+        # all durable boundary and notification checks below still apply.
         async with asyncio.timeout(MEASUREMENT_GUARD_SECONDS):
             while True:
                 child, notice, parents, boundaries = await _state(owner_sessionmaker, seed, web_run_id)
@@ -319,11 +327,14 @@ async def test_parent_starts_before_memory_and_web_joins_both_projections(
         delayed = [call for call in observations if call["session_id"] in {
             seed["child_session_id"], str(web_session_id)}]
         assert len(delayed) == 4
+        # Owner-approved R24a: the shared 3 s auxiliary bound replaces R19a's
+        # 30–40 s join expectation; the parent has a stricter 3 s target too.
+        assert {"parent_within_3s": chain["child_to_parent"] < 3,
+            "web_within_4s": chain["web_to_delivered"] < 4} == {
+                "parent_within_3s": True, "web_within_4s": True}
+        assert all(call["status"] == "cancelled" for call in delayed)
         assert all((datetime.fromisoformat(call["finished_at"]) - datetime.fromisoformat(
-            call["started_at"])).total_seconds() >= 30 for call in delayed)
-        assert {"parent_within_5s": chain["child_to_parent"] <= 5,
-            "web_joins_30s": 30 <= chain["web_to_delivered"] < 40} == {
-                "parent_within_5s": True, "web_joins_30s": True}
+            call["started_at"])).total_seconds() < 4 for call in delayed)
     finally:
         await _stop(running)
 

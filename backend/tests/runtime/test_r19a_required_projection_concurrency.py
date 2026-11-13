@@ -26,7 +26,12 @@ async def test_required_projections_join_before_success_or_failure(monkeypatch, 
     release = asyncio.Event()
     finished = []
 
-    async def session(_ctx):
+    # The boundary now passes one shared deadline; these stubs still test
+    # that transaction failures join their sibling before propagating.
+    deadlines = []
+
+    async def session(_ctx, *, auxiliary_deadline):
+        deadlines.append(auxiliary_deadline)
         started["session"].set()
         await release.wait()
         finished.append("session")
@@ -34,7 +39,8 @@ async def test_required_projections_join_before_success_or_failure(monkeypatch, 
             raise RuntimeError("session transaction failed")
         return {"source_ref": source_ref, "transaction_id": "stable-session-receipt", "revision": 7}
 
-    async def reflection(_ctx):
+    async def reflection(_ctx, *, auxiliary_deadline):
+        deadlines.append(auxiliary_deadline)
         started["reflection"].set()
         if failure == "reflection":
             raise RuntimeError("reflection transaction failed")
@@ -49,6 +55,7 @@ async def test_required_projections_join_before_success_or_failure(monkeypatch, 
         await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started.values())), 1)
         await asyncio.sleep(0)
         assert not task.done(), "A failed consumer must not detach its still-running sibling"
+        assert len(deadlines) == 2 and deadlines[0] == deadlines[1]
         release.set()
         if failure:
             with pytest.raises(RuntimeError, match=f"{failure} transaction failed"):
@@ -72,10 +79,10 @@ async def test_both_projection_failures_log_secondary_type_without_content(monke
     primary = ValueError("PRIVATE_SESSION_CONTENT")
     secondary = RuntimeError("PRIVATE_REFLECTION_CONTENT")
 
-    async def session(_ctx):
+    async def session(_ctx, *, auxiliary_deadline):
         raise primary
 
-    async def reflection(_ctx):
+    async def reflection(_ctx, *, auxiliary_deadline):
         raise secondary
 
     monkeypatch.setattr(hooks_setup, "_project_on_response", session)

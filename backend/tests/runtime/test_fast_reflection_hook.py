@@ -287,10 +287,10 @@ async def test_committed_response_projection_propagates_durable_candidate_failur
     from app.runtime.hooks import HookContext, HookEvent
     from app.runtime.hooks_setup import project_committed_response_complete
 
-    async def no_session_projection(_ctx):
+    async def no_session_projection(_ctx, *, auxiliary_deadline):
         return None
 
-    async def fail_candidate(_ctx):
+    async def fail_candidate(_ctx, *, auxiliary_deadline):
         raise RuntimeError("candidate transaction failed")
 
     monkeypatch.setattr("app.runtime.hooks_setup._project_on_response", no_session_projection)
@@ -325,10 +325,10 @@ async def test_committed_response_projection_marks_required_consumers_for_adviso
     outcome_id = uuid.uuid4()
     base_ref = f"session-run-outcome://{outcome_id}"
 
-    async def session_projection(_ctx):
+    async def session_projection(_ctx, *, auxiliary_deadline):
         return {"source_ref": base_ref, "transaction_id": str(uuid.uuid4()), "revision": 1}
 
-    async def fast_reflection(_ctx):
+    async def fast_reflection(_ctx, *, auxiliary_deadline):
         return {"source_ref": base_ref, "status": "skipped", "reason": "low_signal"}
 
     monkeypatch.setattr("app.runtime.hooks_setup._project_on_response", session_projection)

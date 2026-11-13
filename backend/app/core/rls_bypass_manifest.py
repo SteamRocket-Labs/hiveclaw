@@ -973,7 +973,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # the native V2 result payload (complete_tool_invocation and the module source of
 # session_tool_runtime) and projects in-process tool results for members (module source
 # of web_chat_runtime). Still 122 callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "605efb311385c7739eeccbe00f1661999f96f608501cdd73be3b3dba8c5c689d"
+# Land26 (R20a + R20b + G4c) versus land25: still 794 entries, 3 changed hashes, all in
+# skill_seeder (R20a isolates each agent in push_default_skills_to_existing_agents and
+# counts failures; module source). Still 122 callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "2d80bf1e0d961f99b9c963d6762a84c0f76ca4e143464003bdf40e3da088470d"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

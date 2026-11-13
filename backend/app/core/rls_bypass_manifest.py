@@ -961,7 +961,15 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # A2m removes memory preselection (module source of remote_a2a_chat); G4a moves registry
 # discovery onto the public MCP client (resource_discovery). Still 122 callsites, no new
 # bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "e1cb34cfa325432332492176fc13b0dac65ae8a2ac1d7d480a05ff9ecae5d66a"
+# Land24 (R18a, G4b, X1, A2p, R19b, R19a, A2m-f) versus land23: still 794 entries, 12
+# changed hashes. A2p cuts member-request statements (database, assistant_binding,
+# personal_knowledge_service, session_v2_persistence x2); R19b changes refused-result
+# reads (chat_artifact_delivery x2, content_input_receipts); R19a delivers a finished
+# colleague result once (direct_invocation_terminal_boundary_processor,
+# runtime_notification_outbox, runtime_task_claim_service); R18a settles an effect-free
+# unknown delivery as failed (session_model_round). G4b, X1 and A2m-f touch no
+# bypass-reachable function. Still 122 callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "c05a6a397cd616becbbabab31fd3768334e91cc98a4669cadd490cc67de87c77"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

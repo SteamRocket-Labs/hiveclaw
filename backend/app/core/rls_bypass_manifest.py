@@ -983,7 +983,16 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land28 (X2) versus land27: still 794 entries, 1 changed hash, the module source of
 # web_chat_runtime (broadcast_web_chat_event delivers committed compatibility envelopes
 # untouched; no bypass scope or authorization touched). Still 122 callsites.
-RLS_BYPASS_SCOPES_SHA256 = "85f805de77134ac47542bd85b026a4dee2caae6b511a2ae985e89da2869ae437"
+# Land29 (X3c, X3d, R22a) versus land28: 795 entries, one new and two changed, all in
+# session_tool_runtime. X3c adds _member_target_for_invocation, reached from
+# complete_tool_invocation: it derives the member-safe file name, fetch host or company
+# MCP app label once from the typed arguments, reading Tool (this tenant's row before the
+# global row) and MCPServer joined through MCPServerTool, both filtered to this tenant
+# and to company-owned servers (owner_user_id IS NULL); no result text, no secrets.
+# complete_tool_invocation and the module source change with it. X3d is frontend only;
+# R22a changes runtime_result_sources, which no bypass scope reaches. Still 122
+# callsites, no new bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "b1953cba96fea84239d018ab11018550acf48fcd116bd29b8b9a8c802689b217"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -304,6 +304,9 @@ async def test_non_package_skill_bytes_remain_refused(
         from app.services.config_versioning import save_revision
 
         await _push_default(owner_sessionmaker, updated)
+        # The pre-install pass below must accept the old dependency against
+        # the current package bytes, not against the untouched v1 file.
+        assert path.read_bytes() == updated
         dependency = {"source_kind": "agent_platform_skill_file",
             "source_id": f"{seed['agent_id']}\n{SKILL_PATH}\n{revision_id}", "source_version": original_digest}
         async with app_user_sessionmaker() as db:

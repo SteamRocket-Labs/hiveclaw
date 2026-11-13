@@ -539,6 +539,7 @@ async def push_default_skills_to_existing_agents():
         pushed = 0
         updated = 0
         unchanged = 0
+        failed = 0
         for agent in agents:
             try:
                 agent_dir = agent_manager._agent_dir(agent.id)
@@ -559,16 +560,18 @@ async def push_default_skills_to_existing_agents():
                         ", ".join(legacy_removed),
                     )
             except Exception as exc:
+                failed += 1
                 logger.warning(
                     "[SkillSeeder] Default Skill startup failed for agent {}: {}", agent.id, type(exc).__name__
                 )
 
-        if pushed or updated:
+        if pushed or updated or failed:
             logger.info(
-                "[SkillSeeder] Default Skill startup result: {} pushed, {} updated, {} unchanged",
+                "[SkillSeeder] Default Skill startup result: {} pushed, {} updated, {} unchanged, {} failed",
                 pushed,
                 updated,
                 unchanged,
+                failed,
             )
         else:
             logger.info(

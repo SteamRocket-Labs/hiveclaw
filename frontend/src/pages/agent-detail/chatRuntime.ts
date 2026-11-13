@@ -996,6 +996,12 @@ export function applyRuntimeDoneEvent(
       : thinkingFromParts,
     artifacts: artifacts.length > 0 ? artifacts : undefined,
     timestamp: new Date().toISOString(),
+    // X2 r3 C: the done frame's typed run id, read back through
+    // agentChatMessageRunId so a live-only answer stays bound to its own run
+    // and a later run's terminal merge never adopts it.
+    ...(typeof event?.run_id === 'string' && event.run_id.trim()
+      ? { eventRuntimeTaskId: event.run_id }
+      : {}),
   };
   if (last && last.role === 'assistant' && (last as any)._streaming) {
     return [...messages.slice(0, -1), assistantMessage];

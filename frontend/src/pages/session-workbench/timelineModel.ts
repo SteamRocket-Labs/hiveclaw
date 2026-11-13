@@ -1817,7 +1817,7 @@ function ensureOpenRunDisclosureContinuity(
     if (cell.timeline.status !== 'running' && cell.timeline.status !== 'blocked') continue;
     // X2 r2 D: a mid-load cell with unknown totals renders nothing — its
     // fabricated placeholder row must not appear either.
-    if (cell.totalsUnknown || cell.timeline.statusUnknown) continue;
+    if (cell.totalsUnknown) continue;
     if (cell.timeline.steps.some((step) => step.presentation !== 'external')) return;
 
     const title = cell.timeline.status === 'blocked'
@@ -2178,10 +2178,19 @@ function applyCanonicalRunTerminalEvidence(
       clockUnknown: item?.payload?.task_type === 'delegation' && item.payload.started_at == null,
       completedAtMs, status });
   });
+  // X2 r3 D: a cell on a mid-turn page whose totals are unknown renders no
+  // status either — including the early returns below (no run binding, no
+  // authoritative status source). A full load keeps the pre-X2 legacy rule.
+  const pageTotalsUnknown = (index: number): boolean =>
+    startsMidTurn && (firstUserCell < 0 || index < firstUserCell);
+  const unknownTotalsCell = (cell: Extract<ThreadTimelineCell, { kind: 'active_run' }>, index: number)
+    : Extract<ThreadTimelineCell, { kind: 'active_run' }> => pageTotalsUnknown(index)
+      ? { ...cell, totalsUnknown: true, timeline: { ...cell.timeline, statusUnknown: true } }
+      : cell;
   return cells.map((cell, index) => {
     if (cell.kind !== 'active_run') return cell;
     const runId = cell.runId || (cell.sourceMessages.length > 0 ? normalizeSessionRunId(sessionRunId) : null);
-    if (!runId) return cell;
+    if (!runId) return unknownTotalsCell(cell, index);
     const terminal = terminalByRunId.get(runId);
     const nativeReplyPendingTerminal = !terminal && messages.some(message => message.sessionItem?.kind === 'assistant_final'
       && message.sessionItem.completedEventId && message.sessionItem.payload?.legacy !== true
@@ -2196,7 +2205,7 @@ function applyCanonicalRunTerminalEvidence(
       : canonicalStatus === 'done' ? 'done' : canonicalStatus) : terminal?.status;
     if (nativeReplyPendingTerminal && (!canonicalStatus || canonicalStatus === 'done')) return { ...cell, runId,
       timeline: { ...cell.timeline, status: 'running', completedAt: undefined, durationIsFinal: false } };
-    if (!status) return cell;
+    if (!status) return unknownTotalsCell(cell, index);
     // X2 B: a terminal run's duration comes from the run's own typed start
     // (payload started_at, else the run item's first event) to its typed
     // terminal time — computed the same way live and after reload. A run
@@ -2298,6 +2307,11 @@ function sameCellIdentity(previous: ThreadTimelineCell, next: ThreadTimelineCell
     if (previous.runId !== next.runId) return false;
     if (previous.phase !== next.phase) return false;
     if (previous.timeline.status !== next.timeline.status) return false;
+    // X2 r3: presentation flags must participate — a reused cell cannot keep
+    // a stale delegationInFlight/statusUnknown when only the audience or the
+    // page boundary changed.
+    if (Boolean(previous.timeline.delegationInFlight) !== Boolean(next.timeline.delegationInFlight)) return false;
+    if (Boolean(previous.timeline.statusUnknown) !== Boolean(next.timeline.statusUnknown)) return false;
     if (previous.timeline.phase !== next.timeline.phase) return false;
     if (previous.timeline.startedAt !== next.timeline.startedAt) return false;
     if (previous.timeline.completedAt !== next.timeline.completedAt) return false;
@@ -2465,7 +2479,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const settledCells = applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle, sessionWorkbench?.runtime_tasks,
       sessionRunId)
       .map(cell => terminalStatePending && cell.kind === 'active_run'
-        && cell.sourceMessages.some(({ index }) => index > latestUserMessageIndex(input.messages))
+        && cell.sourceMessages.some(({ index }) => index > latestUserIndex)
         && (!headerRunId || !cell.runId || isSameSessionRunId(cell.runId, headerRunId))
         && cell.timeline.status === 'done'
         ? { ...cell, timeline: { ...cell.timeline, status: 'running' as const }, phase: undefined }

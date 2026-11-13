@@ -90,7 +90,7 @@ it('does not publish partial terminal totals while older transcript pages are lo
   expect(complete).toEqual(runs(build(events))[0].timeline);
 });
 
-it('keeps a completed run while older transcript pages are loading without publishing partial totals', () => {
+it('renders no block while older transcript pages are loading (no provisional status or totals)', () => {
   const events = [user(), event(2, 'run', 'queued', 0), ...Array.from({ length: 69 }, (_, i) => work(i + 3, i + 1)),
     event(72, 'run', 'completed', 897)];
   const project = (snapshot: Event[]) => projectCanonicalTranscriptSnapshot({ existing: [],
@@ -114,7 +114,7 @@ it('keeps a completed run while older transcript pages are loading without publi
   expect(complete).toEqual(runs(build(events))[0].timeline);
 });
 
-it('keeps the hello block when the newest transcript page starts inside its run', () => {
+it('renders no hello block while the newest transcript page starts inside its run', () => {
   const events = [user(), event(2, 'run', 'queued', 0),
     event(3, 'assistant_text', 'completed', 24, 'run-1', { content: 'Hello.' }, 'hello-text'),
     event(4, 'assistant_final', 'completed', 25, 'run-1',

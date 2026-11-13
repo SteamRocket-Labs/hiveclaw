@@ -244,12 +244,17 @@ const DEDICATED_TOOL_CARD_META_KINDS = new Set([
  * terminal receipt reaches this session, so the label never outlives real
  * evidence the reader can see. */
 export function stepDelegationStillInProgress(step: RunStepSnapshot): boolean {
-  const summary = (step.details as { memberSummary?: { kind?: string; state?: string } } | null)?.memberSummary;
-  if (summary?.kind === 'delegation' && summary.state === 'in_progress') return true;
+  // X2 r3: the label may only mark a delegation the projection can also CLEAR
+  // — `projectMemberDelegationStates` keys rows by task id, so an untyped
+  // started row or an in_progress summary without a task id must not set it.
+  const summary = (step.details as { memberSummary?: { kind?: string; state?: string; taskId?: string } } | null)?.memberSummary;
+  if (summary?.kind === 'delegation' && summary.state === 'in_progress'
+    && typeof summary.taskId === 'string' && summary.taskId) return true;
   const event = step.systemEvent;
   if (!event || event.type !== 'runtime_action_started') return false;
   const metadata = event.metadata || {};
   if (metadata.action_kind !== 'a2a_delegation') return false;
+  if (!String(metadata.runtime_task_id || metadata.task_id || '')) return false;
   return ['running', 'in_progress', 'pending', 'queued'].includes(String(metadata.status || step.status || ''));
 }
 

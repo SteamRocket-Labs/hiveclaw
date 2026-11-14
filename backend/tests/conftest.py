@@ -242,6 +242,23 @@ def pytest_unconfigure(config):
 
 
 @pytest.fixture(autouse=True)
+def _restore_tenant_context():
+    """Restore the caller's context even if an async fixture's teardown fails.
+
+    A synchronous function-scoped guard also covers values that pytest-asyncio
+    copies from fixture setup into pytest's context. Keep the incoming value
+    and allow each test/fixture to pin its own tenant for its entire lifetime.
+    """
+    from app.database import get_current_tenant_id, reset_current_tenant, set_current_tenant
+
+    token = set_current_tenant(get_current_tenant_id())
+    try:
+        yield
+    finally:
+        reset_current_tenant(token)
+
+
+@pytest.fixture(autouse=True)
 def _reset_global_engine_pools():
     """Drop the module-level engines' pooled connections after every test.
 

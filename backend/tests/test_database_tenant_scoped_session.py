@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
+from uuid import uuid4
+
 import pytest
 
 
@@ -70,3 +73,26 @@ async def test_tenant_scoped_session_default_still_allows_fail_closed_none(monke
 
     assert pinned_values == [None]
     assert fake_session.commits == 1
+
+
+@pytest.mark.parametrize("has_previous_tenant", [False, True])
+@pytest.mark.parametrize("body_fails", [False, True])
+def test_tenant_context_fixture_restores_its_token_without_overriding_the_body(has_previous_tenant, body_fails):
+    from app.database import get_current_tenant_id, reset_current_tenant, set_current_tenant
+    from tests.conftest import _restore_tenant_context
+
+    previous = str(uuid4()) if has_previous_tenant else None
+    body_tenant = str(uuid4())
+    outer_token = set_current_tenant(previous)
+    guard = contextmanager(_restore_tenant_context.__wrapped__)
+    try:
+        outcome = pytest.raises(RuntimeError, match="controlled test body failure") if body_fails else nullcontext()
+        with outcome, guard():
+            assert get_current_tenant_id() == previous
+            set_current_tenant(body_tenant)
+            assert get_current_tenant_id() == body_tenant
+            if body_fails:
+                raise RuntimeError("controlled test body failure")
+        assert get_current_tenant_id() == previous
+    finally:
+        reset_current_tenant(outer_token)

@@ -85,7 +85,8 @@ async def test_stop_committed_after_observation_before_model_seal(
     monkeypatch.setattr(session_model_round, "fail_model_request", stop_then_seal)
     await orchestrator._fail_session_model_request(state, round_index=1, provider_request_id=request_id,
         error_class="provider_error", delivery_state="rejected" if retry_safe else "unknown", retry_safe=retry_safe)
-    if provider_options:
+    # R23d: a pre-execution rejection has no effect even when the committed stop wins the lock.
+    if provider_options and not retry_safe:
         async with owner_sessionmaker() as db:
             run = await db.get(RuntimeTask, state.run_uuid)
             assert run.status == "needs_reconciliation"
@@ -95,7 +96,7 @@ async def test_stop_committed_after_observation_before_model_seal(
         assert state.provider_reconciliation is None
     async with owner_sessionmaker() as db:
         result = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == state.run_uuid))
-        assert result.state == ("needs_reconciliation" if provider_options else "failed")
+        assert result.state == ("needs_reconciliation" if provider_options and not retry_safe else "failed")
         assert result.seal_json["error_class"] == "cancelled"
 
 

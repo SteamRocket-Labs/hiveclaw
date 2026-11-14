@@ -913,7 +913,12 @@ class OpenAICompatibleClient(LLMClient):
         data = response.json()
 
         if "error" in data:
-            raise LLMError(f"API error: {data['error']}", delivery_state="rejected")
+            # An API error may arrive after provider work; any output makes replay unsafe.
+            has_output = bool(data.get("output")) or any(
+                message.get("content") or message.get("tool_calls")
+                for message in (choice.get("message") or {} for choice in data.get("choices") or [])
+            )
+            raise LLMError(f"API error: {data['error']}", delivery_state="unknown" if has_output else "rejected")
 
         choice = data.get("choices", [{}])[0]
         msg = choice.get("message", {})
@@ -1396,7 +1401,8 @@ class OpenAIResponsesClient(LLMClient):
                 api_error,
                 ctx,
             )
-            raise LLMError(api_error, delivery_state="rejected")
+            has_output = bool(data.get("output") or data.get("output_text"))
+            raise LLMError(api_error, delivery_state="unknown" if has_output else "rejected")
 
         return self._parse_response_data(data)
 
@@ -1837,7 +1843,10 @@ class GeminiClient(LLMClient):
 
         data = response.json()
         if isinstance(data, dict) and data.get("error"):
-            raise LLMError(f"API error: {data['error']}", delivery_state="rejected")
+            has_output = bool(data.get("output")) or any(
+                (candidate.get("content") or {}).get("parts") for candidate in data.get("candidates") or []
+            )
+            raise LLMError(f"API error: {data['error']}", delivery_state="unknown" if has_output else "rejected")
 
         return self._parse_response_data(data)
 
@@ -2143,7 +2152,10 @@ class AnthropicClient(LLMClient):
 
         data = response.json()
         if data.get("type") == "error":
-            raise LLMError(f"API error: {data.get('error', {})}", delivery_state="rejected")
+            has_output = bool(data.get("output") or data.get("content"))
+            raise LLMError(
+                f"API error: {data.get('error', {})}", delivery_state="unknown" if has_output else "rejected"
+            )
 
         full_content = ""
         full_reasoning = ""

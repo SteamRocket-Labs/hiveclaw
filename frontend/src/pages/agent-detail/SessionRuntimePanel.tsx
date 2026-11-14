@@ -8,7 +8,7 @@ import { isAdministratorRole } from '../../roles';
 import { assistantNameForDisplay } from '../assistant/assistantScope';
 import { canOpenWorkBrowser } from '../session-workbench/workBrowserState';
 
-import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
+import { compactDuration, SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import {
   SessionAgentTeamCloseControl,
@@ -144,15 +144,27 @@ export function scrollToRuntimeLinkMarker(runtimeId: string | null | undefined):
   marker?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-export function runtimeMetricSummary(item: RuntimeSectionItemModel, t?: RuntimeStatusTranslator): string {
+function runtimeCountLabel(count: number | null, label: string | null, language: string): string | null {
+  // Use the recorded count, not the rounded K/M presentation, in Chinese copy.
+  return language.startsWith('zh') && count !== null ? count.toLocaleString(language) : label;
+}
+
+function runtimeElapsedLabel(metrics: RuntimeSectionItemModel['metrics'], t: RuntimeStatusTranslator | undefined, language: string): string | null {
+  return t && language.startsWith('zh') && metrics.elapsedSeconds !== null
+    ? compactDuration(metrics.elapsedSeconds, t) : metrics.elapsedLabel;
+}
+
+export function runtimeMetricSummary(item: RuntimeSectionItemModel, t?: RuntimeStatusTranslator, language = 'en'): string {
+  const tokenLabel = runtimeCountLabel(item.metrics.tokenCount, item.metrics.tokenLabel, language);
+  const toolUseLabel = runtimeCountLabel(item.metrics.toolUseCount, item.metrics.toolUseLabel, language);
   return [
-    item.metrics.elapsedLabel,
-    item.metrics.tokenLabel ? t
-      ? t('sessionWorkbench.rightPanel.tokenUsage', '{{value}} tokens', { value: item.metrics.tokenLabel })
-      : `${item.metrics.tokenLabel} tokens` : null,
-    item.metrics.toolUseLabel ? t
-      ? t('sessionWorkbench.rightPanel.toolUses', '{{value}} tools', { value: item.metrics.toolUseLabel })
-      : `${item.metrics.toolUseLabel} tools` : null,
+    runtimeElapsedLabel(item.metrics, t, language),
+    tokenLabel ? t
+      ? t('sessionWorkbench.rightPanel.tokenUsage', '{{value}} tokens', { value: tokenLabel })
+      : `${tokenLabel} tokens` : null,
+    toolUseLabel ? t
+      ? t('sessionWorkbench.rightPanel.toolUses', '{{value}} tools', { value: toolUseLabel })
+      : `${toolUseLabel} tools` : null,
   ].filter(Boolean).join(' · ');
 }
 
@@ -162,6 +174,7 @@ export function runtimeItemDisplayMeta(
   item: RuntimeSectionItemModel,
   resultDeliveredLabel = 'Result delivered',
   t?: RuntimeStatusTranslator,
+  language = 'en',
 ): string {
   const metadata = isRuntimeRecord(item.raw.metadata) ? item.raw.metadata : {};
   const role = stringValue(
@@ -175,7 +188,7 @@ export function runtimeItemDisplayMeta(
   const userFacingSummary = DURABLE_RUNTIME_RESULT_RECEIPT.test(summary)
     ? resultDeliveredLabel
     : summary;
-  return [role, userFacingSummary, runtimeMetricSummary(item, t)].filter(Boolean).join(' · ');
+  return [role, userFacingSummary, runtimeMetricSummary(item, t, language)].filter(Boolean).join(' · ');
 }
 
 export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel, t?: RuntimeStatusTranslator): string {
@@ -219,10 +232,12 @@ export function subagentWorkerRecoveryModel(worker: RuntimeSectionItemModel): {
 
 export function runtimeItemDisplayLabel(item: RuntimeSectionItemModel, fallback: string): string {
   const label = stringValue(item.label).trim();
-  // The API falls back to task_type when no authored name exists. Treat that
-  // exact typed value as a missing display name, not as a title to translate.
+  const metadata = isRuntimeRecord(item.raw.metadata) ? item.raw.metadata : {};
+  const hasChosenName = ['subagent_name', 'workflow_name', 'child_agent_name', 'task_name', 'name'].some(key =>
+    [metadata[key], item.raw[key]].some(value => typeof value === 'string' && value.trim()));
+  // An authored name wins even when it happens to equal the machine type.
   if (!label || label === item.id || isUuidLike(label)
-    || label === item.runtimeKind || label === stringValue(item.raw.task_type)) return fallback;
+    || (!hasChosenName && (label === item.runtimeKind || label === stringValue(item.raw.task_type)))) return fallback;
   return label;
 }
 
@@ -320,7 +335,8 @@ export function SessionRuntimePanel({
     window.addEventListener('mouseup', onUp);
   }, []);
 
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.language || 'en';
   const rightPanel = buildSessionRightPanelModel({
     messages,
     sessionWorkbench: sessionWorkbench as Record<string, unknown> | null,
@@ -357,7 +373,7 @@ export function SessionRuntimePanel({
     const meta = runtimeItemDisplayMeta(
       item,
       t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
-      t,
+      t, language,
     );
     const content = (
       <>
@@ -443,7 +459,7 @@ export function SessionRuntimePanel({
     const meta = runtimeItemDisplayMeta(
       workflow,
       t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
-      t,
+      t, language,
     );
     const content = (
       <>
@@ -481,7 +497,7 @@ export function SessionRuntimePanel({
     const meta = runtimeItemDisplayMeta(
       member,
       t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
-      t,
+      t, language,
     );
     return (
       <div key={member.id || fallback} className="session-runtime-row" data-testid="session-agent-team-member-row">
@@ -511,7 +527,7 @@ export function SessionRuntimePanel({
     const meta = runtimeItemDisplayMeta(
       worker,
       t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
-      t,
+      t, language,
     );
     const recovery = subagentWorkerRecoveryModel(worker);
     const workerAction = (
@@ -922,9 +938,9 @@ export function SessionRuntimePanel({
                 <div className="session-runtime-summary-metrics">
                   <span>{t('sessionWorkbench.rightPanel.runningCount', '{{count}} running', { count: runtimeConsole.summary.runningCount })}</span>
                   <span>{t('sessionWorkbench.rightPanel.waitingCount', '{{count}} waiting', { count: runtimeConsole.summary.waitingCount })}</span>
-                  <span>{runtimeConsole.summary.elapsedLabel || '-'}</span>
-                  <span>{runtimeConsole.summary.tokenLabel || '-'}</span>
-                  <span>{runtimeConsole.summary.toolUseLabel || '-'}</span>
+                  <span>{runtimeElapsedLabel(rightPanel.runtimeMetrics, t, language) || '-'}</span>
+                  <span>{runtimeCountLabel(rightPanel.runtimeMetrics.tokenCount, runtimeConsole.summary.tokenLabel, language) || '-'}</span>
+                  <span>{runtimeCountLabel(rightPanel.runtimeMetrics.toolUseCount, runtimeConsole.summary.toolUseLabel, language) || '-'}</span>
                 </div>
               </div>
 
@@ -986,15 +1002,20 @@ export function WorkflowRunFocusPanel({
   onSelectSession?: (sessionId: string) => void | Promise<unknown>;
   onWorkflowAction?: (action: WorkflowRunActionModel, workflow: RuntimeSectionItemModel) => void | Promise<unknown>;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.language || 'en';
   const windowModel = buildWorkflowRunWindowModel(workflow);
   const leafCalls = windowModel.leafCalls || [];
   const steps = windowModel.steps || [];
   const meta = [
-    windowModel.meta,
-    windowModel.metrics.elapsedLabel,
-    windowModel.metrics.tokenLabel ? `${windowModel.metrics.tokenLabel} tokens` : '',
-    windowModel.metrics.toolUseLabel ? `${windowModel.metrics.toolUseLabel} tools` : '',
+    workflow.summary,
+    runtimeElapsedLabel(windowModel.metrics, t, language),
+    windowModel.metrics.tokenLabel ? t('sessionWorkbench.rightPanel.tokenUsage', '{{value}} tokens', {
+      value: runtimeCountLabel(windowModel.metrics.tokenCount, windowModel.metrics.tokenLabel, language),
+    }) : '',
+    windowModel.metrics.toolUseLabel ? t('sessionWorkbench.rightPanel.toolUses', '{{value}} tools', {
+      value: runtimeCountLabel(windowModel.metrics.toolUseCount, windowModel.metrics.toolUseLabel, language),
+    }) : '',
   ].filter(Boolean).join(' · ');
   const controls = windowModel.controls;
   const actionLabel = (action: WorkflowRunActionModel['action']) => {

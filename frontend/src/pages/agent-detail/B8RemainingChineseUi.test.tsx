@@ -31,14 +31,14 @@ const args = {
   name: '周报助手', first_task: '整理本周工作，不要改写 English literal。',
   attachments: ['report.csv'], dispatch_once: true,
   custom_option: { subject: '周报', unknown_option: false },
-  // to and recipient share a display label; neither value may be lost.
+  // Both key names must stay distinct in the complete proposal (B8-r2).
   to: 'a@example.test', recipient: 'b@example.test',
 };
 const request = { permission_request_id: 'approval', tool_name: 'create_employee_from_request', arguments: args,
   expires_at: '2026-11-06T14:13:43.874659+00:00', allow_session_allowed: false };
 const t = (key: string, fallback: string, options?: any) => translateFromCatalog(zh, key, fallback, options);
 
-it('B8 localizes the complete approval parameter labels, retaining every value and original execution arguments', async () => {
+it('B8-r2 keeps the complete approval arguments exact and approves the untouched request', async () => {
   const original = JSON.stringify(request);
   const resolve = vi.fn().mockResolvedValue(undefined);
   const { container } = render(<ThreadItemRenderer item={{ id: 'approval', item_type: 'approval_request', item_status: 'waiting_user',
@@ -49,31 +49,13 @@ it('B8 localizes the complete approval parameter labels, retaining every value a
   expect(container.textContent).not.toContain(request.expires_at);
   fireEvent.click(screen.getByRole('button', { name: '查看将要执行的完整内容' }));
   const display = screen.getByLabelText('操作详情');
-  expect(display.textContent).toContain('第一项任务');
-  expect(display.textContent).toContain('附件');
-  expect(display.textContent).not.toMatch(/first_task|attachments|dispatch_once|custom_option|unknown_option|"name"|"subject"|"recipient"|"to"/);
-  for (const value of [args.name, args.first_task, 'report.csv', '周报', args.to, args.recipient, 'true', 'false']) {
-    expect(display.textContent).toContain(value);
-  }
-  expect(display.textContent).toContain('参数 4');
-  expect(display.textContent).toContain('参数 5');
+  // B8-r2 withdraws key relabeling: every key, value and nested object must
+  // equal the exact proposed arguments, not merely retain the same values.
+  expect(display.textContent).toBe(JSON.stringify(args, null, 2));
+  expect(JSON.parse(display.textContent!)).toEqual(args);
   fireEvent.click(screen.getByRole('button', { name: '本次允许' }));
   await waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith(request, 'allow_once'));
   expect(JSON.stringify(request)).toBe(original);
-});
-
-it('B8 applies the same labels to the standalone permission details, including unknown and prototype-shaped keys', () => {
-  const argumentsValue = JSON.parse('{"first_task":"完整任务","constructor":"safe literal","__proto__":{"subject":"完整主题"}}');
-  render(<SessionPermissionActions permissionRequest={{ ...request, arguments: argumentsValue }} t={t} />);
-  fireEvent.click(screen.getByText('操作详情'));
-  const display = screen.getByLabelText('操作详情');
-  expect(display.textContent).toContain('第一项任务');
-  expect(display.textContent).toContain('主题');
-  expect(display.textContent).toContain('完整任务');
-  expect(display.textContent).toContain('safe literal');
-  expect(display.textContent).toContain('完整主题');
-  expect(display.textContent).not.toMatch(/first_task|constructor|__proto__|subject/);
-  expect(argumentsValue.constructor).toBe('safe literal');
 });
 
 function adminList() {

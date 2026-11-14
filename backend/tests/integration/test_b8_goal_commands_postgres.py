@@ -25,7 +25,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 
 
-@pytest.mark.parametrize("command", ["goal_update", "goal_stop"])
+@pytest.mark.parametrize("command", ["goal_start", "goal_update", "goal_stop"])
 async def test_local_goal_command_returns_committed_projection_without_lazy_io(owner_sessionmaker, command):
     suffix = uuid.uuid4().hex
     async with owner_sessionmaker() as db:
@@ -55,32 +55,32 @@ async def test_local_goal_command_returns_committed_projection_without_lazy_io(o
         session = ChatSession(tenant_id=tenant.id, agent_id=agent.id, user_id=user.id, title="B8 goal")
         db.add(session)
         await db.flush()
-        goal = AgentSessionGoal(
-            tenant_id=tenant.id,
-            agent_id=agent.id,
-            chat_session_id=session.id,
-            created_by_user_id=user.id,
-            objective="Original objective",
-            token_budget=1000,
-        )
-        db.add(goal)
+        goal = None
+        if command != "goal_start":
+            goal = AgentSessionGoal(
+                tenant_id=tenant.id,
+                agent_id=agent.id,
+                chat_session_id=session.id,
+                created_by_user_id=user.id,
+                objective="Original objective",
+                token_budget=1000,
+            )
+            db.add(goal)
         await db.commit()
-        agent_id, session_id, goal_id = agent.id, session.id, goal.id
-        previous_updated_at = goal.updated_at
+        agent_id, session_id = agent.id, session.id
+        goal_id = goal.id if goal is not None else None
+        previous_updated_at = goal.updated_at if goal is not None else session.created_at
 
         app = FastAPI()
         app.include_router(router, prefix="/api")
         app.dependency_overrides[get_current_user] = lambda: user
         app.dependency_overrides[get_db] = lambda: db
-        arguments = (
-            {"goal_id": str(goal_id), "objective": "Updated objective", "token_budget": 1500}
-            if command == "goal_update"
-            else {
-                "goal_id": str(goal_id),
-                "status": "complete",
-                "completion_summary": "Finished locally",
-            }
-        )
+        if command == "goal_start":
+            arguments = {"objective": "Started objective", "token_budget": 1500}
+        elif command == "goal_update":
+            arguments = {"goal_id": str(goal_id), "objective": "Updated objective", "token_budget": 1500}
+        else:
+            arguments = {"goal_id": str(goal_id), "status": "complete", "completion_summary": "Finished locally"}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local.test") as client:
             response = await client.post(
                 f"/api/agents/{agent_id}/commands/{command}/execute",
@@ -95,21 +95,31 @@ async def test_local_goal_command_returns_committed_projection_without_lazy_io(o
         assert payload["ok"] is True
         assert payload["command"] == command
         projected = payload["result"]
-        assert projected["id"] == str(goal_id)
+        if command == "goal_start":
+            goal_id = uuid.UUID(projected["id"])
+        else:
+            # Update/stop must still project the exact seeded goal, not a replacement.
+            assert projected["id"] == str(goal_id)
         assert datetime.fromisoformat(projected["updated_at"]) >= previous_updated_at
-        assert projected["status"] == ("active" if command == "goal_update" else "complete")
+        assert projected["status"] == ("complete" if command == "goal_stop" else "active")
 
     # A new session verifies what the real endpoint committed, not identity-map state.
     async with owner_sessionmaker() as db:
         stored = await db.get(AgentSessionGoal, goal_id)
         assert projected["updated_at"] == stored.updated_at.isoformat()
-        assert stored.metadata_json["last_command"] == command
-        if command == "goal_update":
-            assert stored.objective == projected["objective"] == "Updated objective"
+        assert stored.created_by_user_id == user.id
+        if command == "goal_start":
+            assert stored.metadata_json["command"] == command
+            assert stored.objective == projected["objective"] == "Started objective"
             assert stored.token_budget == projected["remaining_tokens"] == 1500
         else:
-            assert stored.completion_summary == projected["completion_summary"] == "Finished locally"
-            assert projected["completed_at"] == stored.completed_at.isoformat()
+            assert stored.metadata_json["last_command"] == command
+            if command == "goal_update":
+                assert stored.objective == projected["objective"] == "Updated objective"
+                assert stored.token_budget == projected["remaining_tokens"] == 1500
+            else:
+                assert stored.completion_summary == projected["completion_summary"] == "Finished locally"
+                assert projected["completed_at"] == stored.completed_at.isoformat()
         events = list(
             (
                 await db.scalars(

@@ -144,7 +144,7 @@ it('shows no colleague link in an operator view', () => {
   expect(container.querySelector('a[href^="/agents/agent-colleague"]')).toBeNull();
 });
 
-it('opens the approval card fold to the complete command with a localized label (B8)', () => {
+it('opens the approval card fold to the exact command JSON (X1-r3 ruling 4)', () => {
   // The baseline intent of AgentDetailSections' old 'Full parameters'
   // assertion, restored interactively here because that file stays in the
   // node environment for its source-reading tests: the plain-label fold
@@ -228,6 +228,5 @@ it('opens the approval card fold to the complete command with a localized label 
   );
   fireEvent.click(screen.getByText('详情'));
   fireEvent.click(screen.getByRole('button', { name: '查看将要执行的完整内容' }));
-  // B8 replaces the platform schema key, never the proposed command bytes.
-  expect(container.querySelector('pre')?.textContent).toContain('"命令": "rm workspace/report.md"');
+  expect(container.querySelector('pre')?.textContent).toContain('"command": "rm workspace/report.md"');
 });

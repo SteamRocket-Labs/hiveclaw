@@ -36,7 +36,7 @@ export default function BusinessTaskPermissions({ agentId, task, permissions, us
       <p>{permission.request.tool_display_name || permission.request.tool_name}</p>
       <details><summary>{t('agent.chat.permission.actionDetails', 'Action details')}</summary>
         <pre>{JSON.stringify(permission.request.arguments || {}, null, 2)}</pre></details>
-      <SessionPermissionActions permissionRequest={permission.request} t={t}
+      <SessionPermissionActions permissionRequest={permission.request} t={t} showArgumentDetails={false}
         readOnly={!permission.can_resolve || permission.request.requested_by_user_id !== userId}
         onResolveSessionPermission={async (_request, action) => {
           await resolveBusinessTaskPermission(agentId, task, permission, userId, action,

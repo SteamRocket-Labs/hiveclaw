@@ -9,7 +9,7 @@ import './SessionGoalPanel.css';
 
 type GoalTranslator = (key: string, fallback: string, options?: Record<string, unknown>) => string;
 
-function compactDuration(seconds: number, t: GoalTranslator): string {
+export function compactDuration(seconds: number, t: GoalTranslator): string {
   const safe = Math.max(0, Math.floor(seconds));
   if (safe < 60) return t('sessionGoal.duration.lessThanMinute', '<1m');
   if (safe < 3600) return t('sessionGoal.duration.minutes', '{{minutes}}m', { minutes: Math.floor(safe / 60) });

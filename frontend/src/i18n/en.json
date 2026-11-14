@@ -2608,7 +2608,6 @@
         "unavailable": "Permission details could not be refreshed. Refresh the assignment.",
         "title": "Tool permission",
         "actionDetails": "Action details",
-        "unnamedParameter": "Parameter {{number}}",
         "changed": "This permission request is no longer current. Refresh the assignment.",
         "allowOnce": "Allow once",
         "allowSession": "Allow for this session",

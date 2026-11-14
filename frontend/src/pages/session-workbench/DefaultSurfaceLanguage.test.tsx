@@ -498,11 +498,11 @@ describe('default screen language (B2)', () => {
     expect(summary).toContain('boss@example.com');
     expect(summary).toContain('Q3 复盘');
     expect(summary).toContain('请查收');
-    // B8: the complete proposal keeps every value, with a Chinese schema label
-    // instead of the model-supplied argument name (not typed by the member).
+    // X1-r3 ruling 4: opening the plain-label fold shows the complete JSON —
+    // the baseline intent these two inverted lines had left always-true.
     fireEvent.click(screen.getByRole('button', { name: '查看将要执行的完整内容' }));
     const pre = view.container.querySelector('pre');
-    expect(pre?.textContent).toContain('"收件人": "boss@example.com"');
+    expect(pre?.textContent).toContain('"to": "boss@example.com"');
     expect(pre?.textContent).toContain('Q3 复盘');
     expect(pre?.textContent).toContain('请查收');
     cleanup();

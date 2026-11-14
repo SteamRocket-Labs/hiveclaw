@@ -34,6 +34,15 @@ def test_memory_refusal_keeps_its_non_timeout_class(tool, kind):
     assert payload["member_summary"] == {"kind": kind, "state": "not_done", "error_class": "auth_or_permission"}
 
 
+def test_memory_non_envelope_json_does_not_export_error_class():
+    # X5b r2: a result body's arbitrary fields are not an error envelope.
+    content = json.dumps({"status": "invalid_arguments", "error_class": "secret text", "message": "x"})
+    payload = _user_payload(_native_row("search_memory", content, outcome="success"))
+    assert payload["member_summary"] == {"kind": "memory_search", "state": "not_done"}
+    assert payload["content"] == payload["result"] == ""
+    assert "secret text" not in json.dumps(payload)
+
+
 def test_memory_empty_result_is_not_a_timeout():
     payload = _user_payload(_native_row("search_memory", json.dumps({"status": "empty", "items": []})))
     assert payload["member_summary"] == {"kind": "memory_search", "state": "done", "found": False}

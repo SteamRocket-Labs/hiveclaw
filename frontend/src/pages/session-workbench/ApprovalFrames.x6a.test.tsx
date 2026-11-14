@@ -8,59 +8,111 @@ import en from '../../i18n/en.json';
 import zh from '../../i18n/zh.json';
 import { translateFromCatalog } from '../../test/i18nMock';
 import SessionPermissionActions from '../agent-detail/SessionPermissionActions';
-import { projectSessionEventStoreToMessages } from '../agent-detail/sessionEventConsumer';
-import { createSessionEventStore, reduceSessionEvent, type SessionEventV2 } from './sessionEventStore';
+import { compatibilityProjectionEvent, projectSessionEventStoreToMessages } from '../agent-detail/sessionEventConsumer';
+import type { AgentChatMessage } from '../agent-detail/chatRuntime';
+import { ThreadItemRenderer } from './ThreadItemRenderer';
+import {
+  createSessionEventStore,
+  reduceSessionEvent,
+  type SessionCompatibilityEvent,
+  type SessionEventV2,
+} from './sessionEventStore';
 import { normalizeThreadItemPayload, threadItemToAgentChatMessage } from './threadItemReducer';
 
-type Frames = { tool_name: string; allow_session: boolean; legacy: unknown; canonical: SessionEventV2 };
-// The PostgreSQL regression supplies both real server producers; no hand-authored
-// flag can make a frontend-only fixture pass while the legacy producer still omits it.
+const locale = vi.hoisted(() => ({ value: 'zh' }));
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string, fallback?: string, values?: Record<string, unknown>) =>
+      translateFromCatalog(locale.value === 'zh' ? zh : en, key, fallback, values),
+    i18n: { language: locale.value },
+  }),
+}));
+
+type Frames = {
+  tool_name: string;
+  allow_session: boolean;
+  legacy: SessionCompatibilityEvent;
+  canonical: SessionEventV2;
+  reload: SessionEventV2;
+};
+// The backend integration supplies real committed frames and runs this file.
+// Keep the plain frontend suite usable: without that fixture this file is skipped.
 const fixture = process.env.HC_X6A_PERMISSION_FRAMES;
 const frames: Frames[] = fixture ? JSON.parse(readFileSync(fixture, 'utf8')) : [{} as Frames];
-
 afterEach(cleanup);
 
-it.skipIf(!fixture).each(frames)(
-  'keeps $tool_name choices stable from the legacy frame through the canonical frame',
+function canonicalMessage(event: SessionEventV2): AgentChatMessage {
+  return projectSessionEventStoreToMessages(reduceSessionEvent(createSessionEventStore(event.sequence - 1), event))[0];
+}
+
+function cardItem(msg: AgentChatMessage) {
+  // This is the same compatibility/canonical seam as AgentChatSection.renderEventMessage.
+  return (
+    msg.threadItem ||
+    normalizeThreadItemPayload({
+      id: msg.transcriptEventId || msg.id,
+      eventType: msg.eventType,
+      content: msg.content,
+      status: msg.eventStatus,
+      tool_name: msg.toolName,
+      permission_request: msg.sessionPermissionRequest,
+      created_at: msg.timestamp,
+    })!
+  );
+}
+
+it.skipIf(!fixture).each(frames.flatMap((frame) => ['zh', 'en'].map((language) => ({ ...frame, language }))))(
+  'keeps the whole $tool_name card identical across compatibility, canonical and reload in $language',
   (frame) => {
-    for (const catalog of [zh, en]) {
-      const t = (key: string, fallback: string) => translateFromCatalog(catalog, key, fallback);
-      const legacy = threadItemToAgentChatMessage(normalizeThreadItemPayload(frame.legacy)!);
-      const canonical = projectSessionEventStoreToMessages(
-        reduceSessionEvent(createSessionEventStore(frame.canonical.sequence - 1), frame.canonical),
-      )[0];
-      const resolve = vi.fn();
-      // Approval cards own their details disclosure; compare their actual controls
-      // rather than the standalone row's separate argument preview.
-      const { container, rerender, unmount } = render(
-        <SessionPermissionActions
-          showArgumentDetails={false}
-          permissionRequest={legacy.sessionPermissionRequest!}
-          onResolveSessionPermission={resolve}
-          t={t}
-        />,
+    locale.value = frame.language;
+    const catalog = frame.language === 'zh' ? zh : en;
+    const t = (key: string, fallback: string) => translateFromCatalog(catalog, key, fallback);
+    const legacy = threadItemToAgentChatMessage(
+      normalizeThreadItemPayload(compatibilityProjectionEvent(frame.legacy))!,
+    );
+    const resolve = vi.fn();
+    const card = (message: AgentChatMessage) => (
+      <ThreadItemRenderer
+        item={cardItem(message)}
+        approvalArguments={message.sessionPermissionRequest!.arguments}
+        approvalActions={
+          <SessionPermissionActions
+            showArgumentDetails={false}
+            permissionRequest={message.sessionPermissionRequest!}
+            onResolveSessionPermission={resolve}
+            t={t}
+          />
+        }
+      />
+    );
+    const { container, rerender } = render(card(legacy));
+    const snapshot = () => ({
+      text: container.textContent,
+      rows: Array.from(container.querySelectorAll('dt, dd')).map((row) => row.textContent),
+      buttons: screen.getAllByRole('button').map((button) => button.textContent),
+    });
+    const first = snapshot();
+    const nodes = screen.getAllByRole('button');
+    for (const event of [frame.canonical, frame.reload]) {
+      rerender(card(canonicalMessage(event)));
+      expect(snapshot()).toEqual(first);
+      screen.getAllByRole('button').forEach((button, index) => expect(button).toBe(nodes[index]));
+    }
+    expect(first.buttons).toEqual([
+      t('agent.chat.permission.fullArguments', 'See exactly what will run'),
+      t('agent.chat.permission.allowOnce', 'Allow once'),
+      ...(frame.allow_session ? [t('agent.chat.permission.allowSession', 'Allow for this session')] : []),
+      t('agent.chat.permission.deny', 'Deny'),
+    ]);
+    if (frame.tool_name === 'delete_file') {
+      expect(first.text).toContain(
+        t('agent.chat.permission.deleteOnceOnly', 'Delete operations can only be allowed once.'),
       );
-      const before = screen.getAllByRole('button');
-      const labels = before.map((button) => button.textContent);
-      const copy = container.textContent;
-      rerender(
-        <SessionPermissionActions
-          showArgumentDetails={false}
-          permissionRequest={canonical.sessionPermissionRequest!}
-          onResolveSessionPermission={resolve}
-          t={t}
-        />,
-      );
-      const after = screen.getAllByRole('button');
-      expect(after.map((button) => button.textContent)).toEqual(labels);
-      after.forEach((button, index) => expect(button).toBe(before[index]));
-      expect(container.textContent).toBe(copy);
-      expect(labels).toEqual([
-        t('agent.chat.permission.allowOnce', 'Allow once'),
-        ...(frame.allow_session ? [t('agent.chat.permission.allowSession', 'Allow for this session')] : []),
-        t('agent.chat.permission.deny', 'Deny'),
-      ]);
-      unmount();
+    }
+    if (frame.tool_name === 'plaza_create_post') {
+      expect(first.rows).toContain('Team update');
+    } else {
+      expect(first.rows).toContain(t('sessionWorkbench.threadItem.value.destructive', 'Irreversible action'));
     }
   },
 );

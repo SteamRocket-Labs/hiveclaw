@@ -582,6 +582,7 @@ async def _emit_session_no_policy_result(
     )
     from app.tools.registry import is_destructive_tool
 
+    destructive = is_destructive_tool(context.tool_name) or bool(destructive_delete)
     permission_request = {
         "permission_request_id": permission_request_id,
         "session_id": context.session_id,
@@ -591,7 +592,8 @@ async def _emit_session_no_policy_result(
         "capability": request_capability,
         "permission_mode": mode.value,
         "decision_reason": request_reason or "no enterprise capability policy is configured for this tool",
-        "allow_session_allowed": not (is_destructive_tool(context.tool_name) or destructive_delete),
+        "allow_session_allowed": not destructive,
+        "destructive": destructive,
         "created_at": pending_frame.created_at,
         "expires_at": pending_frame.expires_at,
         "pending_tool_frame": asdict(pending_frame),

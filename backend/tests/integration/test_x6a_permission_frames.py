@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,46 +17,79 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
 async def test_permission_events_share_scope_and_keep_rendered_choices(
-    native_workspace, owner_sessionmaker, tmp_path  # noqa: F811
+    native_workspace, owner_sessionmaker, tmp_path, monkeypatch  # noqa: F811
 ):
     from app.services.session_event_contract import serialize_session_event
     from app.services.session_permission_runtime import _execution_evidence
-    from app.services.session_tool_runtime import complete_tool_invocation
-    from app.services.thread_items import build_live_thread_item
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services import session_tool_runtime, web_chat_runtime
+    from app.tools.governance import _detect_destructive_delete
+    from app.tools.registry import is_destructive_tool
+
+    class LaterDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(seconds=2)
 
     n = native_workspace
     frames = []
+    delivered = []
+
+    async def capture(_agent_id, _session_id, payload):
+        delivered.append(payload)
+
+    monkeypatch.setattr(web_chat_runtime.web_chat_broker, "send_session_message", capture)
+
+    async def publish_legacy(event):
+        if event.get("status") != "session_permission_required":
+            return
+        committed = await web_chat_runtime._persist_runtime_event(
+            agent_id=n.agent, user_id=n.user, session_id=str(n.session),
+            data={**event, "runtime_task_id": str(n.run)},
+        )
+        await web_chat_runtime.broadcast_web_chat_event(n.agent, n.session, committed)
+
     for index, (tool_name, arguments, allow_session) in enumerate([
         ("plaza_create_post", {"content": "Team update"}, True),
         ("delete_file", {"path": "workspace/obsolete.txt"}, False),
+        ("retire_memory", {"memory_id": "obsolete-entry", "reason": "obsolete"}, False),
     ], start=1):
+        if tool_name == "retire_memory":
+            assert is_destructive_tool(tool_name) and not _detect_destructive_delete(tool_name, arguments)
         async with owner_sessionmaker() as db:
             invocation, arguments, turn = await _prepare_write(
                 db, n, tool_name=tool_name, arguments=arguments, round_index=index
             )
-            trace, events = {}, []
+            trace = {}
             result = await n.service.execute(
                 tool_name, arguments, agent_id=n.agent, user_id=n.user,
                 session_id=str(n.session), runtime_task_id=str(n.run), turn_id=turn,
-                tool_call_id=invocation.provider_tool_use_id, event_callback=events.append,
+                tool_call_id=invocation.provider_tool_use_id, event_callback=publish_legacy,
                 emit_runtime_hooks=False, trace_metadata_sink=trace,
             )
-            waiting = await complete_tool_invocation(
-                db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
-                invocation_id=invocation.id, provider_result_content=str(result),
-                execution_evidence=_execution_evidence(trace),
-            )
-            legacy = next(event for event in events if event.get("status") == "session_permission_required")
+            with monkeypatch.context() as clock:
+                clock.setattr(session_tool_runtime, "datetime", LaterDatetime)
+                waiting = await session_tool_runtime.complete_tool_invocation(
+                    db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
+                    invocation_id=invocation.id, provider_result_content=str(result),
+                    execution_evidence=_execution_evidence(trace), effective_arguments=trace["effective_arguments"],
+                )
+            legacy = delivered[-1]
             canonical = next(event for event in waiting if event.item_kind == "tool_permission")
-            # Use the live legacy projection and the canonical user envelope,
-            # including the baseline's missing legacy flag rather than patching the fixture.
+            # Display clocks stay with the original request; permission resolution
+            # still uses the existing invocation deadline computed on settlement.
+            first_expiry = legacy["payload"]["metadata"]["permission_request"]["expires_at"]
+            assert invocation.permission_expires_at - datetime.fromisoformat(first_expiry) >= timedelta(seconds=1)
+            await db.commit()
+            reloaded = await db.get(ChatTranscriptEvent, canonical.id, populate_existing=True)
+            assert legacy["schema"] == "hive.session_event_compatibility"
             frames.append({
                 "tool_name": tool_name,
                 "allow_session": allow_session,
-                "legacy": {**legacy, **build_live_thread_item(legacy, agent_id=n.agent, session_id=n.session)},
+                "legacy": legacy,
                 "canonical": serialize_session_event(canonical, audience="user"),
+                "reload": serialize_session_event(reloaded, audience="user"),
             })
-            await db.commit()
 
     fixture = tmp_path / "permission-frames.json"
     fixture.write_text(json.dumps(frames))
@@ -67,8 +101,12 @@ async def test_permission_events_share_scope_and_keep_rendered_choices(
     )
     print(rendered.stdout + rendered.stderr)
     for frame in frames:
-        first = frame["legacy"]["permission_request"]
+        first = frame["legacy"]["payload"]["metadata"]["permission_request"]
         second = frame["canonical"]["payload"]["permission_request"]
         assert first["permission_request_id"] == second["permission_request_id"]
         assert first["allow_session_allowed"] is second["allow_session_allowed"] is frame["allow_session"]
+        assert first["destructive"] is second["destructive"] is not frame["allow_session"]
+        assert first["arguments"] == second["arguments"]
+        assert first["created_at"] == second["created_at"]
+        assert first["expires_at"] == second["expires_at"]
     assert rendered.returncode == 0, rendered.stdout + rendered.stderr

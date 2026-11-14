@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+import pytest
+
 from app.tools.decorator import ToolMeta, clear_registry, tool
 from app.tools.collector import HANDLER_MODULES, collect_tools
 
@@ -193,6 +195,21 @@ def test_collect_real_handlers_do_not_include_removed_research_pack_tools():
     removed_slug = "_".join(("deep", "research"))
     assert not any(name.startswith(f"{removed_slug}_") for name in names)
     assert f"{removed_slug}_pack" not in collected.pack_tool_groups
+
+
+@pytest.mark.parametrize("tool_name", ["send_message_to_agent", "delegate_to_agent"])
+def test_colleague_schema_exposes_optional_id_without_requiring_name(tool_name):
+    collected = collect_tools()
+    published = next(
+        item["function"]["parameters"] for item in collected.openai_tools if item["function"]["name"] == tool_name
+    )
+    # R25a S4: name OR id is enforced by the handler; id-only calls must pass admission.
+    assert published["required"] == ["message"]
+    assert published["properties"]["agent_name"]["type"] == "string"
+    identity = published["properties"]["target_agent_id"]
+    assert identity["type"] == "string" and identity["format"] == "uuid" and identity["description"]
+    seed = next(item for item in collected.seed_list if item["name"] == tool_name)
+    assert seed["parameters_schema"] == published
 
 
 def test_handler_module_manifest_matches_handlers_directory():

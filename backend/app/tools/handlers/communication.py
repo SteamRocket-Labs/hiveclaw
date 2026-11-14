@@ -140,6 +140,11 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
                     "type": "string",
                     "description": "Target digital employee's name",
                 },
+                "target_agent_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Target employee id; use it instead of a name or to disambiguate matches.",
+                },
                 "message": {
                     "type": "string",
                     "description": "Message content to send",
@@ -153,7 +158,7 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
                     ),
                 },
             },
-            "required": ["agent_name", "message"],
+            "required": ["message"],
         },
         category="communication",
         display_name="Send Message to Agent",
@@ -214,6 +219,11 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, executi
                 "agent_name": {
                     "type": "string",
                     "description": "Target digital employee's name",
+                },
+                "target_agent_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Target employee id; use it instead of a name or to disambiguate matches.",
                 },
                 "message": {
                     "type": "string",
@@ -332,7 +342,7 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, executi
                     "description": "Optional expected output contract for a local-agent delegated task.",
                 },
             },
-            "required": ["agent_name", "message"],
+            "required": ["message"],
         },
         category="communication",
         display_name="Delegate to Agent",

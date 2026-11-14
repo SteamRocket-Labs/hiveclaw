@@ -7,17 +7,19 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.execution_context import A2AToolAuthorityFrame, ExecutionPrincipal
 from app.database import tenant_scoped_session
-from app.services.a2a_collaboration_policy import resolve_a2a_collaboration_policy
+from app.services.a2a_collaboration_policy import resolve_a2a_collaboration_policy, resolve_agent_owner_id
 from app.services.a2a_outcome import A2AOutcome, A2AOperation
 from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
+
+_AMBIGUOUS_AGENT_NAME = "❌ Multiple agents match '{name}'; retry with target_agent_id."
 
 A2A_SYSTEM_PROMPT_SUFFIX = (
     "<role>\n"
@@ -234,18 +236,17 @@ async def _resolve_target_agent_by_name(
     *,
     action: str,
 ) -> tuple[Any | None, str | None]:
-    """Rank one literal name tier; callers still enforce policy after selection."""
+    """Resolve a literal name tier, then effective owner; callers still enforce policy."""
     from app.models.agent import Agent
 
     escaped = agent_name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    query = (
-        select(Agent)
-        .where(Agent.tenant_id == source_agent.tenant_id, Agent.id != source_agent.id)
-        .order_by(Agent.created_at, Agent.id)
-        .limit(21)
-    )
-    # Exact matches win even when all are denied. Never fall back to a more
-    # permissive substring tier or silently rank a truncated candidate set.
+    owner = resolve_agent_owner_id(source_agent)
+    query = select(Agent).where(Agent.tenant_id == source_agent.tenant_id, Agent.id != source_agent.id)
+    if owner is not None:
+        query = query.order_by((func.coalesce(Agent.owner_user_id, Agent.creator_id) == owner).desc())
+    query = query.order_by(Agent.created_at, Agent.id).limit(21)
+    # Exact matches win even when all are denied. Same-owner rows sort first
+    # so other owners cannot push this group beyond the bounded result set.
     for pattern in (escaped, f"%{escaped}%"):
         result = await db.execute(query.where(Agent.name.ilike(pattern, escape="\\")))
         candidates = list(result.scalars().all())
@@ -253,23 +254,25 @@ async def _resolve_target_agent_by_name(
             break
     if not candidates:
         return None, None
+    same_owner = [
+        candidate for candidate in candidates if owner is not None and resolve_agent_owner_id(candidate) == owner
+    ]
+    candidates = same_owner or candidates
+    ambiguity = _AMBIGUOUS_AGENT_NAME.format(name=agent_name)
+    # The 21st row probes overflow of this owner group, never a partial ranking.
     if len(candidates) > 20:
-        return None, (
-            f"❌ More than 20 agents match '{agent_name}' in the best name tier; "
-            "name lookup is ambiguous. Retry with target_agent_id."
-        )
+        return None, ambiguity
 
-    same_owner, other_allowed = [], []
+    allowed = []
     for candidate in candidates:
         policy = await resolve_a2a_collaboration_policy(db, source_agent, candidate, action=action)
         if policy.allowed:
-            (same_owner if policy.reason == "same_owner" else other_allowed).append(candidate)
-    allowed = same_owner or other_allowed
+            allowed.append(candidate)
     if len(allowed) > 1:
         choices = ", ".join(f"{candidate.name} ({candidate.id})" for candidate in allowed)
-        return None, f"❌ Ambiguous agent name '{agent_name}': {choices}. Retry with target_agent_id."
-    # Preserve the existing denial for the first deterministic candidate when
-    # none is allowed; the caller runs its original lifecycle/policy boundary.
+        return None, f"{ambiguity} Candidates: {choices}."
+    # Unavailable same-owner targets retain their own lifecycle/policy reason;
+    # they are never replaced by another owner's allowed namesake.
     return (allowed or candidates)[0], None
 
 
@@ -307,15 +310,11 @@ async def _resolve_target_agent_runtime(
             if error:
                 return source_agent, None, None, error
         if not target:
-            all_r = await db.execute(
-                select(Agent).where(Agent.id != from_agent_id, Agent.tenant_id == source_agent.tenant_id)
-            )
-            names = [a.name for a in all_r.scalars().all()]
             return (
                 source_agent,
                 None,
                 None,
-                (f"❌ No agent found matching '{agent_name}'. Available: {', '.join(names) if names else 'none'}"),
+                (f"❌ No agent found matching '{agent_name}'. Pick a name or id from your A2A Collaborators list."),
             )
 
         if get_agent_lifecycle_block_reason(target) == "deactivated":
@@ -1228,15 +1227,12 @@ async def _send_message_to_agent_outcome(
                 if error:
                     return _a2a_failure("consult", error_code="target_agent_ambiguous", message=error)
             if not target:
-                _avail_filter = [Agent.id != from_agent_id]
-                if source_agent and source_agent.tenant_id:
-                    _avail_filter.append(Agent.tenant_id == source_agent.tenant_id)
-                all_r = await db.execute(select(Agent).where(*_avail_filter))
-                names = [a.name for a in all_r.scalars().all()]
                 return _a2a_failure(
                     "consult",
                     error_code="target_agent_not_found",
-                    message=f"No agent found matching '{agent_name}'. Available: {', '.join(names) if names else 'none'}",
+                    message=(
+                        f"No agent found matching '{agent_name}'. Pick a name or id from your A2A Collaborators list."
+                    ),
                 )
 
             if get_agent_lifecycle_block_reason(target) == "deactivated":
@@ -1540,9 +1536,14 @@ async def _delegate_to_agent_async_outcome(
             target_agent_id=target_agent_id,
         )
         if error:
+            # Decode the resolver's exact compatibility-string prefix, not arbitrary prose.
             return _a2a_failure(
                 "delegate",
-                error_code="target_runtime_unavailable",
+                error_code=(
+                    "target_agent_ambiguous"
+                    if error.startswith(_AMBIGUOUS_AGENT_NAME.format(name=agent_name))
+                    else "target_runtime_unavailable"
+                ),
                 message=error,
                 retryable=str(error).startswith("⚠️"),
             )

@@ -34,6 +34,7 @@ from app.models.user import User
 from app.services.agent_tool_domains import messaging
 from app.services.secrets_provider import get_secrets_provider
 from app.tools.handlers import communication
+from app.tools import validation
 
 TOOLS = ("send_message_to_agent", "delegate_to_agent")
 DENIAL = (
@@ -144,7 +145,7 @@ async def _targets(state, *specs):
     return agents
 
 
-async def _call(state, tool, name, **extra):
+async def _call(state, tool, name=None, **extra):
     principal = ExecutionPrincipal(
         tenant_id=state.tenant_id,
         source_agent_id=state.source.id,
@@ -152,18 +153,20 @@ async def _call(state, tool, name, **extra):
         root_session_id=str(state.root.id),
         delegation_chain=(f"agent:{state.source.id}",),
     )
+    arguments = {
+        "message": "Return the requested analysis.",
+        "_execution_principal": principal.to_evidence(),
+        **extra,
+    }
+    if name is not None:
+        arguments["agent_name"] = name
+    validation._tool_parameter_schemas.cache_clear()
+    errors = validation.validate_tool_arguments(tool, arguments)
+    assert errors == [], errors
     previous_identity = get_execution_identity()
     set_delegated_user_identity(state.owner_id, "R25a member", "web")
     try:
-        raw = await getattr(communication, tool)(
-            state.source.id,
-            {
-                "agent_name": name,
-                "message": "Return the requested analysis.",
-                "_execution_principal": principal.to_evidence(),
-                **extra,
-            },
-        )
+        raw = await getattr(communication, tool)(state.source.id, arguments)
     finally:
         if previous_identity is None:
             clear_execution_identity()
@@ -177,8 +180,17 @@ async def _call(state, tool, name, **extra):
 async def _assert_delivered(state, tool, result, target):
     assert result["ok"] is True, result
     assert result["target_agent_id"] == str(target.id), result
+    # R25a S2: assert the enforced/delivered target, not candidate evaluation order.
+    action = "message" if tool == "send_message_to_agent" else "delegate"
+    assert state.policy_calls[-1] == (target.id, action)
     async with state.owner() as db:
         session = await db.get(ChatSession, UUID(result["child_session_id"]))
+        sessions = list(await db.scalars(select(ChatSession.id).where(ChatSession.user_id == state.owner_id)))
+        assert set(sessions) == {state.root.id, session.id}
+        tasks = list(await db.scalars(select(RuntimeTask).where(RuntimeTask.tenant_id == state.tenant_id)))
+        assert {task.child_agent_id for task in tasks} <= {target.id}
+        messages = list(await db.scalars(select(ChatMessage).where(ChatMessage.tenant_id == state.tenant_id)))
+        assert {message.agent_id for message in messages} <= {state.source.id, target.id}
         assert session is not None
         assert session.user_id == state.owner_id
         if tool == "send_message_to_agent":
@@ -186,7 +198,10 @@ async def _assert_delivered(state, tool, result, target):
             messages = list(await db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == str(session.id))))
             assert len(messages) == 2
             assert state.runtime_calls == [target.id]
+            assert tasks == []
         else:
+            assert len(tasks) == 1
+            assert state.runtime_calls == []
             task = await db.get(RuntimeTask, UUID(result["task_id"]))
             assert task.status == "pending"
             assert task.parent_agent_id == state.source.id and task.child_agent_id == target.id
@@ -207,7 +222,7 @@ async def _assert_no_delivery(state):
 @pytest.mark.parametrize("tool", TOOLS)
 async def test_name_reaches_same_owner_not_older_private_or_public_assistants(directory, tool):
     state = directory
-    private, public, own = await _targets(
+    _, public, own = await _targets(
         state, ("My Assistant", state.other_id), ("My Assistant", state.third_id), ("My Assistant", state.owner_id)
     )
     async with state.owner() as db:
@@ -215,9 +230,6 @@ async def test_name_reaches_same_owner_not_older_private_or_public_assistants(di
         await db.commit()
     result = await _call(state, tool, "My Assistant")
     await _assert_delivered(state, tool, result, own)
-    action = "message" if tool == "send_message_to_agent" else "delegate"
-    # R25a: selection ranks policy-allowed candidates; the original boundary then rechecks once.
-    assert state.policy_calls == [(private.id, action), (public.id, action), (own.id, action), (own.id, action)]
 
 
 @pytest.mark.parametrize("tool", TOOLS)
@@ -236,14 +248,17 @@ async def test_two_same_owner_helpers_are_ambiguous_and_send_nothing(directory, 
     result = await _call(state, tool, "Helper")
     assert result["ok"] is False, result
     diagnostic = result["diagnostic_message"]
-    assert "ambiguous" in diagnostic.lower() and "target_agent_id" in diagnostic, result
+    # R25a N1/N2: both paths expose one actionable ambiguity sentence/code.
+    assert diagnostic.startswith("Multiple agents match 'Helper'; retry with target_agent_id."), result
     assert first.name in diagnostic and str(first.id) in diagnostic and str(second.id) in diagnostic
+    outcome_entry = (
+        messaging._send_message_to_agent_outcome
+        if tool == "send_message_to_agent"
+        else messaging._delegate_to_agent_async_outcome
+    )
+    outcome = await outcome_entry(state.source.id, {"agent_name": "Helper", "message": "No ambiguous send."})
+    assert outcome.error_code == "target_agent_ambiguous" and outcome.retryable is False
     await _assert_no_delivery(state)
-    if tool == "send_message_to_agent":
-        outcome = await messaging._send_message_to_agent_outcome(
-            state.source.id, {"agent_name": "Helper", "message": "No ambiguous send."}
-        )
-        assert outcome.error_code == "target_agent_ambiguous" and outcome.retryable is False
 
 
 @pytest.mark.parametrize("tool", TOOLS)
@@ -323,18 +338,17 @@ async def test_two_public_candidates_are_ambiguous_without_disclosing_denied_can
     result = await _call(state, tool, "Helper")
     assert result["ok"] is False, result
     diagnostic = result["diagnostic_message"]
-    assert "ambiguous" in diagnostic.lower() and "target_agent_id" in diagnostic, result
+    # R25a N2: wording is shared with the capped and delegated ambiguity paths.
+    assert diagnostic.startswith("Multiple agents match 'Helper'; retry with target_agent_id."), result
     assert str(first.id) in diagnostic and str(second.id) in diagnostic and str(private.id) not in diagnostic
     await _assert_no_delivery(state)
 
 
 @pytest.mark.parametrize("tool", TOOLS)
-async def test_twenty_candidates_are_fully_ranked_including_last_same_owner(directory, tool):
+async def test_same_owner_is_reached_among_twenty_matches(directory, tool):
     state = directory
     targets = await _targets(state, *(("Helper", state.other_id) for _ in range(19)), ("Helper", state.owner_id))
     await _assert_delivered(state, tool, await _call(state, tool, "Helper"), targets[-1])
-    action = "message" if tool == "send_message_to_agent" else "delegate"
-    assert state.policy_calls == [(target.id, action) for target in targets] + [(targets[-1].id, action)]
 
 
 @pytest.mark.parametrize("tool", TOOLS)
@@ -345,8 +359,8 @@ async def test_over_twenty_in_winning_tier_requires_id_without_partial_ranking(d
     await _targets(state, *((name, state.owner_id) for name in names))
     result = await _call(state, tool, "Helper")
     assert result["ok"] is False, result
-    assert "20" in result["diagnostic_message"] and "target_agent_id" in result["diagnostic_message"], result
-    assert state.policy_calls == []
+    # R25a S2/N2: retain whole-group refusal/no delivery, not internal scan order or terminology.
+    assert result["diagnostic_message"] == "Multiple agents match 'Helper'; retry with target_agent_id.", result
     await _assert_no_delivery(state)
 
 
@@ -357,7 +371,7 @@ async def test_explicit_id_is_not_replaced_by_same_owner_name_guard(directory, t
     result = await _call(state, tool, "My Assistant", target_agent_id=str(private.id))
     assert result["ok"] is False and result["diagnostic_message"] == DENIAL, result
     action = "message" if tool == "send_message_to_agent" else "delegate"
-    assert state.policy_calls == [(private.id, action)]
+    assert state.policy_calls[-1] == (private.id, action)
     await _assert_no_delivery(state)
 
 
@@ -368,3 +382,101 @@ async def test_many_lower_tier_matches_do_not_hide_single_exact_match_guard(dire
         state, ("Helper", state.owner_id), *((f"Helper {index}", state.owner_id) for index in range(21))
     )
     await _assert_delivered(state, tool, await _call(state, tool, "Helper"), target)
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize("legacy_owner", ("neither", "source", "target", "both"))
+async def test_twenty_other_members_cannot_push_own_assistant_past_cap(directory, tool, legacy_owner):
+    state = directory
+    other_owners = [state.other_id, state.third_id, *(uuid4() for _ in range(18))]
+    async with state.owner() as db:
+        for user_id in other_owners[2:]:
+            db.add(
+                User(
+                    id=user_id,
+                    tenant_id=state.tenant_id,
+                    username=f"r25a-{user_id.hex}",
+                    email=f"{user_id.hex}@fixture.test",
+                    password_hash="fixture",
+                    display_name="Other member",
+                    role="member",
+                )
+            )
+        await db.commit()
+    *_, own = await _targets(
+        state, *(("My Assistant", user_id) for user_id in other_owners), ("My Assistant", state.owner_id)
+    )
+    async with state.owner() as db:
+        if legacy_owner in {"source", "both"}:
+            (await db.get(Agent, state.source.id)).owner_user_id = None
+        if legacy_owner in {"target", "both"}:
+            (await db.get(Agent, own.id)).owner_user_id = None
+        await db.commit()
+    await _assert_delivered(state, tool, await _call(state, tool, "My Assistant"), own)
+
+
+async def _make_unavailable(state, agent, kind):
+    async with state.owner() as db:
+        row = await db.get(Agent, agent.id)
+        row.status = "stopped"
+        if kind == "deactivated":
+            # Mirrors retirement's committed deactivated_at + stopped state.
+            row.deactivated_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize("kind", ("deactivated", "stopped"))
+@pytest.mark.parametrize("public", (True, False), ids=("grok_input_a", "grok_input_b"))
+async def test_unavailable_own_assistant_never_redirects_or_reports_another_owners_denial(
+    directory, tool, kind, public
+):
+    state = directory
+    other, own = await _targets(state, ("My Assistant", state.other_id), ("My Assistant", state.owner_id))
+    await _make_unavailable(state, own, kind)
+    if public:
+        async with state.owner() as db:
+            db.add(AgentPermission(tenant_id=state.tenant_id, agent_id=other.id, scope_type="company"))
+            await db.commit()
+    result = await _call(state, tool, "My Assistant")
+    assert result["ok"] is False, result
+    diagnostic = result["diagnostic_message"]
+    assert ("已停用" if kind == "deactivated" else "stopped") in diagnostic, result
+    assert "Cross-owner" not in diagnostic, result
+    await _assert_no_delivery(state)
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize("kind", ("deactivated", "stopped"))
+async def test_active_own_assistant_wins_over_own_retired_namesake(directory, tool, kind):
+    state = directory
+    retired, active = await _targets(state, ("My Assistant", state.owner_id), ("My Assistant", state.owner_id))
+    await _make_unavailable(state, retired, kind)
+    await _assert_delivered(state, tool, await _call(state, tool, "My Assistant"), active)
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_id_only_call_passes_real_schema_and_reaches_target(directory, tool):
+    state = directory
+    (target,) = await _targets(state, ("My Assistant", state.owner_id))
+    await _assert_delivered(state, tool, await _call(state, tool, target_agent_id=str(target.id)), target)
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_not_found_guides_to_collaborators_without_leaking_tenant_names(directory, tool):
+    state = directory
+    await _targets(state, ("PRIVATE_OTHER_MEMBER_NAME", state.other_id), ("Own colleague", state.owner_id))
+    result = await _call(state, tool, "missing-colleague")
+    assert result["ok"] is False, result
+    diagnostic = result["diagnostic_message"]
+    assert "A2A Collaborators" in diagnostic and "name or id" in diagnostic, result
+    assert "Available:" not in diagnostic and "PRIVATE_OTHER_MEMBER_NAME" not in diagnostic, result
+    await _assert_no_delivery(state)
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_handler_still_requires_a_name_or_id_after_schema_validation(directory, tool):
+    state = directory
+    result = await _call(state, tool)
+    assert result["ok"] is False and "Please provide target agent" in result["diagnostic_message"], result
+    await _assert_no_delivery(state)

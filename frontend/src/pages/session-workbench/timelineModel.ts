@@ -2150,16 +2150,16 @@ function applyCanonicalRunTerminalEvidence(
   const firstSequence = messages.reduce((first, message) => Math.min(first,
     message.sessionItem?.first_sequence ?? message.threadItem?.sequence ?? Infinity), Infinity);
   const startsMidTurn = Number.isFinite(firstSequence) && firstSequence > 1;
-  // X2 r2 B: the run item's own first event time — the typed start a terminal
-  // without payload.started_at falls back to. Items whose first loaded event
-  // is the terminal itself carry no start evidence and are excluded.
+  // X2 B / X5a: the store retains a queued/running event's server timestamp
+  // as started_at. A continuation first seen as cancelling has no such start;
+  // its terminal must use the runtime task span, never the control timestamp.
   const runStartByRunId = new Map<string, string>();
   for (const message of messages) {
     const item = message.sessionItem;
-    if (item?.kind !== 'run' || !isFiniteTimelineTime(item.occurredAt)) continue;
-    if (item.first_sequence >= item.last_sequence) continue;
+    const startedAt = item?.payload?.started_at;
+    if (item?.kind !== 'run' || !isFiniteTimelineTime(startedAt)) continue;
     const runId = messageRunId(message);
-    if (runId && !runStartByRunId.has(runId)) runStartByRunId.set(runId, item.occurredAt);
+    if (runId && !runStartByRunId.has(runId)) runStartByRunId.set(runId, startedAt);
   }
   const terminalByRunId = new Map<string, { sequence: number; startedAt: string; runtimeStartedAt?: string; clockUnknown?: boolean; completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
   messages.forEach((message) => {
@@ -2176,8 +2176,7 @@ function applyCanonicalRunTerminalEvidence(
       : lifecycle === 'cancelled' || lifecycle === 'killed'
         ? 'cancelled'
         : 'done';
-    terminalByRunId.set(runId, { sequence, startedAt: readString(item?.payload ?? {}, ['started_at'], '')
-      || (item?.kind === 'run' && item.first_sequence < sequence ? item.occurredAt : ''),
+    terminalByRunId.set(runId, { sequence, startedAt: readString(item?.payload ?? {}, ['started_at'], ''),
       runtimeStartedAt: item?.payload?.task_type === 'delegation' ? readString(item.payload, ['started_at'], '') : undefined,
       clockUnknown: item?.payload?.task_type === 'delegation' && item.payload.started_at == null,
       completedAtMs, status });
@@ -2217,7 +2216,7 @@ function applyCanonicalRunTerminalEvidence(
     // live clock at the run start would move the visible jump from the
     // terminal to the run start (X2 r2 item 8 trade-off, not taken).
     const runTypedStartedAt = terminal?.runtimeStartedAt || terminal?.startedAt
-      || runStartByRunId.get(runId) || '';
+      || runStartByRunId.get(runId) || readString(task ?? {}, ['started_at'], '');
     const startedAt = (terminal && runTypedStartedAt && Number.isFinite(Date.parse(runTypedStartedAt)) ? runTypedStartedAt : undefined)
       || [cell.timeline.startedAt,
         ...(!terminal ? [readString(task ?? {}, ['started_at', 'created_at'], '')] : [])]
@@ -2494,9 +2493,9 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
         ? { ...cell, timeline: { ...cell.timeline, delegationInFlight: true } }
         : cell);
   const lastUserCell = settledCells.map(cell => cell.kind === 'user_turn' ? 1 : 0).lastIndexOf(1);
-  const latestTurnHandoffInFlight = headerStatus === 'complete'
+  const latestTurnHandoffInFlight = delegationReceiptExpected && headerStatus === 'complete'
     && settledCells.slice(lastUserCell + 1).some(cell => cell.kind === 'active_run'
-      && cell.timeline.delegationInFlight);
+      && !cell.timeline.statusUnknown && cell.timeline.steps.some(stepDelegationStillInProgress));
 
   return {
     cells: settledCells

@@ -1381,7 +1381,7 @@ MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
     "search_memory": "memory_search",
     "load_memory": "memory_read",
     # b) runtime / colleague result readers
-    "read_runtime_result": "colleague_result",
+    "read_runtime_result": "runtime_result",
     "check_async_task": "colleague_result",
     "task_output": "colleague_result",
     "check_subagent": "colleague_result",
@@ -1722,6 +1722,10 @@ def _member_summary_projection(
             # receipt's body is the same class; a remote MCP body is
             # untrusted data that never decides the member sentence.
             result_obj = None
+    if tool_name == "read_runtime_result" and result_obj and _status_text(result_obj.get("source_kind")) in {
+        "a2a_delegation", "delegation", "subagent",
+    }:
+        kind = "colleague_result"
     typed_status = _status_text(result_obj.get("status")) if result_obj else ""
     if kind is None and tool_name.startswith("search_") and typed_status:
         kind = "record_search"

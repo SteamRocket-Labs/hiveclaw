@@ -26,7 +26,7 @@ import { approvalActionFor } from '../session-workbench/approvalActionPresentati
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { fileReadFailureForDisplay, toolFailureForDisplay, toolOutputForDisplay } from './toolFailurePresentation';
 import { memberFilename, memberToolSummaryFromRecord, memberToolSummarySentence, memberSummaryWithArgs } from './memberToolSummary';
-import { commandExecutionOutcome } from './chatDisclosureReducer';
+import { commandExecutionOutcome, stepDelegationStillInProgress } from './chatDisclosureReducer';
 import { useAuthStore } from '../../stores';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import { isKeptResultStep, presentSystemStep } from './systemStepPresentation';
@@ -588,8 +588,8 @@ function stepRenders(step: RunStepSnapshot): boolean {
  * rewritten delegation tool row, then a cancelled runtime action receipt.
  * Started notifications never own; they only repeat the lifecycle. */
 function stoppedDelegationCandidate(step: RunStepSnapshot): { task: string; rank: number } | null {
-  const summary = (step.details as { memberSummary?: { kind?: string; status?: string; taskId?: string } } | null)?.memberSummary;
-  if (summary?.kind === 'delegation' && summary.status === 'cancelled' && summary.taskId) {
+  const summary = (step.details as { memberSummary?: { kind?: string; status?: string; taskId?: string; errorClass?: string } } | null)?.memberSummary;
+  if (summary?.kind === 'delegation' && summary.status === 'cancelled' && summary.taskId && summary.errorClass !== 'cancelled') {
     return { task: summary.taskId, rank: step.systemEvent?.type === 'child_session' ? 0 : 1 };
   }
   const event = step.systemEvent;
@@ -694,6 +694,9 @@ export default function RunDisclosureBlock({
       const owner = stoppedDelegationOwner.get(candidate.task);
       return !owner || owner.id === step.id;
     })
+    // Waiting for a colleague is not a tool still executing. Reuse X3d's
+    // accessible waiting marker without changing the run's lifecycle/status.
+    .map(step => step.status !== 'done' && stepDelegationStillInProgress(step) ? { ...step, status: 'blocked' as const } : step)
     .filter(stepRenders);
   if (visibleSteps.length === 0) {
     if (timeline.status === 'idle') return null;

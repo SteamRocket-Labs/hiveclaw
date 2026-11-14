@@ -1389,6 +1389,22 @@ async def append_session_events(
         lifecycle = draft.lifecycle
         kind = f"{item_kind}.{lifecycle}"
         payload_schema = f"hive.session.payload.{item_kind}.{lifecycle}.v2"
+        # All terminal writers share the same server start, including a
+        # continuation whose first run event was cancelling (run20 step5).
+        # Bind only the task already owned by this event's tenant/conversation.
+        if (item_kind == "run" and scope.get("run_id")
+            and lifecycle in {"completed", "failed", "cancelled", "needs_reconciliation"}):
+            from app.models.runtime_task import RuntimeTask
+
+            task = await db.get(RuntimeTask, _uuid(scope["run_id"], "run_id"))
+            if task is not None:
+                delegated = task.task_type == "delegation"
+                task_agent = task.child_agent_id if delegated else task.parent_agent_id
+                task_session = task.child_session_id if delegated else task.parent_session_id
+                if (task.tenant_id == tenant_uuid and task_agent == agent_uuid
+                    and _uuid_or_none(task_session) == session_uuid and task.started_at is not None):
+                    draft = replace(draft, payload={**draft.payload, "started_at": task.started_at.isoformat()},
+                        content_hash=None)
         effective_content_hash = draft.content_hash or _sha256(draft.payload)
         persisted_at = datetime.now(timezone.utc)
         envelope: dict[str, Any] = {

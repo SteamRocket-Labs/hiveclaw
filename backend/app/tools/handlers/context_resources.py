@@ -517,6 +517,7 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
             "result_ref": result_ref,
             "sha256": actual_sha256,
             "media_type": result_object.media_type,
+            "source_kind": result_object.source_kind,
             "encoding": result_object.encoding,
             "offset": offset,
             "next_offset": next_offset,

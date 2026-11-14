@@ -206,7 +206,9 @@ def test_registry_kinds_are_complete_and_stable() -> None:
         "send_message_to_agent": "delegation",
         "search_memory": "memory_search",
         "load_memory": "memory_read",
-        "read_runtime_result": "colleague_result",
+        # X5a-2: generic result reads do not imply a colleague; the page's
+        # trusted source_kind selects that label only for colleague results.
+        "read_runtime_result": "runtime_result",
         "check_async_task": "colleague_result",
         "task_output": "colleague_result",
         "check_subagent": "colleague_result",
@@ -282,8 +284,9 @@ def test_kind_b_colleague_result_refusal_page_says_not_done() -> None:
     text = _result_text_view(payload)
     for leak in ("source_access_denied", "content_source_changed", "hive.runtime_result_page.v1", "result_ref"):
         assert leak not in text, leak
-    # A typed refusal page must agree with the sentence: it was not done.
-    assert payload["member_summary"] == {"kind": "colleague_result", "state": "not_done"}
+    # X5a-2: a refusal without a result kind cannot claim a colleague result.
+    # It still states that the read did not happen and hides the raw reason.
+    assert payload["member_summary"] == {"kind": "runtime_result", "state": "not_done"}
 
 
 def test_kind_b_colleague_result_success_page() -> None:

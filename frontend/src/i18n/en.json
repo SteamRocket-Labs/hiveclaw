@@ -416,6 +416,8 @@
       "runningSummary": "Running",
       "elapsed": "Elapsed",
       "tokens": "Tokens",
+      "tokenUsage": "{{value}} tokens",
+      "toolUses": "{{value}} tools",
       "tools": "Tools",
       "memberEnter": "Enter",
       "memberEnterTitle": "Open member session",
@@ -6082,6 +6084,12 @@
       "budget_limited": "Budget reached",
       "complete": "Complete",
       "cancelled": "Stopped"
+    },
+    "duration": {
+      "lessThanMinute": "<1m",
+      "minutes": "{{minutes}}m",
+      "hours": "{{hours}}h",
+      "hoursMinutes": "{{hours}}h {{minutes}}m"
     },
     "facts": {
       "tokensLeft": "{{count}} tokens left",

@@ -7,13 +7,17 @@ import type { AgentChatMessage } from '../agent-detail/chatRuntime';
 import { PastedCredentialNotice, PastedCredentialText } from './PastedCredentialNotice';
 import './SessionGoalPanel.css';
 
-function compactDuration(seconds: number): string {
+type GoalTranslator = (key: string, fallback: string, options?: Record<string, unknown>) => string;
+
+export function compactDuration(seconds: number, t: GoalTranslator): string {
   const safe = Math.max(0, Math.floor(seconds));
-  if (safe < 60) return '<1m';
-  if (safe < 3600) return `${Math.floor(safe / 60)}m`;
+  if (safe < 60) return t('sessionGoal.duration.lessThanMinute', '<1m');
+  if (safe < 3600) return t('sessionGoal.duration.minutes', '{{minutes}}m', { minutes: Math.floor(safe / 60) });
   const hours = Math.floor(safe / 3600);
   const minutes = Math.floor((safe % 3600) / 60);
-  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  return minutes > 0
+    ? t('sessionGoal.duration.hoursMinutes', '{{hours}}h {{minutes}}m', { hours, minutes })
+    : t('sessionGoal.duration.hours', '{{hours}}h', { hours });
 }
 
 export function goalProgressFacts(
@@ -21,7 +25,7 @@ export function goalProgressFacts(
     SessionGoal,
     'remaining_tokens' | 'remaining_continuation_turns' | 'remaining_time_seconds'
   >,
-  t: (key: string, fallback: string, options?: Record<string, unknown>) => string,
+  t: GoalTranslator,
 ): string[] {
   return [
     typeof goal.remaining_tokens === 'number'
@@ -31,7 +35,7 @@ export function goalProgressFacts(
       ? t('sessionGoal.facts.turnsLeft', '{{count}} turns left', { count: goal.remaining_continuation_turns })
       : null,
     typeof goal.remaining_time_seconds === 'number'
-      ? t('sessionGoal.facts.timeLeft', '{{duration}} left', { duration: compactDuration(goal.remaining_time_seconds) })
+      ? t('sessionGoal.facts.timeLeft', '{{duration}} left', { duration: compactDuration(goal.remaining_time_seconds, t) })
       : null,
   ].filter((value): value is string => Boolean(value));
 }

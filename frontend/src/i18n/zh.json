@@ -415,6 +415,8 @@
       "runningSummary": "运行中",
       "elapsed": "耗时",
       "tokens": "模型用量",
+      "tokenUsage": "模型用量 {{value}}",
+      "toolUses": "工具调用 {{value}} 次",
       "tools": "工具",
       "memberEnter": "进入",
       "memberEnterTitle": "打开成员会话",
@@ -6083,8 +6085,14 @@
       "complete": "已完成",
       "cancelled": "已停止"
     },
+    "duration": {
+      "lessThanMinute": "不足 1 分钟",
+      "minutes": "{{minutes}} 分钟",
+      "hours": "{{hours}} 小时",
+      "hoursMinutes": "{{hours}} 小时 {{minutes}} 分钟"
+    },
     "facts": {
-      "tokensLeft": "剩余 {{count}} tokens",
+      "tokensLeft": "剩余模型用量 {{count}}",
       "turnsLeft": "还可继续 {{count}} 轮",
       "timeLeft": "剩余 {{duration}}"
     }

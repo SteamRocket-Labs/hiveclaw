@@ -56,6 +56,7 @@ const BANNED_WORDS = [
   'Agent', 'agent', 'A2A',
   'Delegation', 'Team', 'Workers', 'Workflow', 'Activity', 'BACKGROUND',
   'snapshot', 'My Assistant', 'Send Email', 'Copy', 'Collapse Sidebar', 'Scroll to bottom', 'Open ',
+  'Active', 'idle', 'stopped', 'tokens left', "The user's assistant", 'Legacy failed HR draft', 'Provisioning cannot resume', 'folder(s)', 'file(s)',
 ];
 const SNAKE_CASE_RE = /[a-z]+_[a-z_]+/;
 const PATH_RE = /workspace\/|(?:^|\s)\/(?:tmp|usr|home|var)\//;
@@ -109,6 +110,12 @@ function findInternalWords(text: string): string[] {
 // The default timeline's own copy namespaces (the conversation screen a
 // member sees; operator panels have their own surfaces outside this scan).
 const DEFAULT_SCREEN_KEY_ROOTS = [
+  // B8: creation, directory and expanded runtime copy are member/admin UI too.
+  'employees.hrRecovery',
+  'employees.status',
+  'assistant',
+  'sessionGoal',
+  'workspace.digitalEmployees',
   'agent.chat',
   'agent.upload',
   'agent.phase',
@@ -177,6 +184,11 @@ function storedTitle(parts: unknown): string {
 }
 
 describe('default screen language (B2)', () => {
+  it.each(['Active', 'idle', 'stopped', '750 tokens left', "The user's assistant", 'Legacy failed HR draft',
+    'Provisioning cannot resume', 'root: 5 folder(s), 3 file(s)', 'BACKGROUND-AGENT'])
+  ('detects the B8 platform-copy regression: %s', text => {
+    expect(findInternalWords(text).length).toBeGreaterThan(0);
+  });
   it('keeps internal vocabulary out of the zh copy the default timeline uses', () => {
     const failures: string[] = [];
     for (const root of DEFAULT_SCREEN_KEY_ROOTS) {

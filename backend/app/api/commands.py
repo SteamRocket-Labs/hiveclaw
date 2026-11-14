@@ -381,6 +381,8 @@ async def _execute_goal_command(
                 "max_continuation_turns": goal.max_continuation_turns,
             },
         )
+        # SQL onupdate expires updated_at; projection must not trigger async lazy IO.
+        await db.refresh(goal, attribute_names=["updated_at"])
         return {"ok": True, "command": command_name, **_goal_payload(goal)}
 
     if command_name == "goal_stop":
@@ -409,6 +411,7 @@ async def _execute_goal_command(
                 "completion_summary": goal.completion_summary,
             },
         )
+        await db.refresh(goal, attribute_names=["updated_at"])
         return {"ok": True, "command": command_name, **_goal_payload(goal)}
 
     raise HTTPException(status_code=501, detail=f"Unsupported goal command {command_name!r}")

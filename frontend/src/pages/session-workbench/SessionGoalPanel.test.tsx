@@ -120,7 +120,8 @@ describe('SessionGoalPanel', () => {
       expect(statuses[key]).not.toMatch(/Active|Paused|Stopped|Complete/);
     }
     const facts = zhCatalog.sessionGoal.facts as Record<string, string>;
-    expect(facts.tokensLeft).toBe('剩余 {{count}} tokens');
+    // B8: tokens is internal English vocabulary, even in the expanded admin panel.
+    expect(facts.tokensLeft).toBe('剩余模型用量 {{count}}');
     expect(facts.turnsLeft).toBe('还可继续 {{count}} 轮');
     expect(facts.timeLeft).toBe('剩余 {{duration}}');
   });

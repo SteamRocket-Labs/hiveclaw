@@ -227,6 +227,52 @@ def _channel_extra_config(config) -> dict | None:
     return getattr(config, "extra_config", None)
 
 
+async def _resolve_target_agent_by_name(
+    db,
+    source_agent: Any,
+    agent_name: str,
+    *,
+    action: str,
+) -> tuple[Any | None, str | None]:
+    """Rank one literal name tier; callers still enforce policy after selection."""
+    from app.models.agent import Agent
+
+    escaped = agent_name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    query = (
+        select(Agent)
+        .where(Agent.tenant_id == source_agent.tenant_id, Agent.id != source_agent.id)
+        .order_by(Agent.created_at, Agent.id)
+        .limit(21)
+    )
+    # Exact matches win even when all are denied. Never fall back to a more
+    # permissive substring tier or silently rank a truncated candidate set.
+    for pattern in (escaped, f"%{escaped}%"):
+        result = await db.execute(query.where(Agent.name.ilike(pattern, escape="\\")))
+        candidates = list(result.scalars().all())
+        if candidates:
+            break
+    if not candidates:
+        return None, None
+    if len(candidates) > 20:
+        return None, (
+            f"❌ More than 20 agents match '{agent_name}' in the best name tier; "
+            "name lookup is ambiguous. Retry with target_agent_id."
+        )
+
+    same_owner, other_allowed = [], []
+    for candidate in candidates:
+        policy = await resolve_a2a_collaboration_policy(db, source_agent, candidate, action=action)
+        if policy.allowed:
+            (same_owner if policy.reason == "same_owner" else other_allowed).append(candidate)
+    allowed = same_owner or other_allowed
+    if len(allowed) > 1:
+        choices = ", ".join(f"{candidate.name} ({candidate.id})" for candidate in allowed)
+        return None, f"❌ Ambiguous agent name '{agent_name}': {choices}. Retry with target_agent_id."
+    # Preserve the existing denial for the first deterministic candidate when
+    # none is allowed; the caller runs its original lifecycle/policy boundary.
+    return (allowed or candidates)[0], None
+
+
 async def _resolve_target_agent_runtime(
     from_agent_id: uuid.UUID,
     agent_name: str,
@@ -257,14 +303,9 @@ async def _resolve_target_agent_runtime(
             )
             target = target_result.scalar_one_or_none()
         else:
-            target_result = await db.execute(
-                select(Agent).where(
-                    Agent.name.ilike(f"%{agent_name}%"),
-                    Agent.id != from_agent_id,
-                    Agent.tenant_id == source_agent.tenant_id,
-                )
-            )
-            target = target_result.scalars().first()
+            target, error = await _resolve_target_agent_by_name(db, source_agent, agent_name, action="delegate")
+            if error:
+                return source_agent, None, None, error
         if not target:
             all_r = await db.execute(
                 select(Agent).where(Agent.id != from_agent_id, Agent.tenant_id == source_agent.tenant_id)
@@ -1183,11 +1224,9 @@ async def _send_message_to_agent_outcome(
                 result = await db.execute(select(Agent).where(*_tenant_filter))
                 target = result.scalar_one_or_none()
             else:
-                _tenant_filter = [Agent.name.ilike(f"%{agent_name}%"), Agent.id != from_agent_id]
-                if source_agent and source_agent.tenant_id:
-                    _tenant_filter.append(Agent.tenant_id == source_agent.tenant_id)
-                result = await db.execute(select(Agent).where(*_tenant_filter))
-                target = result.scalars().first()
+                target, error = await _resolve_target_agent_by_name(db, source_agent, agent_name, action="message")
+                if error:
+                    return _a2a_failure("consult", error_code="target_agent_ambiguous", message=error)
             if not target:
                 _avail_filter = [Agent.id != from_agent_id]
                 if source_agent and source_agent.tenant_id:

@@ -153,7 +153,7 @@ async def load_explicit_resource_grant_ids_by_action(
     tenant_id = getattr(user, "tenant_id", None)
     if tenant_id is not None:
         statement = statement.where(ResourcePermission.tenant_id == tenant_id)
-    permissions = (await db.execute(statement)).scalars().all()
+    permissions = (await db.execute(statement.execution_options(populate_existing=True))).scalars().all()
     context = {"tenant_id": str(tenant_id) if tenant_id else None}
     grants = {}
     for action in actions:

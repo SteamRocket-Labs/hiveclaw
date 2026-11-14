@@ -13,16 +13,14 @@ from app.core.execution_context import get_execution_identity
 from app.database import async_session, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError
-from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_runtime_task
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.runtime import ToolExecutionContext
 from app.tools.workspace import ensure_workspace
 
 logger = logging.getLogger(__name__)
 
 
-async def _resolve_budget_run_id_from_runtime_task(
-    runtime_task_id: str | None, *, tenant_id: uuid.UUID | None = None
-) -> str | None:
+async def _resolve_budget_run_id_from_runtime_task(runtime_task_id: str | None, *, tenant_id: uuid.UUID) -> str | None:
     if not runtime_task_id:
         return None
     try:
@@ -30,13 +28,6 @@ async def _resolve_budget_run_id_from_runtime_task(
     except (TypeError, ValueError, AttributeError):
         return None
     try:
-        if tenant_id is None:
-            tenant_id = await resolve_tenant_for_runtime_task(
-                task_id,
-                session_factory=async_session,
-            )
-        if tenant_id is None:
-            return None
         async with tenant_scoped_session(
             tenant_id,
             session_factory=async_session,

@@ -1,9 +1,36 @@
 from __future__ import annotations
 
+import inspect
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+
+
+@pytest.mark.asyncio
+async def test_budget_lookup_requires_and_uses_the_resolved_tenant(monkeypatch):
+    from app.tools.resolver import _resolve_budget_run_id_from_runtime_task
+
+    assert (
+        inspect.signature(_resolve_budget_run_id_from_runtime_task).parameters["tenant_id"].default
+        is inspect.Parameter.empty
+    )
+    task_id, tenant_id, budget_id = uuid4(), uuid4(), uuid4()
+
+    async def execute(statement):
+        assert set(statement.compile().params.values()) == {task_id, tenant_id}
+        return SimpleNamespace(scalar_one_or_none=lambda: budget_id)
+
+    @asynccontextmanager
+    async def scoped_session(tenant, **kwargs):
+        assert tenant == tenant_id
+        assert kwargs["require_tenant"] is True
+        yield SimpleNamespace(execute=execute)
+
+    monkeypatch.setattr("app.tools.resolver.tenant_scoped_session", scoped_session)
+    assert await _resolve_budget_run_id_from_runtime_task(str(task_id), tenant_id=tenant_id) == str(budget_id)
 
 
 @pytest.mark.asyncio
@@ -244,6 +271,6 @@ async def test_denied_runtime_never_loads_secret_boundary(monkeypatch, machine):
         monkeypatch.setattr("app.services.machine_runtime_authority.machine_task_actor", machine_denied)
     with pytest.raises(MachineRuntimeAuthorityDenied if machine else HTTPException):
         await ToolRuntimeResolver(workspace_authority_loader=denied).resolve(
-            agent_id=agent_id, user_id=None if machine else uuid4(),
-            runtime_task_id=str(uuid4()) if machine else None)
+            agent_id=agent_id, user_id=None if machine else uuid4(), runtime_task_id=str(uuid4()) if machine else None
+        )
     assert loaded == []

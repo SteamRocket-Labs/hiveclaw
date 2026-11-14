@@ -444,11 +444,13 @@ async def _build_model_input_bindings(
         list(
             (
                 await db.scalars(
-                    select(SessionModelResult).where(
+                    select(SessionModelResult)
+                    .where(
                         SessionModelResult.tenant_id == tenant_id,
                         SessionModelResult.session_id == session_id,
                         SessionModelResult.provider_request_id.in_(provider_ids),
                     )
+                    .execution_options(populate_existing=True)
                 )
             ).all()
         )

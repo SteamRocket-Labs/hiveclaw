@@ -13,8 +13,16 @@ _DEFAULT_INTERVAL_SECONDS = 60
 
 async def runtime_budget_maintenance_tick(service: RuntimeBudgetService | None = None) -> dict[str, int]:
     budget_service = service or RuntimeBudgetService()
-    expired_runs = await budget_service.reap_expired_runs(limit=200)
-    reconciled_reservations = await budget_service.reconcile_orphaned_reservations(limit=500)
+    expired_runs = 0
+    try:
+        expired_runs = await budget_service.reap_expired_runs(limit=200)
+    except Exception as exc:
+        logger.warning("[runtime-budget] expired-run reaping failed: {}", exc)
+    reconciled_reservations = 0
+    try:
+        reconciled_reservations = await budget_service.reconcile_orphaned_reservations(limit=500)
+    except Exception as exc:
+        logger.warning("[runtime-budget] orphan reconciliation failed: {}", exc)
     return {
         "expired_runs": expired_runs,
         "reconciled_reservations": reconciled_reservations,

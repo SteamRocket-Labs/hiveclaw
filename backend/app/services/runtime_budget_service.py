@@ -185,6 +185,10 @@ class RuntimeBudgetApprovalRequired(RuntimeBudgetDenied):
 class RuntimeBudgetSettlementConflict(RuntimeError):
     """Raised when one reservation key is replayed with different actual usage."""
 
+    def __init__(self, message: str, *, runtime_task_id: uuid.UUID | None = None):
+        self.runtime_task_id = runtime_task_id
+        super().__init__(message)
+
 
 class RuntimeBudgetStateConflict(RuntimeError):
     """Raised when a requested budget transition would violate run-state monotonicity."""
@@ -230,20 +234,28 @@ def stamp_runtime_task_budget_actuals(task: Any, actuals: Mapping[str, Any]) -> 
             key: max(0, int(actuals.get(key) or 0)) for key in _DIMENSIONS if max(0, int(actuals.get(key) or 0))
         }
     except (TypeError, ValueError) as exc:
-        raise RuntimeBudgetSettlementConflict(f"invalid runtime budget actuals for RuntimeTask {task.id}") from exc
+        raise RuntimeBudgetSettlementConflict(
+            f"invalid runtime budget actuals for RuntimeTask {task.id}", runtime_task_id=task.id
+        ) from exc
     metadata = dict(getattr(task, "metadata_json", None) or {})
     existing = metadata.get("runtime_budget_actuals")
     if existing is not None:
         if not isinstance(existing, Mapping):
-            raise RuntimeBudgetSettlementConflict(f"invalid runtime budget actuals for RuntimeTask {task.id}")
+            raise RuntimeBudgetSettlementConflict(
+                f"invalid runtime budget actuals for RuntimeTask {task.id}", runtime_task_id=task.id
+            )
         try:
             normalized_existing = {
                 key: max(0, int(existing.get(key) or 0)) for key in _DIMENSIONS if max(0, int(existing.get(key) or 0))
             }
         except (TypeError, ValueError) as exc:
-            raise RuntimeBudgetSettlementConflict(f"invalid runtime budget actuals for RuntimeTask {task.id}") from exc
+            raise RuntimeBudgetSettlementConflict(
+                f"invalid runtime budget actuals for RuntimeTask {task.id}", runtime_task_id=task.id
+            ) from exc
         if normalized_existing != normalized:
-            raise RuntimeBudgetSettlementConflict(f"runtime budget actuals conflict for RuntimeTask {task.id}")
+            raise RuntimeBudgetSettlementConflict(
+                f"runtime budget actuals conflict for RuntimeTask {task.id}", runtime_task_id=task.id
+            )
     metadata["runtime_budget_actuals"] = normalized
     task.metadata_json = metadata
     return normalized
@@ -1010,38 +1022,56 @@ class RuntimeBudgetService:
                 .with_for_update(skip_locked=True)
             )
             runs = result.scalars().all()
+            reaped = 0
             for run in runs:
-                run.status = "expired"
-                run.terminal_reason = "budget_run_expired"
-                run.completed_at = current
-                self._clear_reserved(run)
-                event = self._event(
-                    run,
-                    event_type="expired",
-                    reservation_key=None,
-                    allowed=None,
-                    would_deny=False,
-                    reason="budget_run_expired",
-                    amounts={},
-                    metadata={"target_status": "expired"},
-                )
-                db.add(event)
-                await enqueue_budget_transition(
-                    db,
-                    run=run,
-                    event=event,
-                    transition="expired",
-                    content=budget_transition_copy("expired"),
-                )
-                await self._cancel_pending_unclaimed_tasks(
-                    db,
-                    run,
-                    terminal_reason="budget_run_expired",
-                    result_summary="Runtime budget expired before this work was claimed.",
-                    completed_at=current,
-                )
+                budget_run_id = run.id
+                loaded_before = {key for key in db.identity_map}
+                try:
+                    async with db.begin_nested():
+                        run.status = "expired"
+                        run.terminal_reason = "budget_run_expired"
+                        run.completed_at = current
+                        self._clear_reserved(run)
+                        event = self._event(
+                            run,
+                            event_type="expired",
+                            reservation_key=None,
+                            allowed=None,
+                            would_deny=False,
+                            reason="budget_run_expired",
+                            amounts={},
+                            metadata={"target_status": "expired"},
+                        )
+                        db.add(event)
+                        await enqueue_budget_transition(
+                            db,
+                            run=run,
+                            event=event,
+                            transition="expired",
+                            content=budget_transition_copy("expired"),
+                        )
+                        await self._cancel_pending_unclaimed_tasks(
+                            db,
+                            run,
+                            terminal_reason="budget_run_expired",
+                            result_summary="Runtime budget expired before this work was claimed.",
+                            completed_at=current,
+                        )
+                except RuntimeBudgetSettlementConflict as exc:
+                    logger.error(
+                        "Expired budget run settlement conflict: budget_run_id=%s runtime_task_id=%s",
+                        budget_run_id,
+                        exc.runtime_task_id,
+                    )
+                    # Rollback expires writes, not read-only tasks/reservations.
+                    # Leave the other preselected runs usable without async lazy loads.
+                    for key, instance in list(db.identity_map.items()):
+                        if instance is run or key not in loaded_before:
+                            db.expire(instance)
+                    continue
+                reaped += 1
             await db.commit()
-            return len(runs)
+            return reaped
 
     async def reconcile_orphaned_reservations(
         self,
@@ -2207,7 +2237,7 @@ class RuntimeBudgetService:
                 if reservation is not None:
                     if reservation.runtime_task_id is not None and reservation.runtime_task_id != task.id:
                         raise RuntimeBudgetSettlementConflict(
-                            f"reservation runtime task conflict for {run.id}:{reservation_key}"
+                            f"reservation runtime task conflict for {run.id}:{reservation_key}", runtime_task_id=task.id
                         )
                     if reservation.runtime_task_id == task.id:
                         exact_actuals = runtime_task_actuals_for_outer_reservation(

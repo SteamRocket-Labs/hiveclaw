@@ -872,6 +872,15 @@ async def recover_session_terminal_outcomes_once(
     }
 
 
+def turn_replacement_candidate_statement(*, now: datetime):
+    from app.models.session_v2 import SessionTurnReplacement
+
+    return select(SessionTurnReplacement).where(
+        SessionTurnReplacement.state.notin_(("completed", "failed", "needs_reconciliation")),
+        (SessionTurnReplacement.lease_expires_at.is_(None) | (SessionTurnReplacement.lease_expires_at <= now)),
+    )
+
+
 async def recover_turn_replacement_sagas_once(
     *,
     worker_id: str,
@@ -884,10 +893,7 @@ async def recover_turn_replacement_sagas_once(
     """Discover replacement sagas globally, then recover inside tenant RLS."""
 
     from app.models.session_v2 import SessionTurnReplacement
-    from app.services.session_turn_replacement import (
-        recover_turn_replacements_once,
-        turn_replacement_candidate_statement,
-    )
+    from app.services.session_turn_replacement import recover_turn_replacements_once
 
     now = _utcnow()
     locator_statement = (
@@ -1346,7 +1352,6 @@ def _runtime_work_candidates(*, now: datetime):
         _admitted_input_candidate_statement,
         _terminal_steer_candidate_statement,
     )
-    from app.services.session_turn_replacement import turn_replacement_candidate_statement
 
     candidates = {
         "session-events": session_event_claim_candidate_statement(now=now).exists(),
@@ -1447,26 +1452,20 @@ async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -
     """Gate polling lanes independently; the claim loop owns its own wakeup."""
     exact_worker_id = worker_id or _worker_id()
     lanes = _terminal_boundary_lanes(exact_worker_id)
-    recovery = {
-        "stale-admission",
-        "model-round",
-        "terminal-outcome",
-        "permission-expiry",
-        "hr-draft",
-        "business-task",
-        "team-fanout",
-    }
+    gated = _runtime_work_candidates(now=_utcnow())
+    consumers = {lane: interval for lane, (_drain, interval) in lanes.items() if lane in gated}
     tasks = [
         asyncio.create_task(
             _terminal_boundary_lane_loop(worker_id=exact_worker_id, lane=lane), name=f"runtime-terminal-boundary-{lane}"
         )
         for lane in lanes
-        if lane in recovery
+        if lane not in consumers
     ]
-    consumers = {lane: interval for lane, (_drain, interval) in lanes.items() if lane not in recovery}
     running: dict[str, asyncio.Task] = {}
     next_at = dict.fromkeys(consumers, 0.0)
     probe = None
+    probe_at = 0.0
+    due = dict.fromkeys(consumers, False)
     loop = asyncio.get_running_loop()
 
     async def tick(lane):
@@ -1483,32 +1482,39 @@ async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -
             return
         poll = min(consumers.values())
         while True:
-            next_tick = loop.time() + poll
-            if probe is None:
+            now = loop.time()
+            if probe is not None:
+                if probe.done():
+                    try:
+                        result = probe.result()
+                        # Conservatively discard values observed after the read's deadline.
+                        due = result if now < probe_at else dict.fromkeys(consumers, True)
+                    except BaseException:
+                        if asyncio.current_task().cancelling():
+                            raise
+                        due = dict.fromkeys(consumers, True)
+                        logger.exception("[RuntimeTaskWorker] idle discovery failed; running existing consumers")
+                    probe = None
+                elif now >= probe_at:
+                    due = dict.fromkeys(consumers, True)
+            if probe is None and now >= probe_at:
+                probe_at = now + poll
                 probe = asyncio.create_task(_has_due_runtime_work(worker_id=exact_worker_id))
-                # A late read stays in flight. Never cancel it to start work,
-                # never open a second one, never wait on a completed consumer.
-                await asyncio.wait({probe}, timeout=poll)
-            due = dict.fromkeys(consumers, True)
-            if probe.done():
-                try:
-                    due = probe.result()
-                except BaseException:
-                    if asyncio.current_task().cancelling():
-                        raise
-                    logger.exception("[RuntimeTaskWorker] idle discovery failed; running existing consumers")
-                probe = None
-            skipped_until = []
+            next_tick = probe_at if now < probe_at else now + poll
             for lane in consumers:
-                if not due.get(lane) or (lane in running and not running[lane].done()):
+                if not due.get(lane, True) or (lane in running and not running[lane].done()):
                     continue
-                if next_at[lane] > loop.time():
-                    skipped_until.append(next_at[lane])
+                if next_at[lane] > now:
+                    next_tick = min(next_tick, next_at[lane])
                     continue
                 running[lane] = asyncio.create_task(tick(lane), name=f"runtime-terminal-boundary-{lane}")
-            if skipped_until:
-                next_tick = min(next_tick, min(skipped_until))
-            await asyncio.sleep(max(0, next_tick - loop.time()))
+            # Start cached due work before waiting for a refresh. Lane deadlines
+            # neither start a probe nor wait for its result before dispatching.
+            timeout = max(0, next_tick - loop.time())
+            if probe is not None and now < probe_at:
+                await asyncio.wait({probe}, timeout=timeout)
+            else:
+                await asyncio.sleep(timeout)
     finally:
         _STATE["terminal_boundary_worker_running"] = False
         owned = [*tasks, *running.values(), *([probe] if probe is not None else [])]

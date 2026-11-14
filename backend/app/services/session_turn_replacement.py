@@ -850,13 +850,6 @@ async def _quarantine_turn_replacement(
     await db.flush()
 
 
-def turn_replacement_candidate_statement(*, now: datetime):
-    return select(SessionTurnReplacement).where(
-        SessionTurnReplacement.state.notin_(("completed", "failed", "needs_reconciliation")),
-        (SessionTurnReplacement.lease_expires_at.is_(None) | (SessionTurnReplacement.lease_expires_at <= now)),
-    )
-
-
 async def recover_turn_replacements_once(
     db: AsyncSession,
     *,
@@ -869,6 +862,8 @@ async def recover_turn_replacements_once(
     max_transitions_per_saga: int = 8,
 ) -> dict[str, int]:
     """Lease and advance durable replacement sagas on the existing worker."""
+
+    from app.services.runtime_task_worker import turn_replacement_candidate_statement
 
     now = datetime.now(timezone.utc)
     claim_statement = (

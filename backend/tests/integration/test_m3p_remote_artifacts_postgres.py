@@ -1,6 +1,7 @@
 """Saved remote packets become real original-work files without another RPC."""
 
 import base64
+from contextlib import asynccontextmanager
 import hashlib
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -32,10 +33,18 @@ remote_work = _previous.remote_work
 
 
 @pytest.fixture
-async def artifact_work(remote_work, monkeypatch, tmp_path):
+async def artifact_work(remote_work, app_user_sessionmaker, monkeypatch, tmp_path):
     from app.api import files
 
     seed, api, session_id = remote_work
+
+    @asynccontextmanager
+    async def own_worker_session(_service, _operation):
+        # Exact delivery counts cover this tenant, not other files' pending packets.
+        async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+            yield db
+
+    monkeypatch.setattr(RuntimeNotificationOutboxService, "_worker_session", own_worker_session)
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path / "employees"))
     api._transport.app.include_router(files.router)
     return seed, api, session_id

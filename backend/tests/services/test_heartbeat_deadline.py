@@ -102,6 +102,9 @@ async def heartbeat_run(owner_sessionmaker, monkeypatch):
         return redis
 
     async def acquire(agent_id, *, now=None):
+        # The tick discovers all tenants; this fixture may start only its own agent.
+        if agent_id != state.agent_id:
+            return False
         return await original_acquire(agent_id, now=now, ttl_seconds=1)
 
     async def create_task(agent_id, *, tenant_id=None):

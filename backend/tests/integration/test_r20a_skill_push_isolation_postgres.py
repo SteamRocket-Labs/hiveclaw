@@ -62,7 +62,9 @@ async def test_startup_skill_failure_does_not_block_later_agents(
 
     monkeypatch.setattr(skill_seeder, "_push_default_skill_packages_to_agent", push_one)
     monkeypatch.setattr(skill_seeder, "remove_legacy_flat_skill_files", cleanup_one)
-    sink = logger.add(lambda message: warnings.append(str(message)), level="WARNING")
+    # Count exactly the seeder's warnings, even when stdlib RLS audit logs are bridged to Loguru.
+    sink = logger.add(lambda message: warnings.append(str(message)), level="WARNING",
+        filter=lambda record: record["name"] == skill_seeder.__name__)
     try:
         await skill_seeder.push_default_skills_to_existing_agents()
         assert set(pushes) == set(roots.values())

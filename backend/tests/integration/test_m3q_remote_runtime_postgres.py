@@ -1,5 +1,6 @@
 """Explicit runtime selection precedes any remote employee execution."""
 
+from contextlib import asynccontextmanager
 import json
 import sys
 from uuid import UUID, uuid4
@@ -257,6 +258,14 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
         pass
     monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", no_wake)
     budget_service = RuntimeBudgetService(session_factory=app_user_sessionmaker)
+
+    @asynccontextmanager
+    async def own_worker_session(_operation):
+        # A bounded worker batch must spend its slots on this journey's tenant.
+        async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
+            yield db
+
+    monkeypatch.setattr(budget_service, "_budget_session", own_worker_session)
     budget = await budget_service.create_run(RuntimeBudgetRunCreate(tenant_id=source["tenant_id"],
         root_run_kind="web_chat_turn", root_run_key=str(source["run_id"]), root_runtime_task_id=source["run_id"],
         root_session_id=str(source["session_id"]), root_agent_id=source["agent_id"], root_user_id=source["user_id"],
@@ -606,7 +615,9 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
             checked = await tool("check_async_task", {"task_id": returned["task_id"]})
             assert checked["status"] == "killed" and len(remote.requests) == 3, checked
         else:
-            delivery = await RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker).drain_once(worker_id="employee-return")
+            outbox = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
+            monkeypatch.setattr(outbox, "_worker_session", own_worker_session)
+            delivery = await outbox.drain_once(worker_id="employee-return")
             async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
                 delivered = list(await db.scalars(select(RuntimeNotificationOutbox).where(
                     RuntimeNotificationOutbox.tenant_id == source["tenant_id"],

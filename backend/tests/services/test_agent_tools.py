@@ -461,7 +461,12 @@ async def test_get_agent_tools_for_llm_keeps_keyless_web_providers_visible(monke
     async def no_modelscope_token() -> str:
         return ""
 
+    async def keyless_configs(tool_names):
+        # Keyless mode is the precondition, not a global Tool row left by another file.
+        return {name: {"auth_mode": "auto"} for name in tool_names}
+
     _patch_broken_tenant_session(monkeypatch)
+    monkeypatch.setattr(agent_tools_module, "_get_tool_configs", keyless_configs)
     monkeypatch.setattr(agent_tools_module, "_get_exa_api_key", no_exa_key)
     monkeypatch.setattr(agent_tools_module, "_get_tavily_api_key", no_tavily_key)
     monkeypatch.setattr(agent_tools_module, "_get_firecrawl_api_key", no_firecrawl_key)

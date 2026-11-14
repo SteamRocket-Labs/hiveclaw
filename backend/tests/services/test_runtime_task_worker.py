@@ -411,7 +411,9 @@ def test_worker_dispatches_a2a_continuation_to_web_chat_executor(monkeypatch):
         captured["worker_id"] = worker_id
         return True
 
-    task = SimpleNamespace(id=uuid4(), task_type="a2a_continuation", claim_version=3, claimed_by="worker-9", metadata_json={})
+    task = SimpleNamespace(
+        id=uuid4(), task_type="a2a_continuation", claim_version=3, claimed_by="worker-9", metadata_json={}
+    )
     monkeypatch.setattr(worker, "dispatch_web_chat_run", fake_dispatch)
 
     assert worker._dispatch_claimed_task(task) is True
@@ -1179,7 +1181,9 @@ async def test_runtime_worker_drains_completion_outbox_and_records_counts(monkey
     before_delivered = int(worker._STATE.get("outbox_delivered") or 0)
     before_retried = int(worker._STATE.get("outbox_retried") or 0)
     previous_error = worker._STATE.get("last_error")
-    worker._STATE["last_error"] = "runtime-notification_terminal_boundary:ConfigurationLimitExceededError: temporary file limit exceeded"
+    worker._STATE["last_error"] = (
+        "runtime-notification_terminal_boundary:ConfigurationLimitExceededError: temporary file limit exceeded"
+    )
 
     try:
         result = await worker.drain_runtime_notification_outbox_once(worker_id="runtime-worker")
@@ -1251,6 +1255,7 @@ async def test_runtime_worker_claims_without_waiting_and_preserves_concurrent_wa
 
     entered = asyncio.Event()
     wakeup = asyncio.Event()
+    claimed_twice = asyncio.Event()
     calls = []
 
     async def blocked(*_args, **_kwargs):
@@ -1266,19 +1271,45 @@ async def test_runtime_worker_claims_without_waiting_and_preserves_concurrent_wa
             await entered.wait()
             wakeup.set()  # A new input arrives while the claim is in flight.
         else:
-            raise asyncio.CancelledError
+            claimed_twice.set()
 
-    monkeypatch.setattr(worker, "_settings", lambda: SimpleNamespace(
-        HIVE_PROCESS_ROLE="runtime", RUNTIME_TASK_WORKER_ENABLED=True,
-        RUNTIME_TASK_WORKER_ID="test-worker", RUNTIME_TASK_CLAIM_POLL_SECONDS=60,
-    ))
+    async def due(**_kwargs):
+        return True
+
+    async def empty():
+        pass
+
+    monkeypatch.setattr(
+        worker,
+        "_settings",
+        lambda: SimpleNamespace(
+            HIVE_PROCESS_ROLE="runtime",
+            RUNTIME_TASK_WORKER_ENABLED=True,
+            RUNTIME_TASK_WORKER_ID="test-worker",
+            RUNTIME_TASK_CLAIM_POLL_SECONDS=60,
+        ),
+    )
     monkeypatch.setattr(worker, "_wakeup_event", lambda: wakeup)
     monkeypatch.setattr(worker, "_redis_wakeup_listener", blocked)
-    monkeypatch.setattr(worker, "start_terminal_boundary_worker_loop", slow)
+    # Claim now shares idle discovery, not the recovery consumer's execution.
+    # Block the real recovery lane rather than replacing the whole coordinator.
+    monkeypatch.setattr(
+        worker,
+        "_terminal_boundary_lanes",
+        lambda _: {
+            "stale-admission": (slow, 20),
+            "web": (empty, 60),
+        },
+    )
+    monkeypatch.setattr(worker, "_has_due_runtime_work", due)
     monkeypatch.setattr(worker, "claim_and_dispatch_once", claim)
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(worker.start_runtime_task_worker_loop(), timeout=1)
-    assert calls == ["claim", "claim"]
+    task = asyncio.create_task(worker.start_runtime_task_worker_loop())
+    try:
+        await asyncio.wait_for(claimed_twice.wait(), timeout=1)
+        assert calls == ["claim", "claim"]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.parametrize("lane", ["web", "direct-delegation"])
@@ -1325,15 +1356,19 @@ async def test_terminal_lane_snapshot_locates_wait_without_disclosing_runtime_in
     monkeypatch.setattr(worker, "RuntimeTerminalBoundaryOutboxService", Service)
     monkeypatch.setattr(worker, "WebTerminalBoundaryProcessor", Processor)
     monkeypatch.setattr(worker, "DirectInvocationTerminalBoundaryProcessor", Processor)
-    task = asyncio.create_task(worker._terminal_boundary_lane_loop(worker_id=private_input, lane=lane),
-        name=f"runtime-terminal-boundary-{lane}")
+    task = asyncio.create_task(
+        worker._terminal_boundary_lane_loop(worker_id=private_input, lane=lane),
+        name=f"runtime-terminal-boundary-{lane}",
+    )
     try:
         await asyncio.wait_for(entered.wait(), 2)
         observation = worker.runtime_task_worker_snapshot()["terminal_boundary_execution"]
         assert observation["status"] == "observed"
         tenant = next(row for row in observation["tasks"] if row["name"] == f"runtime-terminal-boundary-{lane}-tenant")
         assert any(frame["function"] == "reconcile_terminal_tasks_once" for frame in tenant["frames"])
-        assert all(set(frame) == {"module", "function", "line"} for row in observation["tasks"] for frame in row["frames"])
+        assert all(
+            set(frame) == {"module", "function", "line"} for row in observation["tasks"] for frame in row["frames"]
+        )
         encoded = json.dumps(observation)
         assert private_input not in encoded and str(tenant_id) not in encoded
         assert not release.is_set() and not task.done() and not delivered.is_set()
@@ -1342,8 +1377,11 @@ async def test_terminal_lane_snapshot_locates_wait_without_disclosing_runtime_in
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    assert not [row for row in worker.runtime_task_worker_snapshot()["terminal_boundary_execution"]["tasks"]
-        if row["name"].startswith(f"runtime-terminal-boundary-{lane}")]
+    assert not [
+        row
+        for row in worker.runtime_task_worker_snapshot()["terminal_boundary_execution"]["tasks"]
+        if row["name"].startswith(f"runtime-terminal-boundary-{lane}")
+    ]
 
 
 def test_terminal_lane_snapshot_reports_missing_event_loop():
@@ -1377,6 +1415,7 @@ async def test_enterprise_wait_recovery_advances_past_an_unrecoverable_page(monk
 
     monkeypatch.setattr("app.services.chat_transcript.lock_transcript_session", lock)
     import app.services.session_approval as approval
+
     monkeypatch.setattr(approval, "_enterprise_permission_after_id", None)
     for count in range(1, 4):
         assert await recover_enterprise_permission_waits(DB(), limit=1) == 0
@@ -1427,8 +1466,16 @@ async def test_worker_lanes_keep_user_work_prompt_and_isolate_recovery(monkeypat
                 if failure == "cancel":
                     raise asyncio.CancelledError
                 await asyncio.Event().wait()
+
         return sweep
 
+    async def due(**_kwargs):
+        return True
+
+    monkeypatch.setattr(worker, "_has_due_runtime_work", due)
+    # The shared discovery coordinator now uses the existing wake Event;
+    # pytest gives each parametrized case a different asyncio loop.
+    monkeypatch.setattr(worker, "_LOCAL_WAKEUP_EVENT", None)
     monkeypatch.setattr(worker, "_STATE", {})
     monkeypatch.setattr(worker, "_settings", lambda: SimpleNamespace(RUNTIME_TASK_CLAIM_POLL_SECONDS=0.05))
     for lane, name in {**prompt, **recovery, "direct": "drain_direct_terminal_boundary_outbox_once"}.items():
@@ -1450,9 +1497,9 @@ async def test_worker_lanes_keep_user_work_prompt_and_isolate_recovery(monkeypat
         if failure == "cancel":
             assert states["stale-admission"]["last_error"].endswith("unexpected_exit")
         names = {row["name"] for row in worker._terminal_boundary_execution_snapshot()["tasks"]}
-        expected = {f"runtime-terminal-boundary-{lane}" for lane in table}
-        if failure == "cancel":
-            expected.remove("runtime-terminal-boundary-stale-admission")
+        # Empty prompt lanes no longer keep one sleeping task per consumer;
+        # their exact calls/timing above still prove prompt independent work.
+        expected = {f"runtime-terminal-boundary-{lane}" for lane in recovery}
         assert expected <= names
         assert not running.done()
     finally:
@@ -1504,10 +1551,20 @@ async def test_cancelled_lane_restarts_without_stopping_other_lanes(monkeypatch)
     async def healthy():
         calls["healthy"] += 1
 
+    async def due(**_kwargs):
+        return True
+
+    monkeypatch.setattr(worker, "_has_due_runtime_work", due)
+    monkeypatch.setattr(worker, "_LOCAL_WAKEUP_EVENT", None)
     monkeypatch.setattr(worker, "_STATE", {})
-    monkeypatch.setattr(worker, "_terminal_boundary_lanes", lambda _: {
-        "cancelled": (cancelled, 0.05), "healthy": (healthy, 0.01),
-    })
+    monkeypatch.setattr(
+        worker,
+        "_terminal_boundary_lanes",
+        lambda _: {
+            "cancelled": (cancelled, 0.05),
+            "healthy": (healthy, 0.01),
+        },
+    )
     running = asyncio.create_task(worker.start_terminal_boundary_worker_loop(worker_id="test"))
     try:
         await asyncio.wait_for(restarted.wait(), 1)
@@ -1531,13 +1588,28 @@ def test_lane_snapshot_exposes_error_class_without_private_state(monkeypatch):
     import app.services.session_approval as approval
 
     monkeypatch.setattr(approval, "_enterprise_permission_after_id", uuid4())
-    monkeypatch.setattr(worker, "_STATE", {"last_error": "unchanged", "lanes": {"web": {
-        "last_success_at": "timestamp", "last_error": "RuntimeError: private detail",
-        "error_type": "RuntimeError", "unexpected_exit": True,
-    }}})
+    monkeypatch.setattr(
+        worker,
+        "_STATE",
+        {
+            "last_error": "unchanged",
+            "lanes": {
+                "web": {
+                    "last_success_at": "timestamp",
+                    "last_error": "RuntimeError: private detail",
+                    "error_type": "RuntimeError",
+                    "unexpected_exit": True,
+                }
+            },
+        },
+    )
     snapshot = worker.runtime_task_worker_snapshot()
     assert "enterprise_permission_after_id" not in snapshot
     assert snapshot["last_error"] == "unchanged"
-    assert snapshot["lanes"] == {"web": {
-        "last_success_at": "timestamp", "last_error": "RuntimeError", "unexpected_exit": True,
-    }}
+    assert snapshot["lanes"] == {
+        "web": {
+            "last_success_at": "timestamp",
+            "last_error": "RuntimeError",
+            "unexpected_exit": True,
+        }
+    }

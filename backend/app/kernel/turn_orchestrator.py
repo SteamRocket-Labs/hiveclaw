@@ -1007,14 +1007,16 @@ async def _finalize_empty_provider_response(
     record_span: Any,
     turn_route_span_metadata: Any,
 ) -> Any:
+    retry_safe = not getattr(response, "provider_output_seen", False)
+    model_fail_state = None
     if request.model_request_fail is not None and provider_request_id is not None:
-        await support._maybe_await(
+        model_fail_state = await support._maybe_await(
             request.model_request_fail(
                 round_index=logical_round_index,
                 provider_request_id=provider_request_id,
                 error_class="provider_empty_response",
                 delivery_state="response_received",
-                retry_safe=True,
+                retry_safe=retry_safe,
             )
         )
     empty_usage_tokens = self._deps.extract_usage_tokens(response.usage)
@@ -1037,6 +1039,10 @@ async def _finalize_empty_provider_response(
     invocation_tokens = max(accumulated_tokens - initial_turn_tokens_used, 0)
     if request.agent_id and invocation_tokens > 0:
         await support._maybe_await(self._deps.record_token_usage(request.agent_id, invocation_tokens))
+    if provider_request_id is not None and not retry_safe and model_fail_state != "failed":
+        raise ProviderRequestNeedsReconciliation(
+            provider_request_id=provider_request_id, error_class="provider_empty_response"
+        )
     return support.InvocationResult(
         content="",
         tokens_used=accumulated_tokens,
@@ -2527,6 +2533,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             await _inject_loop_guard_warning(cost_loop_decision)
                         break
                     except (
+                        ProviderRequestNeedsReconciliation,
                         SessionRestartRecoveryRequired,
                         ToolLifecyclePersistenceError,
                         ExecutionAuthorityUnavailable,
@@ -3076,19 +3083,21 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         )
 
                 if provider_round.get("discarded_summary"):
+                    retry_safe = not getattr(response, "provider_output_seen", False)
+                    model_fail_state = None
                     for physical in [
                         {"provider_request_id": provider_request_id, "continuation_index": 0},
                         *provider_round.get("continuation_receipts", []),
                     ]:
                         if request.model_request_fail is not None and physical["provider_request_id"] is not None:
-                            await _maybe_await(
+                            model_fail_state = await _maybe_await(
                                 request.model_request_fail(
                                     round_index=logical_round_index,
                                     provider_request_id=physical["provider_request_id"],
                                     continuation_index=physical["continuation_index"],
                                     error_class="repeated_empty_search",
                                     delivery_state="response_received",
-                                    retry_safe=True,
+                                    retry_safe=retry_safe,
                                 )
                             )
                     accumulated_tokens += self._deps.extract_usage_tokens(response.usage) or 0
@@ -3104,6 +3113,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         else EMPTY_SEARCH_FINAL_MESSAGE
                     )
                     await _record_new_token_usage()
+                    if provider_request_id is not None and not retry_safe and model_fail_state != "failed":
+                        raise ProviderRequestNeedsReconciliation(
+                            provider_request_id=provider_request_id, error_class="provider_empty_response"
+                        )
                     await self._persist_before_exit(request, runtime_config, message, api_messages)
                     result = _build_error_result(
                         message,

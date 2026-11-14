@@ -810,6 +810,86 @@ async def _set_approval_continuation_status(
     approval.execution_receipt = receipt
 
 
+def _notification_delivery_ready():
+    return or_(
+        RuntimeNotificationOutbox.source_kind != "trigger",
+        RuntimeNotificationOutbox.artifact_count == 0,
+        exists(
+            select(RuntimeTerminalBoundaryOutbox.id).where(
+                RuntimeTerminalBoundaryOutbox.tenant_id == RuntimeNotificationOutbox.tenant_id,
+                func.replace(cast(RuntimeTerminalBoundaryOutbox.runtime_task_id, String), "-", "")
+                == func.replace(RuntimeNotificationOutbox.source_run_id, "-", ""),
+                RuntimeTerminalBoundaryOutbox.terminal_status == RuntimeNotificationOutbox.terminal_status,
+                RuntimeTerminalBoundaryOutbox.event_kind.in_(("turn_stop", "turn_abort")),
+                RuntimeTerminalBoundaryOutbox.authority_ref == "runtime_task",
+                func.replace(RuntimeTerminalBoundaryOutbox.authority_id, "-", "")
+                == func.replace(RuntimeNotificationOutbox.source_run_id, "-", ""),
+                RuntimeTerminalBoundaryOutbox.status == "delivered",
+            )
+        ),
+    )
+
+
+def notification_page_candidate_statement(*, now: datetime):
+    delivery_ready = _notification_delivery_ready()
+    return select(RuntimeResultIntegrationPage).where(
+        or_(
+            and_(
+                RuntimeResultIntegrationPage.status == "prepared",
+                exists(
+                    select(RuntimeNotificationOutbox.id).where(
+                        RuntimeNotificationOutbox.integration_page_id == RuntimeResultIntegrationPage.id,
+                        RuntimeNotificationOutbox.status == "pending",
+                        RuntimeNotificationOutbox.available_at <= now,
+                        delivery_ready,
+                    )
+                ),
+            ),
+            and_(
+                RuntimeResultIntegrationPage.status == "processing",
+                exists(
+                    select(RuntimeNotificationOutbox.id).where(
+                        RuntimeNotificationOutbox.integration_page_id == RuntimeResultIntegrationPage.id,
+                        RuntimeNotificationOutbox.status.in_(("pending", "processing")),
+                        delivery_ready,
+                    )
+                ),
+                or_(
+                    RuntimeResultIntegrationPage.lease_expires_at.is_(None),
+                    RuntimeResultIntegrationPage.lease_expires_at <= now,
+                ),
+            ),
+        )
+    )
+
+
+def notification_claim_candidate_statement(*, now: datetime):
+    return select(RuntimeNotificationOutbox).where(
+        RuntimeNotificationOutbox.integration_page_id.is_(None),
+        _notification_delivery_ready(),
+        or_(
+            and_(RuntimeNotificationOutbox.status == "pending", RuntimeNotificationOutbox.available_at <= now),
+            and_(
+                RuntimeNotificationOutbox.status == "processing",
+                or_(
+                    RuntimeNotificationOutbox.lease_expires_at.is_(None),
+                    RuntimeNotificationOutbox.lease_expires_at <= now,
+                ),
+            ),
+        ),
+    )
+
+
+def completion_recovery_candidate_statement(*, now: datetime):
+    return select(RuntimeTask).where(
+        text(COMPLETION_OUTBOX_PENDING_SQL),
+        or_(
+            RuntimeTask.completion_outbox_attempted_at.is_(None),
+            RuntimeTask.completion_outbox_attempted_at <= now - timedelta(seconds=COMPLETION_OUTBOX_RETRY_SECONDS),
+        ),
+    )
+
+
 class RuntimeNotificationOutboxService:
     """Claim, deliver, retry, and acknowledge completion notifications."""
 
@@ -938,23 +1018,7 @@ class RuntimeNotificationOutboxService:
         lease_expires_at = current + timedelta(seconds=self._lease_seconds)
         effective_limit = max(1, int(limit))
         first_observed: list[tuple[str, int]] = []
-        delivery_ready = or_(
-            RuntimeNotificationOutbox.source_kind != "trigger",
-            RuntimeNotificationOutbox.artifact_count == 0,
-            exists(
-                select(RuntimeTerminalBoundaryOutbox.id).where(
-                    RuntimeTerminalBoundaryOutbox.tenant_id == RuntimeNotificationOutbox.tenant_id,
-                    func.replace(cast(RuntimeTerminalBoundaryOutbox.runtime_task_id, String), "-", "")
-                    == func.replace(RuntimeNotificationOutbox.source_run_id, "-", ""),
-                    RuntimeTerminalBoundaryOutbox.terminal_status == RuntimeNotificationOutbox.terminal_status,
-                    RuntimeTerminalBoundaryOutbox.event_kind.in_(("turn_stop", "turn_abort")),
-                    RuntimeTerminalBoundaryOutbox.authority_ref == "runtime_task",
-                    func.replace(RuntimeTerminalBoundaryOutbox.authority_id, "-", "")
-                    == func.replace(RuntimeNotificationOutbox.source_run_id, "-", ""),
-                    RuntimeTerminalBoundaryOutbox.status == "delivered",
-                )
-            ),
-        )
+        delivery_ready = _notification_delivery_ready()
         async with self._worker_session("claim") as db:
             claimed_rows: list[RuntimeNotificationOutbox] = []
             page_limit = max(
@@ -963,38 +1027,7 @@ class RuntimeNotificationOutboxService:
             pages = list(
                 (
                     await db.execute(
-                        select(RuntimeResultIntegrationPage)
-                        .where(
-                            or_(
-                                and_(
-                                    RuntimeResultIntegrationPage.status == "prepared",
-                                    exists(
-                                        select(RuntimeNotificationOutbox.id).where(
-                                            RuntimeNotificationOutbox.integration_page_id
-                                            == RuntimeResultIntegrationPage.id,
-                                            RuntimeNotificationOutbox.status == "pending",
-                                            RuntimeNotificationOutbox.available_at <= current,
-                                            delivery_ready,
-                                        )
-                                    ),
-                                ),
-                                and_(
-                                    RuntimeResultIntegrationPage.status == "processing",
-                                    exists(
-                                        select(RuntimeNotificationOutbox.id).where(
-                                            RuntimeNotificationOutbox.integration_page_id
-                                            == RuntimeResultIntegrationPage.id,
-                                            RuntimeNotificationOutbox.status.in_(("pending", "processing")),
-                                            delivery_ready,
-                                        )
-                                    ),
-                                    or_(
-                                        RuntimeResultIntegrationPage.lease_expires_at.is_(None),
-                                        RuntimeResultIntegrationPage.lease_expires_at <= current,
-                                    ),
-                                ),
-                            )
-                        )
+                        notification_page_candidate_statement(now=current)
                         .order_by(
                             RuntimeResultIntegrationPage.created_at, RuntimeResultIntegrationPage.integration_epoch
                         )
@@ -1044,24 +1077,7 @@ class RuntimeNotificationOutboxService:
                 rows = list(
                     (
                         await db.execute(
-                            select(RuntimeNotificationOutbox)
-                            .where(
-                                RuntimeNotificationOutbox.integration_page_id.is_(None),
-                                delivery_ready,
-                                or_(
-                                    and_(
-                                        RuntimeNotificationOutbox.status == "pending",
-                                        RuntimeNotificationOutbox.available_at <= current,
-                                    ),
-                                    and_(
-                                        RuntimeNotificationOutbox.status == "processing",
-                                        or_(
-                                            RuntimeNotificationOutbox.lease_expires_at.is_(None),
-                                            RuntimeNotificationOutbox.lease_expires_at <= current,
-                                        ),
-                                    ),
-                                ),
-                            )
+                            notification_claim_candidate_statement(now=current)
                             .order_by(
                                 RuntimeNotificationOutbox.parent_session_id,
                                 RuntimeNotificationOutbox.mailbox_sequence,
@@ -1109,19 +1125,11 @@ class RuntimeNotificationOutboxService:
         """
 
         attempted_at = datetime.now(UTC)
-        retry_before = attempted_at - timedelta(seconds=COMPLETION_OUTBOX_RETRY_SECONDS)
         async with self._worker_session("reconcile_terminal_tasks") as db:
             tasks = list(
                 (
                     await db.execute(
-                        select(RuntimeTask)
-                        .where(
-                            text(COMPLETION_OUTBOX_PENDING_SQL),
-                            or_(
-                                RuntimeTask.completion_outbox_attempted_at.is_(None),
-                                RuntimeTask.completion_outbox_attempted_at <= retry_before,
-                            ),
-                        )
+                        completion_recovery_candidate_statement(now=attempted_at)
                         .order_by(
                             RuntimeTask.completion_outbox_attempted_at.is_not(None).asc(),
                             RuntimeTask.completion_outbox_attempted_at.asc(),

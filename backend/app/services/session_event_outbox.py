@@ -22,6 +22,15 @@ from app.models.session_v2 import SessionEventOutbox
 PublishCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+def session_event_claim_candidate_statement(*, now: datetime):
+    return select(SessionEventOutbox.id).where(
+        or_(
+            and_(SessionEventOutbox.status == "pending", SessionEventOutbox.available_at <= now),
+            and_(SessionEventOutbox.status == "publishing", SessionEventOutbox.claim_expires_at <= now),
+        )
+    )
+
+
 def _sha256(value: Any) -> str:
     encoded = json.dumps(
         value,
@@ -98,21 +107,7 @@ class SessionEventOutboxPublisher:
     ) -> list[ClaimedSessionEvent]:
         current = now or datetime.now(UTC)
         async with self._worker_session("claim") as db:
-            statement = (
-                select(SessionEventOutbox.id)
-                .where(
-                    or_(
-                        and_(
-                            SessionEventOutbox.status == "pending",
-                            SessionEventOutbox.available_at <= current,
-                        ),
-                        and_(
-                            SessionEventOutbox.status == "publishing",
-                            SessionEventOutbox.claim_expires_at <= current,
-                        ),
-                    )
-                )
-            )
+            statement = session_event_claim_candidate_statement(now=current)
             if tenant_id is not None:
                 statement = statement.where(SessionEventOutbox.tenant_id == tenant_id)
             rows = list(

@@ -360,6 +360,17 @@ class ChannelDeliveryOutboxService:
             async with enter_rls_bypass(db, reason=f"channel_delivery_outbox.{operation}") as bypass_db:
                 yield bypass_db
 
+    def claim_candidate_statement(self, *, now: datetime):
+        return select(ChannelDeliveryOutbox).where(
+            or_(
+                and_(ChannelDeliveryOutbox.status == "pending", ChannelDeliveryOutbox.available_at <= now),
+                and_(
+                    ChannelDeliveryOutbox.status == "processing",
+                    ChannelDeliveryOutbox.locked_at <= now - timedelta(seconds=self._lease_seconds),
+                ),
+            )
+        )
+
     async def claim_batch(
         self,
         *,
@@ -368,24 +379,11 @@ class ChannelDeliveryOutboxService:
         limit: int = 20,
     ) -> list[ClaimedChannelDelivery]:
         current = now or datetime.now(UTC)
-        expired = current - timedelta(seconds=self._lease_seconds)
         async with self._worker_session("claim") as db:
             rows = list(
                 (
                     await db.execute(
-                        select(ChannelDeliveryOutbox)
-                        .where(
-                            or_(
-                                and_(
-                                    ChannelDeliveryOutbox.status == "pending",
-                                    ChannelDeliveryOutbox.available_at <= current,
-                                ),
-                                and_(
-                                    ChannelDeliveryOutbox.status == "processing",
-                                    ChannelDeliveryOutbox.locked_at <= expired,
-                                ),
-                            )
-                        )
+                        self.claim_candidate_statement(now=current)
                         .order_by(ChannelDeliveryOutbox.available_at, ChannelDeliveryOutbox.created_at)
                         .limit(max(1, int(limit)))
                         .with_for_update(skip_locked=True)

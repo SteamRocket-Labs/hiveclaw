@@ -31,6 +31,7 @@ from app.services.direct_invocation_terminal_boundary_processor import (
     DirectInvocationTerminalBoundaryProcessor,
 )
 from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+from app.services.session_control_input import CANCEL_CONTROL_STALE_AFTER
 from app.services.runtime_task_fence import run_claimed_runtime_task
 from app.services.web_chat_runtime import (
     EXECUTABLE_CHAT_TASK_TYPES,
@@ -327,15 +328,13 @@ async def drain_runtime_notification_outbox_once(*, worker_id: str) -> dict[str,
     return counts
 
 
-async def _discover_terminal_boundary_tenants(
+def _terminal_boundary_discovery_statement(
     *,
-    worker_id: str,
     task_types: tuple[str, ...],
     limit: int = 20,
     now: datetime | None = None,
-    session_factory=async_session,
-) -> list[UUID]:
-    """Use one bounded bypass read to find tenant-scoped terminal work."""
+):
+    """Keep idle discovery and tenant routing on the same candidate predicate."""
 
     current = now or _utcnow()
     recent_after = current - TERMINAL_BOUNDARY_RECENT_WINDOW
@@ -349,57 +348,89 @@ async def _discover_terminal_boundary_tenants(
         select(
             queue.tenant_id.label("tenant_id"),
             func.coalesce(ready_at, queue.created_at).label("ready_at"),
-        )
-        .where(
+        ).where(
             queue.task_type == route_type,
             queue.status == literal(status, type_=queue.status.type, literal_execute=True),
             *(
-                (ready_at >= recent_after, ready_at <= current) if task_type == "trigger"
-                else (or_(ready_at.is_(None), ready_at <= current),) if status == "processing"
+                (ready_at >= recent_after, ready_at <= current)
+                if task_type == "trigger"
+                else (or_(ready_at.is_(None), ready_at <= current),)
+                if status == "processing"
                 else (ready_at <= current,)
             ),
             # Route through active lanes first. Recheck the canonical task per
             # candidate without materializing every historical task identity.
-            exists(select(RuntimeTask.id).where(
-                RuntimeTask.id == queue.runtime_task_id,
-                RuntimeTask.tenant_id == queue.tenant_id,
-                RuntimeTask.task_type.in_(route_types),
-            ).correlate(RuntimeTerminalBoundaryOutbox).offset(0)),
+            exists(
+                select(RuntimeTask.id)
+                .where(
+                    RuntimeTask.id == queue.runtime_task_id,
+                    RuntimeTask.tenant_id == queue.tenant_id,
+                    RuntimeTask.task_type.in_(route_types),
+                )
+                .correlate(RuntimeTerminalBoundaryOutbox)
+                .offset(0)
+            ),
         )
         for task_type, route_type in zip(task_types, route_types, strict=True)
         for status, ready_at in (("pending", queue.available_at), ("processing", queue.lease_expires_at))
     ]
-    reconcile_candidates = [select(
-        RuntimeTask.tenant_id.label("tenant_id"),
-        func.coalesce(
-            RuntimeTask.terminal_boundary_reconcile_attempted_at,
-            RuntimeTask.created_at,
-        ).label("ready_at"),
-    ).where(
-        RuntimeTask.task_type == route_type,
-        RuntimeTask.terminal_boundary_generation.is_not(None),
-        RuntimeTask.terminal_boundary_enqueued_at.is_(None),
-        RuntimeTask.status.in_(TERMINAL_BOUNDARY_TERMINAL_STATUSES),
-        *((RuntimeTask.created_at >= recent_after, RuntimeTask.created_at <= current)
-            if task_type == "trigger" else ()),
-    ).where(
-        RuntimeTask.terminal_boundary_reconcile_attempted_at.is_(None) if not retry else and_(
-            *((RuntimeTask.terminal_boundary_reconcile_attempted_at >= recent_after,)
-                if task_type == "trigger" else ()),
-            RuntimeTask.terminal_boundary_reconcile_attempted_at <= retry_before,
-        ),
-    ) for task_type, route_type in zip(task_types, route_types, strict=True) for retry in (False, True)]
+    reconcile_candidates = [
+        select(
+            RuntimeTask.tenant_id.label("tenant_id"),
+            func.coalesce(
+                RuntimeTask.terminal_boundary_reconcile_attempted_at,
+                RuntimeTask.created_at,
+            ).label("ready_at"),
+        )
+        .where(
+            RuntimeTask.task_type == route_type,
+            RuntimeTask.terminal_boundary_generation.is_not(None),
+            RuntimeTask.terminal_boundary_enqueued_at.is_(None),
+            RuntimeTask.status.in_(TERMINAL_BOUNDARY_TERMINAL_STATUSES),
+            *(
+                (RuntimeTask.created_at >= recent_after, RuntimeTask.created_at <= current)
+                if task_type == "trigger"
+                else ()
+            ),
+        )
+        .where(
+            RuntimeTask.terminal_boundary_reconcile_attempted_at.is_(None)
+            if not retry
+            else and_(
+                *(
+                    (RuntimeTask.terminal_boundary_reconcile_attempted_at >= recent_after,)
+                    if task_type == "trigger"
+                    else ()
+                ),
+                RuntimeTask.terminal_boundary_reconcile_attempted_at <= retry_before,
+            ),
+        )
+        for task_type, route_type in zip(task_types, route_types, strict=True)
+        for retry in (False, True)
+    ]
     # NULL-first and retry ranges match the second key of terminal_discovery.
     candidates = union_all(
         *outbox_candidates,
         *reconcile_candidates,
     ).subquery()
-    statement = (
+    return (
         select(candidates.c.tenant_id)
         .group_by(candidates.c.tenant_id)
         .order_by(func.min(candidates.c.ready_at), candidates.c.tenant_id)
         .limit(max(1, int(limit)))
     )
+
+
+async def _discover_terminal_boundary_tenants(
+    *,
+    worker_id: str,
+    task_types: tuple[str, ...],
+    limit: int = 20,
+    now: datetime | None = None,
+    session_factory=async_session,
+) -> list[UUID]:
+    """Use one bounded bypass read to find tenant-scoped terminal work."""
+    statement = _terminal_boundary_discovery_statement(task_types=task_types, limit=limit, now=now)
     async with (
         session_factory() as db,
         enter_rls_bypass(
@@ -463,8 +494,13 @@ async def drain_web_terminal_boundary_outbox_once(
         )
         return reconciled, drained
 
-    results = await asyncio.gather(*(asyncio.create_task(_drain_tenant(tenant_id),
-        name="runtime-terminal-boundary-web-tenant") for tenant_id in tenant_ids), return_exceptions=True)
+    results = await asyncio.gather(
+        *(
+            asyncio.create_task(_drain_tenant(tenant_id), name="runtime-terminal-boundary-web-tenant")
+            for tenant_id in tenant_ids
+        ),
+        return_exceptions=True,
+    )
     for tenant_id, result in zip(tenant_ids, results, strict=True):
         if isinstance(result, BaseException):
             counts["failed"] += 1
@@ -541,8 +577,13 @@ async def drain_direct_terminal_boundary_outbox_once(
         return reconciled, drained
 
     lane = f"direct-{task_type}" if task_type is not None else "direct"
-    results = await asyncio.gather(*(asyncio.create_task(_drain_tenant(tenant_id),
-        name=f"runtime-terminal-boundary-{lane}-tenant") for tenant_id in tenant_ids), return_exceptions=True)
+    results = await asyncio.gather(
+        *(
+            asyncio.create_task(_drain_tenant(tenant_id), name=f"runtime-terminal-boundary-{lane}-tenant")
+            for tenant_id in tenant_ids
+        ),
+        return_exceptions=True,
+    )
     for tenant_id, result in zip(tenant_ids, results, strict=True):
         if isinstance(result, BaseException):
             counts["failed"] += 1
@@ -633,7 +674,7 @@ async def recover_session_control_inputs_once(
     *,
     worker_id: str,
     signal_callback=None,
-    stale_after: timedelta = timedelta(seconds=5),
+    stale_after: timedelta = CANCEL_CONTROL_STALE_AFTER,
     tenant_id: UUID | None = None,
     session_factory=async_session,
 ) -> dict[str, int]:
@@ -831,6 +872,15 @@ async def recover_session_terminal_outcomes_once(
     }
 
 
+def turn_replacement_candidate_statement(*, now: datetime):
+    from app.models.session_v2 import SessionTurnReplacement
+
+    return select(SessionTurnReplacement).where(
+        SessionTurnReplacement.state.notin_(("completed", "failed", "needs_reconciliation")),
+        (SessionTurnReplacement.lease_expires_at.is_(None) | (SessionTurnReplacement.lease_expires_at <= now)),
+    )
+
+
 async def recover_turn_replacement_sagas_once(
     *,
     worker_id: str,
@@ -847,11 +897,8 @@ async def recover_turn_replacement_sagas_once(
 
     now = _utcnow()
     locator_statement = (
-        select(SessionTurnReplacement.tenant_id, SessionTurnReplacement.id)
-        .where(
-            SessionTurnReplacement.state.notin_(("completed", "failed", "needs_reconciliation")),
-            (SessionTurnReplacement.lease_expires_at.is_(None) | (SessionTurnReplacement.lease_expires_at <= now)),
-        )
+        turn_replacement_candidate_statement(now=now)
+        .with_only_columns(SessionTurnReplacement.tenant_id, SessionTurnReplacement.id)
         .order_by(SessionTurnReplacement.id)
         .limit(max(1, int(limit)))
     )
@@ -1290,6 +1337,66 @@ async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
             )
 
 
+def _runtime_work_candidates(*, now: datetime):
+    """The consumers' own predicates; one result column per polling lane."""
+    from app.models.session_v2 import SessionInputAdmission
+    from app.services.budget_transition_outbox import budget_event_recovery_candidate_statement
+    from app.services.runtime_notification_outbox import (
+        completion_recovery_candidate_statement,
+        notification_claim_candidate_statement,
+        notification_page_candidate_statement,
+    )
+    from app.services.session_control_input import stale_cancel_control_candidate_statement
+    from app.services.session_event_outbox import session_event_claim_candidate_statement
+    from app.services.session_input_dispatch import (
+        _admitted_input_candidate_statement,
+        _terminal_steer_candidate_statement,
+    )
+
+    candidates = {
+        "session-events": session_event_claim_candidate_statement(now=now).exists(),
+        "channel-delivery": ChannelDeliveryOutboxService().claim_candidate_statement(now=now).exists(),
+        "budget-transition": or_(
+            budget_event_recovery_candidate_statement().exists(),
+            BudgetTransitionOutboxService().claim_candidate_statement(now=now).exists(),
+        ),
+        "runtime-notification": or_(
+            completion_recovery_candidate_statement(now=now).exists(),
+            notification_page_candidate_statement(now=now).exists(),
+            notification_claim_candidate_statement(now=now).exists(),
+        ),
+        "turn-replacement": turn_replacement_candidate_statement(now=now).exists(),
+        "input-dispatch": _admitted_input_candidate_statement(
+            SessionInputAdmission.id, now=now, tenant_id=None, limit=1
+        ).exists(),
+        "terminal-input": _terminal_steer_candidate_statement(
+            SessionInputAdmission.id, tenant_id=None, limit=1
+        ).exists(),
+        "control-input": stale_cancel_control_candidate_statement(now=now).exists(),
+    }
+    # Keep expensive terminal discovery last, with each lane's exact route.
+    for lane, task_types in (
+        ("web", EXECUTABLE_CHAT_TASK_TYPES),
+        *((f"direct-{kind}", (kind,)) for kind in DIRECT_INVOCATION_TASK_TYPES),
+    ):
+        candidates[lane] = _terminal_boundary_discovery_statement(task_types=task_types, now=now, limit=1).exists()
+    return candidates
+
+
+async def _has_due_runtime_work(*, worker_id: str) -> dict[str, bool]:
+    candidates = _runtime_work_candidates(now=_utcnow())
+    async with (
+        async_session() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker discover due consumer work",
+            actor_id=worker_id,
+        ),
+    ):
+        row = (await db.execute(select(*(leg.label(lane) for lane, leg in candidates.items())))).mappings().one()
+        return dict(row)
+
+
 def _terminal_boundary_lanes(worker_id: str):
     poll = max(0.05, float(_settings().RUNTIME_TASK_CLAIM_POLL_SECONDS))
     return {
@@ -1309,12 +1416,17 @@ def _terminal_boundary_lanes(worker_id: str):
         "hr-draft": (lambda: reconcile_hr_creation_drafts_once(), 20.0),
         "business-task": (lambda: reconcile_stale_business_tasks_once(), 20.0),
         "team-fanout": (lambda: recover_team_fanout_admissions_once(worker_id=worker_id), 20.0),
-        **{f"direct-{kind}": (lambda kind=kind: drain_direct_terminal_boundary_outbox_once(
-            worker_id=worker_id, task_type=kind), poll) for kind in DIRECT_INVOCATION_TASK_TYPES},
+        **{
+            f"direct-{kind}": (
+                lambda kind=kind: drain_direct_terminal_boundary_outbox_once(worker_id=worker_id, task_type=kind),
+                poll,
+            )
+            for kind in DIRECT_INVOCATION_TASK_TYPES
+        },
     }
 
 
-async def _terminal_boundary_lane_loop(*, worker_id: str, lane: str) -> None:
+async def _terminal_boundary_lane_loop(*, worker_id: str, lane: str, once: bool = False) -> None:
     drain, interval = _terminal_boundary_lanes(worker_id)[lane]
     state = _STATE.setdefault("lanes", {}).setdefault(lane, {"last_success_at": None, "last_error": None})
     while True:
@@ -1331,24 +1443,84 @@ async def _terminal_boundary_lane_loop(*, worker_id: str, lane: str) -> None:
             state["last_error"] = _STATE["last_error"] = f"{lane}_terminal_boundary:unexpected_exit"
             state.update(unexpected_exit=True, error_type=type(exc).__name__)
             logger.exception("[RuntimeTaskWorker] {} lane ended unexpectedly", lane)
+        if once:
+            return
         await asyncio.sleep(interval)
 
 
 async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -> None:
-    """Run user-facing consumers promptly and crash recovery independently."""
+    """Gate polling lanes independently; the claim loop owns its own wakeup."""
     exact_worker_id = worker_id or _worker_id()
-    lane_tasks = [asyncio.create_task(
-        _terminal_boundary_lane_loop(worker_id=exact_worker_id, lane=lane),
-        name=f"runtime-terminal-boundary-{lane}",
-    ) for lane in _terminal_boundary_lanes(exact_worker_id)]
+    lanes = _terminal_boundary_lanes(exact_worker_id)
+    gated = _runtime_work_candidates(now=_utcnow())
+    consumers = {lane: interval for lane, (_drain, interval) in lanes.items() if lane in gated}
+    tasks = [
+        asyncio.create_task(
+            _terminal_boundary_lane_loop(worker_id=exact_worker_id, lane=lane), name=f"runtime-terminal-boundary-{lane}"
+        )
+        for lane in lanes
+        if lane not in consumers
+    ]
+    running: dict[str, asyncio.Task] = {}
+    next_at = dict.fromkeys(consumers, 0.0)
+    probe = None
+    probe_at = 0.0
+    due = dict.fromkeys(consumers, False)
+    loop = asyncio.get_running_loop()
+
+    async def tick(lane):
+        try:
+            await _terminal_boundary_lane_loop(worker_id=exact_worker_id, lane=lane, once=True)
+        finally:
+            # Preserve the old sleep-after-drain cadence, including failures.
+            next_at[lane] = loop.time() + consumers[lane]
+
     _STATE["terminal_boundary_worker_running"] = True
     try:
-        await asyncio.gather(*lane_tasks, return_exceptions=True)
+        if not consumers:
+            await asyncio.gather(*tasks)
+            return
+        poll = min(consumers.values())
+        while True:
+            now = loop.time()
+            if probe is not None:
+                if probe.done():
+                    try:
+                        result = probe.result()
+                        # Conservatively discard values observed after the read's deadline.
+                        due = result if now < probe_at else dict.fromkeys(consumers, True)
+                    except BaseException:
+                        if asyncio.current_task().cancelling():
+                            raise
+                        due = dict.fromkeys(consumers, True)
+                        logger.exception("[RuntimeTaskWorker] idle discovery failed; running existing consumers")
+                    probe = None
+                elif now >= probe_at:
+                    due = dict.fromkeys(consumers, True)
+            if probe is None and now >= probe_at:
+                probe_at = now + poll
+                probe = asyncio.create_task(_has_due_runtime_work(worker_id=exact_worker_id))
+            next_tick = probe_at if now < probe_at else now + poll
+            for lane in consumers:
+                if not due.get(lane, True) or (lane in running and not running[lane].done()):
+                    continue
+                if next_at[lane] > now:
+                    next_tick = min(next_tick, next_at[lane])
+                    continue
+                running[lane] = asyncio.create_task(tick(lane), name=f"runtime-terminal-boundary-{lane}")
+            # Start cached due work before waiting for a refresh. Lane deadlines
+            # neither start a probe nor wait for its result before dispatching.
+            timeout = max(0, next_tick - loop.time())
+            if probe is not None and now < probe_at:
+                await asyncio.wait({probe}, timeout=timeout)
+            else:
+                await asyncio.sleep(timeout)
     finally:
         _STATE["terminal_boundary_worker_running"] = False
-        for task in lane_tasks:
+        owned = [*tasks, *running.values(), *([probe] if probe is not None else [])]
+        for task in owned:
             task.cancel()
-        await asyncio.gather(*lane_tasks, return_exceptions=True)
+        await asyncio.gather(*owned, return_exceptions=True)
 
 
 async def start_runtime_task_worker_loop() -> None:
@@ -1403,17 +1575,37 @@ def _terminal_boundary_execution_snapshot() -> dict[str, Any]:
             seen.add(id(current))
             frame = current.cr_frame if isinstance(current, CoroutineType) else current.gi_frame
             if frame is not None:
-                frames.append({"module": frame.f_globals.get("__name__", ""),
-                    "function": frame.f_code.co_name, "line": frame.f_lineno})
+                frames.append(
+                    {
+                        "module": frame.f_globals.get("__name__", ""),
+                        "function": frame.f_code.co_name,
+                        "line": frame.f_lineno,
+                    }
+                )
             current = current.cr_await if isinstance(current, CoroutineType) else current.gi_yieldfrom
-        observations.append({"name": task.get_name(), "frames": frames, "cycle_detected": cycle,
-            "terminal_awaiter_type": f"{type(current).__module__}.{type(current).__name__}" if current is not None else None})
+        observations.append(
+            {
+                "name": task.get_name(),
+                "frames": frames,
+                "cycle_detected": cycle,
+                "terminal_awaiter_type": f"{type(current).__module__}.{type(current).__name__}"
+                if current is not None
+                else None,
+            }
+        )
     return {"status": "observed", "tasks": observations}
 
 
 def runtime_task_worker_snapshot() -> dict[str, Any]:
-    return {**_STATE, "lanes": {lane: {
-        "last_success_at": state.get("last_success_at"), "unexpected_exit": state.get("unexpected_exit", False),
-        "last_error": state.get("error_type"),
-    } for lane, state in _STATE.get("lanes", {}).items()},
-        "terminal_boundary_execution": _terminal_boundary_execution_snapshot()}
+    return {
+        **_STATE,
+        "lanes": {
+            lane: {
+                "last_success_at": state.get("last_success_at"),
+                "unexpected_exit": state.get("unexpected_exit", False),
+                "last_error": state.get("error_type"),
+            }
+            for lane, state in _STATE.get("lanes", {}).items()
+        },
+        "terminal_boundary_execution": _terminal_boundary_execution_snapshot(),
+    }

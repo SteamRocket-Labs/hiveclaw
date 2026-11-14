@@ -1730,6 +1730,14 @@ RLS_BYPASS_ALLOWLIST = (
         )
     ),
     _grant(
+        # A2q: one read-only result boolean per existing polling consumer.
+        # No identifiers, content, mutation or claim authority leave this scope.
+        "app/services/runtime_task_worker.py",
+        "_has_due_runtime_work",
+        "'runtime task worker discover due consumer work'",
+        ("select:*(leg.label(lane) for lane, leg in candidates.items())",),
+    ),
+    _grant(
         *(
             "app/services/runtime_task_worker.py",
             "recover_session_control_inputs_once",

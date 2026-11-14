@@ -9,24 +9,38 @@ import pytest
 from sqlalchemy import select
 
 from tests.integration import test_r23a_stop_ends_blocked_model_call as stops
-from tests.services.test_r23d_api_error_delivery import COMPLETED_EFFECT
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 t2_work = stops.t2_work
 MCP_SERVERS = [{"name": "synthetic-effect", "url": "http://127.0.0.1:1/mcp"}]
+COMPLETED_EFFECT = {
+    "type": "mcp_call",
+    "id": "synthetic-call",
+    "status": "completed",
+    "name": "write_record",
+    "output": "Synthetic record written",
+}
+PARTIAL_TEXT = {"type": "message", "content": [{"type": "output_text", "text": "Partial output"}]}
 
 
 @pytest.mark.parametrize(
-    "stopped,has_output",
-    [(True, False), (True, True), (False, True), (False, False)],
-    ids=["stopped_refusal", "stopped_after_effect", "running_after_effect", "running_refusal"],
+    "stopped,output,needs_reconciliation",
+    [
+        (True, [], False),
+        (True, [COMPLETED_EFFECT], True),
+        (False, [COMPLETED_EFFECT], True),
+        (False, [], False),
+        (False, [PARTIAL_TEXT], False),
+    ],
+    ids=["stopped_refusal", "stopped_after_effect", "running_after_effect", "running_refusal", "running_partial_text"],
 )
 async def test_provider_error_uses_output_before_stop_or_fallback(
     t2_work,
     owner_sessionmaker,
     monkeypatch,
     stopped,
-    has_output,
+    output,
+    needs_reconciliation,
 ):
     import app.runtime.invoker as invoker
     from app.models.agent import Agent
@@ -70,7 +84,7 @@ async def test_provider_error_uses_output_before_stop_or_fallback(
                 json={
                     "status": "failed",
                     "error": {"message": "Synthetic provider failure"},
-                    "output": [COMPLETED_EFFECT] if has_output else [],
+                    "output": output,
                 },
             )
         return httpx.Response(
@@ -112,16 +126,11 @@ async def test_provider_error_uses_output_before_stop_or_fallback(
         async with owner_sessionmaker() as db:
             run = await db.get(RuntimeTask, seed["run_id"])
             rows = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])))
-            print(
-                f"R23D stopped={stopped} output={has_output} requests={len(requests)} "
-                f"models={[item['model'] for item in requests]} run={run.status} "
-                f"seals={[(row.state, row.seal_json.get('error_class'), row.seal_json.get('delivery_state')) for row in rows]}"
-            )
             assert len(rows) == 1
             row = rows[0]
             assert row.model_request_snapshot_json["wire_request"]["reasoning"]["mcp_servers"] == MCP_SERVERS
             assert requests[0]["mcp_servers"] == MCP_SERVERS
-            if has_output:
+            if needs_reconciliation:
                 assert len(requests) == 1, "An effectful unknown delivery must never retry or call the fallback"
                 assert row.state == run.status == "needs_reconciliation"
                 assert row.reconciliation_owner == "session_model_round:ambiguous_failure"

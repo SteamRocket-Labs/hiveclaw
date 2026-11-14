@@ -1,4 +1,6 @@
-"""An API error with provider output cannot prove rejection before execution."""
+"""Only provider execution or unrecognised output makes an API error unknown."""
+
+import json
 
 import httpx
 import pytest
@@ -22,16 +24,54 @@ COMPLETED_EFFECT = {
 }
 
 
-def _error_payload(client_type, output):
+def _error_payload(client_type, kind):
     data = {"error": {"message": "Synthetic provider failure"}}
     if client_type is OpenAICompatibleClient:
-        data["choices"] = [{"message": {"content": output, "tool_calls": []}}]
+        message = {
+            "completed_effect": {"tool_calls": [COMPLETED_EFFECT]},
+            "unknown_type": {"tool_calls": [{"type": "future_tool"}]},
+            "malformed_entry": "Not a message object",
+            "partial_text": {"content": "Partial output"},
+            "function_call": {
+                "tool_calls": [{"type": "function", "function": {"name": "local_function", "arguments": "{}"}}]
+            },
+            "reasoning": {"reasoning_content": "Synthetic reasoning"},
+            "empty": {},
+        }[kind]
+        data["choices"] = [] if kind == "empty" else [{"message": message}]
     elif client_type is OpenAIResponsesClient:
-        data.update(status="failed", output=output)
+        item = {
+            "completed_effect": COMPLETED_EFFECT,
+            "unknown_type": {"type": "future_item"},
+            "malformed_entry": None,
+            "partial_text": {"type": "message", "content": [{"type": "output_text", "text": "Partial output"}]},
+            "function_call": {"type": "function_call", "name": "local_function", "arguments": "{}"},
+            "reasoning": {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Synthetic reasoning"}]},
+            "empty": {},
+        }[kind]
+        data.update(status="failed", output=[] if kind == "empty" else [item])
     elif client_type is GeminiClient:
-        data["candidates"] = [{"content": {"parts": output}}]
+        part = {
+            "completed_effect": {"codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "Synthetic result"}},
+            "unknown_type": {"futurePart": "Synthetic output"},
+            "malformed_entry": None,
+            "partial_text": {"text": "Partial output"},
+            "function_call": {"functionCall": {"name": "local_function", "args": {}}},
+            "reasoning": {"text": "Synthetic reasoning", "thought": True},
+            "empty": {},
+        }[kind]
+        data["candidates"] = [] if kind == "empty" else [{"content": {"parts": [part]}}]
     else:
-        data.update(type="error", content=output)
+        block = {
+            "completed_effect": {"type": "server_tool_use", "name": "web_search", "status": "completed"},
+            "unknown_type": {"type": "future_block"},
+            "malformed_entry": None,
+            "partial_text": {"type": "text", "text": "Partial output"},
+            "function_call": {"type": "tool_use", "name": "local_function", "input": {}},
+            "reasoning": {"type": "thinking", "thinking": "Synthetic reasoning"},
+            "empty": {},
+        }[kind]
+        data.update(type="error", content=[] if kind == "empty" else [block])
     return data
 
 
@@ -40,7 +80,7 @@ async def _observe_error(client_type, payload, *, status_code=200):
 
     def respond(request):
         requests.append(request)
-        return httpx.Response(status_code, json=payload)
+        return httpx.Response(status_code) if payload is None else httpx.Response(status_code, json=payload)
 
     client = client_type(api_key="synthetic-key", base_url="http://127.0.0.1/native", model="synthetic")
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
@@ -55,26 +95,32 @@ async def _observe_error(client_type, payload, *, status_code=200):
 
 @pytest.mark.parametrize("client_type", CLIENTS, ids=lambda client: client.__name__)
 @pytest.mark.parametrize(
-    "output",
-    [[COMPLETED_EFFECT], [{"type": "text", "text": "Partial output"}]],
-    ids=["completed_effect", "partial_text"],
+    "kind,expected",
+    [
+        ("completed_effect", "unknown"),
+        ("unknown_type", "unknown"),
+        ("malformed_entry", "unknown"),
+        ("partial_text", "rejected"),
+        ("function_call", "rejected"),
+        ("reasoning", "rejected"),
+    ],
 )
-async def test_api_error_with_output_is_unknown(client_type, output):
-    # Opaque items exercise each native output container without a tool-type allowlist.
-    error = await _observe_error(client_type, _error_payload(client_type, output))
-    assert error.delivery_state == "unknown"
+async def test_api_error_delivery_follows_protocol_output(client_type, kind, expected):
+    # Controller decision 1: partial text, reasoning and client calls retain safe fallback.
+    error = await _observe_error(client_type, _error_payload(client_type, kind))
+    assert error.delivery_state == expected
 
 
 @pytest.mark.parametrize("client_type", CLIENTS, ids=lambda client: client.__name__)
 async def test_api_error_without_output_stays_rejected(client_type):
-    error = await _observe_error(client_type, _error_payload(client_type, []))
+    error = await _observe_error(client_type, _error_payload(client_type, "empty"))
     assert error.delivery_state == "rejected"
 
 
 @pytest.mark.parametrize("client_type", CLIENTS, ids=lambda client: client.__name__)
 @pytest.mark.parametrize("status_code,expected", [(400, "rejected"), (503, "unknown")])
 async def test_http_status_still_owns_delivery_classification(client_type, status_code, expected):
-    error = await _observe_error(client_type, _error_payload(client_type, [COMPLETED_EFFECT]), status_code=status_code)
+    error = await _observe_error(client_type, None, status_code=status_code)
     assert error.delivery_state == expected
     assert error.http_status == status_code
 
@@ -87,15 +133,114 @@ async def test_responses_non_success_status_preserves_output_uncertainty(status,
 
 
 @pytest.mark.parametrize(
-    "client_type,payload",
+    "client_type,payload,expected",
     [
         (
             OpenAICompatibleClient,
             {"error": "Synthetic failure", "choices": [{"message": {"tool_calls": [COMPLETED_EFFECT]}}]},
+            "unknown",
         ),
-        (OpenAIResponsesClient, {"error": "Synthetic failure", "output_text": "Partial answer"}),
+        # Controller decision 1: output_text is ordinary text and must not disable fallback.
+        (OpenAIResponsesClient, {"error": "Synthetic failure", "output_text": "Partial answer"}, "rejected"),
     ],
 )
-async def test_api_error_with_other_supported_output_is_unknown(client_type, payload):
+async def test_api_error_with_other_supported_output(client_type, payload, expected):
+    error = await _observe_error(client_type, payload)
+    assert error.delivery_state == expected
+
+
+@pytest.mark.parametrize(
+    "item_type",
+    [
+        "mcp_call",
+        "mcp_list_tools",
+        "web_search_call",
+        "file_search_call",
+        "code_interpreter_call",
+        "image_generation_call",
+    ],
+)
+async def test_responses_provider_executed_items_are_unknown(item_type):
+    error = await _observe_error(OpenAIResponsesClient, {"error": "Synthetic failure", "output": [{"type": item_type}]})
+    assert error.delivery_state == "unknown"
+
+
+@pytest.mark.parametrize(
+    "client_type,payload",
+    [
+        (OpenAICompatibleClient, {"error": "Synthetic failure", "choices": [None]}),
+        (OpenAICompatibleClient, {"error": "Synthetic failure", "choices": [{"message": {"tool_calls": [None]}}]}),
+        (
+            OpenAICompatibleClient,
+            {
+                "error": "Synthetic failure",
+                "choices": [{"message": {"tool_calls": [{"type": "function", "function": "Not a function object"}]}}],
+            },
+        ),
+        (OpenAIResponsesClient, {"error": "Synthetic failure", "output": [{"type": []}]}),
+        (OpenAIResponsesClient, {"error": "Synthetic failure", "output": [{"type": "message", "content": [None]}]}),
+        (OpenAIResponsesClient, {"error": "Synthetic failure", "output_text": {"unexpected": "object"}}),
+        (GeminiClient, {"error": "Synthetic failure", "candidates": [None]}),
+        (GeminiClient, {"error": "Synthetic failure", "candidates": [{"content": [{"text": "Partial output"}]}]}),
+        (GeminiClient, {"error": "Synthetic failure", "candidates": [{"content": {"parts": [{"text": {}}]}}]}),
+        (AnthropicClient, {"type": "error", "error": "Synthetic failure", "content": [{"type": []}]}),
+        (AnthropicClient, {"type": "error", "error": "Synthetic failure", "content": [{"type": "text", "text": {}}]}),
+    ],
+)
+async def test_malformed_api_error_output_remains_an_llm_error(client_type, payload):
     error = await _observe_error(client_type, payload)
     assert error.delivery_state == "unknown"
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        {"groundingMetadata": {"webSearchQueries": ["synthetic"]}, "content": {"parts": []}},
+        {"content": {"parts": [{"executableCode": {"language": "PYTHON", "code": "print(1)"}}]}},
+    ],
+)
+async def test_gemini_provider_execution_without_text_is_unknown(candidate):
+    error = await _observe_error(GeminiClient, {"error": "Synthetic failure", "candidates": [candidate]})
+    assert error.delivery_state == "unknown"
+
+
+@pytest.mark.parametrize("block_type", ["mcp_tool_use", "web_search_tool_result", "future_tool_result"])
+async def test_anthropic_provider_tool_blocks_are_unknown(block_type):
+    error = await _observe_error(
+        AnthropicClient, {"type": "error", "error": "Synthetic failure", "content": [{"type": block_type}]}
+    )
+    assert error.delivery_state == "unknown"
+
+
+async def test_anthropic_redacted_thinking_is_not_provider_execution():
+    error = await _observe_error(
+        AnthropicClient,
+        {
+            "type": "error",
+            "error": "Synthetic failure",
+            "content": [{"type": "redacted_thinking", "data": "synthetic-redacted-data"}],
+        },
+    )
+    assert error.delivery_state == "rejected"
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["complete", "stream"])
+async def test_compatible_success_with_null_error_returns_content(stream):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if stream:
+            payload = {"error": None, "choices": [{"delta": {"content": "Synthetic success"}}]}
+            return httpx.Response(200, text="data: " + json.dumps(payload) + "\n\ndata: [DONE]\n\n")
+        return httpx.Response(200, json={"error": None, "choices": [{"message": {"content": "Synthetic success"}}]})
+
+    client = OpenAICompatibleClient(api_key="synthetic-key", base_url="http://127.0.0.1/v1", model="synthetic")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        method = client.stream if stream else client.complete
+        response = await method([LLMMessage(role="user", content="Synthetic task")], _http_max_attempts=1)
+        assert response.content == "Synthetic success"
+        assert len(requests) == 1
+    finally:
+        await client.close()

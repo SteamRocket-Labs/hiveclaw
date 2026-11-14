@@ -447,6 +447,89 @@ def delivery_state_from_http_status(status_code: int) -> Literal["rejected", "un
     return "rejected" if int(status_code) in _AUTHORITATIVE_PROVIDER_REJECTION_STATUSES else "unknown"
 
 
+def _api_error_delivery_state(
+    data: dict[str, Any], protocol: Literal["openai", "responses", "gemini", "anthropic"]
+) -> Literal["rejected", "unknown"]:
+    """Allow replay only for recognised text, reasoning and client-side calls."""
+
+    def known_items(items: Any, kinds: set[str]) -> bool:
+        return items is None or (
+            isinstance(items, list)
+            and all(
+                isinstance(item, dict) and isinstance(item.get("type"), str) and item["type"] in kinds for item in items
+            )
+        )
+
+    if protocol == "responses":
+        output = data.get("output")
+        if not known_items(output, {"message", "reasoning", "function_call"}):
+            return "unknown"
+        if data.get("output_text") is not None and not isinstance(data["output_text"], str):
+            return "unknown"
+        for item in output or []:
+            if item["type"] == "message":
+                content = item.get("content")
+                if not known_items(content, {"output_text", "text", "reasoning"}):
+                    return "unknown"
+                if any(
+                    not isinstance(block.get(key, ""), str) for block in content or [] for key in ("text", "summary")
+                ):
+                    return "unknown"
+            elif item["type"] == "function_call" and not isinstance(item.get("arguments", ""), (str, dict)):
+                return "unknown"
+    elif protocol == "openai":
+        choices = data.get("choices")
+        if choices is not None and not isinstance(choices, list):
+            return "unknown"
+        for choice in choices or []:
+            if not isinstance(choice, dict) or not isinstance(message := choice.get("message"), dict):
+                return "unknown"
+            if any(
+                value is not None and not isinstance(value, str)
+                for value in (message.get("content"), message.get("reasoning_content"))
+            ):
+                return "unknown"
+            calls = message.get("tool_calls")
+            if not known_items(calls, {"function"}) or any(
+                not isinstance(call.get("function"), dict) for call in calls or []
+            ):
+                return "unknown"
+    elif protocol == "gemini":
+        candidates = data.get("candidates")
+        if candidates is not None and not isinstance(candidates, list):
+            return "unknown"
+        part_types = {"text": str, "thought": bool, "functionCall": dict}
+        for candidate in candidates or []:
+            if not isinstance(candidate, dict) or "groundingMetadata" in candidate:
+                return "unknown"
+            content = candidate.get("content", {})
+            if not isinstance(content, dict):
+                return "unknown"
+            parts = content.get("parts")
+            if parts is not None and not isinstance(parts, list):
+                return "unknown"
+            for part in parts or []:
+                if (
+                    not isinstance(part, dict)
+                    or not part
+                    or any(
+                        key not in part_types or not isinstance(value, part_types[key]) for key, value in part.items()
+                    )
+                ):
+                    return "unknown"
+    else:
+        content = data.get("content")
+        if not known_items(content, {"text", "thinking", "redacted_thinking", "tool_use"}):
+            return "unknown"
+        for block in content or []:
+            text_key = {"text": "text", "thinking": "thinking", "redacted_thinking": "data"}.get(block["type"])
+            if text_key is not None and not isinstance(block.get(text_key, ""), str):
+                return "unknown"
+            if block["type"] == "tool_use" and not isinstance(block.get("input", {}), dict):
+                return "unknown"
+    return "rejected"
+
+
 def _is_retryable_http_status(status_code: int) -> bool:
     # Automatic transport retry is allowed only for an explicit rate-limit
     # rejection. Semantic 4xx repair belongs to the kernel/model path.
@@ -803,7 +886,7 @@ class OpenAICompatibleClient(LLMClient):
         except json.JSONDecodeError:
             return chunk, in_think, tag_buffer
 
-        if "error" in data:
+        if data.get("error"):
             raise LLMError(f"Stream error: {data['error']}")
 
         # Parse usage from stream (returned in the final chunk with include_usage)
@@ -912,13 +995,8 @@ class OpenAICompatibleClient(LLMClient):
 
         data = response.json()
 
-        if "error" in data:
-            # An API error may arrive after provider work; any output makes replay unsafe.
-            has_output = bool(data.get("output")) or any(
-                message.get("content") or message.get("tool_calls")
-                for message in (choice.get("message") or {} for choice in data.get("choices") or [])
-            )
-            raise LLMError(f"API error: {data['error']}", delivery_state="unknown" if has_output else "rejected")
+        if data.get("error"):
+            raise LLMError(f"API error: {data['error']}", delivery_state=_api_error_delivery_state(data, "openai"))
 
         choice = data.get("choices", [{}])[0]
         msg = choice.get("message", {})
@@ -1401,8 +1479,7 @@ class OpenAIResponsesClient(LLMClient):
                 api_error,
                 ctx,
             )
-            has_output = bool(data.get("output") or data.get("output_text"))
-            raise LLMError(api_error, delivery_state="unknown" if has_output else "rejected")
+            raise LLMError(api_error, delivery_state=_api_error_delivery_state(data, "responses"))
 
         return self._parse_response_data(data)
 
@@ -1843,10 +1920,7 @@ class GeminiClient(LLMClient):
 
         data = response.json()
         if isinstance(data, dict) and data.get("error"):
-            has_output = bool(data.get("output")) or any(
-                (candidate.get("content") or {}).get("parts") for candidate in data.get("candidates") or []
-            )
-            raise LLMError(f"API error: {data['error']}", delivery_state="unknown" if has_output else "rejected")
+            raise LLMError(f"API error: {data['error']}", delivery_state=_api_error_delivery_state(data, "gemini"))
 
         return self._parse_response_data(data)
 
@@ -2152,9 +2226,8 @@ class AnthropicClient(LLMClient):
 
         data = response.json()
         if data.get("type") == "error":
-            has_output = bool(data.get("output") or data.get("content"))
             raise LLMError(
-                f"API error: {data.get('error', {})}", delivery_state="unknown" if has_output else "rejected"
+                f"API error: {data.get('error', {})}", delivery_state=_api_error_delivery_state(data, "anthropic")
             )
 
         full_content = ""

@@ -1106,6 +1106,17 @@ async def _load_scoped_memory(agent_id, arguments, execution_context):
 async def search_memory(
     agent_id: uuid.UUID, arguments: dict, tenant_id: str | None = None, *, execution_context=None
 ) -> str:
+    from app.services.content_input_receipts import group_source_read
+
+    # Share retained evidence across this tool's independent authorizations.
+    # The outer frame holds no live checkpoint or successful-source decisions.
+    with group_source_read(source_catalog=True):
+        return await _search_memory(agent_id, arguments, tenant_id, execution_context=execution_context)
+
+
+async def _search_memory(
+    agent_id: uuid.UUID, arguments: dict, tenant_id: str | None = None, *, execution_context=None
+) -> str:
     import json
     from pathlib import Path
 

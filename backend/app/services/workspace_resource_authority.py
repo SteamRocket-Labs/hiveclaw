@@ -880,8 +880,16 @@ async def _canonical_root_session(
     key = ("workspace_root", agent_id, user.id, resource_tenant_id, session_id)
     if rows is not None and key in rows:
         return rows[key]
+    from app.services.content_input_receipts import checkpoint_rows
+    from app.services.source_read_queries import fact_columns
+
+    vector = await checkpoint_rows(db, "workspace_root_session", select(ChatSession.id, fact_columns(ChatSession,
+        "id tenant_id agent_id user_id peer_agent_id audience_kind external_principal_id source_channel "
+        "group_installation_ref group_subject_id session_kind runtime_source runtime_task_id root_session_id")
+    ).where(ChatSession.id == session_id), lambda row: row[0],
+        binding=(session_id, user.id, resource_tenant_id), entities={1: ChatSession})
     session = (
-        rows[(ChatSession, session_id)]
+        vector.get(session_id, (None, None))[1] if vector is not None else rows[(ChatSession, session_id)]
         if rows is not None and (ChatSession, session_id) in rows
         else (
             await db.execute(
@@ -899,8 +907,7 @@ async def _canonical_root_session(
         ).scalar_one_or_none()
     )
     if (
-        rows is not None
-        and (ChatSession, session_id) in rows
+        (vector is not None or rows is not None and (ChatSession, session_id) in rows)
         and session is not None
         and session.agent_id != agent_id
         and not (

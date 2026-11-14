@@ -61,13 +61,16 @@ def is_machine_runtime_actor(actor):
     return isinstance(actor, MachineRuntimeActor)
 
 
-async def machine_task_actor(db, *, tenant_id, agent_id, runtime_task_id, session_id, user_id, scope='agent.execute'):
+async def machine_task_actor(db, *, tenant_id, agent_id, runtime_task_id, session_id, user_id, scope='agent.execute', task_facts=None):
     """Return None for a nonmachine run; never reinterpret a machine as a User."""
     if not runtime_task_id:
         return None
-    from app.services.content_input_receipts import _input_row
+    from app.services.content_input_receipts import _input_row, machine_source_tasks
 
-    task = await _input_row(db, RuntimeTask, uuid.UUID(str(runtime_task_id)))
+    identity = uuid.UUID(str(runtime_task_id))
+    vector = await machine_source_tasks(db, identity) if task_facts is None else None
+    task = task_facts[0] if task_facts is not None else (
+        vector[identity][1] if vector is not None and identity in vector else await _input_row(db, RuntimeTask, identity))
     if task is None or task.machine_credential_id is None:
         return None
     if (str(task.tenant_id) != str(tenant_id) or task.parent_agent_id != agent_id or user_id is not None
@@ -79,7 +82,7 @@ async def machine_task_actor(db, *, tenant_id, agent_id, runtime_task_id, sessio
     return await load_machine_runtime_actor(db, task=task, session=session, scope=scope)
 
 
-async def machine_request_actor(db, tenant_id, request):
+async def machine_request_actor(db, tenant_id, request, *, task_facts=None):
     context = getattr(request, 'context', None) or request
     session = getattr(context, 'session_context', None)
     metadata = getattr(session, 'metadata', None) or {}
@@ -87,7 +90,7 @@ async def machine_request_actor(db, tenant_id, request):
         runtime_task_id=getattr(context, 'runtime_task_id', None) or metadata.get('runtime_task_id') or metadata.get('task_id'),
         session_id=getattr(context, 'session_id', None) or getattr(session, 'session_id', None),
         user_id=getattr(context, 'user_id', getattr(context, 'requester_user_id', None)),
-        scope='task.read' if isinstance(request, MachineArtifactReader) else 'agent.execute')
+        scope='task.read' if isinstance(request, MachineArtifactReader) else 'agent.execute', task_facts=task_facts)
 
 
 async def revalidate_machine_tool_context(db, context):

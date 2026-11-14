@@ -76,6 +76,36 @@ async def validate_reference(db, tenant_id, dependency, *, user=None, runtime_re
         raise ContentInputReceiptError("content_source_unavailable", "The memory index observation is unavailable.", 503) from exc
     from app.services.content_input_receipts import _batch_browser_point
 
+    runtime_actor = await _runtime_input_actor(db, tenant_id, runtime_request) if runtime_request is not None else None
+    requester = runtime_actor[1] if runtime_actor is not None else user
+    current_session = uuid.UUID(runtime_actor[0].session_id) if runtime_actor is not None and getattr(requester, "id", None) is not None else None
+    vector = await _reference_checkpoint_facts(db, tenant_id, requester, current_session)
+    if (vector is not None and source_id in vector and (runtime_actor is not None or (
+        vector[source_id][5] is not None and vector[source_id][5].role != "platform_admin"))):
+        from app.core.permissions import agent_access_from_facts
+        from types import SimpleNamespace
+
+        facts = vector[source_id]
+        if runtime_actor is not None:
+            if runtime_actor[0].agent_id != scope["agent_id"]:
+                raise ContentInputReceiptError("content_source_access_denied", "The memory reference belongs to another employee.", 403)
+        else:
+            requester = facts[5]
+            if requester is not None and (not requester.is_active or requester.tenant_id != tenant_id):
+                requester = None
+        sessions = [SimpleNamespace(id=uuid.UUID(value["id"]), audience_kind=value["audience_kind"])
+            for value in facts[6] or []]
+        if runtime_actor is not None:
+            await _private_sessions(db, tenant_id=tenant_id, agent_id=scope["agent_id"], user_id=requester.id,
+                session_ids={current_session}, sessions=[item for item in sessions if item.id == current_session])
+        if requester is None or requester.id != scope["user_id"]:
+            raise ContentInputReceiptError("content_source_access_denied", "The original memory requester is unavailable.", 403)
+        await agent_access_from_facts(db, requester, facts)
+        await _private_sessions(db, tenant_id=tenant_id, agent_id=scope["agent_id"], user_id=requester.id,
+            session_ids={scope["session_id"], scope["source_session_id"]},
+            sessions=[item for item in sessions if item.id in {scope["session_id"], scope["source_session_id"]}])
+        return
+
     if (runtime_request is None and user is not None and user.role != "platform_admin"
         and _batch_browser_point(db, user)):
         from types import SimpleNamespace
@@ -106,7 +136,7 @@ async def validate_reference(db, tenant_id, dependency, *, user=None, runtime_re
             session_ids=session_ids, sessions=sessions)
         return
     if runtime_request is not None:
-        principal, requester = await _runtime_input_actor(db, tenant_id, runtime_request)
+        principal, requester = runtime_actor
         if principal.agent_id != scope["agent_id"]:
             raise ContentInputReceiptError("content_source_access_denied", "The memory reference belongs to another employee.", 403)
         await _private_sessions(db, tenant_id=tenant_id, agent_id=scope["agent_id"], user_id=requester.id,
@@ -118,3 +148,42 @@ async def validate_reference(db, tenant_id, dependency, *, user=None, runtime_re
     await check_agent_access(db, requester, scope["agent_id"])
     await _private_sessions(db, tenant_id=tenant_id, agent_id=scope["agent_id"], user_id=requester.id,
         session_ids={scope["session_id"], scope["source_session_id"]})
+
+
+async def _reference_checkpoint_facts(db, tenant_id, user, current_session):
+    from app.services.content_input_receipts import checkpoint_values
+
+    if user is not None:
+        current = checkpoint_values(db, "memory_reference", binding=(tenant_id, user.id, current_session))
+        if current is not None:
+            return current
+    from sqlalchemy import column, values
+    from sqlalchemy.dialects.postgresql import UUID
+    from app.models.agent import Agent
+    from app.models.user import User
+    from app.services.content_input_receipts import checkpoint_source_uuids, checkpoint_rows, _preflight_inputs
+    from app.services.source_read_queries import source_reader_facts_statement, fact_columns, _json_rows
+
+    if user is None or getattr(user, "id", None) is None or getattr(user, "role", None) == "platform_admin":
+        return None
+    retained, bindings = _preflight_inputs(db), []
+    for identity in checkpoint_source_uuids(SOURCE_KIND):
+        row = retained.get((InvocationSpan, identity))
+        proof = (row.metadata_json or {}).get(SOURCE_KIND) if row is not None else None
+        try:
+            bindings.append((identity, uuid.UUID(proof["agent_id"]), uuid.UUID(proof["session_id"]),
+                uuid.UUID(proof["source_session_id"])))
+        except (TypeError, KeyError, ValueError):
+            pass
+    if not bindings:
+        return None
+    refs = values(column("id", UUID), column("agent", UUID), column("work", UUID), column("origin", UUID),
+        name="memory_references").data(bindings)
+    session_ids = [refs.c.work, refs.c.origin, *([current_session] if current_session is not None else [])]
+    statement = source_reader_facts_statement(user, refs.c.agent, source=refs).add_columns(
+        fact_columns(User, "id tenant_id role department_id is_active username display_name"),
+        _json_rows(ChatSession, ("id", "audience_kind"), ChatSession.id.in_(session_ids),
+            ChatSession.tenant_id == tenant_id, ChatSession.agent_id == refs.c.agent, ChatSession.user_id == user.id),
+        refs.c.id).outerjoin(User, User.id == user.id)
+    return await checkpoint_rows(db, "memory_reference", statement, lambda row: row[7],
+        binding=(tenant_id, user.id, current_session), entities={0: Agent, 5: User})

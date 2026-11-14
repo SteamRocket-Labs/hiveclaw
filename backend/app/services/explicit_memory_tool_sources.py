@@ -19,8 +19,14 @@ async def record_memory_result(request, *, content, entries=(), team_entries=(),
     """Pin actual emitted entries, never infer source completeness from prose."""
     tenant_id = uuid.UUID(str(request.context.tenant_id))
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
-        with group_source_read(batch_inputs=True):
+        with group_source_read(batch_inputs=True, source_catalog=True) as frame:
+            from app.services.source_read_queries import transcript_event_columns
+
+            transcript_event_columns(frame)
             await _actor(db, tenant_id, request)
+            from app.services.explicit_memory_authority import preload_memory_receipts
+
+            await preload_memory_receipts(db, tenant_id, [source_dependency(receipt) for _entry, receipt in entries])
             for entry, receipt in entries:
                 await _authorize_entry(db, tenant_id=tenant_id, agent_id=request.context.agent_id,
                     request=request, entry=entry, receipt=receipt)

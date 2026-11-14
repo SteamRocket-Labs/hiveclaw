@@ -637,7 +637,10 @@ async def _validate_or_withhold_model_sources(
         if reader is not None:
             memory_readers[entry["message_index"]] = principals.setdefault(reader, reader)
     # Reuse source walks and rows; resolve reader authority on each validation.
-    with group_source_read(batch_inputs=True, cache_authority=False) as scope:
+    with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as scope:
+        from app.services.source_read_queries import transcript_event_columns
+
+        transcript_event_columns(scope)
         await preload_memory_receipts(db, tenant_id, input_bindings["dependencies"])
         # Each dependency is checked once; an arbitrary retry cap must not turn the
         # fourth unavailable item into a whole-turn failure.
@@ -647,7 +650,9 @@ async def _validate_or_withhold_model_sources(
             dependencies = [source] if source is not None else []
             for rows in scope.inputs.values():
                 for key in list(rows):
-                    if isinstance(key, tuple) and key[0] == "platform_skill_sources":
+                    # A later top-level input is an independent live phase.
+                    # Keep A2b's successful-source set and immutable evidence.
+                    if isinstance(key, tuple) and key[0] in {"platform_skill_sources", "checkpoint"}:
                         del rows[key]
             source_key = (
                 tuple(source[key] for key in ("source_kind", "source_id", "source_version")) if source else None

@@ -45,9 +45,18 @@ def source_dependency(receipt):
 
 async def _actor(db, tenant_id, request):
     from app.models.chat_session import ChatSession
+    from app.services.content_input_receipts import runtime_actor_session
+    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if (isinstance(db, AsyncSession) and db.get_bind().dialect.name == "postgresql"
+        and (scope is None or not scope.active or not scope.batch_inputs)):
+        with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True):
+            return await _actor(db, tenant_id, request)
 
     principal, actor = await _runtime_input_actor(db, tenant_id, request)
-    session = await _input_row(db, ChatSession, uuid.UUID(str(principal.session_id)))
+    session = await runtime_actor_session(db, tenant_id, principal)
     if getattr(actor, "id", None) is None or session.audience_kind not in {None, "private", "group"}:
         raise ContentInputReceiptError("explicit_memory_scoped_audience_unavailable",
             "This memory operation requires a supported current source audience.")
@@ -146,6 +155,26 @@ async def memory_effect_actor(db, tenant_id, request):
 
 
 async def latest_memory_receipt(db, tenant_id, agent_id, entry_id):
+    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS, checkpoint_rows
+    from app.services.source_read_queries import fact_columns
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if scope is not None and scope.source_catalog and scope.checkpoint[0] == "explicit_memory":
+        refs = {row.carrier_ref for key, row in scope.retained.items()
+            if isinstance(key, tuple) and key[0] == "memory_receipt_binding"}
+        if not refs:
+            historical = await _memory_receipt_checkpoint(db, tenant_id)
+            refs = {row[0].carrier_ref for row in (historical or {}).values()}
+        if refs:
+            statement = select(fact_columns(ContentInputReceipt, "id tenant_id carrier_kind carrier_ref revision "
+                "content_sha256 dependencies_json authority_json"), ContentInputReceipt.carrier_ref).where(
+                    ContentInputReceipt.tenant_id == tenant_id, ContentInputReceipt.carrier_kind == "explicit_memory",
+                    ContentInputReceipt.carrier_ref.in_(refs)).distinct(ContentInputReceipt.carrier_ref).order_by(
+                        ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())
+            vector = await checkpoint_rows(db, "memory_history_latest", statement, lambda row: row[1],
+                binding=(tenant_id,), entities={0: ContentInputReceipt})
+            if vector is not None and memory_ref(agent_id, entry_id) in vector:
+                return vector[memory_ref(agent_id, entry_id)][0]
     rows = _preflight_inputs(db, authority=True)
     key = ("latest", "explicit_memory", memory_ref(agent_id, entry_id))
     # Like the reader frame, latest is a preflight snapshot; the next call sees revocations.
@@ -160,7 +189,10 @@ async def latest_memory_receipt(db, tenant_id, agent_id, entry_id):
 async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, active_receipts=frozenset(),
     final_receipt_check=True):
     authority = receipt.authority_json if receipt is not None else {}
-    await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
+    from app.services.content_input_receipts import source_read_checkpoint
+
+    with source_read_checkpoint(phase="memory_audience_before"):
+        await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     if (
         receipt is None or receipt.tenant_id != tenant_id or receipt.carrier_kind != "explicit_memory"
         or receipt.carrier_ref != memory_ref(agent_id, entry.entry_id)
@@ -179,9 +211,11 @@ async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, 
     _validate_source_bytes(path, receipt.content_sha256)
     await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, runtime_request=request,
         active_workspace_receipts=active_receipts | {receipt.id})
-    await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
+    with source_read_checkpoint(phase="memory_audience_after"):
+        await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     if final_receipt_check:
-        latest = await latest_memory_receipt(db, tenant_id, agent_id, entry.entry_id)
+        with source_read_checkpoint(kind="explicit_memory", phase="memory_entry_latest"):
+            latest = await latest_memory_receipt(db, tenant_id, agent_id, entry.entry_id)
         if latest is None or latest.id != receipt.id or _sha256(latest.authority_json) != version:
             raise ContentInputReceiptError("explicit_memory_source_changed", "The memory authority changed while reading.", 403)
     _validate_source_bytes(path, receipt.content_sha256)
@@ -202,6 +236,12 @@ async def preload_memory_receipts(db, tenant_id, dependencies):
     from sqlalchemy.ext.asyncio import AsyncSession
 
     if not isinstance(db, AsyncSession):
+        return
+    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS, _preload_execution_sources
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if scope is not None and scope.source_catalog:
+        await _preload_execution_sources(db, tenant_id, dependencies)
         return
     ids = []
     for source in dependencies:
@@ -259,13 +299,18 @@ async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, 
     entries = list(entries)
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
         # Every authorization pass, including post-selection, owns a fresh walk.
-        with group_source_read(batch_inputs=True):
+        with group_source_read(batch_inputs=True, source_catalog=True) as frame:
+            from app.services.source_read_queries import transcript_event_columns
+
+            transcript_event_columns(frame)
             _principal, actor, _session = await _actor(db, tenant_id, request)
             actor_id = actor.id
             current_audience = audience_for_session(_session)
             latest = await _latest_entry_receipts(db, tenant_id, agent_id, entries)
             rows = _preflight_inputs(db)
-            rows.update({(ContentInputReceipt, receipt.id): receipt for receipt in latest.values()})
+            from app.services.content_input_receipts import _preload_execution_sources
+
+            await _preload_execution_sources(db, tenant_id, [source_dependency(receipt) for receipt in latest.values()])
             checked_entries = []
             versions = {}
             for entry in entries:
@@ -354,7 +399,9 @@ async def authorize_explicit_memory_file_read(request, path):
 async def validate_explicit_memory_dependency(db, tenant_id, dependency, *, request, active_receipts=frozenset()):
 
     try:
-        receipt = await _input_row(db, ContentInputReceipt, uuid.UUID(dependency["source_id"]))
+        identity = uuid.UUID(dependency["source_id"])
+        vector = await _memory_receipt_checkpoint(db, tenant_id)
+        receipt = vector[identity][0] if vector is not None and identity in vector else await _input_row(db, ContentInputReceipt, identity)
         if receipt is None or receipt.tenant_id != tenant_id or receipt.carrier_kind != "explicit_memory":
             raise ValueError("explicit_memory_receipt_missing")
         raw_agent, entry_id = receipt.carrier_ref.split("\n", 1)
@@ -370,7 +417,10 @@ async def validate_explicit_memory_dependency(db, tenant_id, dependency, *, requ
 async def authorize_memory_history(db, *, tenant_id, agent_id, entry_id, request, receipt, active_receipts=frozenset()):
     """Historical evidence retains source ACLs; semantic retirement stops new recall."""
     authority = receipt.authority_json
-    await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
+    from app.services.content_input_receipts import source_read_checkpoint
+
+    with source_read_checkpoint(phase="memory_audience_before"):
+        await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     if (receipt.tenant_id != tenant_id or receipt.carrier_kind != "explicit_memory"
         or receipt.carrier_ref != memory_ref(agent_id, entry_id)
         or authority.get("schema") != AUTHORITY_SCHEMA or authority.get("state") not in {"active", "retired"}
@@ -383,12 +433,87 @@ async def authorize_memory_history(db, *, tenant_id, agent_id, entry_id, request
 
     await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, runtime_request=request,
         active_workspace_receipts=active_receipts | {receipt.id})
-    await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
+    with source_read_checkpoint(phase="memory_audience_after"):
+        await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     latest = await latest_memory_receipt(db, tenant_id, agent_id, entry_id)
     if (latest is None or latest.authority_json.get("state") == "revoked"
         or (latest.authority_json.get("state") == "prepared" and latest.authority_json.get("planned_state") == "revoked")):
         raise ContentInputReceiptError("explicit_memory_source_revoked", "The memory source was withdrawn for privacy.", 403)
     _validate_source_bytes(path, receipt.content_sha256)
+
+
+async def _memory_receipt_checkpoint(db, tenant_id):
+    from app.services.content_input_receipts import checkpoint_values
+
+    current = checkpoint_values(db, "memory_history_before", binding=(tenant_id,))
+    if current is not None:
+        return current
+    from app.services.content_input_receipts import checkpoint_source_uuids, checkpoint_rows
+    from app.services.source_read_queries import fact_columns
+
+    identities = checkpoint_source_uuids("explicit_memory")
+    if not identities:
+        return None
+    statement = select(fact_columns(ContentInputReceipt, "id tenant_id carrier_kind carrier_ref revision "
+        "content_sha256 dependencies_json authority_json"), ContentInputReceipt.id).where(
+            ContentInputReceipt.tenant_id == tenant_id, ContentInputReceipt.id.in_(identities))
+    return await checkpoint_rows(db, "memory_history_before", statement, lambda row: row[1],
+        binding=(tenant_id,), entities={0: ContentInputReceipt})
+
+
+async def _browser_memory_checkpoint(db, tenant_id, user, *, before=None):
+    from app.services.content_input_receipts import checkpoint_values
+
+    point = "memory_browser_before" if before is None else "memory_browser_after"
+    current = checkpoint_values(db, point, binding=(tenant_id, user.id))
+    if current is not None:
+        return current
+    from sqlalchemy import outerjoin, func, values, column
+    from sqlalchemy.dialects.postgresql import UUID
+    from sqlalchemy.orm import aliased
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.user import User
+    from app.services.content_input_receipts import checkpoint_rows, checkpoint_source_uuids
+    from app.services.source_read_queries import source_reader_facts_statement, source_uuid, fact_columns
+
+    ids = checkpoint_source_uuids("explicit_memory")
+    if not ids:
+        return None
+    if before is None:
+        agent_binding = source_uuid(func.split_part(ContentInputReceipt.carrier_ref, "\n", 1))
+        statement = source_reader_facts_statement(user, agent_binding, source=ContentInputReceipt).add_columns(
+            fact_columns(ContentInputReceipt, "id tenant_id carrier_kind carrier_ref revision content_sha256 "
+                "authority_json dependencies_json"),
+            fact_columns(User, "id tenant_id role department_id is_active username display_name"),
+            fact_columns(ChatSession, "id tenant_id agent_id user_id audience_kind external_principal_id source_channel "
+                "group_installation_ref group_subject_id session_kind runtime_source runtime_task_id"), ContentInputReceipt.id)
+        statement = statement.outerjoin(User, User.id == user.id).outerjoin(ChatSession,
+            ChatSession.id == source_uuid(ContentInputReceipt.authority_json["source_session_id"].astext)).where(
+                ContentInputReceipt.id.in_(ids))
+        return await checkpoint_rows(db, "memory_browser_before", statement, lambda row: row[8],
+            binding=(tenant_id, user.id), entities={0: Agent, 5: ContentInputReceipt, 6: User, 7: ChatSession})
+    bindings = [(identity, fact[7].id, fact[5].carrier_ref) for identity, fact in before.items()
+        if fact[5] is not None and fact[7] is not None]
+    if not bindings:
+        return None
+    from sqlalchemy import String
+
+    refs = values(column("id", UUID), column("session", UUID), column("carrier", String),
+        name="memory_after_bindings").data(bindings)
+    current = aliased(ContentInputReceipt)
+    latest = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
+        ContentInputReceipt.carrier_kind == "explicit_memory", ContentInputReceipt.carrier_ref == refs.c.carrier
+        ).order_by(ContentInputReceipt.revision.desc()).limit(1).correlate(refs).scalar_subquery()
+    source = outerjoin(refs, ChatSession, ChatSession.id == refs.c.session)
+    statement = source_reader_facts_statement(user, ChatSession.agent_id, source=source).add_columns(
+        fact_columns(User, "id tenant_id role department_id is_active username display_name"),
+        fact_columns(ChatSession, "id tenant_id agent_id user_id audience_kind external_principal_id source_channel "
+            "group_installation_ref group_subject_id session_kind runtime_source runtime_task_id"),
+        fact_columns(current, "id authority_json"), refs.c.id).outerjoin(User, User.id == user.id).outerjoin(
+            current, current.id == latest)
+    return await checkpoint_rows(db, "memory_browser_after", statement, lambda row: row[8],
+        binding=(tenant_id, user.id), entities={0: Agent, 5: User, 6: ChatSession, 7: ContentInputReceipt})
 
 
 async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user, active_receipts=frozenset()):
@@ -410,7 +535,12 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
 
         joined = _batch_browser_point(db, user)
         facts = None
+        before = None
         if joined:
+            before = await _browser_memory_checkpoint(db, tenant_id, user)
+            facts = before.get(uuid.UUID(dependency["source_id"])) if before is not None else None
+        if joined and facts is None:
+            before = None
             agent_binding = source_uuid(func.split_part(ContentInputReceipt.carrier_ref, "\n", 1))
             facts = (await db.execute(source_reader_statement(user, agent_binding, source=ContentInputReceipt)
                 .add_columns(ContentInputReceipt, User, ChatSession)
@@ -418,6 +548,7 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
                 .outerjoin(ChatSession, ChatSession.id == source_uuid(ContentInputReceipt.authority_json["source_session_id"].astext))
                 .where(ContentInputReceipt.id == uuid.UUID(dependency["source_id"]))
                 .options(*reader_columns(User, ChatSession)))).first()
+        if joined:
             receipt, requester, session = (facts[5], facts[6], facts[7]) if facts is not None else (None,) * 3
         else:
             receipt = await db.get(ContentInputReceipt, uuid.UUID(dependency["source_id"]), populate_existing=True)
@@ -447,7 +578,11 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
     await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, user=requester,
         active_workspace_receipts=active_receipts | {receipt.id})
     latest = None
-    if joined:
+    after = await _browser_memory_checkpoint(db, tenant_id, user, before=before) if before is not None else None
+    if after is not None:
+        facts = after.get(receipt.id)
+        requester, current_session, latest = (facts[5], facts[6], facts[7]) if facts is not None else (None,) * 3
+    elif joined:
         from sqlalchemy import outerjoin
         from sqlalchemy.orm import aliased, load_only
 

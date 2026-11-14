@@ -148,31 +148,41 @@ async def _delegated_result(n, owner, app_factory, sources, *, title):
         page={"source_kind": "runtime_result_page", "source_id": str(page.id), "source_version": page.manifest_sha256})
 
 
-async def _run20_shape(n, owner, app_factory):
+async def _run20_shape(n, owner, app_factory, *, scale=1):
     from app.models.invocation_span import InvocationSpan
     from app.services.session_model_inputs import _hash
 
-    await _production_shape(n, owner, app_factory, workspace_nodes=66, memory_nodes=7,
-        directory_nodes=38, actor_nodes=27, tool_rounds=37, directory_tools=5, root_dependencies=72,
-        workspace_paths=57)
+    # Double observation volume and retained versions, retaining the same
+    # maximum lineage depth and 57 current paths. This models two histories
+    # sharing one assistant's capability and configuration singletons.
+    await _production_shape(n, owner, app_factory, workspace_nodes=66 * scale, memory_nodes=7 * scale,
+        directory_nodes=38 * scale, actor_nodes=27 * scale, tool_rounds=37 * scale, directory_tools=5,
+        root_dependencies=72 * scale, workspace_paths=57, workspace_lineages=scale,
+        memory_reference_nodes=28 * scale if scale > 1 else None)
     # The previous result retains the same historical graph, excluding the
     # future root receipt. Recursive result reads must do real upstream work.
     historical = [source for source in n.receipts[-1].dependencies_json if source["source_kind"] != "explicit_memory"]
-    simple = await _delegated_result(n, owner, app_factory, historical, title="Earlier retained sales result")
-    proof = {"schema": "hive.runtime_team_publication_observation.v1", "content": "Sales colleague is processing.",
+    returns = []
+    for index in range(scale):
+        simple = await _delegated_result(n, owner, app_factory, historical,
+            title="Earlier retained sales result" if index == 0 else f"Earlier retained sales result {index}")
+        proof = {"schema": "hive.runtime_team_publication_observation.v1", "content": "Sales colleague is processing.",
         "sources": [], "pending_task_ids": [str(simple.run)], "run_id": str(n.run),
         "agent_id": str(n.agent), "session_id": str(n.session), "user_id": str(n.user)}
-    version = _hash(proof)
-    identity = uuid.uuid5(n.run, f"runtime-team-publication:{version}")
-    async with owner() as db:
-        db.add(InvocationSpan(id=identity, tenant_id=n.tenant, agent_id=n.agent, user_id=n.user,
+        version = _hash(proof)
+        identity = uuid.uuid5(n.run, f"runtime-team-publication:{version}")
+        async with owner() as db:
+            db.add(InvocationSpan(id=identity, tenant_id=n.tenant, agent_id=n.agent, user_id=n.user,
             runtime_task_id=n.run, session_id=str(n.session), trace_id=f"runtime-team:{n.run}",
             span_id=f"runtime-team:{identity}", span_type="runtime_team_context", name="team_publication_observed",
             status="captured", duration_ms=0, started_at=datetime.now(timezone.utc), metadata_json={"observation": proof}))
-        root = await db.get(ContentInputReceipt, n.receipts[-1].id)
-        root.dependencies_json = [*root.dependencies_json, simple.result, simple.page,
+            await db.commit()
+        returns += [simple.result, simple.page,
             {"source_kind": "runtime_team_context", "source_id": f"{n.agent}\n{n.session}\n{identity}",
                 "source_version": version}]
+    async with owner() as db:
+        root = await db.get(ContentInputReceipt, n.receipts[-1].id)
+        root.dependencies_json = [*root.dependencies_json, *returns]
         await db.commit()
         n.receipts[-1] = root
         sizes = (await db.execute(text("""SELECT
@@ -186,10 +196,13 @@ async def _run20_shape(n, owner, app_factory):
     root_sources = [_dependency(n.receipts[-1])]
     closure = await _closure(n, owner, root_sources)
     counts = Counter(kind for kind, _ in closure)
-    print("A2W_SHAPE", json.dumps({"nodes": len(closure), "kinds": counts,
+    print("A2W_SHAPE", json.dumps({"scale": scale, "nodes": len(closure), "kinds": counts,
         "direct_dependencies": len(n.receipts[-1].dependencies_json)}), flush=True)
     assert set(counts) == set(EXPECTED), counts
     for kind, count in EXPECTED.items():
+        if kind not in {"agent_platform_skill_file", "agent_context_resource", "agent_identity", "owner_action_policy",
+            "agent_resident_memory"}:
+            count *= scale
         assert .9 * count <= counts[kind] <= 1.1 * count, (kind, counts)
     return root_sources, closure
 
@@ -317,7 +330,148 @@ async def test_nested_catalog_refreshes_current_agent_owner(
 
 
 
-async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_sessionmaker, monkeypatch):
+async def test_catalogue_preserves_existing_large_transcript_read_columns(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker,  # noqa: F811
+):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.content_input_receipts import group_source_read, _input_row, _preload_execution_sources
+    from app.services.session_model_inputs import _hash
+    from app.services.session_semantic_history import _event_payload
+    from app.services.source_read_queries import transcript_event_columns
+    from app.tools.output_limits import TOOL_OUTPUT_BYTES, TOOL_OUTPUT_TRUNCATION
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+
+    n = native_workspace
+    path = "workspace/transcript-projection.txt"
+    (n.root / "workspace").mkdir(exist_ok=True)
+    (n.root / path).write_text("Projection source")
+    _content, invocation = await memory_call(n, app_user_sessionmaker, "read_file", {"path": path})
+    large = "甲" * (TOOL_OUTPUT_BYTES // 3 + 20)
+    async with owner_sessionmaker() as db:
+        current = await db.get(SessionToolInvocation, invocation.id)
+        result_event_id = current.result_event_id
+        assert result_event_id is not None
+        event = await db.get(ChatTranscriptEvent, result_event_id)
+        payload = {**_event_payload(event), "content": large, "content_hash": _hash(large)}
+        event.content = large
+        event.metadata_json = {**event.metadata_json, "v2_payload": payload}
+        await db.commit()
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        expected = _event_payload(await db.get(ChatTranscriptEvent, result_event_id))
+        assert expected["content"].endswith(TOOL_OUTPUT_TRUNCATION)
+        assert expected["content_hash"] != _hash(expected["content"])
+        dependency = {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
+            "source_version": _hash(large)}
+        with group_source_read(batch_inputs=True, source_catalog=True):
+            await _preload_execution_sources(db, n.tenant, [dependency])
+            assert _event_payload(await _input_row(db, ChatTranscriptEvent, result_event_id)) == payload
+        with group_source_read(batch_inputs=True, source_catalog=True) as frame:
+            transcript_event_columns(frame)
+            await _preload_execution_sources(db, n.tenant, [dependency])
+            assert _event_payload(await _input_row(db, ChatTranscriptEvent, result_event_id)) == expected
+
+
+@pytest.mark.parametrize("runtime", [False, True])
+async def test_catalogue_preserves_legacy_top_level_tool_payload(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker, runtime,  # noqa: F811
+):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionToolInvocation
+    from app.models.user import User
+    from app.services.content_input_receipts import (
+        group_source_read, _preload_execution_sources, _validate_input_dependencies,
+    )
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.session_model_inputs import tool_result_source_hash
+    from app.services.session_semantic_history import _event_payload
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+
+    n = native_workspace
+    path = "workspace/legacy-tool.txt"
+    (n.root / "workspace").mkdir(exist_ok=True)
+    (n.root / path).write_text("Legacy tool source")
+    _content, invocation = await memory_call(n, app_user_sessionmaker, "read_file", {"path": path})
+    async with owner_sessionmaker() as db:
+        current = await db.get(SessionToolInvocation, invocation.id)
+        event = await db.get(ChatTranscriptEvent, current.result_event_id)
+        payload = _event_payload(event)
+        event.schema_version = 1
+        event.metadata_json = {**payload}
+        await db.commit()
+    source = {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
+        "source_version": tool_result_source_hash(payload)}
+    principal = AgentRuntimePrincipal(agent_id=n.agent, requester_user_id=n.user,
+        session_id=str(n.session), runtime_task_id=str(n.run), purpose="interactive_session")
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        user = await db.get(User, n.user)
+        context = {"user": None if runtime else user, "runtime_request": principal if runtime else None}
+        await _validate_input_dependencies(db, n.tenant, [source], **context)
+        with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True):
+            await _preload_execution_sources(db, n.tenant, [source])
+            await _validate_input_dependencies(db, n.tenant, [source], **context)
+
+
+async def test_catalogue_defers_malformed_nested_source_until_its_ordered_check(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker,  # noqa: F811
+):
+    from app.models.agent import Agent
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.models.user import User
+    from app.services.agent_context import agent_identity_content
+    from app.services.config_versioning import canonical_content_hash
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError, group_source_read, _preload_execution_sources, _validate_input_dependencies,
+    )
+    from app.services.session_model_inputs import tool_result_source_hash
+    from app.services.session_semantic_history import _event_payload
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+
+    n = native_workspace
+    path = "workspace/ordered-source.txt"
+    (n.root / "workspace").mkdir(exist_ok=True)
+    (n.root / path).write_text("Ordered source")
+    _content, invocation = await memory_call(n, app_user_sessionmaker, "read_file", {"path": path})
+    async with owner_sessionmaker() as db:
+        current = await db.get(SessionToolInvocation, invocation.id)
+        event = await db.get(ChatTranscriptEvent, current.result_event_id)
+        later = {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
+            "source_version": tool_result_source_hash(_event_payload(event))}
+        model = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.session_id == current.session_id, SessionModelResult.run_id == current.run_id,
+            SessionModelResult.provider_request_id == current.provider_request_id))
+        snapshot = deepcopy(model.model_request_snapshot_json)
+        snapshot["input_bindings"]["dependencies"].append(
+            {"source_kind": "agent_identity", "source_id": None, "source_version": "0" * 64})
+        model.model_request_snapshot_json = snapshot
+        agent = await db.get(Agent, n.agent)
+        first = {"source_kind": "agent_identity", "source_id": f"{n.agent}\nidentity",
+            "source_version": canonical_content_hash(agent_identity_content(agent.name, agent.role_description))}
+        agent.deactivated_at = datetime.now(timezone.utc)
+        await db.commit()
+    sources = [first, later]
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        user = await db.get(User, n.user)
+        with pytest.raises(ContentInputReceiptError) as original:
+            await _validate_input_dependencies(db, n.tenant, sources, user=user)
+        assert (original.value.status_code, original.value.code) == (403, "content_source_access_denied")
+        with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True):
+            await _preload_execution_sources(db, n.tenant, sources)
+            with pytest.raises(ContentInputReceiptError) as batched:
+                await _validate_input_dependencies(db, n.tenant, sources, user=user)
+        assert (batched.value.status_code, batched.value.code, str(batched.value)) == (
+            original.value.status_code, original.value.code, str(original.value))
+
+
+@pytest.fixture(scope="module")
+def scaling_counts():
+    return {}
+
+
+@pytest.mark.parametrize("scale", [1, 2])
+async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+    scaling_counts, scale, tmp_path):
     from app.services import content_input_receipts as receipts
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.tools.handlers.context_resources import read_runtime_result
@@ -325,7 +479,7 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
 
     n = source_graph
     monkeypatch.setattr("app.tools.handlers.context_resources.async_session", app_user_sessionmaker)
-    roots, closure = await _run20_shape(n, owner_sessionmaker, app_user_sessionmaker)
+    roots, closure = await _run20_shape(n, owner_sessionmaker, app_user_sessionmaker, scale=scale)
     entries = await _search_shape(n, owner_sessionmaker)
     # A second colleague's final carries this graph and distinct actor
     # observations. Its closure is the measured 524-node return workload.
@@ -335,7 +489,7 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
     added = []
     async with tenant_scoped_session(n.tenant, session_factory=owner_sessionmaker) as db:
         actor = await db.get(User, n.user)
-        for index in range(524 - len(closure) - 1):
+        for index in range(524 * scale - len(closure) - 1):
             actor.display_name = f"Sales owner historical name {index}"
             await db.flush()
             source, _ = await record_session_actor_identity(db, tenant_id=n.tenant, agent_id=n.agent,
@@ -346,8 +500,8 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
         title="Colleague sales result after checking all reporting inputs.")
     large_sources = [{"source_kind": "session_model_result", "source_id": str(large.model)}]
     large_closure = await _closure(n, owner_sessionmaker, large_sources)
-    print("A2W_RESULT_SHAPE", json.dumps({"nodes": len(large_closure)}), flush=True)
-    assert 524 * .9 <= len(large_closure) <= 524 * 1.1
+    print("A2W_RESULT_SHAPE", json.dumps({"scale": scale, "nodes": len(large_closure)}), flush=True)
+    assert 524 * scale * .9 <= len(large_closure) <= 524 * scale * 1.1
     paths = sorted({row.carrier_ref.split("\n", 1)[1] for row in n.receipts})
     assert len(paths) == 57
     memory_closure = await _closure(n, owner_sessionmaker, n.search_memory_sources)
@@ -424,12 +578,47 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
         assert payload["status"] == "ok" and payload["content"] == large.content, payload
         measurements.append(await _model_prepare(n, app_user_sessionmaker, monkeypatch, delay))
     violations = []
+    # These constants include ingress and each independent live phase. Recall
+    # performs admission, selection and emitted-result authorization; each
+    # gets fresh live rows. Retained evidence is loaded once for the tool.
+    constants = {"download": 48, "content": 48, "preview": 51, "read_file_member": 44,
+        "read_file_runtime": 44, "execution_57_files": 48, "search_memory_8_entries": 160,
+        "read_runtime_result_524": 60, "prepare_model_request_sources": 80}
+    scaling_counts[scale] = {row["path"]: row["statements"] for row in measurements
+        if not row.get("rtt", row.get("injected_rtt"))}
+    if scale == 2:
+        assert 1 in scaling_counts, "Run both graph scales to verify constant statement work."
+        print("A2W_SCALING", json.dumps(scaling_counts), flush=True)
     for row in measurements:
         bound = 5 if row["path"] in {"execution_57_files", "read_runtime_result_524"} else 3
         value = {key: row[key] for key in ("path", "statements", "seconds")}
-        value.update(live_checkpoints=budgets[row["path"]], C=40, time_bound=bound)
+        value.update(scale=scale, live_checkpoints=budgets[row["path"]], C=40, time_bound=bound,
+            constant=constants[row["path"]])
         print("A2W_BOUND", json.dumps(value), flush=True)
-        if row["statements"] > budgets[row["path"]] + 40 or (
+        if row["statements"] > min(budgets[row["path"]] + 40, constants[row["path"]]) or (
             row.get("rtt", row.get("injected_rtt")) and row["seconds"] > bound):
             violations.append(value)
+    if scale == 2 and any(value["path"] == "search_memory_8_entries" for value in violations):
+        # Diagnose a failed CPU bound separately; profiling never contributes
+        # overhead to the measured local/6 ms samples or their assertions.
+        import cProfile
+        import pstats
+
+        profile = cProfile.Profile()
+        profile.enable()
+        try:
+            profiled = await search_memory(n.agent, search.arguments, str(n.tenant), execution_context=search.context)
+        finally:
+            profile.disable()
+        assert str(profiled) == search_output
+        output = tmp_path / "a2w-doubled-search.prof"
+        profile.dump_stats(output)
+        stats = pstats.Stats(profile)
+        rows = sorted(({"function": f"{file}:{line}:{name}", "calls": calls, "cpu_seconds": total,
+            "cumulative_seconds": cumulative} for (file, line, name), (_primitive, calls, total, cumulative, _callers)
+            in stats.stats.items()), key=lambda row: row["cumulative_seconds"], reverse=True)[:30]
+        print("A2W_CPU_PROFILE", json.dumps({"path": str(output), "functions": rows}), flush=True)
+    if scale == 2:
+        # Report all path/CPU measurements before the unchanged strict gate.
+        assert scaling_counts[2] == scaling_counts[1], scaling_counts
     assert not violations, violations

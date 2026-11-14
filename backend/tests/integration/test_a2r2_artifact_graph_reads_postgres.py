@@ -85,7 +85,8 @@ async def _six_native_tools(n, app_user_sessionmaker, *, directory_tools=4):
 
 async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker, *,
     workspace_nodes=45, memory_nodes=6, directory_nodes=27, actor_nodes=18, tool_rounds=26,
-    directory_tools=4, root_dependencies=57, workspace_paths=None):
+    directory_tools=4, root_dependencies=57, workspace_paths=None,
+    workspace_lineages=1, memory_reference_nodes=None):
     from app.memory.types import MemoryItem, MemoryKind
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
@@ -121,8 +122,9 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker, *,
     # Seed historical working copies through the existing receipt/manifest writers.
     # Their exact bytes and upstream edges still pass the real browser readers.
     async with owner_sessionmaker() as db:
-        previous, by_path = None, {}
+        by_lineage, by_path = {}, {}
         for i in range(workspace_nodes - 1):
+            previous = by_lineage.get(i % workspace_lineages)
             path = f"workspace/sales-run-{i if workspace_paths is None else i % (workspace_paths - 1):02d}.md"
             (n.root / path).write_text(BODY)
             await register_workspace_path(db, tenant_id=n.tenant, agent_id=n.agent, path=path,
@@ -133,6 +135,7 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker, *,
                 additional_dependencies=[{"source_kind": "workspace_artifact", "source_id": str(previous.id),
                     "source_version": previous.content_sha256}] if previous is not None else ())
             n.receipts.append(previous)
+            by_lineage[i % workspace_lineages] = previous
             by_path[path] = previous
         memories = list(await db.scalars(select(ContentInputReceipt).where(
             ContentInputReceipt.tenant_id == n.tenant, ContentInputReceipt.carrier_kind == "explicit_memory")))
@@ -165,7 +168,9 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker, *,
         async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
             _, directory = await observe_directory(db, tenant_id=n.tenant, agent_id=n.agent, runtime_request=principal)
             dependencies.append(directory)
-            for index in ([i, 27] if i == 26 else [i] if i < 27 else []):
+            reference_indexes = ([i, 27] if i == 26 else [i] if i < 27 else []) if memory_reference_nodes is None else (
+                [i] if i < memory_reference_nodes else [])
+            for index in reference_indexes:
                 resource = f"memory/t2/sessions/{n.session}/segments/shape-{index}"
                 (n.root / resource).mkdir(parents=True)
                 (n.root / resource / "manifest.json").write_text("{}")
@@ -199,8 +204,8 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker, *,
             receipt.dependencies_json = [*receipt.dependencies_json, *remainder[i::len(n.receipts)]]
             await db.merge(receipt)
         await db.commit()
-    n.sources = [*root_sources, {"source_kind": "workspace_artifact", "source_id": str(n.receipts[-1].id),
-        "source_version": n.receipts[-1].content_sha256}]
+    n.sources = [*root_sources, *[{"source_kind": "workspace_artifact", "source_id": str(row.id),
+        "source_version": row.content_sha256} for row in by_lineage.values()]]
     n.path = "workspace/sales-report-production-shape.md"
     output, _ = await memory_call(n, app_user_sessionmaker, "write_file", {"path": n.path, "content": BODY})
     async with owner_sessionmaker() as db:

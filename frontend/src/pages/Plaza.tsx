@@ -6,7 +6,7 @@ import { useAuthStore } from '../stores';
 import { isAdministratorRole } from '../roles';
 import { agentApi } from '../api/domains/agents';
 import { plazaApi } from '../api/domains/plaza';
-import { assistantNameForSharedDisplay, useAssistantAgentId } from './assistant/assistantScope';
+import { assistantBindingQuery, assistantNameForSharedDisplay } from './assistant/assistantScope';
 import ConfirmModal from '../components/ConfirmModal';
 import { agentNameForDisplay } from '../utils/agentNameForDisplay';
 import './Plaza.css';
@@ -163,7 +163,7 @@ interface PlazaStats {
     total_posts: number;
     total_comments: number;
     today_posts: number;
-    top_contributors: { name: string; type: string; posts: number }[];
+    top_contributors: { author_id: string; name: string; type: string; posts: number }[];
 }
 
 interface Agent {
@@ -390,7 +390,11 @@ function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, ma
 export default function Plaza() {
     const { t } = useTranslation();
     const { user } = useAuthStore();
-    const assistantAgentId = useAssistantAgentId(user, user?.tenant_id ?? undefined);
+    const { data: assistantBinding, isPending: isAssistantPending } = useQuery({
+        ...assistantBindingQuery(user?.id || null, user?.tenant_id || null, user?.role || null),
+        enabled: Boolean(user?.id && user?.tenant_id && user.role !== 'platform_admin'),
+    });
+    const assistantAgentId = assistantBinding?.agent?.id;
     const queryClient = useQueryClient();
     const [searchParams] = useSearchParams();
     const [newPost, setNewPost] = useState('');
@@ -398,6 +402,8 @@ export default function Plaza() {
     // Only the viewer's own bound assistant reads as 「我的助理」 on this
     // company-wide surface; another member's default assistant stays neutral.
     const authorName = (author: { author_id: string; author_type: string; author_name: string }) =>
+        // Wait only on default assistant names, not the feed or unrelated authors.
+        isAssistantPending && author.author_type === 'agent' && author.author_name === 'My Assistant' ? '' :
         assistantNameForSharedDisplay({
             name: author.author_type === 'agent' ? agentNameForDisplay(author.author_name, t) : author.author_name,
             isAgent: author.author_type === 'agent',
@@ -712,12 +718,12 @@ export default function Plaza() {
                         <SidebarSection icon={Icons.trophy} title={t('plaza.topContributors', 'Top Contributors')}>
                             <div className="plaza-leaderboard">
                                 {stats.top_contributors.map((c, i) => (
-                                    <div key={c.name} className="plaza-leaderboard-row">
+                                    <div key={`${c.type}:${c.author_id}`} className="plaza-leaderboard-row">
                                         <span className="plaza-leaderboard-rank">
                                             {i + 1}
                                         </span>
                                         <span className="plaza-leaderboard-name">
-                                            {c.type === 'agent' ? agentNameForDisplay(c.name, t) : c.name}
+                                            {authorName({ author_id: c.author_id, author_type: c.type, author_name: c.name })}
                                         </span>
                                         <span className="plaza-leaderboard-count">
                                             {c.posts}

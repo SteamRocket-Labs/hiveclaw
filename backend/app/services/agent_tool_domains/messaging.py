@@ -11,7 +11,11 @@ from sqlalchemy import func, select
 
 from app.core.execution_context import A2AToolAuthorityFrame, ExecutionPrincipal
 from app.database import tenant_scoped_session
-from app.services.a2a_collaboration_policy import resolve_a2a_collaboration_policy, resolve_agent_owner_id
+from app.services.a2a_collaboration_policy import (
+    _a2a_agent_sql_filter,
+    resolve_a2a_collaboration_policy,
+    resolve_agent_owner_id,
+)
 from app.services.a2a_outcome import A2AOutcome, A2AOperation
 from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -241,7 +245,9 @@ async def _resolve_target_agent_by_name(
 
     escaped = agent_name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     owner = resolve_agent_owner_id(source_agent)
-    query = select(Agent).where(Agent.tenant_id == source_agent.tenant_id, Agent.id != source_agent.id)
+    query = select(Agent).where(
+        Agent.tenant_id == source_agent.tenant_id, Agent.id != source_agent.id, _a2a_agent_sql_filter()
+    )
     if owner is not None:
         query = query.order_by((func.coalesce(Agent.owner_user_id, Agent.creator_id) == owner).desc())
     query = query.order_by(Agent.created_at, Agent.id).limit(21)
@@ -271,6 +277,8 @@ async def _resolve_target_agent_by_name(
     if len(allowed) > 1:
         choices = ", ".join(f"{candidate.name} ({candidate.id})" for candidate in allowed)
         return None, f"{ambiguity} Candidates: {choices}."
+    if not allowed and not same_owner and pattern != escaped:
+        return None, None
     # Unavailable same-owner targets retain their own lifecycle/policy reason;
     # they are never replaced by another owner's allowed namesake.
     return (allowed or candidates)[0], None
@@ -1168,7 +1176,7 @@ async def _send_message_to_agent_outcome(
         return _a2a_failure(
             "consult",
             error_code="invalid_arguments",
-            message="Please provide target agent name and message content",
+            message="Please provide target agent name or target_agent_id and message content",
         )
 
     try:
@@ -1519,7 +1527,7 @@ async def _delegate_to_agent_async_outcome(
         return _a2a_failure(
             "delegate",
             error_code="invalid_arguments",
-            message="Please provide target agent name and message content",
+            message="Please provide target agent name or target_agent_id and message content",
         )
 
     try:
@@ -1536,12 +1544,13 @@ async def _delegate_to_agent_async_outcome(
             target_agent_id=target_agent_id,
         )
         if error:
-            # Decode the resolver's exact compatibility-string prefix, not arbitrary prose.
+            # Decode only the resolver's two exact compatibility-string forms.
+            ambiguity = _AMBIGUOUS_AGENT_NAME.format(name=agent_name)
             return _a2a_failure(
                 "delegate",
                 error_code=(
                     "target_agent_ambiguous"
-                    if error.startswith(_AMBIGUOUS_AGENT_NAME.format(name=agent_name))
+                    if error == ambiguity or error.startswith(f"{ambiguity} Candidates:")
                     else "target_runtime_unavailable"
                 ),
                 message=error,

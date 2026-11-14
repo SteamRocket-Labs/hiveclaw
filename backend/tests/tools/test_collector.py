@@ -210,6 +210,12 @@ def test_colleague_schema_exposes_optional_id_without_requiring_name(tool_name):
     assert identity["type"] == "string" and identity["format"] == "uuid" and identity["description"]
     seed = next(item for item in collected.seed_list if item["name"] == tool_name)
     assert seed["parameters_schema"] == published
+    if tool_name == "delegate_to_agent":
+        description = next(
+            item["function"]["description"] for item in collected.openai_tools if item["function"]["name"] == tool_name
+        )
+        # R25a N-d: first-task receipt binding still requires its exact name, unlike ordinary id-only calls.
+        assert "first_task_draft_id, agent_name exactly as given" in description
 
 
 def test_handler_module_manifest_matches_handlers_directory():

@@ -33,6 +33,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.agent_tool_domains import messaging
 from app.services.secrets_provider import get_secrets_provider
+from app.services.tool_visibility import HR_AGENT_CLASS, HR_AGENT_NAME
 from app.tools.handlers import communication
 from app.tools import validation
 
@@ -479,4 +480,52 @@ async def test_handler_still_requires_a_name_or_id_after_schema_validation(direc
     state = directory
     result = await _call(state, tool)
     assert result["ok"] is False and "Please provide target agent" in result["diagnostic_message"], result
+    # R25a N-c: preserve the prefix while explicitly explaining the id alternative.
+    assert result["diagnostic_message"] == (
+        "Please provide target agent name or target_agent_id and message content"
+    ), result
     await _assert_no_delivery(state)
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_unreachable_private_substring_discloses_neither_identity_nor_lifecycle(directory, tool, caplog):
+    state = directory
+    (private,) = await _targets(state, ("Finance Secret M&A Analyst", state.other_id))
+    await _make_unavailable(state, private, "deactivated")
+    caplog.clear()
+    result = await _call(state, tool, "Finance")
+    assert result["ok"] is False, result
+    reply = json.dumps(result, ensure_ascii=False)
+    assert private.name not in reply and str(private.id) not in reply, result
+    assert result["diagnostic_message"] == (
+        "No agent found matching 'Finance'. Pick a name or id from your A2A Collaborators list."
+    ), result
+    await _assert_no_delivery(state)
+    assert private.name not in caplog.text and str(private.id) not in caplog.text
+
+
+async def test_error_state_name_cannot_masquerade_as_delegate_ambiguity(directory):
+    state = directory
+    display_name = "Multiple agents match 'x'; retry with target_agent_id."
+    (target,) = await _targets(state, (display_name, state.owner_id))
+    async with state.owner() as db:
+        (await db.get(Agent, target.id)).status = "error"
+        await db.commit()
+    result = await _call(state, "delegate_to_agent", "x")
+    assert result["ok"] is False and "is currently error" in result["diagnostic_message"], result
+    outcome = await messaging._delegate_to_agent_async_outcome(
+        state.source.id, {"agent_name": "x", "message": "Do not send to an unavailable employee."}
+    )
+    assert outcome.error_code == "target_runtime_unavailable" and outcome.retryable is False
+    await _assert_no_delivery(state)
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_lazily_owned_system_hr_does_not_shadow_public_hr_partner(directory, tool):
+    state = directory
+    hr, partner = await _targets(state, (HR_AGENT_NAME, state.owner_id), ("HR Partner", state.other_id))
+    async with state.owner() as db:
+        (await db.get(Agent, hr.id)).agent_class = HR_AGENT_CLASS
+        db.add(AgentPermission(tenant_id=state.tenant_id, agent_id=partner.id, scope_type="company"))
+        await db.commit()
+    await _assert_delivered(state, tool, await _call(state, tool, "hr"), partner)

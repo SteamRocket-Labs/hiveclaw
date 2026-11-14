@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { taskApi } from '../../api/domains/tasks';
 import { toolStepLabel } from '../agent-detail/toolStepLabel';
+import { agentNameForDisplay } from '../../utils/agentNameForDisplay';
 
 interface HandoverWork {
   id: string; agent_id: string; task_id: string | null; title: string;
@@ -66,7 +67,7 @@ function WorkDecision({ work, onNavigate }: { work: HandoverWork; onNavigate: ()
 
 export default function OffboardingNotice({ body, onNavigate }: { body: string; onNavigate: () => void }) {
   const { t } = useTranslation();
-  const agentName = (name: string) => name === '__system_hr__' ? t('handover.hrAgentName') : name;
+  const agentName = (name: string) => agentNameForDisplay(name, t);
   const handover = useMemo((): Handover | null => { try { return JSON.parse(body); } catch { return null; } }, [body]);
   if (!handover) return <p role="alert">{t('handover.unavailable')}</p>;
   return <div className="offboarding-notice">

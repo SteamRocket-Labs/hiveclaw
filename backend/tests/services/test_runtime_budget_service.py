@@ -1099,7 +1099,9 @@ async def test_reconcile_orphaned_reservations_releases_terminal_task_reservatio
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
-async def test_reconcile_orphaned_completed_subagent_uses_terminal_actuals(owner_sessionmaker):
+async def test_reconcile_orphaned_completed_subagent_uses_terminal_actuals(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch
+):
     from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
     from app.models.runtime_task import RuntimeTask
     from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
@@ -1150,6 +1152,15 @@ async def test_reconcile_orphaned_completed_subagent_uses_terminal_actuals(owner
         )
         await db.commit()
 
+    @contextlib.asynccontextmanager
+    async def own_budget_session(_operation):
+        from app.database import tenant_scoped_session
+
+        # Keep the real reconciliation and exact count, scoped to this tenant's rows.
+        async with tenant_scoped_session(tenant_id, session_factory=app_user_sessionmaker) as db:
+            yield db
+
+    monkeypatch.setattr(service, "_budget_session", own_budget_session)
     assert await service.reconcile_orphaned_reservations() == 1
 
     async with owner_sessionmaker() as db:

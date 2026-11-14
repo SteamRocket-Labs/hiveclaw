@@ -220,6 +220,7 @@ async def graph(native_workspace, owner_sessionmaker, app_user_sessionmaker, mon
     n.common = SimpleNamespace(skills=skills[1:], tools=tools[1:], context=context, directory=directory,
         reference=reference[0], identity=identity, actor=actor, policy=policy[0], resident=resident)
     prepare = session_model_round.prepare_model_request
+    n.prepare_model_request = prepare
 
     async def expose_sources(db, **kwargs):
         from app.kernel.engine import _context_message

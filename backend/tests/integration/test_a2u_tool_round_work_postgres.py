@@ -5,6 +5,7 @@ from collections import Counter
 from contextlib import contextmanager
 from contextvars import ContextVar
 from time import perf_counter
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -211,6 +212,7 @@ async def test_track_todo_round_statement_ceilings(hello_work, owner_sessionmake
     from app.runtime import invoker
     from app.services import session_model_round, session_tool_runtime, web_chat_runtime
     from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+    from app.tools import governance_resolver
 
     n, probe = hello_work, RoundWork()
     await _retained_rounds(n, owner_sessionmaker)
@@ -251,7 +253,10 @@ async def test_track_todo_round_statement_ceilings(hello_work, owner_sessionmake
         probe.observe_events(monkeypatch, module)
     fence = set_runtime_task_fence(task_id=n.web_run, worker_id="a2d-worker", claim_version=1)
     try:
-        with probe.counting():
+        # Hold the fixture's warm governance entries at a fixed cache clock.
+        # Replace only the module's time binding; asyncio and wall clocks stay real.
+        with monkeypatch.context() as cache_clock, probe.counting():
+            cache_clock.setattr(governance_resolver, "time", SimpleNamespace(monotonic=lambda: 0.0))
             probe.mark("turn_start")
             await web_chat_runtime.execute_web_chat_run(n.web_run)
             probe.mark("terminal")

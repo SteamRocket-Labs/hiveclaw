@@ -140,6 +140,11 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
                     "type": "string",
                     "description": "Target digital employee's name",
                 },
+                "target_agent_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Target employee id; use it instead of a name or to disambiguate matches.",
+                },
                 "message": {
                     "type": "string",
                     "description": "Message content to send",
@@ -153,7 +158,7 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
                     ),
                 },
             },
-            "required": ["agent_name", "message"],
+            "required": ["message"],
         },
         category="communication",
         display_name="Send Message to Agent",
@@ -199,7 +204,7 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, executi
             "so the worker updates/delivers the exact target path instead of inventing a replacement artifact.\n"
             "- Completion automatically returns to this conversation and resumes you to use the result. Tell the member in one line that the colleague is working, then end the turn if no independent work remains. Do not sleep, poll, or resend to wait.\n"
             "- The result includes session_id/child_session_id. Use `send_agent_session_message` only to send additional instructions to the colleague.\n"
-            "- To authorize or resume an employee's recorded first task, pass first_task_draft_id and its exact employee/message. "
+            "- To authorize or resume an employee's recorded first task, pass first_task_draft_id, agent_name exactly as given in the creation receipt, and the exact message. "
             "The existing creation receipt supplies these values; do not rewrite the task or supply worker overrides. "
             "Approval and retries resume the same durable task.\n"
             "- Do NOT use this for session-local worker fan-out, context isolation, or independent verification inside the same session — use `spawn_subagent` for To Session Worker."
@@ -214,6 +219,11 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, executi
                 "agent_name": {
                     "type": "string",
                     "description": "Target digital employee's name",
+                },
+                "target_agent_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Target employee id; use it instead of a name or to disambiguate matches.",
                 },
                 "message": {
                     "type": "string",
@@ -332,7 +342,7 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict, *, executi
                     "description": "Optional expected output contract for a local-agent delegated task.",
                 },
             },
-            "required": ["agent_name", "message"],
+            "required": ["message"],
         },
         category="communication",
         display_name="Delegate to Agent",

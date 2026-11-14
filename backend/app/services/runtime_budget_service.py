@@ -17,6 +17,7 @@ from typing import Any
 import uuid
 
 from sqlalchemy import Select, and_, exists, func, or_, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
@@ -185,6 +186,10 @@ class RuntimeBudgetApprovalRequired(RuntimeBudgetDenied):
 class RuntimeBudgetSettlementConflict(RuntimeError):
     """Raised when one reservation key is replayed with different actual usage."""
 
+    def __init__(self, message: str, *, runtime_task_id: uuid.UUID | None = None):
+        self.runtime_task_id = runtime_task_id
+        super().__init__(message)
+
 
 class RuntimeBudgetStateConflict(RuntimeError):
     """Raised when a requested budget transition would violate run-state monotonicity."""
@@ -230,20 +235,28 @@ def stamp_runtime_task_budget_actuals(task: Any, actuals: Mapping[str, Any]) -> 
             key: max(0, int(actuals.get(key) or 0)) for key in _DIMENSIONS if max(0, int(actuals.get(key) or 0))
         }
     except (TypeError, ValueError) as exc:
-        raise RuntimeBudgetSettlementConflict(f"invalid runtime budget actuals for RuntimeTask {task.id}") from exc
+        raise RuntimeBudgetSettlementConflict(
+            f"invalid runtime budget actuals for RuntimeTask {task.id}", runtime_task_id=task.id
+        ) from exc
     metadata = dict(getattr(task, "metadata_json", None) or {})
     existing = metadata.get("runtime_budget_actuals")
     if existing is not None:
         if not isinstance(existing, Mapping):
-            raise RuntimeBudgetSettlementConflict(f"invalid runtime budget actuals for RuntimeTask {task.id}")
+            raise RuntimeBudgetSettlementConflict(
+                f"invalid runtime budget actuals for RuntimeTask {task.id}", runtime_task_id=task.id
+            )
         try:
             normalized_existing = {
                 key: max(0, int(existing.get(key) or 0)) for key in _DIMENSIONS if max(0, int(existing.get(key) or 0))
             }
         except (TypeError, ValueError) as exc:
-            raise RuntimeBudgetSettlementConflict(f"invalid runtime budget actuals for RuntimeTask {task.id}") from exc
+            raise RuntimeBudgetSettlementConflict(
+                f"invalid runtime budget actuals for RuntimeTask {task.id}", runtime_task_id=task.id
+            ) from exc
         if normalized_existing != normalized:
-            raise RuntimeBudgetSettlementConflict(f"runtime budget actuals conflict for RuntimeTask {task.id}")
+            raise RuntimeBudgetSettlementConflict(
+                f"runtime budget actuals conflict for RuntimeTask {task.id}", runtime_task_id=task.id
+            )
     metadata["runtime_budget_actuals"] = normalized
     task.metadata_json = metadata
     return normalized
@@ -1010,38 +1023,63 @@ class RuntimeBudgetService:
                 .with_for_update(skip_locked=True)
             )
             runs = result.scalars().all()
+            reaped = 0
             for run in runs:
-                run.status = "expired"
-                run.terminal_reason = "budget_run_expired"
-                run.completed_at = current
-                self._clear_reserved(run)
-                event = self._event(
-                    run,
-                    event_type="expired",
-                    reservation_key=None,
-                    allowed=None,
-                    would_deny=False,
-                    reason="budget_run_expired",
-                    amounts={},
-                    metadata={"target_status": "expired"},
-                )
-                db.add(event)
-                await enqueue_budget_transition(
-                    db,
-                    run=run,
-                    event=event,
-                    transition="expired",
-                    content=budget_transition_copy("expired"),
-                )
-                await self._cancel_pending_unclaimed_tasks(
-                    db,
-                    run,
-                    terminal_reason="budget_run_expired",
-                    result_summary="Runtime budget expired before this work was claimed.",
-                    completed_at=current,
-                )
+                budget_run_id = run.id
+                loaded_before = set(db.identity_map.keys())
+                try:
+                    async with db.begin_nested():
+                        run.status = "expired"
+                        run.terminal_reason = "budget_run_expired"
+                        run.completed_at = current
+                        self._clear_reserved(run)
+                        event = self._event(
+                            run,
+                            event_type="expired",
+                            reservation_key=None,
+                            allowed=None,
+                            would_deny=False,
+                            reason="budget_run_expired",
+                            amounts={},
+                            metadata={"target_status": "expired"},
+                        )
+                        db.add(event)
+                        await enqueue_budget_transition(
+                            db,
+                            run=run,
+                            event=event,
+                            transition="expired",
+                            content=budget_transition_copy("expired"),
+                        )
+                        await self._cancel_pending_unclaimed_tasks(
+                            db,
+                            run,
+                            terminal_reason="budget_run_expired",
+                            result_summary="Runtime budget expired before this work was claimed.",
+                            completed_at=current,
+                        )
+                except Exception as exc:
+                    # DB/session errors can mean failed rollback, a lost connection, or repeating lock waits.
+                    # Fail and roll back the whole tick; isolate only errors from one row's own data.
+                    if isinstance(exc, SQLAlchemyError):
+                        raise
+                    # Permanent failures filling the oldest-first limit (daemon: 32) delay newer rows until fixed.
+                    # No quarantine marker is allowed here; use an operator fix or an owner-approved marker.
+                    logger.error(
+                        "Expired budget run failed: budget_run_id=%s error_type=%s runtime_task_id=%s",
+                        budget_run_id,
+                        type(exc).__name__,
+                        getattr(exc, "runtime_task_id", None),
+                    )
+                    # Rollback expires writes, not read-only tasks/reservations.
+                    # Leave the other preselected runs usable without async lazy loads.
+                    for key, instance in list(db.identity_map.items()):
+                        if key not in loaded_before:
+                            db.expire(instance)
+                    continue
+                reaped += 1
             await db.commit()
-            return len(runs)
+            return reaped
 
     async def reconcile_orphaned_reservations(
         self,
@@ -1132,115 +1170,150 @@ class RuntimeBudgetService:
             )
             reservation_events = result.scalars().all()
             for event in reservation_events:
-                run = await self._lock_run(db, event.budget_run_id)
-                settlement = await self._existing_event(db, run.id, event.reservation_key, "settlement")
-                task = (
-                    await db.execute(
-                        select(RuntimeTask).where(RuntimeTask.id == event.runtime_task_id).with_for_update()
-                    )
-                ).scalar_one_or_none()
-                is_unbound_reservation = event.runtime_task_id is None
-                if task is None:
-                    applicable_cutoff = unbound_reservation_cutoff if is_unbound_reservation else missing_task_cutoff
-                    if event.created_at > applicable_cutoff:
-                        continue
-                if task is not None and str(task.status) not in _TERMINAL_RUNTIME_TASK_STATUSES:
-                    continue
-                is_task_reservation = bool(
-                    task is not None
-                    and task.budget_run_id == event.budget_run_id
-                    and task.budget_reservation_key == event.reservation_key
-                )
-                if task is not None and not is_task_reservation:
-                    if task.completed_at is None or task.completed_at > nested_reservation_cutoff:
-                        continue
-
-                if settlement is not None:
-                    if settlement.runtime_task_id != event.runtime_task_id:
-                        raise RuntimeBudgetSettlementConflict(
-                            f"settlement runtime task conflict for {run.id}:{event.reservation_key}"
-                        )
-                    metadata = (
-                        task.metadata_json if task is not None and isinstance(task.metadata_json, Mapping) else {}
-                    )
-                    if is_task_reservation and isinstance(metadata.get("runtime_budget_actuals"), Mapping):
-                        declared_actual, _actual_source, _released = _orphan_reconciliation_actual(
-                            task,
-                            dict(event.amounts_json or {}),
-                        )
-                        settled_actual = {
-                            key: max(0, int((settlement.amounts_json or {}).get(key) or 0))
-                            for key in _DIMENSIONS
-                            if max(0, int((settlement.amounts_json or {}).get(key) or 0))
-                        }
-                        if settled_actual != declared_actual:
-                            raise RuntimeBudgetSettlementConflict(
-                                f"settlement actuals conflict for {run.id}:{event.reservation_key}"
+                budget_run_id = event.budget_run_id
+                runtime_task_id = event.runtime_task_id
+                source_event_id = event.id
+                run = None
+                task = None
+                try:
+                    async with db.begin_nested():
+                        run = await self._lock_run(db, event.budget_run_id)
+                        settlement = await self._existing_event(db, run.id, event.reservation_key, "settlement")
+                        task = (
+                            await db.execute(
+                                select(RuntimeTask).where(RuntimeTask.id == event.runtime_task_id).with_for_update()
                             )
+                        ).scalar_one_or_none()
+                        is_unbound_reservation = event.runtime_task_id is None
+                        if task is None:
+                            applicable_cutoff = (
+                                unbound_reservation_cutoff if is_unbound_reservation else missing_task_cutoff
+                            )
+                            if event.created_at > applicable_cutoff:
+                                continue
+                        if task is not None and str(task.status) not in _TERMINAL_RUNTIME_TASK_STATUSES:
+                            continue
+                        is_task_reservation = bool(
+                            task is not None
+                            and task.budget_run_id == event.budget_run_id
+                            and task.budget_reservation_key == event.reservation_key
+                        )
+                        if task is not None and not is_task_reservation:
+                            if task.completed_at is None or task.completed_at > nested_reservation_cutoff:
+                                continue
 
-                repaired = False
-                if settlement is None:
-                    estimated = dict(event.amounts_json or {})
-                    if is_unbound_reservation:
-                        actual = {}
-                        actual_source = "unbound_reservation_grace_expired"
-                        released_without_actual = sorted(key for key, value in estimated.items() if value)
-                    elif task is None:
-                        actual, actual_source, released_without_actual = _orphan_reconciliation_actual(
-                            None,
-                            estimated,
-                        )
-                    elif is_task_reservation:
-                        actual, actual_source, released_without_actual = _orphan_reconciliation_actual(
-                            task,
-                            estimated,
-                        )
-                    else:
-                        actual = {}
-                        actual_source = "nested_reservation_missing_settlement"
-                        released_without_actual = sorted(key for key, value in estimated.items() if value)
-                    self._release_reserved(run, estimated)
-                    self._increment_used(run, actual)
-                    db.add(
-                        self._event(
-                            run,
-                            event_type="settlement",
-                            reservation_key=event.reservation_key,
-                            allowed=True,
-                            would_deny=False,
-                            reason="orphaned_reservation_reconciled",
-                            amounts=actual,
-                            runtime_task_id=event.runtime_task_id,
-                            metadata={
-                                "source_event_id": str(event.id),
-                                "runtime_task_status": str(task.status) if task is not None else "missing",
-                                "runtime_task_type": str(task.task_type) if task is not None else "missing",
-                                "actual_source": actual_source,
-                                "released_without_actual_dimensions": released_without_actual,
-                                **(
-                                    {
-                                        "reservation_binding": "unbound",
-                                        "grace_seconds": int(effective_unbound_reservation_grace.total_seconds()),
-                                    }
-                                    if is_unbound_reservation
-                                    else {}
-                                ),
-                            },
-                        )
+                        if settlement is not None:
+                            if settlement.runtime_task_id != event.runtime_task_id:
+                                raise RuntimeBudgetSettlementConflict(
+                                    f"settlement runtime task conflict for {run.id}:{event.reservation_key}"
+                                )
+                            metadata = (
+                                task.metadata_json
+                                if task is not None and isinstance(task.metadata_json, Mapping)
+                                else {}
+                            )
+                            if is_task_reservation and isinstance(metadata.get("runtime_budget_actuals"), Mapping):
+                                declared_actual, _actual_source, _released = _orphan_reconciliation_actual(
+                                    task,
+                                    dict(event.amounts_json or {}),
+                                )
+                                settled_actual = {
+                                    key: max(0, int((settlement.amounts_json or {}).get(key) or 0))
+                                    for key in _DIMENSIONS
+                                    if max(0, int((settlement.amounts_json or {}).get(key) or 0))
+                                }
+                                if settled_actual != declared_actual:
+                                    raise RuntimeBudgetSettlementConflict(
+                                        f"settlement actuals conflict for {run.id}:{event.reservation_key}"
+                                    )
+
+                        repaired = False
+                        if settlement is None:
+                            estimated = dict(event.amounts_json or {})
+                            if is_unbound_reservation:
+                                actual = {}
+                                actual_source = "unbound_reservation_grace_expired"
+                                released_without_actual = sorted(key for key, value in estimated.items() if value)
+                            elif task is None:
+                                actual, actual_source, released_without_actual = _orphan_reconciliation_actual(
+                                    None,
+                                    estimated,
+                                )
+                            elif is_task_reservation:
+                                actual, actual_source, released_without_actual = _orphan_reconciliation_actual(
+                                    task,
+                                    estimated,
+                                )
+                            else:
+                                actual = {}
+                                actual_source = "nested_reservation_missing_settlement"
+                                released_without_actual = sorted(key for key, value in estimated.items() if value)
+                            self._release_reserved(run, estimated)
+                            self._increment_used(run, actual)
+                            db.add(
+                                self._event(
+                                    run,
+                                    event_type="settlement",
+                                    reservation_key=event.reservation_key,
+                                    allowed=True,
+                                    would_deny=False,
+                                    reason="orphaned_reservation_reconciled",
+                                    amounts=actual,
+                                    runtime_task_id=event.runtime_task_id,
+                                    metadata={
+                                        "source_event_id": str(event.id),
+                                        "runtime_task_status": str(task.status) if task is not None else "missing",
+                                        "runtime_task_type": str(task.task_type) if task is not None else "missing",
+                                        "actual_source": actual_source,
+                                        "released_without_actual_dimensions": released_without_actual,
+                                        **(
+                                            {
+                                                "reservation_binding": "unbound",
+                                                "grace_seconds": int(
+                                                    effective_unbound_reservation_grace.total_seconds()
+                                                ),
+                                            }
+                                            if is_unbound_reservation
+                                            else {}
+                                        ),
+                                    },
+                                )
+                            )
+                            tripped = self._breaker_tripped(run)
+                            if tripped:
+                                await self._apply_breaker(
+                                    db,
+                                    run,
+                                    tripped,
+                                    actor="settlement",
+                                    source="orphaned_reservation_reconciled",
+                                )
+                            repaired = True
+                        if is_task_reservation and task is not None and task.budget_admission_status != "settled":
+                            task.budget_admission_status = "settled"
+                            repaired = True
+                except Exception as exc:
+                    # DB/session errors can mean failed rollback, a lost connection, or repeating lock waits.
+                    # Fail and roll back the whole tick; isolate only errors from one row's own data.
+                    if isinstance(exc, SQLAlchemyError):
+                        raise
+                    # Permanent failures filling the oldest-first limit (daemon: 32) delay newer rows until fixed.
+                    # No quarantine marker is allowed here; use an operator fix or an owner-approved marker.
+                    logger.error(
+                        "Orphaned reservation failed: budget_run_id=%s runtime_task_id=%s source_event_id=%s "
+                        "error_type=%s exception_runtime_task_id=%s",
+                        budget_run_id,
+                        runtime_task_id,
+                        source_event_id,
+                        type(exc).__name__,
+                        getattr(exc, "runtime_task_id", None),
                     )
-                    tripped = self._breaker_tripped(run)
-                    if tripped:
-                        await self._apply_breaker(
-                            db,
-                            run,
-                            tripped,
-                            actor="settlement",
-                            source="orphaned_reservation_reconciled",
-                        )
-                    repaired = True
-                if is_task_reservation and task is not None and task.budget_admission_status != "settled":
-                    task.budget_admission_status = "settled"
-                    repaired = True
+                    # Rollback releases new row locks, but leaves unmodified ORM reads cached.
+                    if run is not None:
+                        db.expire(run)
+                    if task is not None:
+                        db.expire(task)
+                    continue
                 if repaired:
                     reconciled += 1
             await db.commit()
@@ -2186,7 +2259,7 @@ class RuntimeBudgetService:
                 if reservation is not None:
                     if reservation.runtime_task_id is not None and reservation.runtime_task_id != task.id:
                         raise RuntimeBudgetSettlementConflict(
-                            f"reservation runtime task conflict for {run.id}:{reservation_key}"
+                            f"reservation runtime task conflict for {run.id}:{reservation_key}", runtime_task_id=task.id
                         )
                     if reservation.runtime_task_id == task.id:
                         exact_actuals = runtime_task_actuals_for_outer_reservation(
@@ -2281,6 +2354,7 @@ class RuntimeBudgetService:
                             RuntimeTask.claimed_by.is_(None),
                         )
                         .with_for_update()
+                        .execution_options(populate_existing=True)
                     )
                 )
                 .scalars()
@@ -2293,7 +2367,8 @@ class RuntimeBudgetService:
                     if reservation is not None:
                         if reservation.runtime_task_id != task.id:
                             raise RuntimeBudgetSettlementConflict(
-                                f"reservation runtime task conflict for {run.id}:{reservation_key}"
+                                f"reservation runtime task conflict for {run.id}:{reservation_key}",
+                                runtime_task_id=task.id,
                             )
                         stamp_runtime_task_budget_actuals(
                             task,

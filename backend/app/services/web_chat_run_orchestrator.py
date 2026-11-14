@@ -236,6 +236,8 @@ async def _load_web_chat_context(state: _WebChatRunState) -> None:
     else:
         runtime_task, agent, user, model, fallback, history, session = loaded
     state.runtime_task = runtime_task
+    if (runtime_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}:
+        state.cancel_event.set()
     state.native_trigger_frame = getattr(runtime_task, "_native_trigger_frame", None)
     state.system_plan_mode = getattr(runtime_task, "_system_plan_mode", None)
     state.agent = agent
@@ -1264,13 +1266,13 @@ async def _bind_session_round_inputs(state: _WebChatRunState, round_index: int) 
 
 async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any) -> str | dict[str, Any]:
     state.active_provider_request_id = None
+    root_prepare = int(payload.get("continuation_index") or 0) == 0
     try:
         return await _prepare_session_model_request_transaction(state, **payload)
     except asyncio.CancelledError:
-        # The transaction's context has closed/rolled back before this runs.
-        # Its explicit commit may already have finished, so retain and settle
-        # that exact request identity. This callback never sends provider bytes.
-        if state.cancel_event.is_set() and state.active_provider_request_id is not None:
+        # Commit may have finished, including a separately shielded session close.
+        # Only the raced root prepare proves no request was sent by this round.
+        if root_prepare and state.cancel_event.is_set() and state.active_provider_request_id is not None:
             await _fail_session_model_request(
                 state,
                 round_index=int(payload["round_index"]),
@@ -1394,7 +1396,11 @@ async def _prepare_session_model_request_transaction(state: _WebChatRunState, **
                 else None
             )
         except ModelRoundNeedsReconciliation:
-            await db.commit()
+            commit = asyncio.ensure_future(db.commit())
+            try:
+                await asyncio.shield(commit)
+            except asyncio.CancelledError:
+                await commit
             raise
         state.active_provider_request_id = provider_request_id
         await db.commit()

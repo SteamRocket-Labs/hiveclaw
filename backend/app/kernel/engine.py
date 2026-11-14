@@ -3983,12 +3983,13 @@ async def _await_with_cancel(
     operation: Callable[[], Awaitable[Any]],
     *,
     cancel_event: asyncio.Event | None,
+    provider_request_sent: bool,
 ) -> Any:
     if cancel_event is None:
         return await operation()
 
     if cancel_event.is_set():
-        raise _KernelCancelledError(provider_request_sent=False)
+        raise _KernelCancelledError(provider_request_sent=provider_request_sent)
 
     work_task = asyncio.ensure_future(operation())
     cancel_task = asyncio.create_task(cancel_event.wait())
@@ -4003,14 +4004,20 @@ async def _await_with_cancel(
                 await work_task
             except asyncio.CancelledError:
                 pass
-            raise _KernelCancelledError
-        return await work_task
+            except Exception:
+                if not provider_request_sent:
+                    raise
+            raise _KernelCancelledError(provider_request_sent=provider_request_sent)
+        result = await work_task
     finally:
         cancel_task.cancel()
         if not work_task.done():
             work_task.cancel()
-        # Join the operation's rollback/close before its caller can settle.
+        # Join these tasks; a session may separately shield its post-commit close.
         await asyncio.gather(work_task, cancel_task, return_exceptions=True)
+    if cancel_event.is_set():
+        raise _KernelCancelledError(provider_request_sent=provider_request_sent)
+    return result
 
 
 async def _stream_with_cancel(
@@ -4019,7 +4026,9 @@ async def _stream_with_cancel(
     cancel_event: asyncio.Event | None,
     **kwargs: Any,
 ) -> Any:
-    return await _await_with_cancel(lambda: client.stream(**kwargs), cancel_event=cancel_event)
+    return await _await_with_cancel(
+        lambda: client.stream(**kwargs), cancel_event=cancel_event, provider_request_sent=True
+    )
 
 
 def _resolve_continuation_max_tokens(active_model: Any) -> int:

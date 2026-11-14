@@ -405,33 +405,34 @@ async def _execute_committed_provider_round(
     provider_request_id: str | None = None
     prepare_receipt: dict[str, Any] | None = None
     if request.model_request_prepare is not None:
-        try:
-            prepared = await support._await_with_cancel(
-                lambda: support._maybe_await(
-                    request.model_request_prepare(
-                        round_index=logical_round_index,
-                        messages=stream_messages,
-                        tools=request_tools or None,
-                        provider=provider,
-                        model=model,
-                        wire_request=wire_request,
-                        continuation_index=0,
-                        provider_idempotency_supported=provider_idempotency_supported,
-                        provider_idempotency_key_applied=False,
-                    )
-                ),
-                cancel_event=request.cancel_event,
+
+        async def prepare_request() -> None:
+            nonlocal provider_request_id, prepare_receipt
+            prepared = await support._maybe_await(
+                request.model_request_prepare(
+                    round_index=logical_round_index,
+                    messages=stream_messages,
+                    tools=request_tools or None,
+                    provider=provider,
+                    model=model,
+                    wire_request=wire_request,
+                    continuation_index=0,
+                    provider_idempotency_supported=provider_idempotency_supported,
+                    provider_idempotency_key_applied=False,
+                )
             )
-        except support._KernelCancelledError as exc:
-            exc.provider_request_sent = False
-            raise
-        if isinstance(prepared, dict):
-            # A committed-round resume receipt: the caller's durable seal is
-            # the authoritative model-authored response for this round.
-            prepare_receipt = dict(prepared)
-            provider_request_id = str(prepare_receipt.get("provider_request_id") or "") or None
-        elif prepared is not None:
-            provider_request_id = str(prepared)
+            if isinstance(prepared, dict):
+                # The durable seal is authoritative on committed-round resume.
+                prepare_receipt = dict(prepared)
+                provider_request_id = str(prepare_receipt.get("provider_request_id") or "") or None
+            elif prepared is not None:
+                provider_request_id = str(prepared)
+            # Retain identity even when preparation and cancellation finish together.
+            attempt_state["provider_request_id"] = provider_request_id
+
+        await support._await_with_cancel(
+            prepare_request, cancel_event=request.cancel_event, provider_request_sent=False
+        )
 
     llm_started_ms = support.monotonic_ms()
     attempt_state.update(
@@ -529,27 +530,21 @@ async def _execute_committed_provider_round(
                 )
 
             continuation_prepare = prepare_continuation
-    try:
-        response, continuation_receipts = await support._continue_after_output_cap(
-            client=continuation_client,
-            response=response,
-            stream_messages=stream_messages,
-            cancel_event=request.cancel_event,
-            active_model=active_model,
-            on_chunk=emit_chunk,
-            on_thinking=emit_thinking,
-            reasoning_kwargs=reasoning_kwargs,
-            round_index=logical_round_index,
-            model_request_prepare=continuation_prepare,
-            provider=provider,
-            model=model,
-            provider_idempotency_supported=provider_idempotency_supported,
-        )
-    except support._KernelCancelledError as exc:
-        # A continuation's pre-send cancel cannot undo the first physical
-        # request's send fact for this still-unsealed logical round.
-        exc.provider_request_sent = True
-        raise
+    response, continuation_receipts = await support._continue_after_output_cap(
+        client=continuation_client,
+        response=response,
+        stream_messages=stream_messages,
+        cancel_event=request.cancel_event,
+        active_model=active_model,
+        on_chunk=emit_chunk,
+        on_thinking=emit_thinking,
+        reasoning_kwargs=reasoning_kwargs,
+        round_index=logical_round_index,
+        model_request_prepare=continuation_prepare,
+        provider=provider,
+        model=model,
+        provider_idempotency_supported=provider_idempotency_supported,
+    )
     if final_reply_only and (response.tool_calls or not str(response.content or "").strip()):
         # Settle every physical response before rejecting this summary's tools or empty output.
         return {
@@ -2315,24 +2310,22 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         await _await_with_cancel(
                             lambda: _maybe_await(request.round_input_bind(logical_round_index)),
                             cancel_event=request.cancel_event,
+                            provider_request_sent=False,
                         )
                     )
                     if bound_round_inputs:
                         api_messages.extend(bound_round_inputs)
-                        await _await_with_cancel(
-                            lambda: _emit_event(
-                                {
-                                    "type": "session_round_inputs_bound",
-                                    "part": {
-                                        "type": "event",
-                                        "event_type": "session_round_inputs_bound",
-                                        "title": "Durable session inputs bound",
-                                        "round": logical_round_index,
-                                        "count": len(bound_round_inputs),
-                                    },
-                                }
-                            ),
-                            cancel_event=request.cancel_event,
+                        await _emit_event(
+                            {
+                                "type": "session_round_inputs_bound",
+                                "part": {
+                                    "type": "event",
+                                    "event_type": "session_round_inputs_bound",
+                                    "title": "Durable session inputs bound",
+                                    "round": logical_round_index,
+                                    "count": len(bound_round_inputs),
+                                },
+                            }
                         )
                 if not final_empty_search_reply and request.mid_run_message_drain is not None:
                     try:
@@ -2340,6 +2333,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             await _await_with_cancel(
                                 lambda: _maybe_await(request.mid_run_message_drain()),
                                 cancel_event=request.cancel_event,
+                                provider_request_sent=False,
                             )
                         )
                     except _KernelCancelledError:
@@ -2349,20 +2343,17 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         logger.warning("[Kernel] mid-run message drain failed: %s", drain_exc)
                     if drained:
                         api_messages.extend(drained)
-                        await _await_with_cancel(
-                            lambda: _emit_event(
-                                {
-                                    "type": "mid_run_user_messages_drained",
-                                    "part": {
-                                        "type": "event",
-                                        "event_type": "mid_run_user_messages_drained",
-                                        "title": "User message queued during run",
-                                        "round": round_i,
-                                        "count": len(drained),
-                                    },
-                                }
-                            ),
-                            cancel_event=request.cancel_event,
+                        await _emit_event(
+                            {
+                                "type": "mid_run_user_messages_drained",
+                                "part": {
+                                    "type": "event",
+                                    "event_type": "mid_run_user_messages_drained",
+                                    "title": "User message queued during run",
+                                    "round": round_i,
+                                    "count": len(drained),
+                                },
+                            }
                         )
                 # Runtime reminders (T-G1): the scheduler decides what this
                 # round gets (plan FULL/SPARSE, work-ledger nudge, round
@@ -2407,28 +2398,29 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 if _transient_reminders:
                     # M6 observability: reminders no longer appear in the
                     # persisted transcript, so emit an event per injection.
-                    await _await_with_cancel(
-                        lambda: _emit_event(
-                            {
-                                "type": "reminder_injected",
-                                "part": {
-                                    "type": "event",
-                                    "event_type": "reminder_injected",
-                                    "title": "Runtime Reminder",
-                                    "round": round_i,
-                                    "count": len(_transient_reminders),
-                                    "chars": sum(len(t) for t in _transient_reminders),
-                                    "context_candidates": _runtime_reminder_candidates,
-                                },
-                            }
-                        ),
-                        cancel_event=request.cancel_event,
+                    await _emit_event(
+                        {
+                            "type": "reminder_injected",
+                            "part": {
+                                "type": "event",
+                                "event_type": "reminder_injected",
+                                "title": "Runtime Reminder",
+                                "round": round_i,
+                                "count": len(_transient_reminders),
+                                "chars": sum((len(t) for t in _transient_reminders)),
+                                "context_candidates": _runtime_reminder_candidates,
+                            },
+                        }
                     )
 
                 # Apply capability-driven cache hints.
                 ptl_retries = 0
                 while True:
-                    await _await_with_cancel(_prepare_api_messages_for_request, cancel_event=request.cancel_event)
+                    await _await_with_cancel(
+                        _prepare_api_messages_for_request,
+                        cancel_event=request.cancel_event,
+                        provider_request_sent=False,
+                    )
                     stream_messages = _clone_api_messages(api_messages)
                     if _transient_reminders:
                         stream_messages = stream_messages + [
@@ -2559,6 +2551,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     round_index=logical_round_index,
                                     provider_request_id=provider_request_id,
                                     error_class="cancelled",
+                                    delivery_state="unknown" if exc.provider_request_sent else "rejected",
                                     retry_safe=False,
                                     provider_request_sent=exc.provider_request_sent,
                                 )
@@ -4070,6 +4063,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             user_id=request.user_id,
                         ),
                         cancel_event=request.cancel_event,
+                        provider_request_sent=False,
                     )
                     if len(compressed) < len(conv_dicts):
                         # Post-compaction restoration: re-inject identity + work ledger

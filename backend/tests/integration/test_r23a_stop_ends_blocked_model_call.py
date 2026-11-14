@@ -241,6 +241,7 @@ class PreparationGate:
         "model_request_prepare",
         "model_request_committed",
         "model_request_committed_effectful",
+        "model_request_locked_query",
     ],
 )
 async def test_case_d_stop_during_next_round_preparation(
@@ -267,6 +268,27 @@ async def test_case_d_stop_during_next_round_preparation(
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
     clock = _control_channel(monkeypatch, seed, remote=False)
     gate = PreparationGate()
+    stop_committed = asyncio.Event()
+    query_pid = None
+    if stage == "model_request_locked_query":
+        signal = web_chat_runtime.signal_web_chat_cancel
+
+        async def signal_during_query(**kwargs):
+            # The real stop transaction commits before signaling. Let the
+            # prepare take the transcript lock only after that commit.
+            stop_committed.set()
+            from sqlalchemy import text
+
+            async with owner_sessionmaker() as db:
+                async with asyncio.timeout(5):
+                    while query_pid is None or not await db.scalar(
+                        text("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=:pid AND wait_event='PgSleep')"),
+                        {"pid": query_pid},
+                    ):
+                        await asyncio.sleep(0.01)
+            return await signal(**kwargs)
+
+        monkeypatch.setattr(web_chat_runtime, "signal_web_chat_cancel", signal_during_query)
     async with owner_sessionmaker() as db:
         original_description = (await db.get(Agent, seed["agent_id"])).role_description
 
@@ -287,7 +309,22 @@ async def test_case_d_stop_during_next_round_preparation(
         return await bind(db, **kwargs)
 
     async def prepare_request(db, **kwargs):
+        nonlocal query_pid
         if kwargs["round_index"] == 2:
+            if stage == "model_request_locked_query":
+                from app.services.chat_transcript import lock_transcript_session
+                from sqlalchemy import text
+
+                gate.started.set()
+                await stop_committed.wait()
+                await lock_transcript_session(db, session_id=seed["session_id"])
+                query_pid = await db.scalar(text("SELECT pg_backend_pid()"))
+                try:
+                    await db.execute(text("SELECT pg_sleep(30)"))
+                    gate.finished = True
+                except asyncio.CancelledError:
+                    gate.abandoned.set()
+                    raise
             if stage == "model_request_prepare":
                 await uncommitted_probe(db)
                 await gate.wait()
@@ -363,6 +400,14 @@ async def test_case_d_stop_during_next_round_preparation(
         assert gate.abandoned.is_set() and not gate.finished
         assert len(provider.requests) == 1, "No provider request may be sent for round 2"
         assert description == original_description, "Interrupted preparation must roll back its transaction"
+        if stage == "model_request_locked_query":
+            from sqlalchemy import func
+
+            async with owner_sessionmaker() as db:
+                lock_key = int.from_bytes(seed["session_id"].bytes[:8], byteorder="big", signed=True)
+                assert await db.scalar(select(func.pg_try_advisory_xact_lock(lock_key))), (
+                    "The query lock must be released"
+                )
         assert all(row.state not in {"prepared", "streaming", "needs_reconciliation"} for row in rounds)
         if stage != "round_input_bind":
             # Input binding already committed a placeholder before context
@@ -494,7 +539,9 @@ async def test_output_continuation_cancel_does_not_erase_prior_provider_send(
         assert (await _stop(owner_sessionmaker, seed))["accepted"] is True
         gate.release.set()
         await asyncio.wait_for(asyncio.shield(worker), timeout=10)
-        assert continuation_cancel == [False], "The continuation's own provider request did not start"
+        # Stream call sites conservatively retain the logical root's send fact,
+        # including a continuation precheck; preparation alone uses False.
+        assert continuation_cancel == [True], "A continuation stop must preserve the original send fact"
         assert len(provider.requests) == 1
         async with owner_sessionmaker() as db:
             run = await db.get(RuntimeTask, seed["run_id"])
@@ -510,3 +557,490 @@ async def test_output_continuation_cancel_does_not_erase_prior_provider_send(
         if not worker.done():
             worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
+
+
+async def _reclaim_stopped_run(owner, seed, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.runtime_task import RuntimeTask
+    from app.services import web_chat_runtime
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import _claim_run
+
+    async with owner() as db:
+        run = await db.get(RuntimeTask, seed["run_id"])
+        assert run.status == "running" and run.metadata_json["cancel_state"] == "cancelling"
+        run.claim_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await db.commit()
+    claimed = await _claim_run(owner, seed["run_id"], "r23b-reclaimed-worker")
+    assert len(claimed) == 1 and claimed[0].attempt_count == 2
+    assert claimed[0].metadata_json["reclaimed_expired_claim"] is True
+    loaded = []
+    resume = web_chat_runtime._session_restart_resume_history
+
+    async def observe_resume(db, task):
+        loaded.append(task.attempt_count)
+        return await resume(db, task)
+
+    monkeypatch.setattr(web_chat_runtime, "_session_restart_resume_history", observe_resume)
+    worker = await _dispatch(owner, seed["run_id"])
+    await asyncio.wait_for(asyncio.shield(worker), timeout=15)
+    assert loaded and set(loaded) == {2}, "The real claim must enter the restart loader"
+
+
+async def _assert_sealed_once(owner, seed, result_id, expected):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult
+
+    async with owner() as db:
+        row = await db.get(SessionModelResult, result_id)
+        run = await db.get(RuntimeTask, seed["run_id"])
+        seals = list(
+            await db.scalars(
+                select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.result_id == result_id,
+                    ChatTranscriptEvent.item_kind == "result_commit",
+                    ChatTranscriptEvent.lifecycle.in_(["failed", "needs_reconciliation"]),
+                )
+            )
+        )
+        assert row.state == expected and row.seal_json["error_class"] == "cancelled"
+        assert run.status == ("killed" if expected == "failed" else "needs_reconciliation")
+        assert len(seals) == 1, "A stopped request must have exactly one closing seal"
+        return row.version
+
+
+async def test_round2_prepare_and_cancel_finish_in_the_same_turn(t2_work, owner_sessionmaker, monkeypatch):
+    import app.runtime.invoker as invoker
+    from app.models.session_v2 import SessionModelResult
+    from app.services import web_chat_run_orchestrator as orchestrator, web_chat_runtime
+
+    seed = t2_work
+    provider = ScriptedLLMClient([{"content": "Must not send"}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
+    _control_channel(monkeypatch, seed, remote=False)
+    signal = web_chat_runtime.signal_web_chat_cancel
+    prepare = orchestrator._prepare_session_model_request
+    prepared, accepted, deliver = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    returned = []
+
+    async def defer_signal(**kwargs):
+        accepted.set()  # The real stop transaction has committed.
+        await deliver.wait()
+        return await signal(**kwargs)
+
+    async def finish_with_stop(state, **payload):
+        result = await prepare(state, **payload)
+        prepared.set()
+        await accepted.wait()
+        returned.append(result)
+        # No await: the successful preparation and event finish together.
+        state.cancel_event.set()
+        deliver.set()
+        return result
+
+    monkeypatch.setattr(web_chat_runtime, "signal_web_chat_cancel", defer_signal)
+    monkeypatch.setattr(orchestrator, "_prepare_session_model_request", finish_with_stop)
+    worker = await _dispatch(owner_sessionmaker, seed["run_id"])
+    try:
+        await asyncio.wait_for(prepared.wait(), timeout=20)
+        assert (await _stop(owner_sessionmaker, seed))["accepted"] is True
+        await asyncio.wait_for(asyncio.shield(worker), timeout=10)
+        assert returned and provider.requests == []
+        async with owner_sessionmaker() as db:
+            row = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
+            result_id = row.id
+            assert row.provider_request_id == returned[0]
+        await _assert_sealed_once(owner_sessionmaker, seed, result_id, "failed")
+    finally:
+        deliver.set()
+        if not worker.done():
+            worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.parametrize("snapshot", ["placeholder", "full", "full_effectful"])
+async def test_round2_crash_after_accepted_stop_is_reclaimed_without_sending(
+    t2_work, owner_sessionmaker, monkeypatch, snapshot
+):
+    import app.runtime.invoker as invoker
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult
+    from app.services import session_model_round as rounds, web_chat_runtime
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import SimulatedWorkerCrash
+
+    seed = t2_work
+    provider = ScriptedLLMClient([{"content": "A stopped run must not send"}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
+    _control_channel(monkeypatch, seed, remote=False)
+    ready = asyncio.Event()
+    bind, prepare, commit = rounds.bind_round_inputs, rounds.prepare_model_request, AsyncSession.commit
+
+    async def bind_placeholder(db, **kwargs):
+        result = await bind(db, **kwargs)
+        if snapshot == "placeholder":
+            db.info["r23b_crash_after_commit"] = True
+        return result
+
+    async def prepare_full(db, **kwargs):
+        if snapshot == "full_effectful":
+            kwargs["wire_request"] = {**kwargs["wire_request"], "mcp_servers": [{"name": "possibly-sent"}]}
+        result = await prepare(db, **kwargs)
+        if snapshot != "placeholder":
+            db.info["r23b_crash_after_commit"] = True
+        return result
+
+    async def die_before_seal(db):
+        await commit(db)
+        if db.info.pop("r23b_crash_after_commit", False):
+            ready.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # Abrupt process death runs no preparation-failure callback.
+                raise SimulatedWorkerCrash()
+
+    monkeypatch.setattr(rounds, "bind_round_inputs", bind_placeholder)
+    monkeypatch.setattr(rounds, "prepare_model_request", prepare_full)
+    monkeypatch.setattr(AsyncSession, "commit", die_before_seal)
+    worker = await _dispatch(owner_sessionmaker, seed["run_id"])
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=20)
+        assert (await _stop(owner_sessionmaker, seed))["accepted"] is True
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        async with owner_sessionmaker() as db:
+            run = await db.get(RuntimeTask, seed["run_id"])
+            row = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
+            assert run.status == "running" and run.metadata_json["cancel_state"] == "cancelling"
+            assert row.state == "prepared" and row.seal_json is None
+            result_id, version = row.id, row.version
+        assert provider.requests == [] and seed["run_id"].hex not in web_chat_runtime._CANCEL_EVENTS
+        monkeypatch.setattr(rounds, "bind_round_inputs", bind)
+        monkeypatch.setattr(rounds, "prepare_model_request", prepare)
+        monkeypatch.setattr(AsyncSession, "commit", commit)
+        await _reclaim_stopped_run(owner_sessionmaker, seed, monkeypatch)
+        assert provider.requests == [], "A reclaimed stopped task must never send"
+        expected = "needs_reconciliation" if snapshot == "full_effectful" else "failed"
+        assert await _assert_sealed_once(owner_sessionmaker, seed, result_id, expected) == version + 1
+        await web_chat_runtime.execute_web_chat_run(seed["run_id"])
+        assert provider.requests == []
+        assert await _assert_sealed_once(owner_sessionmaker, seed, result_id, expected) == version + 1
+    finally:
+        if not worker.done():
+            worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
+async def test_round2_asyncio_cancel_in_continuation_prepare_preserves_sent_root(
+    t2_work, owner_sessionmaker, monkeypatch
+):
+    import app.runtime.invoker as invoker
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult
+    from app.services import session_model_round as rounds
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    seed = t2_work
+    provider = ScriptedLLMClient([{"content": "Partial", "finish_reason": "length"}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
+    _control_channel(monkeypatch, seed, remote=False)
+    ready = asyncio.Event()
+    prepare, commit = rounds.prepare_model_request, AsyncSession.commit
+    root_id = []
+
+    async def prepare_request(db, **kwargs):
+        if not kwargs.get("continuation_index"):
+            kwargs["wire_request"] = {**kwargs["wire_request"], "mcp_servers": [{"name": "possibly-sent"}]}
+        result = await prepare(db, **kwargs)
+        if kwargs.get("continuation_index"):
+            db.info["r23b_continuation_commit"] = True
+        else:
+            root_id.append(result)
+        return result
+
+    async def commit_continuation(db):
+        await commit(db)
+        if db.info.pop("r23b_continuation_commit", False):
+            ready.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(rounds, "prepare_model_request", prepare_request)
+    monkeypatch.setattr(AsyncSession, "commit", commit_continuation)
+    worker = await _dispatch(owner_sessionmaker, seed["run_id"])
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=20)
+        assert (await _stop(owner_sessionmaker, seed))["accepted"] is True
+        worker.cancel()  # Process shutdown while the continuation prepare exits.
+        await asyncio.gather(worker, return_exceptions=True)
+        async with owner_sessionmaker() as db:
+            assert (await db.get(RuntimeTask, seed["run_id"])).status == "running", "Do not kill a possibly-sent root"
+            root = await db.scalar(
+                select(SessionModelResult).where(SessionModelResult.provider_request_id == root_id[0])
+            )
+            result_id = root.id
+        monkeypatch.setattr(rounds, "prepare_model_request", prepare)
+        monkeypatch.setattr(AsyncSession, "commit", commit)
+        await _reclaim_stopped_run(owner_sessionmaker, seed, monkeypatch)
+        assert len(provider.requests) == 1
+        await _assert_sealed_once(owner_sessionmaker, seed, result_id, "needs_reconciliation")
+    finally:
+        if not worker.done():
+            worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.parametrize("lane", ["web", "delegated"])
+async def test_round2_reconciliation_commit_survives_cancel(t2_work, owner_sessionmaker, monkeypatch, lane):
+    from types import SimpleNamespace
+
+    from app.models.agent import Agent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult
+    from app.models.user import User
+    from app.services import session_model_round as rounds, web_chat_run_orchestrator as orchestrator, web_chat_runtime
+    from app.services.delegation_session_runtime import DelegationSessionRuntime
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from tests.services.test_r18a_ambiguous_send_classification import _prepare_round
+
+    seed = t2_work
+    common = dict(
+        tenant_id=seed["tenant_id"],
+        agent_id=seed["agent_id"],
+        session_id=seed["session_id"],
+        run_id=seed["run_id"],
+        turn_id=seed["turn_id"],
+    )
+    async with owner_sessionmaker() as db:
+        request_id = await _prepare_round(
+            db, {**common, "round_index": 1}, {"mcp_servers": [{"name": "possibly-sent"}]}
+        )
+        run, agent, user = (
+            await db.get(RuntimeTask, seed["run_id"]),
+            await db.get(Agent, seed["agent_id"]),
+            await db.get(User, seed["user_id"]),
+        )
+    event = asyncio.Event()
+    if lane == "web":
+        state = SimpleNamespace(
+            run_uuid=seed["run_id"],
+            ports=web_chat_runtime._web_chat_run_ports(),
+            cancel_event=event,
+            agent=agent,
+            user=user,
+            runtime_task=run,
+            session_id=str(seed["session_id"]),
+            metadata={},
+            active_provider_request_id=None,
+        )
+
+        async def prepare():
+            return await orchestrator._prepare_session_model_request(state, round_index=1, messages=[])
+
+        expected_error = rounds.ModelRoundNeedsReconciliation
+    else:
+        from app.kernel.contracts import SessionRestartRecoveryRequired
+
+        runtime = DelegationSessionRuntime(
+            scope=common,
+            attempt_owner=f"{run.claimed_by}:{run.claim_version}:{run.attempt_count}",
+            session_context=SimpleNamespace(),
+        )
+
+        async def prepare():
+            return await runtime.prepare(round_index=1, messages=[])
+
+        expected_error = SessionRestartRecoveryRequired
+    ready, release = asyncio.Event(), asyncio.Event()
+    commit = AsyncSession.commit
+
+    async def require_reconciliation(db, **_kwargs):
+        # Exercise the actual transaction's exception/commit boundary with
+        # the same staged row transition as ambiguous prepare takeover.
+        row = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id))
+        row.state, row.reconciliation_owner = "needs_reconciliation", "session_model_round:ambiguous_prepare"
+        row.version += 1
+        db.info["r23b_reconciliation_commit"] = True
+        raise rounds.ModelRoundNeedsReconciliation("model_round_provider_send_is_ambiguous")
+
+    async def pause_commit(db):
+        if db.info.pop("r23b_reconciliation_commit", False):
+            ready.set()
+            await release.wait()
+        await commit(db)
+
+    monkeypatch.setattr(rounds, "prepare_model_request", require_reconciliation)
+    monkeypatch.setattr(AsyncSession, "commit", pause_commit)
+    task = asyncio.create_task(prepare())
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=10)
+        event.set()
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+        async with owner_sessionmaker() as db:
+            row = await db.scalar(
+                select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id)
+            )
+            assert row.state == "needs_reconciliation", (lane, row.state, type(outcome).__name__)
+        assert isinstance(outcome, expected_error), outcome
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_round2_stream_error_during_stop_preserves_r18a(t2_work, owner_sessionmaker, monkeypatch):
+    import app.runtime.invoker as invoker
+    from app.models.session_v2 import SessionModelResult
+    from app.services import session_model_round as rounds
+
+    seed = t2_work
+    ready = asyncio.Event()
+
+    class ErrorOnCancel(ScriptedLLMClient):
+        async def stream(self, **kwargs):
+            self.requests.append(kwargs)
+            ready.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise ConnectionError("Provider socket closed during stop")
+
+    provider = ErrorOnCancel([])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
+    _control_channel(monkeypatch, seed, remote=False)
+    prepare = rounds.prepare_model_request
+
+    async def prepare_effectful(db, **kwargs):
+        kwargs["wire_request"] = {**kwargs["wire_request"], "mcp_servers": [{"name": "possibly-sent"}]}
+        return await prepare(db, **kwargs)
+
+    monkeypatch.setattr(rounds, "prepare_model_request", prepare_effectful)
+    worker = await _dispatch(owner_sessionmaker, seed["run_id"])
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=20)
+        assert (await _stop(owner_sessionmaker, seed))["accepted"] is True
+        await asyncio.wait_for(asyncio.shield(worker), timeout=10)
+        async with owner_sessionmaker() as db:
+            row = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
+            result_id = row.id
+        assert len(provider.requests) == 1
+        await _assert_sealed_once(owner_sessionmaker, seed, result_id, "needs_reconciliation")
+    finally:
+        if not worker.done():
+            worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
+async def test_round2_durable_stop_survives_death_before_any_prepared_row(t2_work, owner_sessionmaker, monkeypatch):
+    import app.runtime.invoker as invoker
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult
+    from app.services import session_model_round as rounds
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import SimulatedWorkerCrash
+
+    seed = t2_work
+    provider = ScriptedLLMClient([{"content": "A durable stop must prevent the first send"}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
+    _control_channel(monkeypatch, seed, remote=False)
+    ready = asyncio.Event()
+    bind = rounds.bind_round_inputs
+
+    async def die_before_bind_commit(db, **_kwargs):
+        await db.execute(select(1))  # A real transaction, with no prepared row yet.
+        ready.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise SimulatedWorkerCrash()
+
+    monkeypatch.setattr(rounds, "bind_round_inputs", die_before_bind_commit)
+    worker = await _dispatch(owner_sessionmaker, seed["run_id"])
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=20)
+        assert (await _stop(owner_sessionmaker, seed))["accepted"] is True
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        async with owner_sessionmaker() as db:
+            assert not list(
+                await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
+            )
+        monkeypatch.setattr(rounds, "bind_round_inputs", bind)
+        await _reclaim_stopped_run(owner_sessionmaker, seed, monkeypatch)
+        assert provider.requests == [], "Recreate the event from durable intent even without a prepared row"
+        async with owner_sessionmaker() as db:
+            run = await db.get(RuntimeTask, seed["run_id"])
+            assert run.status == "killed" and run.metadata_json["cancel_state"] == "cancelled"
+            assert not list(
+                await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
+            )
+    finally:
+        if not worker.done():
+            worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
+async def test_round2_stop_during_preparation_race_cleanup_is_still_unsent(t2_work, owner_sessionmaker, monkeypatch):
+    import app.runtime.invoker as invoker
+    from app.models.session_v2 import SessionModelResult
+    from app.services import session_model_round as rounds, web_chat_run_orchestrator as orchestrator
+
+    seed = t2_work
+    provider = ScriptedLLMClient([{"content": "Must not send"}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
+    _control_channel(monkeypatch, seed, remote=False)
+    returned, cleanup, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    prepare, prepare_round, gather = (
+        orchestrator._prepare_session_model_request,
+        rounds.prepare_model_request,
+        asyncio.gather,
+    )
+    held = False
+
+    async def effectful_snapshot(db, **kwargs):
+        kwargs["wire_request"] = {**kwargs["wire_request"], "mcp_servers": [{"name": "known-unsent"}]}
+        return await prepare_round(db, **kwargs)
+
+    async def record_return(state, **payload):
+        result = await prepare(state, **payload)
+        returned.set()
+        return result
+
+    def hold_race_cleanup(*tasks, **kwargs):
+        nonlocal held
+        joined = gather(*tasks, **kwargs)
+        if returned.is_set() and not held and len(tasks) == 2 and all(isinstance(t, asyncio.Task) for t in tasks):
+            held = True
+
+            async def after_join():
+                result = await joined
+                cleanup.set()
+                await release.wait()
+                return result
+
+            return after_join()
+        return joined
+
+    monkeypatch.setattr(rounds, "prepare_model_request", effectful_snapshot)
+    monkeypatch.setattr(orchestrator, "_prepare_session_model_request", record_return)
+    monkeypatch.setattr(asyncio, "gather", hold_race_cleanup)
+    worker = await _dispatch(owner_sessionmaker, seed["run_id"])
+    try:
+        await asyncio.wait_for(cleanup.wait(), timeout=20)
+        assert (await _stop(owner_sessionmaker, seed))["accepted"] is True
+        release.set()
+        await asyncio.wait_for(asyncio.shield(worker), timeout=10)
+        assert provider.requests == [], "Preparation cleanup is still before the provider handoff"
+        async with owner_sessionmaker() as db:
+            row = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
+            result_id = row.id
+        await _assert_sealed_once(owner_sessionmaker, seed, result_id, "failed")
+    finally:
+        release.set()
+        if not worker.done():
+            worker.cancel()
+        await gather(worker, return_exceptions=True)

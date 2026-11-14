@@ -284,8 +284,9 @@ def test_kind_b_colleague_result_refusal_page_says_not_done() -> None:
     text = _result_text_view(payload)
     for leak in ("source_access_denied", "content_source_changed", "hive.runtime_result_page.v1", "result_ref"):
         assert leak not in text, leak
-    # X5a-2: a refusal without a result kind cannot claim a colleague result.
-    # It still states that the read did not happen and hides the raw reason.
+    # X5a r2: real refusal pages omit source_kind, so only a generic failed
+    # read is justified. This checks typed state and secrecy; the mounted
+    # frontend regression separately checks the definite "not read" sentence.
     assert payload["member_summary"] == {"kind": "runtime_result", "state": "not_done"}
 
 

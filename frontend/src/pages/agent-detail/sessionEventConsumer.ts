@@ -626,7 +626,8 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
     const runId = key(item.scope.run_id);
     const runIndex = messages.indexOf(message);
     const inputIndex = messages.findIndex(input => input.role === 'user'
-      && key(input.sessionItem?.payload?.legacy_run_id || recordValue(input.sessionItem?.payload?.metadata)?.runtime_task_id) === runId);
+      && key(input.sessionItem?.payload?.legacy_run_id || input.sessionItem?.payload?.target_run_id
+        || recordValue(input.sessionItem?.payload?.metadata)?.runtime_task_id) === runId);
     if (inputIndex > runIndex) {
       messages.splice(runIndex, 1);
       messages.splice(inputIndex, 0, message);

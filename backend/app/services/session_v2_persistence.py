@@ -1397,14 +1397,12 @@ async def append_session_events(
             from app.models.runtime_task import RuntimeTask
 
             task = await db.get(RuntimeTask, _uuid(scope["run_id"], "run_id"))
-            if task is not None:
-                delegated = task.task_type == "delegation"
-                task_agent = task.child_agent_id if delegated else task.parent_agent_id
-                task_session = task.child_session_id if delegated else task.parent_session_id
-                if (task.tenant_id == tenant_uuid and task_agent == agent_uuid
-                    and _uuid_or_none(task_session) == session_uuid and task.started_at is not None):
-                    draft = replace(draft, payload={**draft.payload, "started_at": task.started_at.isoformat()},
-                        content_hash=None)
+            if (task is not None and task.tenant_id == tenant_uuid and task.started_at is not None
+                and any(task_agent == agent_uuid and str(task_session or "").replace("-", "").lower() == session_uuid.hex
+                    for task_agent, task_session in ((task.parent_agent_id, task.parent_session_id),
+                                                    (task.child_agent_id, task.child_session_id)))):
+                draft = replace(draft, payload={**draft.payload, "started_at": task.started_at.isoformat()},
+                    content_hash=None)
         effective_content_hash = draft.content_hash or _sha256(draft.payload)
         persisted_at = datetime.now(timezone.utc)
         envelope: dict[str, Any] = {

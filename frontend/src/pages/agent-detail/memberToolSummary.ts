@@ -155,7 +155,7 @@ export function memberToolSummarySentence(summary: MemberToolSummary, t: TFuncti
   if (summary.state === 'unknown') return t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.');
   if (summary.kind === 'runtime_result') {
     return summary.state === 'done' ? t('agent.chat.disclosure.resultReturned', 'Result returned')
-      : t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.');
+      : t('agent.chat.disclosure.resultReadFailed', "Couldn't read the result this time.");
   }
   if (summary.kind === 'delegation') {
     if (summary.errorClass === 'cancelled' && summary.taskId) {

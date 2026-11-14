@@ -96,7 +96,8 @@ it('X5a-1: a first-task started notice names the child and keeps the parent head
     for (const messages of both(state)) {
       const { container, model, unmount } = mount(messages);
       expect(model.header.status).toBe('running');
-      expect(container.querySelector('[role="img"][aria-label="等待处理"]')).toBeTruthy();
+      // X5a r2: background colleague work needs no member action.
+      expect(container.querySelector('[role="img"][aria-label="等待同事"] .tabler-icon-clock')).toBeTruthy();
       unmount();
     }
     const finished = [...state, { ...compat(state.length + 1, 'child_session', '2026-11-14T05:12:49.852Z', '同事已完成这项工作。', {
@@ -105,7 +106,7 @@ it('X5a-1: a first-task started notice names the child and keeps the parent head
     for (const messages of both(finished)) {
       const { container, model, unmount } = mount(messages);
       expect(model.header.status).toBe('complete');
-      expect(container.querySelector('[role="img"][aria-label="等待处理"]')).toBeNull();
+      expect(container.querySelector('[role="img"][aria-label="等待同事"]')).toBeNull();
       unmount();
     }
   }
@@ -132,6 +133,34 @@ it('X5a-3: cross-block hex/UUID task identities keep one stopped sentence and th
       expect(rows.every(r => r.getAttribute('data-status') === 'cancelled' && r.querySelector('[role="img"][aria-label="已停止"]'))).toBe(true);
       unmount();
     }
+  }
+});
+
+it('X5a-r2-2: a queued run keeps T2−T0 despite later claim times on running, terminal and workbench', () => {
+  const start = '2026-11-14T04:35:00Z';
+  const events = [{ ...input(), occurred_at: start, persisted_at: start },
+    event(2, 'run', 'queued', parent, start, {}),
+    event(3, 'run', 'running', parent, '2026-11-14T04:37:00Z', { started_at: '2026-11-14T04:37:00Z' }),
+    event(4, 'assistant_commentary', 'completed', 'queued-work', '2026-11-14T04:37:05Z', { content: '整理结果' }),
+    event(5, 'run', 'completed', parent, '2026-11-14T04:37:10Z', { started_at: '2026-11-14T04:37:00Z' }),
+  ];
+  for (const messages of both(events.slice(0, -1))) {
+    const { model, unmount } = mount(messages, { sessionWorkbench: { runtime_tasks: [{ id: parent, status: 'running',
+      started_at: '2026-11-14T04:37:00Z' }] } });
+    const runs = model.cells.filter(c => c.kind === 'active_run');
+    expect(runs).toHaveLength(1);
+    expect(runs[0].timeline.status).toBe('running');
+    expect(Date.parse(runs[0].timeline.startedAt!)).toBe(Date.parse(start));
+    unmount();
+  }
+  for (const messages of both(events)) {
+    const { model, unmount } = mount(messages, { sessionWorkbench: { runtime_tasks: [{ id: parent, status: 'completed',
+      started_at: '2026-11-14T04:37:00Z', completed_at: '2026-11-14T04:37:10Z' }] } });
+    const runs = model.cells.filter(c => c.kind === 'active_run');
+    expect(runs).toHaveLength(1);
+    expect(runs[0].timeline.status).toBe('done');
+    expect(runs[0].timeline.durationMs).toBe(130000);
+    unmount();
   }
 });
 
@@ -183,6 +212,11 @@ function assertStoppedChild(events: Event[]) {
   }
 }
 it('X5a-5: a terminal colleague run before its legacy task message does not create a second running block', () => assertStoppedChild(stoppedChild()));
+it('X5a-r2-6: V2 target_run_id orders the stopped block after its task', () => {
+  const events = stoppedChild();
+  events[1].payload = { content: '整理季度复盘', target_run_id: child };
+  assertStoppedChild(events);
+});
 // The backend integration exports actual persisted events through the member serializer.
 it.skipIf(!process.env.X5A_CHILD_EVENTS)('X5a-5 integration: real PostgreSQL stop events render stopped after their task', () => {
   assertStoppedChild(JSON.parse(readFileSync(process.env.X5A_CHILD_EVENTS!, 'utf8')));
@@ -198,9 +232,37 @@ it('X5a-6: colleague-check and background rows use the accessible waiting marker
     const { container, model, unmount } = mount(messages);
     const rows = [...container.querySelectorAll('.run-step, .run-tool-history-item')];
     expect(rows).toHaveLength(2);
-    expect(rows.every(r => r.getAttribute('data-status') === 'blocked' && r.querySelector('[role="img"][aria-label="等待处理"]'))).toBe(true);
+    // X5a r2: keep blocked, but distinguish passive waiting from an approval.
+    expect(rows.every(r => r.getAttribute('data-status') === 'blocked' && r.querySelector('[role="img"][aria-label="等待同事"] .tabler-icon-clock'))).toBe(true);
+    expect(container.querySelector('[role="img"][aria-label="等待处理"]')).toBeNull();
     expect(container.querySelector('.tabler-icon-loader-2')).toBeNull();
     expect(model.header.status).not.toBe('complete');
+    unmount();
+  }
+});
+
+it('X5a-r2-3: a refused runtime result read definitely did not read; unknown stays unconfirmed', () => {
+  for (const state of ['not_done', 'unknown']) {
+    const events = [input(), ...tool(2, 'runtime_result', state)];
+    events[1].payload.tool_name = events[2].payload.tool_name = 'read_runtime_result';
+    for (const messages of both(events)) {
+      const { container, unmount } = mount(messages);
+      if (state === 'not_done') {
+        expect(container.textContent).toContain('这次没读到结果');
+        expect(container.textContent).not.toContain('结果尚未确认');
+      } else expect(container.textContent).toContain('结果尚未确认');
+      unmount();
+    }
+  }
+});
+
+it.skipIf(!process.env.X5A_FIRST_TASK_EVENTS)('X5a-r2-1 integration: actual first-task recovery ends the parent header', () => {
+  const events = JSON.parse(readFileSync(process.env.X5A_FIRST_TASK_EVENTS!, 'utf8'));
+  for (const messages of both(events)) {
+    const { container, model, unmount } = mount(messages);
+    expect(model.header.status).toBe('complete');
+    expect(messages.filter(m => m.eventType === 'runtime_action_started')).toHaveLength(0);
+    expect(container.querySelectorAll('[role="img"][aria-label="等待同事"], [role="img"][aria-label="等待处理"]')).toHaveLength(0);
     unmount();
   }
 });

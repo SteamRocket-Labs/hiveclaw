@@ -1723,7 +1723,7 @@ def _member_summary_projection(
             # untrusted data that never decides the member sentence.
             result_obj = None
     if tool_name == "read_runtime_result" and result_obj and _status_text(result_obj.get("source_kind")) in {
-        "a2a_delegation", "delegation", "subagent",
+        "a2a_delegation", "a2a_continuation", "subagent",
     }:
         kind = "colleague_result"
     typed_status = _status_text(result_obj.get("status")) if result_obj else ""

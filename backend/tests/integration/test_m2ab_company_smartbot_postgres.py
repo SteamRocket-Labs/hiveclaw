@@ -1,6 +1,7 @@
 """Smart Bot identities, encrypted inputs and single-use replies stay in one work."""
 
 import base64
+from contextlib import asynccontextmanager
 import hashlib
 import json
 from uuid import UUID
@@ -10,13 +11,28 @@ import pytest
 from sqlalchemy import select, text
 
 from app.api.wecom import _encrypt_msg, _pad, _verify_signature
-from app.database import pin_rls_tenant_context
+from app.database import pin_rls_tenant_context, tenant_scoped_session
 from app.models.tenant_channel_config import TenantChannelConfig
 from tests.integration import test_m2aa_company_attachments_postgres as _files
 from tests.integration import test_m2y_company_channel_identity_postgres as _company
 
 company_messaging = _company.company_messaging
 company_runtime = _company.company_runtime
+
+
+@pytest.fixture
+async def smartbot_workers(company_runtime, app_user_sessionmaker, monkeypatch):
+    from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService
+    from app.services.channel_ingress_inbox import ChannelIngressInboxService
+
+    @asynccontextmanager
+    async def own_worker_session(_service, _operation):
+        # Preserve exact call/replay counts without claiming another tenant's batch first.
+        async with tenant_scoped_session(company_runtime['tenant_id'], session_factory=app_user_sessionmaker) as db:
+            yield db
+
+    for service in (ChannelIngressInboxService, ChannelDeliveryOutboxService):
+        monkeypatch.setattr(service, '_worker_session', own_worker_session)
 
 
 async def _configure(seed, factory, mode='encrypted'):
@@ -265,7 +281,7 @@ async def _plain_delivery(seed, owner_factory, app_factory):
 
 @pytest.mark.parametrize('case', ['unknown', 'expired', 'revoked', 'bot_replaced', 'two_outputs'])
 async def test_bot_one_use_response_preserves_unknown_expiry_and_current_authority(
-    company_runtime, app_user_sessionmaker, owner_sessionmaker, monkeypatch, case,
+    company_runtime, app_user_sessionmaker, owner_sessionmaker, monkeypatch, case, smartbot_workers,
 ):
     from datetime import datetime, timedelta, timezone
     from uuid import uuid4

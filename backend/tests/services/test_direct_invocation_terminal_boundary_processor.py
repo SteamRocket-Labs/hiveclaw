@@ -1261,7 +1261,22 @@ async def test_postgres_completed_direct_terminal_missing_payload_reconcile_is_h
         )
 
 
-async def test_postgres_trigger_binding_covers_effectful_projection_metadata(owner_sessionmaker) -> None:
+@pytest.fixture
+async def binding_sessionmaker(owner_engine):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    # These read/flush-only binding checks must not leave completed trigger work
+    # for another file's completion sweep. Helper commits release savepoints;
+    # the outer rollback removes every owned row even when an assertion fails.
+    async with owner_engine.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            yield async_sessionmaker(connection, expire_on_commit=False, join_transaction_mode="create_savepoint")
+        finally:
+            await transaction.rollback()
+
+
+async def test_postgres_trigger_binding_covers_effectful_projection_metadata(binding_sessionmaker) -> None:
     from app.database import tenant_scoped_session
     from app.models.runtime_task import RuntimeTask
     from app.services.direct_invocation_terminal_boundary_processor import (
@@ -1269,8 +1284,8 @@ async def test_postgres_trigger_binding_covers_effectful_projection_metadata(own
     )
     from app.services.trigger_artifacts import trigger_output_artifact_ref
 
-    seeded = await _seed_postgres_direct_terminal(owner_sessionmaker, task_type="trigger")
-    async with tenant_scoped_session(seeded.tenant_id, session_factory=owner_sessionmaker) as db:
+    seeded = await _seed_postgres_direct_terminal(binding_sessionmaker, task_type="trigger")
+    async with tenant_scoped_session(seeded.tenant_id, session_factory=binding_sessionmaker) as db:
         task = await db.get(RuntimeTask, seeded.task_id)
         assert task is not None
         original = await build_direct_terminal_boundary_binding(db, task)
@@ -1296,15 +1311,15 @@ async def test_postgres_trigger_binding_covers_effectful_projection_metadata(own
 
 
 @pytest.mark.asyncio
-async def test_postgres_direct_binding_covers_hook_turn_identity(owner_sessionmaker) -> None:
+async def test_postgres_direct_binding_covers_hook_turn_identity(binding_sessionmaker) -> None:
     from app.database import tenant_scoped_session
     from app.models.runtime_task import RuntimeTask
     from app.services.direct_invocation_terminal_boundary_processor import (
         build_direct_terminal_boundary_binding,
     )
 
-    seeded = await _seed_postgres_direct_terminal(owner_sessionmaker, task_type="trigger")
-    async with tenant_scoped_session(seeded.tenant_id, session_factory=owner_sessionmaker) as db:
+    seeded = await _seed_postgres_direct_terminal(binding_sessionmaker, task_type="trigger")
+    async with tenant_scoped_session(seeded.tenant_id, session_factory=binding_sessionmaker) as db:
         task = await db.get(RuntimeTask, seeded.task_id)
         assert task is not None
         original = await build_direct_terminal_boundary_binding(db, task)

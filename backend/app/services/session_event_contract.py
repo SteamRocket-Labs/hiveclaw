@@ -2237,6 +2237,78 @@ def _member_system_payload(payload: dict[str, Any], *, event_type: str) -> dict[
     return clean
 
 
+_MEMBER_PERMISSION_REQUEST_KEYS = frozenset({
+    "permission_request_id", "tool_name", "tool_display_name", "arguments",
+    "allow_session_allowed", "destructive", "risk_class", "confirmation_kind", "expires_at",
+    "session_id", "runtime_task_id", "requested_by_user_id",
+})
+
+
+def member_permission_request(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep the proposal, choices and requester bindings consumed by member cards."""
+    return {key: value for key, value in request.items() if key in _MEMBER_PERMISSION_REQUEST_KEYS}
+
+
+def _member_permission_json(value: str) -> str:
+    # Every broadcast passes here; skip parsing large tool results that cannot hold a request.
+    if "permission_request" not in value:
+        return value
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        return value
+    if isinstance(decoded, dict) and isinstance(decoded.get("permission_request"), Mapping):
+        return json.dumps(member_permission_payload(decoded), ensure_ascii=False)
+    return value
+
+
+def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project permission copies in event carriers without traversing tool arguments."""
+    request = payload.get("permission_request")
+    clean = dict(payload)
+    if isinstance(request, Mapping):
+        from app.services.thread_items import _user_summary
+
+        # Internal governance siblings are private regardless of their values;
+        # all other event fields keep their own meaning beside the request.
+        for key in ("capability", "permission_mode", "decision_reason", "pending_tool_frame",
+                    "round_state", "permission_profile"):
+            clean.pop(key, None)
+        clean["permission_request"] = member_permission_request(request)
+        pending = payload.get("status", "session_permission_required") == "session_permission_required"
+        summary = _user_summary(item_type="approval_request" if pending else "approval_decision", event_type="permission",
+                                item_status="waiting_user" if pending else "succeeded", data=clean["permission_request"], content="")
+        for key in ("message", "text"):
+            if key in payload:
+                clean[key] = summary
+    for key in ("payload", "metadata", "v2_payload"):
+        if isinstance(clean.get(key), Mapping):
+            clean[key] = member_permission_payload(clean[key])
+    if isinstance(clean.get("parts"), list):
+        clean["parts"] = [member_permission_payload(part) if isinstance(part, Mapping) else part
+                          for part in clean["parts"]]
+    for key in ("toolResult", "result"):
+        if isinstance(clean.get(key), str):
+            clean[key] = _member_permission_json(clean[key])
+    content = clean.get("content")
+    metadata = payload.get("metadata")
+    if isinstance(content, str) and "permission_request" in content:
+        try:
+            decoded = json.loads(content)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, dict) and isinstance(decoded.get("result"), str):
+            result = _member_permission_json(decoded["result"])
+            if result != decoded["result"]:
+                decoded["result"] = result
+                content = json.dumps(decoded, ensure_ascii=False)
+        if (isinstance(request, Mapping)
+            or isinstance(metadata, Mapping) and isinstance(metadata.get("permission_request"), Mapping)):
+            content = _member_permission_json(content)
+        clean["content"] = content
+    return clean
+
+
 def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str, Any]:
     """Serialize one session event for an audience.
 
@@ -2267,6 +2339,8 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
             event["lifecycle"] = "cancelled"
             event["kind"] = f"{event['item_kind']}.cancelled"
             event["payload_schema"] = f"hive.session.payload.{event['item_kind']}.cancelled.v2"
+    if audience != "operator":
+        event["payload"] = member_permission_payload(event["payload"])
     return event
 
 

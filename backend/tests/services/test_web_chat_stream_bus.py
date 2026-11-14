@@ -349,6 +349,53 @@ async def test_legacy_compatibility_event_advances_the_same_live_sequence(monkey
 
 
 @pytest.mark.asyncio
+async def test_user_marked_legacy_permission_is_projected_again_by_forwarder(monkeypatch):
+    import copy
+
+    import app.services.web_chat_broker as broker_module
+    import app.services.web_chat_stream_bus as bus
+    from app.services.execution_receipts import canonical_payload_hash
+
+    delivery = _compatibility_delivery(1)
+    delivery["projection_audience"] = "user"
+    delivery["envelope"]["payload"] = {"message": "INTERNAL_CAPABILITY do not create a backend approval request",
+        "permission_request": {"permission_request_id": "request", "tool_name": "plaza_create_post",
+            "capability": "INTERNAL_CAPABILITY", "pending_tool_frame": {"permission_profile": {"sandbox": "internal"}}}}
+    delivery["envelope_sha256"] = canonical_payload_hash(delivery["envelope"])
+    original = copy.deepcopy(delivery)
+
+    class Pubsub:
+        async def subscribe(self, *_args):
+            pass
+
+        async def listen(self):
+            yield {"type": "message", "data": json.dumps(delivery)}
+
+    class Redis:
+        def pubsub(self):
+            return Pubsub()
+
+    async def redis():
+        return Redis()
+
+    forwarded = []
+
+    async def capture(_agent, _session, payload):
+        forwarded.append(payload)
+
+    monkeypatch.setattr(bus, "get_redis", redis)
+    monkeypatch.setattr(broker_module.web_chat_broker, "send_session_message", capture)
+    await bus._listen_web_chat_stream_once()
+    assert len(forwarded) == 1
+    assert forwarded[0]["payload"]["permission_request"] == {
+        "permission_request_id": "request", "tool_name": "plaza_create_post"}
+    assert forwarded[0]["payload"]["message"] == "需要你的确认：Plaza create post"
+    assert "INTERNAL_CAPABILITY" not in json.dumps(forwarded)
+    assert "do not create a backend approval request" not in json.dumps(forwarded)
+    assert delivery == original
+
+
+@pytest.mark.asyncio
 async def test_web_chat_stream_forwarder_reconnects_after_pubsub_error(monkeypatch):
     import app.services.web_chat_stream_bus as bus
 

@@ -2552,7 +2552,9 @@ def _finish_dispatched_web_chat_run(task: asyncio.Task, *, run_key: str) -> None
 async def broadcast_web_chat_event(
     agent_id: uuid.UUID, session_id: str | uuid.UUID | None, event: dict[str, Any]
 ) -> None:
-    event_payload = dict(event)
+    from app.services.session_event_contract import member_permission_payload
+
+    event_payload = member_permission_payload(event)
     if (
         event_payload.get("schema") == "hive.session_event_compatibility"
         and int(event_payload.get("schema_version") or 0) == 1

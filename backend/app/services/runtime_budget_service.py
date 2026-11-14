@@ -1058,6 +1058,8 @@ class RuntimeBudgetService:
                             completed_at=current,
                         )
                 except RuntimeBudgetSettlementConflict as exc:
+                    # Permanent conflicts filling the oldest-first limit delay newer rows until fixed.
+                    # No quarantine marker is allowed here; use an operator fix or an owner-approved marker.
                     logger.error(
                         "Expired budget run settlement conflict: budget_run_id=%s runtime_task_id=%s",
                         budget_run_id,
@@ -1280,6 +1282,8 @@ class RuntimeBudgetService:
                             task.budget_admission_status = "settled"
                             repaired = True
                 except RuntimeBudgetSettlementConflict:
+                    # Permanent conflicts filling the oldest-first limit delay newer rows until fixed.
+                    # No quarantine marker is allowed here; use an operator fix or an owner-approved marker.
                     logger.error(
                         "Orphaned reservation settlement conflict: "
                         "budget_run_id=%s reservation_key=%s source_event_id=%s",
@@ -2332,6 +2336,7 @@ class RuntimeBudgetService:
                             RuntimeTask.claimed_by.is_(None),
                         )
                         .with_for_update()
+                        .execution_options(populate_existing=True)
                     )
                 )
                 .scalars()

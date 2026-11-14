@@ -105,3 +105,95 @@ def test_ordinary_result_strings_and_arguments_are_unchanged(result):
                "parts": [{"type": "tool_call", "arguments": arguments, "result": result}],
                "content": json.dumps({"name": "tool", "args": arguments, "result": result}, indent=2)}
     assert member_permission_payload(payload) == payload
+
+
+@pytest.mark.parametrize("status, expected", [
+    ("permission_denied", "当前没有权限完成这次操作。"),
+    ("blocked", "当前没有权限完成这次操作。"),
+    ("capability_denied", "当前没有权限完成这次操作。"),
+    ("approval_decision_mismatch", "当前没有权限完成这次操作。"),
+    ("delegation_token_denied", "当前没有权限完成这次操作。"),
+    ("governance_hook_denied", "当前没有权限完成这次操作。"),
+    ("approval_required", "需要你的确认：Plaza create post"),
+    ("permission_resolved", "已记录你的决定。"),
+])
+@pytest.mark.parametrize("shape", ["producer", "event-part", "messages", "stored-content"])
+def test_requestless_permission_copies_follow_the_same_member_projection(status, expected, shape):
+    import copy
+
+    from app.services.session_event_contract import member_permission_payload
+
+    internal = {"capability": "private-capability", "permission_mode": "dontAsk",
+                "decision_reason": "private-reason", "authorization_decision_entry": {
+                    "principal": "private-principal", "model_visible_message": "model-only decision"}}
+    event = {"type": "permission", "tool_name": "plaza_create_post", "status": status,
+             "message": "model-only teaching", "text": "model-only teaching", **internal}
+    part = {**event, "type": "event", "event_type": "permission"}
+    if shape == "producer":
+        payload = {"payload": event, "metadata": event, "v2_payload": event}
+    elif shape == "event-part":
+        payload = {"parts": [part]}
+    elif shape == "messages":
+        payload = {"eventType": "permission", "eventStatus": status,
+                   "content": event["message"], "parts": [part]}
+    else:
+        payload = {"content": json.dumps(event), "metadata": event, "parts": [part]}
+    before = copy.deepcopy(payload)
+    projected = member_permission_payload(payload)
+    assert payload == before
+    assert member_permission_payload(projected) == projected
+    def assert_public(value):
+        if isinstance(value, dict):
+            # X6c checks exact keys, not the valid capability_denied status;
+            # also decode stored JSON so escaped copies cannot evade it.
+            assert not internal.keys() & value.keys()
+            for child in value.values():
+                assert_public(child)
+        elif isinstance(value, list):
+            for child in value:
+                assert_public(child)
+        elif isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except ValueError:
+                return
+            if isinstance(decoded, (dict, list)):
+                assert_public(decoded)
+
+    assert_public(projected)
+    assert "model-only" not in json.dumps(projected)
+    if shape == "producer":
+        assert all(projected[key]["message"] == projected[key]["text"] == expected
+                   for key in ("payload", "metadata", "v2_payload"))
+    elif shape == "event-part":
+        assert projected["parts"][0]["text"] == expected
+    elif shape == "messages":
+        assert projected["content"] == projected["parts"][0]["text"] == expected
+    else:
+        assert json.loads(projected["content"])["message"] == projected["parts"][0]["text"] == expected
+
+
+def test_status_only_permission_denial_uses_member_sentence():
+    from app.services.session_event_contract import member_permission_payload
+
+    assert member_permission_payload({"status": "permission_denied", "message": "private teaching",
+        "capability": "private", "permission_mode": "plan", "authorization_decision_entry": {"policy": "private"}}) == {
+            "status": "permission_denied", "message": "当前没有权限完成这次操作。"}
+
+
+def test_authorization_decision_next_to_request_is_private():
+    from app.services.session_event_contract import member_permission_payload
+
+    request = {"permission_request_id": "request", "tool_name": "write_file"}
+    assert member_permission_payload({"permission_request": request,
+        "authorization_decision_entry": {"model_visible_message": "private decision"}}) == {"permission_request": request}
+
+
+def test_non_permission_capability_and_authored_content_are_unchanged():
+    from app.services.session_event_contract import member_permission_payload
+
+    payload = {"type": "tool_group_activation", "capability": "authored-capability", "permission_mode": "example",
+        "authorization_decision_entry": {"model_visible_message": "authored example"},
+        "message": "authored sentence", "text": "authored sentence",
+        "content": json.dumps({"type": "permission", "capability": "authored-document-field"})}
+    assert member_permission_payload(payload) == payload

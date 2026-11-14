@@ -99,6 +99,26 @@ function item(itemType: ThreadItemType): ThreadItem {
 }
 
 describe('ThreadItemRenderer', () => {
+  it.each([
+    ['permission_denied', '当前没有权限完成这次操作。'],
+    ['blocked', '当前没有权限完成这次操作。'],
+    ['capability_denied', '当前没有权限完成这次操作。'],
+    ['approval_required', '需要你的确认：Write file'],
+    ['permission_resolved', '已记录你的决定。'],
+  ])('X6c keeps the projected sentence for a request-less member permission: %s', (status, sentence) => {
+    const permission = {
+      ...item('approval_request'), audience: 'user', event_type: 'permission',
+      item_data: { ...DATA_BY_TYPE.approval_request, permission_request_id: 'unknown' },
+      metadata: { status }, content: sentence, user_summary: sentence,
+    } as ThreadItem;
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={permission} />);
+    expect(markup).toContain(sentence);
+    expect(markup).not.toContain('This needs your approval');
+    // Operator rendering is not a member projection, even without a request.
+    const operator = renderToStaticMarkup(<ThreadItemRenderer item={{ ...permission, audience: 'operator' }} />);
+    expect(operator).toContain('This needs your approval');
+  });
+
   // The screenshot exposes this prefix through `env | grep -iE`; the pattern
   // and find arguments are reconstructed because the input covers the tail.
   const step4Command = 'ls -la uploads | head; echo "=== hidden ==="; ls -la .[a-z]* 2>/dev/null | head; echo "=== env ==="; env | grep -iE "workspace|sandbox"; find / -name "*.md" 2>/dev/null | head';

@@ -183,6 +183,13 @@ function stepMarkerLabel(status: RunStepSnapshot['status'] | undefined, t: TFunc
   return undefined;
 }
 
+function stepWaitingForColleague(step: RunStepSnapshot): boolean {
+  const status = (step.details as { memberSummary?: { status?: string } } | null)?.memberSummary?.status;
+  // A new delegation is also suspended, so that status cannot distinguish
+  // passive colleague work from waiting for a member; keep its clock marker.
+  return stepDelegationStillInProgress(step) && !['waiting_approval', 'waiting_budget_approval'].includes(status || '');
+}
+
 function stepIsUnconfirmed(step: RunStepSnapshot): boolean {
   return (step.details as { memberSummary?: { state?: string } } | null)?.memberSummary?.state === 'unknown';
 }
@@ -349,7 +356,7 @@ function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepS
       className={getRunStepPresentation(step) === 'surface' ? 'run-step is-surfaced' : 'run-step'}
     >
       <span className={running ? 'run-step-icon is-running' : 'run-step-icon'}>
-        <StepIcon kind={step.kind} running={running} status={step.status} unconfirmed={stepIsUnconfirmed(step)} colleagueWaiting={stepDelegationStillInProgress(step)} />
+        <StepIcon kind={step.kind} running={running} status={step.status} unconfirmed={stepIsUnconfirmed(step)} colleagueWaiting={stepWaitingForColleague(step)} />
       </span>
       <div className="run-step-body">
         <button
@@ -498,7 +505,7 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const row = (
     <>
       <span className={step.status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
-        <StepIcon kind={step.kind} running={step.status === 'running'} status={step.status} unconfirmed={stepIsUnconfirmed(step)} colleagueWaiting={stepDelegationStillInProgress(step)} />
+        <StepIcon kind={step.kind} running={step.status === 'running'} status={step.status} unconfirmed={stepIsUnconfirmed(step)} colleagueWaiting={stepWaitingForColleague(step)} />
       </span>
       <span className="run-tool-history-title">
         {localizedToolTitle(step, t)}
@@ -545,10 +552,12 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
         ? t('agent.chat.disclosure.toolInterrupted', 'Interrupted: {{tools}}', { tools: namedTools })
         : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', { tools: namedTools });
   const historyLabel = t('agent.chat.disclosure.toolHistory', 'Tool call history');
-  const statusStep = steps.find(step => step.status === status && !stepIsUnconfirmed(step))
+  const statusStep = (status === 'blocked' && steps.find(step => step.status === status
+    && !stepIsUnconfirmed(step) && !stepWaitingForColleague(step)))
+    || steps.find(step => step.status === status && !stepIsUnconfirmed(step))
     || steps.find(step => step.status === status) || currentStep;
   const unconfirmed = stepIsUnconfirmed(statusStep);
-  const colleagueWaiting = stepDelegationStillInProgress(statusStep);
+  const colleagueWaiting = stepWaitingForColleague(statusStep);
   const markerLabel = stepMarkerLabel(status, t, unconfirmed, colleagueWaiting);
   return (
     <details data-testid="run-disclosure-tool-group" data-status={status} className="run-tool-group">

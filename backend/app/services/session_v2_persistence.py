@@ -1400,7 +1400,7 @@ async def append_session_events(
             if (task is not None and task.tenant_id == tenant_uuid and task.started_at is not None
                 and any(task_agent == agent_uuid and str(task_session or "").replace("-", "").lower() == session_uuid.hex
                     for task_agent, task_session in ((task.parent_agent_id, task.parent_session_id),
-                                                    (task.child_agent_id, task.child_session_id)))):
+                                                    (task.child_agent_id or task.parent_agent_id, task.child_session_id)))):
                 draft = replace(draft, payload={**draft.payload, "started_at": task.started_at.isoformat()},
                     content_hash=None)
         effective_content_hash = draft.content_hash or _sha256(draft.payload)

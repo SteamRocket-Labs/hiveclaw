@@ -22,7 +22,18 @@ def test_x5a_result_sentence_kind_follows_the_typed_page_not_its_prose(source_ki
         page["source_kind"] = source_kind
     summary = _member_tool_summary({"tool_name": "read_runtime_result", "outcome": "success",
         "invocation_id": "read-result", "content": json.dumps(page)}, item_kind="tool_result")
-    assert summary == {"kind": kind, "state": "done"}
+    # X5a r3: colleague summaries preserve the existing typed status field.
+    assert summary == {"kind": kind, "state": "done", **({"status": "ok"} if kind == "colleague_result" else {})}
+
+
+@pytest.mark.parametrize("tool_name", ["check_async_task", "check_subagent"])
+@pytest.mark.parametrize("status", ["waiting_approval", "waiting_budget_approval", "suspended"])
+def test_x5a_colleague_task_reads_keep_the_status_needed_by_the_wait_marker(tool_name, status):
+    page = {"task_id": "colleague-task", "task_type": "delegation" if tool_name == "check_async_task" else "subagent",
+        "status": status, "result": None}
+    summary = _member_tool_summary({"tool_name": tool_name, "outcome": "success",
+        "content": json.dumps(page)}, item_kind="tool_result")
+    assert summary == {"kind": "colleague_result", "state": "in_progress", "status": status, "task_id": "colleague-task"}
 
 
 @pytest.mark.parametrize("status", [

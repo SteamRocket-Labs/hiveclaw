@@ -14,6 +14,7 @@ import { hydrateSessionTranscriptEvents } from './sessionEventConsumer';
 import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } from './sessionTranscriptApplier';
 import { buildThreadTimeline } from '../session-workbench/timelineModel';
 import type { AgentChatMessage, ChatTranscriptEventPayload } from './chatRuntime';
+import type { RunTimelineSnapshot } from './chatDisclosureReducer';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({
   t: (key: string, fallback?: string, values?: Record<string, unknown>) => translateFromCatalog(zh, key, fallback, values),
@@ -191,6 +192,24 @@ it('X5a-4: a continuation first seen as cancelling uses its server run span, not
   }
 });
 
+it('X5a-r3-2: a waiting-first run does not start again at approval resolution', () => {
+  const start = '2026-11-14T04:35:22.261668Z';
+  const events = [input(),
+    event(2, 'run', 'waiting', parent, '2026-11-14T04:36:00Z', { reason_code: 'session_permission_required' }),
+    event(3, 'run', 'queued', parent, '2026-11-14T04:38:00Z', { reason_code: 'session_permission_resolved' }),
+    event(4, 'assistant_commentary', 'completed', 'resumed-work', '2026-11-14T04:38:10Z', { content: '继续整理结果' }),
+    event(5, 'run', 'completed', parent, '2026-11-14T04:38:22.807647Z', { started_at: start }),
+  ];
+  for (const messages of both(events)) {
+    const { model, unmount } = mount(messages);
+    const runs = model.cells.filter(c => c.kind === 'active_run');
+    expect(runs).toHaveLength(1);
+    expect(runs[0].timeline.status).toBe('done');
+    expect(runs[0].timeline.durationMs).toBe(180546);
+    unmount();
+  }
+});
+
 const stoppedChild = () => [
   event(1, 'run', 'running', child, '2026-11-14T04:42:25.689211Z', { task_type: 'delegation', started_at: '2026-11-14T04:42:25.689211Z' }, child),
   event(2, 'human_input', 'accepted', 'task-message', '2026-11-14T04:42:30.502793Z', {
@@ -241,6 +260,38 @@ it('X5a-6: colleague-check and background rows use the accessible waiting marker
   }
 });
 
+it.each(['delegation', 'colleague_result'].flatMap(kind =>
+  ['waiting_approval', 'waiting_budget_approval', 'suspended'].map(status => ({ kind, status }))))(
+  'X5a-r3-1: $kind/$status has the correct passive-wait or approval marker, live/reload', ({ kind, status }) => {
+    const events = [input(), ...tool(2, kind, 'in_progress')];
+    events[2].payload.member_summary.status = status;
+    for (const messages of both(events)) {
+      const { container, unmount } = mount(messages);
+      const rows = container.querySelectorAll('.run-step, .run-tool-history-item');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].getAttribute('data-status')).toBe('blocked');
+      const passive = status === 'suspended';
+      expect(Boolean(rows[0].querySelector('[aria-label="等待同事"] .tabler-icon-clock'))).toBe(passive);
+      expect(Boolean(rows[0].querySelector('[aria-label="等待处理"] .tabler-icon-alert-circle'))).toBe(!passive);
+      expect(rows[0].querySelector('.tabler-icon-loader-2')).toBeNull();
+      unmount();
+    }
+  });
+
+it('X5a-r3-4: a genuine blocked tool takes precedence over a colleague wait in the group marker', () => {
+  const timeline: RunTimelineSnapshot = { id: 'mixed-waits', status: 'blocked', steps: [
+    { id: 'colleague-wait', kind: 'tool', title: 'Tool call', status: 'blocked', visibility: 'collapsed',
+      details: { tool: 'check_async_task', memberSummary: { kind: 'colleague_result', state: 'in_progress', taskId: child, status: 'running' } } },
+    { id: 'blocked-tool', kind: 'tool', title: 'Tool call', status: 'blocked', visibility: 'collapsed',
+      details: { tool: 'read_file', args: { path: 'report.md' } } },
+  ] };
+  const { container } = render(<RunDisclosureBlock timeline={timeline} />);
+  const group = container.querySelector('[data-testid="run-disclosure-tool-group-toggle"]');
+  expect(group?.getAttribute('aria-label')).toContain('等待处理');
+  expect(group?.querySelector('[aria-label="等待处理"] .tabler-icon-alert-circle')).toBeTruthy();
+  expect(group?.querySelector('[aria-label="等待同事"]')).toBeNull();
+});
+
 it('X5a-r2-3: a refused runtime result read definitely did not read; unknown stays unconfirmed', () => {
   for (const state of ['not_done', 'unknown']) {
     const events = [input(), ...tool(2, 'runtime_result', state)];
@@ -253,6 +304,17 @@ it('X5a-r2-3: a refused runtime result read definitely did not read; unknown sta
       } else expect(container.textContent).toContain('结果尚未确认');
       unmount();
     }
+  }
+});
+
+it.skipIf(!process.env.X5A_FIRST_TASK_RUNNING_EVENTS)('X5a-r3-5 integration: actual recovered first-task work keeps the parent running', () => {
+  const events = JSON.parse(readFileSync(process.env.X5A_FIRST_TASK_RUNNING_EVENTS!, 'utf8'));
+  for (const messages of both(events)) {
+    const { container, model, unmount } = mount(messages);
+    expect(model.header.status).toBe('running');
+    expect(messages.filter(m => m.eventType === 'runtime_action_started')).toHaveLength(1);
+    expect(container.querySelector('[aria-label="等待同事"] .tabler-icon-clock')).toBeTruthy();
+    unmount();
   }
 });
 

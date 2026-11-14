@@ -344,7 +344,7 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
             // Only a real admission/start can supply this fallback. The first
             // run event of a continuation may instead be cancelling.
             started_at: prior?.payload.started_at ?? event.payload.started_at
-              ?? (['queued', 'running'].includes(event.lifecycle) ? event.occurred_at : undefined),
+              ?? (!prior && ['queued', 'running'].includes(event.lifecycle) ? event.occurred_at : undefined),
           } : {}) },
         actor: event.actor,
         visibility: event.visibility,

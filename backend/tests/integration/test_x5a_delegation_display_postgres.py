@@ -73,7 +73,7 @@ async def test_x5a_first_task_real_tool_recovery_and_replay_have_one_start_and_f
     from app.services.agent_manager import AgentManager
     from app.services.hr_provisioning_runtime import execute_claimed_hr_provisioning
     from app.services.secrets_provider import get_secrets_provider
-    from tests.integration.test_r11c_colleague_lifecycle_postgres import _execute, _session_api, _tool
+    from tests.integration.test_r11c_colleague_lifecycle_postgres import PausedClient, _execute, _session_api, _tool
     from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient
 
     user, context, model_id, _ = direct_origin
@@ -161,8 +161,18 @@ async def test_x5a_first_task_real_tool_recovery_and_replay_have_one_start_and_f
         assert starts[0].metadata_json["runtime_task_id"] == str(child_id)
         assert len(list(await db.scalars(select(RuntimeTask).where(RuntimeTask.tenant_id == user.tenant_id,
             RuntimeTask.task_type == "delegation")))) == 1
-    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: ScriptedLLMClient([{"content": "我负责整理研究草稿。"}]))
-    await asyncio.wait_for(_execute(child_id, owner_sessionmaker, worker="x5a-first-task-child", delegation=True), 30)
+    child_client = PausedClient([{"content": "我负责整理研究草稿。"}], pause_at=0)
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: child_client)
+    child_execution = asyncio.create_task(_execute(child_id, owner_sessionmaker, worker="x5a-first-task-child", delegation=True))
+    try:
+        await asyncio.wait_for(child_client.started.wait(), 20)
+        async with owner_sessionmaker() as db:
+            assert (await db.get(RuntimeTask, child_id)).status == "running"
+        running_events = await _session_api(app_user_sessionmaker, seed)
+        assert sum(e.get("legacy_event_type") == "runtime_action_started" for e in running_events) == 1
+    finally:
+        child_client.release.set()
+        await asyncio.wait_for(child_execution, 30)
     from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
     from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
 
@@ -176,10 +186,13 @@ async def test_x5a_first_task_real_tool_recovery_and_replay_have_one_start_and_f
     events = await _session_api(app_user_sessionmaker, seed)
     fixture = tmp_path / "first-task-events.json"
     fixture.write_text(json.dumps(events))
+    running_fixture = tmp_path / "first-task-running-events.json"
+    running_fixture.write_text(json.dumps(running_events))
     frontend = Path(__file__).resolve().parents[3] / "frontend"
     process = await asyncio.create_subprocess_exec(str(frontend / "node_modules/.bin/vitest"), "run",
-        "src/pages/agent-detail/RunDisclosureBlock.x5a.test.tsx", "-t", "X5a-r2-1 integration",
-        cwd=frontend, env={**os.environ, "X5A_FIRST_TASK_EVENTS": str(fixture), "NODE_OPTIONS": "--no-experimental-webstorage"},
+        "src/pages/agent-detail/RunDisclosureBlock.x5a.test.tsx", "-t", "X5a-(r2-1|r3-5) integration",
+        cwd=frontend, env={**os.environ, "X5A_FIRST_TASK_EVENTS": str(fixture),
+            "X5A_FIRST_TASK_RUNNING_EVENTS": str(running_fixture), "NODE_OPTIONS": "--no-experimental-webstorage"},
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     output, _ = await asyncio.wait_for(process.communicate(), 60)
     assert process.returncode == 0, output.decode()
@@ -201,6 +214,9 @@ async def test_x5a_terminal_start_binds_either_side_and_tolerates_non_uuid_sessi
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
         task.task_type, task.started_at, task.status = task_type, start, "killed"
+        if task_type == "subagent":
+            # Production subagents use their parent agent on the child session.
+            task.child_agent_id = None
         other = "legacy-non-uuid-session" if side == "invalid" else str(uuid.uuid4())
         task.parent_session_id = str(session_id) if side == "parent" else other
         task.child_session_id = str(session_id) if side in {"child", "invalid"} else other

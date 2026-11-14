@@ -294,7 +294,8 @@ def test_kind_b_colleague_result_success_page() -> None:
     page = json.dumps({"schema": "hive.runtime_result_page.v1", "status": "ok", "content": "同事的结果正文…"})
     row = _legacy_row("check_async_task", {"task_id": "t-1"}, page)
     payload = _user_payload(row)
-    assert payload["member_summary"] == {"kind": "colleague_result", "state": "done"}
+    # X5a r3: preserve typed status on colleague reads, just as on delegation.
+    assert payload["member_summary"] == {"kind": "colleague_result", "state": "done", "status": "ok"}
     assert "同事的结果正文" not in _result_text_view(payload)
 
 
@@ -305,7 +306,7 @@ def test_kind_b_colleague_still_working_is_not_a_read() -> None:
     payload = _user_payload(_legacy_row("check_async_task", {"task_id": "t-1"}, running))
     # X3b item 5 retains the typed task binding so a later terminal event can
     # replace the current-tense sentence without claiming this read got a body.
-    assert payload["member_summary"] == {"kind": "colleague_result", "state": "in_progress", "task_id": "t-1"}
+    assert payload["member_summary"] == {"kind": "colleague_result", "state": "in_progress", "status": "running", "task_id": "t-1"}
     queued = json.dumps({"task_id": "t-1", "task_type": "delegation", "status": "queued", "result": None})
     assert _user_payload(_legacy_row("check_async_task", {"task_id": "t-1"}, queued))["member_summary"]["state"] == "in_progress"
 
@@ -314,7 +315,8 @@ def test_kind_b_task_output_running_task_is_in_progress() -> None:
     # task_output's typed status rides on task.status (ruling 2).
     page = json.dumps({"ok": True, "task": {"task_type": "delegation", "status": "running"}})
     payload = _user_payload(_legacy_row("task_output", {"runtime_task_id": "r-1"}, page))
-    assert payload["member_summary"] == {"kind": "colleague_result", "state": "in_progress"}
+    # No top-level status exists on this nested legacy page; do not invent one.
+    assert payload["member_summary"] == {"kind": "colleague_result", "state": "in_progress", "status": ""}
 
 
 def test_kind_c_web_fetch_keeps_only_typed_host() -> None:
@@ -813,7 +815,7 @@ def test_x3b_member_projection_does_not_rewrite_model_prose():
 
 def test_x3b_running_colleague_read_keeps_its_typed_task_binding_for_terminal_presentation():
     row = _native_row("check_async_task", json.dumps({"status": "running", "task_id": INVOCATION_UUID}))
-    assert _user_payload(row)["member_summary"] == {"kind": "colleague_result", "state": "in_progress", "task_id": INVOCATION_UUID}
+    assert _user_payload(row)["member_summary"] == {"kind": "colleague_result", "state": "in_progress", "status": "running", "task_id": INVOCATION_UUID}
 
 
 @pytest.mark.parametrize("status,size,artifacts,kept", [("killed", 30, 0, False),

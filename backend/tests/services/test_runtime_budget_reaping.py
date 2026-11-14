@@ -32,7 +32,7 @@ async def expired_budget_conflict(app_user_sessionmaker, owner_sessionmaker, mon
             state.statement = state.statement.options(
                 *(
                     with_loader_criteria(model, model.tenant_id.in_(tenant_ids), include_aliases=True)
-                    for model in (RuntimeBudgetRun, RuntimeBudgetEvent, RuntimeTask)
+                    for model in (RuntimeBudgetRun, RuntimeBudgetEvent)
                 )
             )
 

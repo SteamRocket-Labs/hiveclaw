@@ -447,6 +447,47 @@ def delivery_state_from_http_status(status_code: int) -> Literal["rejected", "un
     return "rejected" if int(status_code) in _AUTHORITATIVE_PROVIDER_REJECTION_STATUSES else "unknown"
 
 
+def _api_error_delivery_state(
+    data: dict[str, Any], protocol: Literal["openai", "responses", "gemini", "anthropic"]
+) -> Literal["rejected", "unknown"]:
+    """'rejected' means no provider-side effect seen; partial generation may already be billed."""
+    if protocol == "responses":
+        # MCP tools/list is discovery only, so replaying it has no side effect.
+        items, kinds = data.get("output"), {"message", "reasoning", "function_call", "mcp_list_tools"}
+    elif protocol == "anthropic":
+        items, kinds = data.get("content"), {"text", "thinking", "redacted_thinking", "tool_use"}
+    else:
+        # Gemini thoughtSignature carries reasoning metadata, not provider execution.
+        kinds = {"function"} if protocol == "openai" else {"text", "thought", "functionCall", "thoughtSignature"}
+        entries = data.get("choices" if protocol == "openai" else "candidates")
+        if entries is not None and not isinstance(entries, list):
+            return "unknown"
+        items = []
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                return "unknown"
+            if protocol == "gemini" and ("groundingMetadata" in entry or "urlContextMetadata" in entry):
+                return "unknown"
+            content = entry.get("message" if protocol == "openai" else "content") or {}
+            if not isinstance(content, dict):
+                return "unknown"
+            parts = content.get("tool_calls" if protocol == "openai" else "parts")
+            if parts is not None and not isinstance(parts, list):
+                return "unknown"
+            items.extend(parts or [])
+    if items is not None and not isinstance(items, list):
+        return "unknown"
+    for item in items or []:
+        if not isinstance(item, dict):
+            return "unknown"
+        if protocol == "gemini":
+            if item.keys() - kinds:
+                return "unknown"
+        elif not isinstance(item.get("type"), str) or item["type"] not in kinds:
+            return "unknown"
+    return "rejected"
+
+
 def _is_retryable_http_status(status_code: int) -> bool:
     # Automatic transport retry is allowed only for an explicit rate-limit
     # rejection. Semantic 4xx repair belongs to the kernel/model path.
@@ -803,7 +844,7 @@ class OpenAICompatibleClient(LLMClient):
         except json.JSONDecodeError:
             return chunk, in_think, tag_buffer
 
-        if "error" in data:
+        if data.get("error"):
             raise LLMError(f"Stream error: {data['error']}")
 
         # Parse usage from stream (returned in the final chunk with include_usage)
@@ -912,8 +953,8 @@ class OpenAICompatibleClient(LLMClient):
 
         data = response.json()
 
-        if "error" in data:
-            raise LLMError(f"API error: {data['error']}", delivery_state="rejected")
+        if data.get("error"):
+            raise LLMError(f"API error: {data['error']}", delivery_state=_api_error_delivery_state(data, "openai"))
 
         choice = data.get("choices", [{}])[0]
         msg = choice.get("message", {})
@@ -1396,7 +1437,7 @@ class OpenAIResponsesClient(LLMClient):
                 api_error,
                 ctx,
             )
-            raise LLMError(api_error, delivery_state="rejected")
+            raise LLMError(api_error, delivery_state=_api_error_delivery_state(data, "responses"))
 
         return self._parse_response_data(data)
 
@@ -1837,7 +1878,7 @@ class GeminiClient(LLMClient):
 
         data = response.json()
         if isinstance(data, dict) and data.get("error"):
-            raise LLMError(f"API error: {data['error']}", delivery_state="rejected")
+            raise LLMError(f"API error: {data['error']}", delivery_state=_api_error_delivery_state(data, "gemini"))
 
         return self._parse_response_data(data)
 
@@ -2143,7 +2184,9 @@ class AnthropicClient(LLMClient):
 
         data = response.json()
         if data.get("type") == "error":
-            raise LLMError(f"API error: {data.get('error', {})}", delivery_state="rejected")
+            raise LLMError(
+                f"API error: {data.get('error', {})}", delivery_state=_api_error_delivery_state(data, "anthropic")
+            )
 
         full_content = ""
         full_reasoning = ""

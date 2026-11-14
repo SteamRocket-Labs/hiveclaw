@@ -1255,7 +1255,6 @@ async def test_runtime_worker_claims_without_waiting_and_preserves_concurrent_wa
 
     entered = asyncio.Event()
     wakeup = asyncio.Event()
-    claimed_twice = asyncio.Event()
     calls = []
 
     async def blocked(*_args, **_kwargs):
@@ -1271,45 +1270,19 @@ async def test_runtime_worker_claims_without_waiting_and_preserves_concurrent_wa
             await entered.wait()
             wakeup.set()  # A new input arrives while the claim is in flight.
         else:
-            claimed_twice.set()
+            raise asyncio.CancelledError
 
-    async def due(**_kwargs):
-        return True
-
-    async def empty():
-        pass
-
-    monkeypatch.setattr(
-        worker,
-        "_settings",
-        lambda: SimpleNamespace(
-            HIVE_PROCESS_ROLE="runtime",
-            RUNTIME_TASK_WORKER_ENABLED=True,
-            RUNTIME_TASK_WORKER_ID="test-worker",
-            RUNTIME_TASK_CLAIM_POLL_SECONDS=60,
-        ),
-    )
+    monkeypatch.setattr(worker, "_settings", lambda: SimpleNamespace(
+        HIVE_PROCESS_ROLE="runtime", RUNTIME_TASK_WORKER_ENABLED=True,
+        RUNTIME_TASK_WORKER_ID="test-worker", RUNTIME_TASK_CLAIM_POLL_SECONDS=60,
+    ))
     monkeypatch.setattr(worker, "_wakeup_event", lambda: wakeup)
     monkeypatch.setattr(worker, "_redis_wakeup_listener", blocked)
-    # Claim now shares idle discovery, not the recovery consumer's execution.
-    # Block the real recovery lane rather than replacing the whole coordinator.
-    monkeypatch.setattr(
-        worker,
-        "_terminal_boundary_lanes",
-        lambda _: {
-            "stale-admission": (slow, 20),
-            "web": (empty, 60),
-        },
-    )
-    monkeypatch.setattr(worker, "_has_due_runtime_work", due)
+    monkeypatch.setattr(worker, "start_terminal_boundary_worker_loop", slow)
     monkeypatch.setattr(worker, "claim_and_dispatch_once", claim)
-    task = asyncio.create_task(worker.start_runtime_task_worker_loop())
-    try:
-        await asyncio.wait_for(claimed_twice.wait(), timeout=1)
-        assert calls == ["claim", "claim"]
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(worker.start_runtime_task_worker_loop(), timeout=1)
+    assert calls == ["claim", "claim"]
 
 
 @pytest.mark.parametrize("lane", ["web", "direct-delegation"])
@@ -1470,10 +1443,10 @@ async def test_worker_lanes_keep_user_work_prompt_and_isolate_recovery(monkeypat
         return sweep
 
     async def due(**_kwargs):
-        return True
+        return dict.fromkeys(worker._terminal_boundary_lanes("test"), True)
 
     monkeypatch.setattr(worker, "_has_due_runtime_work", due)
-    # The shared discovery coordinator now uses the existing wake Event;
+    # Isolate the existing claim wake Event across pytest event loops;
     # pytest gives each parametrized case a different asyncio loop.
     monkeypatch.setattr(worker, "_LOCAL_WAKEUP_EVENT", None)
     monkeypatch.setattr(worker, "_STATE", {})
@@ -1552,7 +1525,7 @@ async def test_cancelled_lane_restarts_without_stopping_other_lanes(monkeypatch)
         calls["healthy"] += 1
 
     async def due(**_kwargs):
-        return True
+        return {"cancelled": True, "healthy": True}
 
     monkeypatch.setattr(worker, "_has_due_runtime_work", due)
     monkeypatch.setattr(worker, "_LOCAL_WAKEUP_EVENT", None)

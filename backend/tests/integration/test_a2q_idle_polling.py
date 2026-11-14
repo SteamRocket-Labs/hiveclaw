@@ -78,7 +78,7 @@ async def idle_db(owner_engine, monkeypatch):
                 await db.execute(text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user"))
             ).one()
             assert tuple(role) == (False, False)
-        assert await worker._has_due_runtime_work(worker_id="a2q", claim_tasks=True) is False
+        assert not any((await worker._has_due_runtime_work(worker_id="a2q")).values())
         yield factory, seed, now
 
 
@@ -91,7 +91,7 @@ async def test_idle_read_is_one_select_no_claims_and_keeps_warning(idle_db, owne
     event.listen(owner_engine.sync_engine, "before_cursor_execute", observe)
     try:
         with caplog.at_level(logging.WARNING, logger="app.database"):
-            assert await worker._has_due_runtime_work(worker_id="a2q", claim_tasks=True) is False
+            assert not any((await worker._has_due_runtime_work(worker_id="a2q")).values())
     finally:
         event.remove(owner_engine.sync_engine, "before_cursor_execute", observe)
     assert len([sql for sql in statements if sql.lstrip().startswith("SELECT")]) == 1
@@ -146,7 +146,8 @@ async def test_combined_read_finds_every_terminal_lane_candidate(idle_db, task_t
     # Trigger's existing discovery deliberately excludes NULL processing leases;
     # other lanes recover them. The shared predicate must preserve that rule.
     expected = not (task_type == "trigger" and source == "null-lease")
-    assert await worker._has_due_runtime_work(worker_id="a2q") is expected
+    lane = "web" if task_type in worker.EXECUTABLE_CHAT_TASK_TYPES else f"direct-{task_type}"
+    assert (await worker._has_due_runtime_work(worker_id="a2q"))[lane] is expected
 
 
 async def _input(factory, seed, now, *, dispatch_state="pending", intent="start_turn", namespace="human_input"):
@@ -210,7 +211,8 @@ async def _input(factory, seed, now, *, dispatch_state="pending", intent="start_
 async def test_combined_read_finds_input_dispatch_and_terminal_rollover(idle_db, dispatch_state, intent):
     factory, seed, now = idle_db
     await _input(factory, seed, now, dispatch_state=dispatch_state, intent=intent)
-    assert await worker._has_due_runtime_work(worker_id="a2q") is True
+    lane = "terminal-input" if dispatch_state == "dispatched" else "input-dispatch"
+    assert (await worker._has_due_runtime_work(worker_id="a2q"))[lane] is True
 
 
 @pytest.mark.parametrize("kind", ("cancel-accepted", "cancel-applying", "replacement"))
@@ -273,7 +275,8 @@ async def test_combined_read_finds_control_and_replacement_recovery(idle_db, kin
                 )
             )
         await db.commit()
-    assert await worker._has_due_runtime_work(worker_id="a2q") is True
+    lane = "turn-replacement" if kind == "replacement" else "control-input"
+    assert (await worker._has_due_runtime_work(worker_id="a2q"))[lane] is True
 
 
 async def test_combined_read_finds_and_publishes_canonical_session_event(idle_db):
@@ -297,7 +300,7 @@ async def test_combined_read_finds_and_publishes_canonical_session_event(idle_db
         row = await db.scalar(select(SessionEventOutbox))
         row.available_at = now - timedelta(seconds=1)
         await db.commit()
-    assert await worker._has_due_runtime_work(worker_id="a2q") is True
+    assert (await worker._has_due_runtime_work(worker_id="a2q"))["session-events"] is True
     published = []
 
     async def publish(payload):
@@ -308,7 +311,7 @@ async def test_combined_read_finds_and_publishes_canonical_session_event(idle_db
     )
     assert result == {"claimed": 1, "published": 1, "retried": 0, "dead_lettered": 0}
     assert len(published) == 1
-    assert await worker._has_due_runtime_work(worker_id="a2q") is False
+    assert not any((await worker._has_due_runtime_work(worker_id="a2q")).values())
 
 
 @pytest.mark.parametrize("kind", ("channel", "budget"))
@@ -361,7 +364,8 @@ async def test_combined_read_matches_delivery_retry_and_lease_clocks(idle_db, ki
         row.status, row.available_at, row.locked_at = status, moment, moment
         db.add(row)
         await db.commit()
-    assert await worker._has_due_runtime_work(worker_id="a2q") is due
+    lane = "channel-delivery" if kind == "channel" else "budget-transition"
+    assert (await worker._has_due_runtime_work(worker_id="a2q"))[lane] is due
 
 
 async def test_combined_read_finds_missing_budget_delivery_intent(idle_db):
@@ -379,7 +383,7 @@ async def test_combined_read_finds_missing_budget_delivery_intent(idle_db):
         await db.flush()
         db.add(RuntimeBudgetEvent(id=uuid4(), tenant_id=seed.tenant_id, budget_run_id=budget.id, event_type="expired"))
         await db.commit()
-    assert await worker._has_due_runtime_work(worker_id="a2q") is True
+    assert (await worker._has_due_runtime_work(worker_id="a2q"))["budget-transition"] is True
 
 
 @pytest.mark.parametrize("shape", ("pending", "expired", "null-lease", "page-future-item"))
@@ -424,7 +428,7 @@ async def test_combined_read_finds_notification_and_page_reclaims(idle_db, shape
             await db.flush()
             row.integration_page_id = page.id
         await db.commit()
-    assert await worker._has_due_runtime_work(worker_id="a2q") is True
+    assert (await worker._has_due_runtime_work(worker_id="a2q"))["runtime-notification"] is True
 
 
 async def test_combined_read_finds_missing_completion_intent(idle_db):
@@ -441,17 +445,18 @@ async def test_combined_read_finds_missing_completion_intent(idle_db):
             )
         )
         await db.commit()
-    assert await worker._has_due_runtime_work(worker_id="a2q") is True
+    assert (await worker._has_due_runtime_work(worker_id="a2q"))["runtime-notification"] is True
 
 
 @pytest.mark.parametrize("status", ("pending", "resumable", "running"))
 @pytest.mark.parametrize("due", (True, False))
-async def test_combined_read_preserves_scheduled_claims_and_expired_lease_recovery(idle_db, status, due):
+async def test_base_claim_preserves_scheduled_claims_and_expired_lease_recovery(idle_db, status, due, monkeypatch):
     factory, seed, now = idle_db
+    task_id = uuid4()
     async with factory() as db:
         db.add(
             RuntimeTask(
-                id=uuid4(),
+                id=task_id,
                 tenant_id=seed.tenant_id,
                 parent_agent_id=seed.agent_id,
                 task_type="readiness_probe",
@@ -461,5 +466,8 @@ async def test_combined_read_preserves_scheduled_claims_and_expired_lease_recove
             )
         )
         await db.commit()
-    assert await worker._has_due_runtime_work(worker_id="a2q", claim_tasks=True) is due
-    assert await worker._has_due_runtime_work(worker_id="a2q", claim_tasks=False) is False
+    # Claim is deliberately no longer a probe leg. Preserve the old positive
+    # shapes against the real claim consumer instead of weakening the checks.
+    monkeypatch.setattr(worker, "_dispatch_claimed_task", lambda _task: True)
+    assert await worker.claim_and_dispatch_once(worker_id="a2q") == ([task_id.hex] if due else [])
+    assert not any((await worker._has_due_runtime_work(worker_id="a2q")).values())

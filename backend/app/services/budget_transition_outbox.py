@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 import uuid
 from typing import Any
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -26,6 +26,7 @@ from app.services.chat_transcript import append_session_event
 
 _OUTBOX_NAMESPACE = uuid.UUID("09a56d4e-eb1f-49de-8ad4-90eecce464ca")
 _TRANSITION_EVENTS = ("denial", "overrun_approved", "overrun_rejected", "expired", "cancelled", "circuit_break")
+_TARGET_TRANSITIONS = ("waiting_budget_approval", "summary_only", "exhausted", "hard_stopped")
 
 
 class BudgetTransitionPermanentError(RuntimeError):
@@ -62,9 +63,38 @@ def transition_for_event(event: RuntimeBudgetEvent) -> str | None:
         return event.event_type
     if event.event_type in {"denial", "circuit_break"}:
         target = str((event.metadata_json or {}).get("target_status") or "").strip()
-        if target in {"waiting_budget_approval", "summary_only", "exhausted", "hard_stopped"}:
+        if target in _TARGET_TRANSITIONS:
             return target
     return None
+
+
+def budget_event_recovery_candidate_statement():
+    # Superset of transition_for_event: a substring survives every Python
+    # str.strip() whitespace, unlike PostgreSQL's default btrim. Prefixes,
+    # suffixes and JSON containers can be false positives; Python remains
+    # authoritative. Missing/invalid target_status legacy denials cannot
+    # occupy every slot ahead of repairable events anymore.
+    target = RuntimeBudgetEvent.metadata_json["target_status"].astext
+    return (
+        select(RuntimeBudgetEvent, RuntimeBudgetRun)
+        .join(
+            RuntimeBudgetRun,
+            RuntimeBudgetRun.id == RuntimeBudgetEvent.budget_run_id,
+        )
+        .where(
+            RuntimeBudgetEvent.event_type.in_(_TRANSITION_EVENTS),
+            or_(
+                RuntimeBudgetEvent.event_type.notin_(("denial", "circuit_break")),
+                *(func.strpos(target, status) > 0 for status in _TARGET_TRANSITIONS),
+            ),
+            RuntimeBudgetEvent.tenant_id.is_not(None),
+            RuntimeBudgetRun.root_agent_id.is_not(None),
+            RuntimeBudgetRun.root_session_id.is_not(None),
+            ~exists(
+                select(BudgetTransitionOutbox.id).where(BudgetTransitionOutbox.budget_event_id == RuntimeBudgetEvent.id)
+            ),
+        )
+    )
 
 
 def _uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
@@ -232,6 +262,17 @@ class BudgetTransitionOutboxService:
             async with enter_rls_bypass(db, reason=f"budget_transition_outbox.{operation}") as bypass_db:
                 yield bypass_db
 
+    def claim_candidate_statement(self, *, now: datetime):
+        return select(BudgetTransitionOutbox).where(
+            or_(
+                and_(BudgetTransitionOutbox.status == "pending", BudgetTransitionOutbox.available_at <= now),
+                and_(
+                    BudgetTransitionOutbox.status == "processing",
+                    BudgetTransitionOutbox.locked_at <= now - timedelta(seconds=self._lease_seconds),
+                ),
+            )
+        )
+
     async def claim_batch(
         self,
         *,
@@ -240,24 +281,11 @@ class BudgetTransitionOutboxService:
         limit: int = 20,
     ) -> list[ClaimedBudgetTransition]:
         current = now or datetime.now(UTC)
-        expired = current - timedelta(seconds=self._lease_seconds)
         async with self._worker_session("claim") as db:
             rows = list(
                 (
                     await db.execute(
-                        select(BudgetTransitionOutbox)
-                        .where(
-                            or_(
-                                and_(
-                                    BudgetTransitionOutbox.status == "pending",
-                                    BudgetTransitionOutbox.available_at <= current,
-                                ),
-                                and_(
-                                    BudgetTransitionOutbox.status == "processing",
-                                    BudgetTransitionOutbox.locked_at <= expired,
-                                ),
-                            )
-                        )
+                        self.claim_candidate_statement(now=current)
                         .order_by(BudgetTransitionOutbox.available_at, BudgetTransitionOutbox.created_at)
                         .limit(max(1, int(limit)))
                         .with_for_update(skip_locked=True)
@@ -587,20 +615,7 @@ class BudgetTransitionOutboxService:
         """Backfill legacy/crash-window user transitions from mechanical facts."""
 
         async with self._worker_session("reconcile") as db:
-            already = exists(
-                select(BudgetTransitionOutbox.id).where(BudgetTransitionOutbox.budget_event_id == RuntimeBudgetEvent.id)
-            )
-            statement = (
-                select(RuntimeBudgetEvent, RuntimeBudgetRun)
-                .join(RuntimeBudgetRun, RuntimeBudgetRun.id == RuntimeBudgetEvent.budget_run_id)
-                .where(
-                    RuntimeBudgetEvent.event_type.in_(_TRANSITION_EVENTS),
-                    RuntimeBudgetEvent.tenant_id.is_not(None),
-                    RuntimeBudgetRun.root_agent_id.is_not(None),
-                    RuntimeBudgetRun.root_session_id.is_not(None),
-                    ~already,
-                )
-            )
+            statement = budget_event_recovery_candidate_statement()
             if tenant_id is not None:
                 statement = statement.where(RuntimeBudgetEvent.tenant_id == tenant_id)
             rows = list(

@@ -30,6 +30,7 @@ _ACTIVE_RUN_STATUSES = frozenset({"pending", "running", "suspended", "resumable"
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "killed", "skipped", "needs_reconciliation"})
 _TOOL_PERMISSION_DECISIONS = frozenset({"allow_once", "allow_session", "deny"})
 _TOOL_PERMISSION_RESPONSE_SCHEMA = "hive.tool_permission_response.v1"
+CANCEL_CONTROL_STALE_AFTER = timedelta(seconds=5)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1142,12 +1143,27 @@ async def settle_pending_controls_for_run(
     return counts
 
 
+def stale_cancel_control_candidate_statement(*, now: datetime, stale_after: timedelta = CANCEL_CONTROL_STALE_AFTER):
+    return (
+        select(SessionControlInput.id)
+        .join(
+            SessionCommand,
+            SessionCommand.id == SessionControlInput.command_id,
+        )
+        .where(
+            SessionControlInput.kind == "cancel_run",
+            SessionControlInput.status.in_(("accepted", "applying")),
+            SessionCommand.updated_at <= now - stale_after,
+        )
+    )
+
+
 async def recover_stale_cancel_control_inputs_once(
     db: AsyncSession,
     *,
     worker_id: str,
     signal_callback: Callable[..., Awaitable[Any]] | None = None,
-    stale_after: timedelta = timedelta(seconds=5),
+    stale_after: timedelta = CANCEL_CONTROL_STALE_AFTER,
     limit: int = 100,
     tenant_id: uuid.UUID | None = None,
 ) -> dict[str, int]:
@@ -1161,13 +1177,7 @@ async def recover_stale_cancel_control_inputs_once(
     claimed_at = datetime.now(timezone.utc)
     cutoff = claimed_at - stale_after
     candidate_statement = (
-        select(SessionControlInput.id)
-        .join(SessionCommand, SessionCommand.id == SessionControlInput.command_id)
-        .where(
-            SessionControlInput.kind == "cancel_run",
-            SessionControlInput.status.in_(("accepted", "applying")),
-            SessionCommand.updated_at <= cutoff,
-        )
+        stale_cancel_control_candidate_statement(now=claimed_at, stale_after=stale_after)
         .order_by(SessionCommand.updated_at, SessionControlInput.id)
         .limit(max(1, int(limit)))
     )

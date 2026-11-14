@@ -850,6 +850,13 @@ async def _quarantine_turn_replacement(
     await db.flush()
 
 
+def turn_replacement_candidate_statement(*, now: datetime):
+    return select(SessionTurnReplacement).where(
+        SessionTurnReplacement.state.notin_(("completed", "failed", "needs_reconciliation")),
+        (SessionTurnReplacement.lease_expires_at.is_(None) | (SessionTurnReplacement.lease_expires_at <= now)),
+    )
+
+
 async def recover_turn_replacements_once(
     db: AsyncSession,
     *,
@@ -865,11 +872,7 @@ async def recover_turn_replacements_once(
 
     now = datetime.now(timezone.utc)
     claim_statement = (
-        select(SessionTurnReplacement)
-        .where(
-            SessionTurnReplacement.state.notin_(("completed", "failed", "needs_reconciliation")),
-            (SessionTurnReplacement.lease_expires_at.is_(None) | (SessionTurnReplacement.lease_expires_at <= now)),
-        )
+        turn_replacement_candidate_statement(now=now)
         .order_by(SessionTurnReplacement.id)
         .limit(max(1, int(limit)))
         .with_for_update(skip_locked=True)

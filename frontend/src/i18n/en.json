@@ -2665,6 +2665,7 @@
         "toolRunning": "Using {{tool}}",
         "colleagueWorking": "The colleague is working. The result will return here.",
         "resultReturned": "Result returned",
+        "resultReadFailed": "Couldn't read the result this time.",
         "resultUnconfirmed": "The outcome is unconfirmed.",
         "resultSucceeded": "Succeeded",
         "resultFile": "{{action}}: {{file}}. {{status}}",
@@ -2740,6 +2741,9 @@
           "listFiles": "List files",
           "searchWeb": "Search web",
           "fetchWebPage": "Fetch web page",
+          "checkTime": "Check time",
+          "loadSkill": "Load skill",
+          "browsePlaza": "Browse Plaza",
           "runCommand": "Run command",
           "editDocument": "Edit document",
           "toolCall": "Tool",
@@ -2779,7 +2783,8 @@
         "openColleagueConversation": "Open this colleague's conversation",
         "failedMarker": "Not completed",
         "stoppedMarker": "Stopped",
-        "blockedMarker": "Needs attention"
+        "blockedMarker": "Needs attention",
+        "colleagueWaitingMarker": "Waiting for colleague"
       },
       "artifacts": {
         "viewSource": "View source",

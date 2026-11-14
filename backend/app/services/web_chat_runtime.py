@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from loguru import logger
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import case, func, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -1073,6 +1073,9 @@ def _runtime_action_event_from_tool_result(data: dict[str, Any]) -> dict[str, An
     child_session_id = str(payload.get("child_session_id") or payload.get("session_id") or "").strip()
 
     if tool_name in {"delegate_to_agent", "send_message_to_agent"}:
+        # First-task dispatch owns this signal, including tool recovery/replay.
+        if tool_name == "delegate_to_agent" and payload.get("first_task_draft_id"):
+            return None
         runtime_task_id = str(payload.get("runtime_task_id") or payload.get("task_id") or "").strip()
         if tool_name == "send_message_to_agent" and not runtime_task_id:
             return None
@@ -1910,6 +1913,59 @@ async def _settle_committed_round_token_usage(
     }
 
 
+async def _stopped_by_self_or_delegation_ancestor(db: AsyncSession, task: RuntimeTask) -> bool:
+    columns = (
+        RuntimeTask.id,
+        case((RuntimeTask.task_type == "delegation", RuntimeTask.root_runtime_task_id)).label("parent_id"),
+        RuntimeTask.metadata_json["cancel_state"].astext.label("cancel_state"),
+    )
+    ancestors = (
+        select(*columns)
+        .where(RuntimeTask.id == task.id, RuntimeTask.tenant_id == task.tenant_id)
+        .cte("delegation_stop_ancestors", recursive=True)
+    )
+    ancestors = ancestors.union(
+        select(*columns)
+        .join(ancestors, RuntimeTask.id == ancestors.c.parent_id)
+        .where(RuntimeTask.tenant_id == task.tenant_id)
+    )
+    with db.no_autoflush:
+        return bool(
+            await db.scalar(
+                select(select(ancestors.c.id).where(ancestors.c.cancel_state.in_(("cancelling", "cancelled"))).exists())
+            )
+        )
+
+
+async def _seal_stopped_model_request(db: AsyncSession, runtime_task: RuntimeTask, row: Any) -> None:
+    from app.services.session_model_round import fail_model_request
+
+    round_index = _round_index_from_id(row.round_id)
+    placeholder = (row.model_request_snapshot_json or {}).get("phase") == "awaiting_exact_snapshot"
+    await fail_model_request(
+        db,
+        tenant_id=row.tenant_id,
+        agent_id=runtime_task.child_agent_id
+        if runtime_task.task_type == "delegation"
+        else runtime_task.parent_agent_id,
+        session_id=row.session_id,
+        run_id=row.run_id,
+        turn_id=row.turn_id,
+        round_index=round_index,
+        continuation_index=_continuation_index_from_round_id(row.round_id),
+        provider_request_id=row.provider_request_id,
+        error_class="cancelled",
+        delivery_state="rejected" if placeholder else "unknown",
+        retry_safe=False,
+        provider_request_sent=not placeholder,
+    )
+    await db.commit()
+    raise SessionRestartRecoveryRequired(
+        reason_code="round_requires_reconciliation",
+        detail={"round_index": round_index, "round_id": row.round_id, "state": row.state},
+    )
+
+
 async def _session_restart_resume_history(
     db: AsyncSession,
     runtime_task: RuntimeTask,
@@ -1955,7 +2011,7 @@ async def _session_restart_resume_history(
 
     from app.models.session_v2 import SessionModelResult, SessionToolInvocation, SessionTurnInput
     from app.services.session_human_input import input_parts_to_runtime_messages
-    from app.services.session_model_round import commit_sealed_model_round, fail_model_request
+    from app.services.session_model_round import commit_sealed_model_round
     from app.services.session_round_obligation import release_dispatched_plans_without_sealed_result
     from app.services.session_tool_runtime import UNRESOLVED_TOOL_EFFECT_STATES
     from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
@@ -2074,33 +2130,12 @@ async def _session_restart_resume_history(
             )
         if not recoverable:
             if (
-                (runtime_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}
-                and row.state in {"prepared", "streaming"}
+                row.state in {"prepared", "streaming"}
                 and row.seal_json is None
                 and not invocations
+                and await _stopped_by_self_or_delegation_ancestor(db, runtime_task)
             ):
-                placeholder = (row.model_request_snapshot_json or {}).get("phase") == "awaiting_exact_snapshot"
-                await fail_model_request(
-                    db,
-                    tenant_id=row.tenant_id,
-                    agent_id=runtime_task.child_agent_id
-                    if runtime_task.task_type == "delegation"
-                    else runtime_task.parent_agent_id,
-                    session_id=row.session_id,
-                    run_id=row.run_id,
-                    turn_id=row.turn_id,
-                    round_index=round_index,
-                    provider_request_id=row.provider_request_id,
-                    error_class="cancelled",
-                    delivery_state="rejected" if placeholder else "unknown",
-                    retry_safe=False,
-                    provider_request_sent=not placeholder,
-                )
-                await db.commit()
-                raise SessionRestartRecoveryRequired(
-                    reason_code="round_requires_reconciliation",
-                    detail={"round_index": round_index, "round_id": row.round_id, "state": row.state},
-                )
+                await _seal_stopped_model_request(db, runtime_task, row)
             failure_seal = dict(row.seal_json or {})
             if (
                 row.state == "failed"
@@ -2517,7 +2552,9 @@ def _finish_dispatched_web_chat_run(task: asyncio.Task, *, run_key: str) -> None
 async def broadcast_web_chat_event(
     agent_id: uuid.UUID, session_id: str | uuid.UUID | None, event: dict[str, Any]
 ) -> None:
-    event_payload = dict(event)
+    from app.services.session_event_contract import member_permission_payload
+
+    event_payload = member_permission_payload(event)
     if (
         event_payload.get("schema") == "hive.session_event_compatibility"
         and int(event_payload.get("schema_version") or 0) == 1
@@ -3864,6 +3901,7 @@ async def signal_web_chat_cancel(
             run_uuid.hex,
             type(exc).__name__,
         )
+        await _cancel_web_chat_delegation_children(run_uuid=run_uuid, agent_id=agent_id, user_id=user_id)
         return CancelSignalDeliveryReceipt(
             run_id=run_uuid.hex,
             delivery_state="unavailable",

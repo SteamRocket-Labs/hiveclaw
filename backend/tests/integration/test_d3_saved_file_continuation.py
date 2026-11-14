@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import sys
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -21,7 +22,7 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
     "no_hash_changed", "deleted", "unreceipted_change", "symlink", "rolled_over", "replay", "count_limit",
 ])
 async def test_saved_file_is_checked_at_the_real_model_input_boundary(
-    native_workspace, app_user_sessionmaker, case,
+    native_workspace, app_user_sessionmaker, case,  # noqa: F811
 ):
     from app.kernel.engine import _mid_run_items_to_user_messages
     from app.models.agent import Agent
@@ -233,3 +234,124 @@ async def test_saved_file_is_checked_at_the_real_model_input_boundary(
             assert replay_request_id == request_id
             assert not list(await db.scalars(select(ChatTranscriptEvent).where(
                 ChatTranscriptEvent.run_id == n.run, ChatTranscriptEvent.item_kind == "assistant_commentary")))
+
+
+@pytest.mark.parametrize("source_access", ["member_grant", "revoked", "agent_only", "unverifiable"])
+async def test_saved_derived_file_uses_the_same_source_reader_as_file_tools(
+    native_workspace, app_user_sessionmaker, source_access,  # noqa: F811
+):
+    from datetime import datetime, timedelta, timezone
+
+    from app.kernel.engine import _mid_run_items_to_user_messages
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
+    from app.models.session_v2 import SessionModelResult
+    from app.models.user import User
+    from app.services import artifact_continuation as continuation
+    from app.services.content_input_receipts import latest_workspace_receipt
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+    from app.services.session_live_input import submit_live_human_input
+    from app.services.session_model_round import prepare_model_request
+    from app.services.web_chat_run_orchestrator import _bind_session_round_inputs
+    from tests.integration.test_artifact_publication_transactions import stage_report
+
+    n = native_workspace
+    path = "workspace/saved-derived-report.md"
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        imported = await PersonalKnowledgeService(data_root=n.root.parent, extractor=None).ingest_markdown(
+            db, tenant_id=n.tenant, owner_user_id=n.foreign, title="Report source",
+            markdown="# Source\nAuthorized source material\n", source_kind="paste")
+        document = await db.get(KnowledgeDocument, imported.document_id)
+        source = {"source_kind": "knowledge_document", "source_id": str(document.id),
+                  "source_version": document.canonical_md_sha256}
+        grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign,
+            resource_type="document", resource_id=document.id, document_id=document.id,
+            grantee_type="user", grantee_id=n.user, created_by_user_id=n.foreign, permission="read",
+            sensitivity_ceiling="PL3_sensitive")
+        db.add(grant)
+        if source_access == "agent_only":
+            grant.grantee_type, grant.grantee_id = "agent", n.agent
+            grant.requester_user_id, grant.session_id = n.user, str(n.session)
+            grant.purpose = "interactive_session"
+            grant.expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        intermediate = await stage_report(db, tenant=n.tenant, agent=n.agent, user=n.user,
+            session=n.session, root=n.root, path="workspace/source-notes.md", dependencies=[source])
+        dependency = {"source_kind": "workspace_artifact", "source_id": str(intermediate.id),
+                      "source_version": intermediate.content_sha256}
+        original = await stage_report(db, tenant=n.tenant, agent=n.agent, user=n.user,
+            session=n.session, root=n.root, path=path, dependencies=[dependency])
+        await db.commit()
+
+    saved_text = "# Report\nHuman saved correction: keep this version.\n"
+    saved = await n.client.put(f"/agents/{n.agent}/files/content", params={"path": path}, json={
+        "content": saved_text, "expected_current_hash": original.content_sha256})
+    assert saved.status_code == 200, saved.text
+    saved_hash = saved.json()["content_hash"]
+    assert saved_hash == hashlib.sha256(saved_text.encode()).hexdigest()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        receipt = await latest_workspace_receipt(db, n.tenant, n.agent, path)
+        assert receipt.id != original.id and receipt.revision == original.revision + 1
+        assert receipt.content_sha256 == saved_hash and receipt.dependencies_json == [dependency]
+        if source_access == "revoked":
+            (await db.get(KnowledgeGrant, grant.id)).revoked_at = datetime.now(timezone.utc)
+        elif source_access == "unverifiable":
+            (n.root.parent / document.canonical_md_path).unlink()
+        accepted = await submit_live_human_input(db=db, agent=await db.get(Agent, n.agent),
+            user=await db.get(User, n.user), session=await db.get(ChatSession, n.session),
+            content="Continue on the version I saved; also answer my other question.",
+            parts=[{"type": "workspace_file_ref", "agent_id": str(n.agent), "path": path,
+                    "human_saved_hash": saved_hash}],
+            source="web", source_channel="web", requested_kind="steer_current_turn",
+            expected_turn_id=f"turn-{n.run.hex}", expected_run_id=n.run)
+        assert accepted["input_id"]
+        await db.commit()
+
+    # Observe the exception handled by the real notice path without changing it.
+    caught = []
+    append_events = continuation.append_session_events
+
+    async def observe_notice(*args, **kwargs):
+        error = sys.exception()
+        caught.append({"type": type(error).__name__, "code": getattr(error, "code", None),
+                       "message": str(error), "cause": str(error.__cause__) if error else None})
+        return await append_events(*args, **kwargs)
+
+    n.monkeypatch.setattr(continuation, "append_session_events", observe_notice)
+    state = SimpleNamespace(agent=SimpleNamespace(id=n.agent, tenant_id=n.tenant),
+        session_id=str(n.session), run_uuid=n.run, actor_user_id=n.user,
+        metadata={"turn_id": f"turn-{n.run.hex}"},
+        ports=SimpleNamespace(runtime=SimpleNamespace(tenant_scoped_session=lambda tenant:
+            tenant_scoped_session(tenant, session_factory=app_user_sessionmaker)),
+            events=SimpleNamespace(broadcast=AsyncMock())))
+    messages = _mid_run_items_to_user_messages(await _bind_session_round_inputs(state, 1))
+    selected = [m for m in messages if m.context_origin and m.context_origin.kind == "selected_workspace_file"]
+    assert len(selected) == 1
+    allowed = source_access == "member_grant"
+    tool_result = str(await n.service.execute("read_file", {"path": path}, agent_id=n.agent, user_id=n.user,
+        session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False))
+    assert (saved_text in tool_result.replace("\\n", "\n")) is allowed, tool_result
+    notice = "这个文件目前无法读取，本次未使用它。你可以继续处理其他问题，或选择有权打开的文件。"
+    assert (saved_text in selected[0].content) is allowed, caught
+    assert (notice in selected[0].content) is (not allowed)
+    assert bool(caught) is (not allowed)
+    if not allowed:
+        assert caught[0]["code"] == (
+            "content_source_unavailable" if source_access == "unverifiable" else "content_source_access_denied"
+        )
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        request_id = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent,
+            session_id=n.session, run_id=n.run, turn_id=f"turn-{n.run.hex}", round_index=1,
+            messages=messages, tools=[], provider="synthetic", model="q2b-local")
+        await db.commit()
+        result = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id))
+        snapshot = json.dumps(result.model_request_snapshot_json)
+        assert (saved_text in snapshot.replace("\\n", "\n")) is allowed
+        assert "also answer my other question" in snapshot
+        notices = list(await db.scalars(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.run_id == n.run, ChatTranscriptEvent.item_kind == "assistant_commentary")))
+        assert any(notice in event.content for event in notices) is (not allowed)

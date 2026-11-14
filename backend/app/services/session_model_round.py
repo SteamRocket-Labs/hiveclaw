@@ -1868,8 +1868,10 @@ async def fail_model_request(
     # the request id — but the boundary itself stays fail-closed.
     # Only the trusted preparation callback can prove no provider send took
     # place. Ordinary provider cancellation/failure keeps the R18a default.
-    provider_effect = provider_request_sent and (
-        True if not isinstance(wire_request, dict) else provider_request_has_effect(dict(wire_request))
+    provider_effect = (
+        provider_request_sent
+        and delivery_state != "rejected"
+        and (True if not isinstance(wire_request, dict) else provider_request_has_effect(dict(wire_request)))
     )
     if error_class == "cancelled" or (
         run_task is not None and (run_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}

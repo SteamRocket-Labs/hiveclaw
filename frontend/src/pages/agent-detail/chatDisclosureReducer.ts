@@ -140,6 +140,12 @@ const WEB_SEARCH_TOOL_NAMES = new Set([
   'tavily_search',
   'web_search',
 ]);
+// All page-fetch channels registered in backend/app/tools/handlers/search.py.
+// Share the exact set between titles and legacy args-only host summaries.
+const WEB_FETCH_TOOL_NAMES = new Set([
+  'web_fetch', 'advanced_web_fetch', 'anysearch_extract', 'exa_fetch',
+  'tavily_extract', 'firecrawl_fetch', 'xcrawl_scrape',
+]);
 const COMMAND_TOOLS = new Set(['execute_code', 'run_command']);
 const A2A_TOOLS = new Set([
   'cancel_async_task',
@@ -250,7 +256,7 @@ export function stepDelegationStillInProgress(step: RunStepSnapshot): boolean {
   // — `projectMemberDelegationStates` keys rows by task id, so an untyped
   // started row or an in_progress summary without a task id must not set it.
   const summary = (step.details as { memberSummary?: { kind?: string; state?: string; taskId?: string } } | null)?.memberSummary;
-  if (summary?.kind === 'delegation' && summary.state === 'in_progress'
+  if (summary && ['delegation', 'colleague_result'].includes(summary.kind || '') && summary.state === 'in_progress'
     && typeof summary.taskId === 'string' && summary.taskId) return true;
   const event = step.systemEvent;
   if (!event || event.type !== 'runtime_action_started') return false;
@@ -376,6 +382,7 @@ function summarizeToolMessage(message: AgentChatMessage): string {
   }
   if (COMMAND_TOOLS.has(name)) return '';
   if (FILE_TOOL_NAMES.has(name)) return summarizeFileTool(message);
+  if (WEB_FETCH_TOOL_NAMES.has(name)) return summarizeSearchTool(message);
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeSearchTool(message);
   const path = stringArg(message, ['path', 'file_path', 'target_path', 'source_path']);
   const filename = memberFilename(path);
@@ -467,7 +474,10 @@ export function titleForToolMessage(message: Pick<AgentChatMessage, 'toolName'>)
   if (name === 'list_files' || name === 'fs_list') return 'List files';
   if (name === 'grep_search' || name === 'glob_search') return 'Search files';
   if (name === 'web_search') return 'Search web';
-  if (name === 'web_fetch' || name === 'firecrawl_fetch' || name === 'xcrawl_scrape') return 'Fetch web page';
+  if (WEB_FETCH_TOOL_NAMES.has(name)) return 'Fetch web page';
+  if (name === 'get_current_time') return 'Check time';
+  if (name === 'load_skill') return 'Load skill';
+  if (name === 'plaza_get_new_posts') return 'Browse Plaza';
   if (COMMAND_TOOLS.has(name)) return 'Run command';
   if (name === 'office_document_apply') return 'Edit document';
   if (name.includes('workflow')) return 'Workflow step';
@@ -632,6 +642,12 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean, 
   }
   if (message.role === 'event') {
     const status = String(message.eventStatus || '').toLowerCase();
+    const metadata = message.threadItem?.metadata || message.sessionItem?.payload || {};
+    // A first-task dispatch can arrive after the parent finished, on the
+    // child's run id. It is still real work, not an interrupted parent tool.
+    if (delegationReceiptExpected && message.eventType === 'runtime_action_started'
+      && metadata.action_kind === 'a2a_delegation' && (metadata.runtime_task_id || metadata.task_id)
+      && ['running', 'in_progress', 'pending', 'queued'].includes(status)) return 'running';
     if (status === 'running' || status === 'in_progress' || status === 'pending') return live('running');
     if (status === 'blocked' || status === 'skipped' || status === 'approval_required' || status === 'session_permission_required') return 'blocked';
     if (status === 'failed' || status === 'error') return 'failed';

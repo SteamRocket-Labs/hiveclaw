@@ -8,6 +8,7 @@ import { agentApi } from '../api/domains/agents';
 import { plazaApi } from '../api/domains/plaza';
 import { assistantNameForSharedDisplay, useAssistantAgentId } from './assistant/assistantScope';
 import ConfirmModal from '../components/ConfirmModal';
+import { agentNameForDisplay } from '../utils/agentNameForDisplay';
 import './Plaza.css';
 
 /* ────── Inline SVG Icons (monochrome, matching Dashboard) ────── */
@@ -254,6 +255,9 @@ function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, ma
     multiline?: boolean;
     style?: React.CSSProperties;
 }) {
+    const { t } = useTranslation();
+    const displayName = (author: { name: string; isAgent: boolean }) =>
+        author.isAgent ? agentNameForDisplay(author.name, t) : author.name;
     const [showDropdown, setShowDropdown] = useState(false);
     const [mentionFilter, setMentionFilter] = useState('');
     const [mentionStart, setMentionStart] = useState(-1);
@@ -262,7 +266,7 @@ function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, ma
     const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement>(null);
 
     const filtered = mentionables.filter(m =>
-        m.name.toLowerCase().includes(mentionFilter.toLowerCase())
+        displayName(m).toLowerCase().includes(mentionFilter.toLowerCase())
     ).slice(0, 50);
 
     const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
@@ -313,7 +317,7 @@ function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, ma
             }
             if (e.key === 'Enter' || e.key === 'Tab') {
                 e.preventDefault();
-                insertMention(filtered[selectedIdx].name);
+                insertMention(displayName(filtered[selectedIdx]));
                 return;
             }
             if (e.key === 'Escape') {
@@ -366,12 +370,12 @@ function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, ma
                 <div className="plaza-mention-dropdown">
                     {filtered.map((a, idx) => (
                         <div key={a.id}
-                            onMouseDown={e => { e.preventDefault(); insertMention(a.name); }}
+                            onMouseDown={e => { e.preventDefault(); insertMention(displayName(a)); }}
                             className={`plaza-mention-item${idx === selectedIdx ? ' selected' : ''}`}
                             onMouseEnter={() => setSelectedIdx(idx)}
                         >
-                            <Avatar name={a.name} isAgent={a.isAgent} size={20} />
-                            <span>{a.name}</span>
+                            <Avatar name={displayName(a)} isAgent={a.isAgent} size={20} />
+                            <span>{displayName(a)}</span>
                             {a.isAgent && <span className="plaza-mention-ai">AI</span>}
                         </div>
                     ))}
@@ -395,7 +399,8 @@ export default function Plaza() {
     // company-wide surface; another member's default assistant stays neutral.
     const authorName = (author: { author_id: string; author_type: string; author_name: string }) =>
         assistantNameForSharedDisplay({
-            name: author.author_name, isAgent: author.author_type === 'agent',
+            name: author.author_type === 'agent' ? agentNameForDisplay(author.author_name, t) : author.author_name,
+            isAgent: author.author_type === 'agent',
             authorAgentId: author.author_id, viewerAssistantId: assistantAgentId, t,
         });
     const [newComment, setNewComment] = useState('');
@@ -693,8 +698,8 @@ export default function Plaza() {
                         >
                             <div className="plaza-online-agents">
                                 {runningAgents.slice(0, 12).map((a: Agent) => (
-                                    <div key={a.id} title={a.name} className="plaza-online-agent">
-                                        {a.name[0]?.toUpperCase()}
+                                    <div key={a.id} title={agentNameForDisplay(a.name, t)} className="plaza-online-agent">
+                                        {agentNameForDisplay(a.name, t)[0]?.toUpperCase()}
                                         <span className="plaza-online-agent-dot" />
                                     </div>
                                 ))}
@@ -712,7 +717,7 @@ export default function Plaza() {
                                             {i + 1}
                                         </span>
                                         <span className="plaza-leaderboard-name">
-                                            {c.name}
+                                            {c.type === 'agent' ? agentNameForDisplay(c.name, t) : c.name}
                                         </span>
                                         <span className="plaza-leaderboard-count">
                                             {c.posts}

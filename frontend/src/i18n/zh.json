@@ -2665,6 +2665,7 @@
         "toolRunning": "正在调用 {{tool}}",
         "colleagueWorking": "同事正在处理，结果回来后会在这里继续。",
         "resultReturned": "已返回结果",
+        "resultReadFailed": "这次没读到结果。",
         "resultUnconfirmed": "结果尚未确认。",
         "resultSucceeded": "成功",
         "resultFile": "{{action}}：{{file}}。{{status}}",
@@ -2740,6 +2741,9 @@
           "listFiles": "列出文件",
           "searchWeb": "搜索网页",
           "fetchWebPage": "读取网页",
+          "checkTime": "查看时间",
+          "loadSkill": "加载技能",
+          "browsePlaza": "浏览广场",
           "runCommand": "运行命令",
           "editDocument": "编辑文档",
           "toolCall": "处理请求",
@@ -2779,7 +2783,8 @@
         "openColleagueConversation": "查看这位同事的对话",
         "failedMarker": "未完成",
         "stoppedMarker": "已停止",
-        "blockedMarker": "等待处理"
+        "blockedMarker": "等待处理",
+        "colleagueWaitingMarker": "等待同事"
       },
       "artifacts": {
         "viewSource": "查看源码",

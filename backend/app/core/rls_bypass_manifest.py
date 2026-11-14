@@ -992,7 +992,25 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # complete_tool_invocation and the module source change with it. X3d is frontend only;
 # R22a changes runtime_result_sources, which no bypass scope reaches. Still 122
 # callsites, no new bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "b1953cba96fea84239d018ab11018550acf48fcd116bd29b8b9a8c802689b217"
+# Land30 (B8, F1, T1, T3, R24a, R23a/R23b, A2q, A2u, BF) versus land29: 797 entries,
+# 123 callsites. One new scope: A2q's runtime_task_worker._has_due_runtime_work runs a
+# single read-only SELECT of labelled EXISTS probes (one per worker lane) so an idle
+# worker skips draining empty lanes; it returns booleans only and writes nothing. The
+# other changed hashes are module sources and bodies edited without new bypass writes:
+# A2q's idle-probe split in the four outbox claim_batch/reconcile functions and
+# session_control_input; A2u's batched member-round reads in resource_authority,
+# workspace_resource_authority and session_model_round; R23a/R23b's stop-during-
+# preparation changes in session_model_round and web_chat_runtime; BF's per-row
+# savepoints in runtime_budget_service (row errors isolated, database errors fail the
+# tick).
+# Land31 (R23c, Q2b, X5a, R23d, R25a, X6a, X5b, R23e, X6b) versus land30: still 797
+# entries and 123 callsites, no new bypass scope. Changed hashes are module sources and
+# bodies edited without new bypass writes: X6a's complete_tool_invocation display
+# metadata and session_tool_runtime source; X5a's append_session_events and
+# session_v2_persistence source; R23d's session_model_round source; R23c, X5a and X6b's
+# web_chat_runtime source (stop-intent ancestry read, delegation signals, member
+# permission projection at broadcast).
+RLS_BYPASS_SCOPES_SHA256 = "470867c3d934995c614e9e9719ecf4e3fc78f791047239fb58c2b122f302bc38"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

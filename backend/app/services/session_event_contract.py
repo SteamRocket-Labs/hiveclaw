@@ -1381,7 +1381,7 @@ MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
     "search_memory": "memory_search",
     "load_memory": "memory_read",
     # b) runtime / colleague result readers
-    "read_runtime_result": "colleague_result",
+    "read_runtime_result": "runtime_result",
     "check_async_task": "colleague_result",
     "task_output": "colleague_result",
     "check_subagent": "colleague_result",
@@ -1707,6 +1707,7 @@ def _member_summary_projection(
             stored_kind = _text(member_target.get("kind"))
             kind = stored_kind if stored_kind in _MEMBER_TARGET_KINDS else "file_write"
     result_obj: Any = None
+    error_envelope = False
     if isinstance(result, str) and result.strip():
         # A native refusal envelope is typed JSON even when preceded by a
         # human sentence. Only the exact envelope fields decide the summary.
@@ -1722,6 +1723,10 @@ def _member_summary_projection(
             # receipt's body is the same class; a remote MCP body is
             # untrusted data that never decides the member sentence.
             result_obj = None
+    if tool_name == "read_runtime_result" and result_obj and _status_text(result_obj.get("source_kind")) in {
+        "a2a_delegation", "a2a_continuation", "subagent",
+    }:
+        kind = "colleague_result"
     typed_status = _status_text(result_obj.get("status")) if result_obj else ""
     if kind is None and tool_name.startswith("search_") and typed_status:
         kind = "record_search"
@@ -1758,9 +1763,14 @@ def _member_summary_projection(
             summary["filename"] = filename
     if kind == "mcp_app":
         summary["app_label"] = app_label
-    if kind in {"file_read", "delegation"} and state == "not_done" and result_obj and isinstance(result_obj.get("error_class"), str):
+    if (
+        (kind in {"file_read", "delegation"} or (kind in {"memory_search", "memory_read"} and error_envelope))
+        and state == "not_done"
+        and result_obj
+        and isinstance(result_obj.get("error_class"), str)
+    ):
         summary["error_class"] = result_obj["error_class"]
-    if kind == "delegation" and result_obj:
+    if kind in {"delegation", "colleague_result"} and result_obj:
         summary["status"] = "cancelled" if typed_status in {"killed", "cancelled"} else typed_status
     if (kind == "delegation" or (kind == "colleague_result" and state == "in_progress")) and result_obj:
         task_id = result_obj.get("task_id") or result_obj.get("runtime_task_id")
@@ -2227,6 +2237,78 @@ def _member_system_payload(payload: dict[str, Any], *, event_type: str) -> dict[
     return clean
 
 
+_MEMBER_PERMISSION_REQUEST_KEYS = frozenset({
+    "permission_request_id", "tool_name", "tool_display_name", "arguments",
+    "allow_session_allowed", "destructive", "risk_class", "confirmation_kind", "expires_at",
+    "session_id", "runtime_task_id", "requested_by_user_id",
+})
+
+
+def member_permission_request(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep the proposal, choices and requester bindings consumed by member cards."""
+    return {key: value for key, value in request.items() if key in _MEMBER_PERMISSION_REQUEST_KEYS}
+
+
+def _member_permission_json(value: str) -> str:
+    # Every broadcast passes here; skip parsing large tool results that cannot hold a request.
+    if "permission_request" not in value:
+        return value
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        return value
+    if isinstance(decoded, dict) and isinstance(decoded.get("permission_request"), Mapping):
+        return json.dumps(member_permission_payload(decoded), ensure_ascii=False)
+    return value
+
+
+def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project permission copies in event carriers without traversing tool arguments."""
+    request = payload.get("permission_request")
+    clean = dict(payload)
+    if isinstance(request, Mapping):
+        from app.services.thread_items import _user_summary
+
+        # Internal governance siblings are private regardless of their values;
+        # all other event fields keep their own meaning beside the request.
+        for key in ("capability", "permission_mode", "decision_reason", "pending_tool_frame",
+                    "round_state", "permission_profile"):
+            clean.pop(key, None)
+        clean["permission_request"] = member_permission_request(request)
+        pending = payload.get("status", "session_permission_required") == "session_permission_required"
+        summary = _user_summary(item_type="approval_request" if pending else "approval_decision", event_type="permission",
+                                item_status="waiting_user" if pending else "succeeded", data=clean["permission_request"], content="")
+        for key in ("message", "text"):
+            if key in payload:
+                clean[key] = summary
+    for key in ("payload", "metadata", "v2_payload"):
+        if isinstance(clean.get(key), Mapping):
+            clean[key] = member_permission_payload(clean[key])
+    if isinstance(clean.get("parts"), list):
+        clean["parts"] = [member_permission_payload(part) if isinstance(part, Mapping) else part
+                          for part in clean["parts"]]
+    for key in ("toolResult", "result"):
+        if isinstance(clean.get(key), str):
+            clean[key] = _member_permission_json(clean[key])
+    content = clean.get("content")
+    metadata = payload.get("metadata")
+    if isinstance(content, str) and "permission_request" in content:
+        try:
+            decoded = json.loads(content)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, dict) and isinstance(decoded.get("result"), str):
+            result = _member_permission_json(decoded["result"])
+            if result != decoded["result"]:
+                decoded["result"] = result
+                content = json.dumps(decoded, ensure_ascii=False)
+        if (isinstance(request, Mapping)
+            or isinstance(metadata, Mapping) and isinstance(metadata.get("permission_request"), Mapping)):
+            content = _member_permission_json(content)
+        clean["content"] = content
+    return clean
+
+
 def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str, Any]:
     """Serialize one session event for an audience.
 
@@ -2257,6 +2339,8 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
             event["lifecycle"] = "cancelled"
             event["kind"] = f"{event['item_kind']}.cancelled"
             event["payload_schema"] = f"hive.session.payload.{event['item_kind']}.cancelled.v2"
+    if audience != "operator":
+        event["payload"] = member_permission_payload(event["payload"])
     return event
 
 

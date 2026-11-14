@@ -205,6 +205,8 @@ class LLMResponse:
     finish_reason: str | None = None
     usage: dict[str, int] | None = None
     model: str | None = None
+    # In-memory protocol fact only; not part of the durable response payload.
+    provider_output_seen: bool = False
 
 
 @dataclass
@@ -217,6 +219,7 @@ class LLMStreamChunk:
     finish_reason: str | None = None
     is_finished: bool = False
     usage: dict | None = None
+    provider_output_seen: bool = False
 
 
 def _merge_tool_name_delta(current: str, delta: str) -> str:
@@ -445,6 +448,65 @@ def delivery_state_from_http_status(status_code: int) -> Literal["rejected", "un
     """
 
     return "rejected" if int(status_code) in _AUTHORITATIVE_PROVIDER_REJECTION_STATUSES else "unknown"
+
+
+def _api_error_delivery_state(
+    data: dict[str, Any], protocol: Literal["openai", "responses", "gemini", "anthropic"]
+) -> Literal["rejected", "unknown"]:
+    """'rejected' means no provider-side effect seen; partial generation may already be billed."""
+    if protocol == "responses":
+        # MCP tools/list is discovery only, so replaying it has no side effect.
+        items, kinds = data.get("output"), {"message", "reasoning", "function_call", "mcp_list_tools"}
+    elif protocol == "anthropic":
+        items, kinds = data.get("content"), {"text", "thinking", "redacted_thinking", "tool_use"}
+    else:
+        # Gemini thoughtSignature carries reasoning metadata, not provider execution.
+        kinds = {"function"} if protocol == "openai" else {"text", "thought", "functionCall", "thoughtSignature"}
+        entries = data.get("choices" if protocol == "openai" else "candidates")
+        if entries is not None and not isinstance(entries, list):
+            return "unknown"
+        items = []
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                return "unknown"
+            if protocol == "gemini" and ("groundingMetadata" in entry or "urlContextMetadata" in entry):
+                return "unknown"
+            content = entry.get("message" if protocol == "openai" else "content") or {}
+            if not isinstance(content, dict):
+                return "unknown"
+            parts = content.get("tool_calls" if protocol == "openai" else "parts")
+            if parts is not None and not isinstance(parts, list):
+                return "unknown"
+            items.extend(parts or [])
+    if items is not None and not isinstance(items, list):
+        return "unknown"
+    for item in items or []:
+        if not isinstance(item, dict):
+            return "unknown"
+        if protocol == "gemini":
+            if item.keys() - kinds:
+                return "unknown"
+        elif not isinstance(item.get("type"), str) or item["type"] not in kinds:
+            return "unknown"
+    return "rejected"
+
+
+def _compatible_provider_output_seen(data: dict[str, Any], field: Literal["message", "delta"]) -> bool:
+    """Successful compatible responses count only readable item kinds, including partial streams."""
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        message = choice.get(field) if isinstance(choice, dict) else None
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if isinstance(call, dict) and call.get("type") is not None and _api_error_delivery_state(
+                {"choices": [{"message": {"tool_calls": [call]}}]}, "openai"
+            ) == "unknown":
+                return True
+    return False
 
 
 def _is_retryable_http_status(status_code: int) -> bool:
@@ -778,6 +840,7 @@ class OpenAICompatibleClient(LLMClient):
         line: str,
         in_think: bool,
         tag_buffer: str,
+        tool_call_types: dict[int, Any] | None = None,
     ) -> tuple[LLMStreamChunk, bool, str]:
         """Parse a single SSE line from stream.
 
@@ -803,7 +866,7 @@ class OpenAICompatibleClient(LLMClient):
         except json.JSONDecodeError:
             return chunk, in_think, tag_buffer
 
-        if "error" in data:
+        if data.get("error"):
             raise LLMError(f"Stream error: {data['error']}")
 
         # Parse usage from stream (returned in the final chunk with include_usage)
@@ -816,6 +879,17 @@ class OpenAICompatibleClient(LLMClient):
 
         choice = choices[0]
         delta = choice.get("delta", {})
+        chunk.provider_output_seen = _compatible_provider_output_seen(data, "delta")
+        calls = delta.get("tool_calls")
+        if tool_call_types is not None and isinstance(calls, list):
+            for call in calls:
+                if isinstance(call, dict) and call.get("type") is not None:
+                    try:
+                        if isinstance(calls[0], dict) and calls[0].get("type") is None:
+                            tool_call_types.setdefault(calls[0].get("index", 0), "function")
+                        tool_call_types.setdefault(call.get("index", 0), call["type"])
+                    except TypeError:  # An unreadable secondary index must not add a stream failure.
+                        continue
 
         if choice.get("finish_reason"):
             chunk.finish_reason = choice["finish_reason"]
@@ -912,8 +986,8 @@ class OpenAICompatibleClient(LLMClient):
 
         data = response.json()
 
-        if "error" in data:
-            raise LLMError(f"API error: {data['error']}", delivery_state="rejected")
+        if data.get("error"):
+            raise LLMError(f"API error: {data['error']}", delivery_state=_api_error_delivery_state(data, "openai"))
 
         choice = data.get("choices", [{}])[0]
         msg = choice.get("message", {})
@@ -924,6 +998,7 @@ class OpenAICompatibleClient(LLMClient):
             finish_reason=choice.get("finish_reason"),
             usage=data.get("usage"),
             model=data.get("model"),
+            provider_output_seen=_compatible_provider_output_seen(data, "message"),
         )
 
     async def stream(
@@ -944,8 +1019,10 @@ class OpenAICompatibleClient(LLMClient):
         full_content = ""
         full_reasoning = ""
         tool_calls_data: list[dict] = []
+        tool_call_types: dict[int, Any] = {}
         last_finish_reason: str | None = None
         final_usage: dict | None = None
+        provider_output_seen = False
 
         in_think = False
         tag_buffer = ""
@@ -999,7 +1076,10 @@ class OpenAICompatibleClient(LLMClient):
                         )
 
                     async for line in resp.aiter_lines():
-                        chunk, in_think, tag_buffer = self._parse_stream_line(line, in_think, tag_buffer)
+                        chunk, in_think, tag_buffer = self._parse_stream_line(
+                            line, in_think, tag_buffer, tool_call_types
+                        )
+                        provider_output_seen |= chunk.provider_output_seen
 
                         if chunk.is_finished:
                             break
@@ -1014,6 +1094,11 @@ class OpenAICompatibleClient(LLMClient):
                             if on_thinking:
                                 await on_thinking(chunk.reasoning_content)
 
+                        if chunk.tool_call and tool_call_types.setdefault(
+                            chunk.tool_call.get("index", 0),
+                            chunk.tool_call["type"] if chunk.tool_call.get("type") is not None else "function",
+                        ) != "function":
+                            chunk.tool_call = None
                         if chunk.tool_call:
                             idx = chunk.tool_call.get("index", 0)
                             while len(tool_calls_data) <= idx:
@@ -1082,11 +1167,14 @@ class OpenAICompatibleClient(LLMClient):
 
         return LLMResponse(
             content=full_content,
-            tool_calls=tool_calls_data,
+            tool_calls=[
+                call for index, call in enumerate(tool_calls_data) if tool_call_types.get(index, "function") == "function"
+            ],
             reasoning_content=full_reasoning or None,
             finish_reason=last_finish_reason,
             usage=final_usage,
             model=self.model,
+            provider_output_seen=provider_output_seen,
         )
 
     async def close(self) -> None:
@@ -1308,6 +1396,7 @@ class OpenAIResponsesClient(LLMClient):
             finish_reason=finish_reason,
             usage=usage if isinstance(usage, dict) else None,
             model=data.get("model"),
+            provider_output_seen=_api_error_delivery_state(data, "responses") == "unknown",
         )
 
     def _extract_api_error(self, data: dict[str, Any]) -> str | None:
@@ -1396,7 +1485,7 @@ class OpenAIResponsesClient(LLMClient):
                 api_error,
                 ctx,
             )
-            raise LLMError(api_error, delivery_state="rejected")
+            raise LLMError(api_error, delivery_state=_api_error_delivery_state(data, "responses"))
 
         return self._parse_response_data(data)
 
@@ -1791,6 +1880,7 @@ class GeminiClient(LLMClient):
             finish_reason=self._normalize_finish_reason(finish_reason, tool_calls),
             usage=usage,
             model=data.get("modelVersion") or self.model,
+            provider_output_seen=_api_error_delivery_state(data, "gemini") == "unknown",
         )
 
     async def complete(
@@ -1837,7 +1927,7 @@ class GeminiClient(LLMClient):
 
         data = response.json()
         if isinstance(data, dict) and data.get("error"):
-            raise LLMError(f"API error: {data['error']}", delivery_state="rejected")
+            raise LLMError(f"API error: {data['error']}", delivery_state=_api_error_delivery_state(data, "gemini"))
 
         return self._parse_response_data(data)
 
@@ -1878,6 +1968,7 @@ class GeminiClient(LLMClient):
         seen_tool_calls: set[str] = set()
         final_usage: dict[str, int] | None = None
         final_finish_reason: str | None = None
+        provider_output_seen = False
 
         client = await self._get_client()
         max_retries = http_max_attempts
@@ -1932,6 +2023,7 @@ class GeminiClient(LLMClient):
                         if isinstance(data, dict) and data.get("error"):
                             raise LLMError(f"API error: {data['error']}")
 
+                        provider_output_seen |= _api_error_delivery_state(data, "gemini") == "unknown"
                         usage = self._normalize_usage(data.get("usageMetadata"))
                         if usage:
                             final_usage = usage
@@ -1982,6 +2074,7 @@ class GeminiClient(LLMClient):
             finish_reason=self._normalize_finish_reason(final_finish_reason, tool_calls),
             usage=final_usage,
             model=self.model,
+            provider_output_seen=provider_output_seen,
         )
 
     async def close(self) -> None:
@@ -2143,7 +2236,9 @@ class AnthropicClient(LLMClient):
 
         data = response.json()
         if data.get("type") == "error":
-            raise LLMError(f"API error: {data.get('error', {})}", delivery_state="rejected")
+            raise LLMError(
+                f"API error: {data.get('error', {})}", delivery_state=_api_error_delivery_state(data, "anthropic")
+            )
 
         full_content = ""
         full_reasoning = ""
@@ -2183,6 +2278,7 @@ class AnthropicClient(LLMClient):
             finish_reason=data.get("stop_reason"),
             usage=usage,
             model=data.get("model"),
+            provider_output_seen=_api_error_delivery_state(data, "anthropic") == "unknown",
         )
 
     async def stream(
@@ -2208,6 +2304,7 @@ class AnthropicClient(LLMClient):
         last_finish_reason: str | None = None
         final_usage = None
         final_model = self.model
+        provider_output_seen = False
 
         client = await self._get_client()
 
@@ -2277,6 +2374,9 @@ class AnthropicClient(LLMClient):
 
                         elif current_event == "content_block_start":
                             block = data.get("content_block", {})
+                            provider_output_seen |= _api_error_delivery_state(
+                                {"content": [block]}, "anthropic"
+                            ) == "unknown"
                             idx = data.get("index", 0)
                             if block.get("type") == "tool_use":
                                 tool_call_index_map[idx] = len(tool_calls_data)
@@ -2352,6 +2452,7 @@ class AnthropicClient(LLMClient):
             finish_reason=last_finish_reason,
             usage=final_usage,
             model=final_model,
+            provider_output_seen=provider_output_seen,
         )
 
     async def close(self) -> None:

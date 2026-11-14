@@ -20,7 +20,8 @@ class _FakeDB:
     async def flush(self):
         self.flushes += 1
 
-    async def refresh(self, value):
+    async def refresh(self, value, attribute_names=None):
+        # Mirrors AsyncSession.refresh: commands.py refreshes only updated_at (B8).
         self.refreshes.append(value)
 
     async def commit(self):

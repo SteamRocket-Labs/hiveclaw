@@ -495,6 +495,23 @@ async def dispatch_first_task(db, draft, *, execution_context=None, arguments=No
             # An interrupted dispatch reuses the same durable id; it never issues another intent.
             logger.exception("Explicit first-task dispatch did not finish for draft %s", draft.id)
             receipt.update(status="unknown", error=getattr(exc, "code", type(exc).__name__))
+    if (receipt["status"] == "dispatched" and receipt.get("runtime_status") in {"pending", "queued", "running", "suspended", "resumable"}
+        and (draft.provisioning_json or {}).get("first_task", {}).get("status") != "dispatched"):
+        from app.services.chat_message_parts import build_session_native_event
+        from app.services.chat_transcript import append_session_event
+        from app.services.web_chat_runtime import _runtime_action_event_from_tool_result
+
+        target = await db.get(Agent, draft.created_agent_id)
+        event = _runtime_action_event_from_tool_result({
+            "name": "delegate_to_agent", "status": "done", "args": {"agent_name": target.name},
+            "result": {"runtime_task_id": str(task_id), "child_session_id": session_id},
+            "parent_session_id": str(draft.session_id),
+        })
+        await append_session_event(db=db, tenant_id=draft.tenant_id, agent_id=draft.hr_agent_id,
+            session_id=draft.session_id, user_id=draft.requested_by_user_id, run_id=task_id,
+            actor_type="system", event_type=event["type"], role="system", source="employee_first_task",
+            content=json.dumps(event, ensure_ascii=False), parts=[build_session_native_event(event)["part"]],
+            metadata=event)
     draft.provisioning_json = {**dict(draft.provisioning_json or {}), "first_task": receipt}
     return receipt["status"] == "dispatched"
 

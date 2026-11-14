@@ -10,6 +10,7 @@ import {
   IconChevronRight,
   IconCircleCheck,
   IconCircleX,
+  IconClock,
   IconPlayerStop,
   IconAlertCircle,
   IconFileText,
@@ -26,7 +27,7 @@ import { approvalActionFor } from '../session-workbench/approvalActionPresentati
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { fileReadFailureForDisplay, toolFailureForDisplay, toolOutputForDisplay } from './toolFailurePresentation';
 import { memberFilename, memberToolSummaryFromRecord, memberToolSummarySentence, memberSummaryWithArgs } from './memberToolSummary';
-import { commandExecutionOutcome } from './chatDisclosureReducer';
+import { commandExecutionOutcome, stepDelegationStillInProgress } from './chatDisclosureReducer';
 import { useAuthStore } from '../../stores';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import { isKeptResultStep, presentSystemStep } from './systemStepPresentation';
@@ -171,25 +172,34 @@ function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string |
   return running && !Number.isNaN(parsed) ? i18n.t('agent.chat.disclosure.elapsedSeconds', '{{seconds}}s', { seconds: 0 }) : '';
 }
 
-function stepMarkerLabel(status: RunStepSnapshot['status'] | undefined, t: TFunction, unconfirmed = false): string | undefined {
+function stepMarkerLabel(status: RunStepSnapshot['status'] | undefined, t: TFunction, unconfirmed = false, colleagueWaiting = false): string | undefined {
   if (unconfirmed) return t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.');
   if (status === 'cancelled') return t('agent.chat.disclosure.stoppedMarker', 'Stopped');
-  if (status === 'blocked') return t('agent.chat.disclosure.blockedMarker', 'Needs attention');
+  if (status === 'blocked') return colleagueWaiting
+    ? t('agent.chat.disclosure.colleagueWaitingMarker', 'Waiting for colleague')
+    : t('agent.chat.disclosure.blockedMarker', 'Needs attention');
   if (status === 'failed') return t('agent.chat.disclosure.failedMarker', 'Not completed');
   if (status === 'running' || status === 'queued') return runtimeStatusLabel(status, t);
   return undefined;
+}
+
+function stepWaitingForColleague(step: RunStepSnapshot): boolean {
+  const status = (step.details as { memberSummary?: { status?: string } } | null)?.memberSummary?.status;
+  // A new delegation is also suspended, so that status cannot distinguish
+  // passive colleague work from waiting for a member; keep its clock marker.
+  return stepDelegationStillInProgress(step) && !['waiting_approval', 'waiting_budget_approval'].includes(status || '');
 }
 
 function stepIsUnconfirmed(step: RunStepSnapshot): boolean {
   return (step.details as { memberSummary?: { state?: string } } | null)?.memberSummary?.state === 'unknown';
 }
 
-function StepIcon({ kind, running, status, unconfirmed }: { kind: RunStepKind; running: boolean; status?: RunStepSnapshot['status']; unconfirmed?: boolean }) {
+function StepIcon({ kind, running, status, unconfirmed, colleagueWaiting }: { kind: RunStepKind; running: boolean; status?: RunStepSnapshot['status']; unconfirmed?: boolean; colleagueWaiting?: boolean }) {
   const { t } = useTranslation();
   const size = 14;
-  const label = stepMarkerLabel(status, t, unconfirmed);
+  const label = stepMarkerLabel(status, t, unconfirmed, colleagueWaiting);
   if (label) {
-    const Marker = unconfirmed ? IconHelp : status === 'cancelled' ? IconPlayerStop : status === 'blocked' ? IconAlertCircle
+    const Marker = unconfirmed ? IconHelp : status === 'cancelled' ? IconPlayerStop : status === 'blocked' ? (colleagueWaiting ? IconClock : IconAlertCircle)
       : status === 'running' || status === 'queued' ? IconLoader2 : IconCircleX;
     return <span role="img" aria-label={label}><Marker size={size} stroke={2.1} aria-hidden="true"
       className={running ? 'session-tui-step-spinner' : undefined} /></span>;
@@ -338,6 +348,10 @@ function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepS
   const hasDetails = hasStepDetails(step);
   const preview = resultPreview && step.systemEvent?.type === 'child_session' && typeof step.details === 'string'
     ? step.details : step.summary;
+  // A failed read still has a target; only the same X3c-safe basename may
+  // stay in the header beside its expanded failure explanation.
+  const keepFilename = ['read_file', 'fs_read', 'read_document'].includes(toolNameOf(step) || '')
+    && Boolean(preview) && memberFilename(preview) === preview;
   return (
     <div
       data-testid="run-disclosure-step"
@@ -346,7 +360,7 @@ function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepS
       className={getRunStepPresentation(step) === 'surface' ? 'run-step is-surfaced' : 'run-step'}
     >
       <span className={running ? 'run-step-icon is-running' : 'run-step-icon'}>
-        <StepIcon kind={step.kind} running={running} status={step.status} unconfirmed={stepIsUnconfirmed(step)} />
+        <StepIcon kind={step.kind} running={running} status={step.status} unconfirmed={stepIsUnconfirmed(step)} colleagueWaiting={stepWaitingForColleague(step)} />
       </span>
       <div className="run-step-body">
         <button
@@ -362,7 +376,7 @@ function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepS
             <span className="run-step-caret" />
           )}
           <span className="run-step-title">{localizedToolTitle(step, t)}</span>
-          {preview && !(expanded && ['failed', 'cancelled'].includes(step.status)) && <span className="run-step-summary">{
+          {preview && (keepFilename || !(expanded && ['failed', 'cancelled'].includes(step.status))) && <span className="run-step-summary">{
             preview.includes('[REDACTED_SECRET]')
               ? <PastedCredentialText content={preview} />
               : <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown>
@@ -495,7 +509,7 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const row = (
     <>
       <span className={step.status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
-        <StepIcon kind={step.kind} running={step.status === 'running'} status={step.status} unconfirmed={stepIsUnconfirmed(step)} />
+        <StepIcon kind={step.kind} running={step.status === 'running'} status={step.status} unconfirmed={stepIsUnconfirmed(step)} colleagueWaiting={stepWaitingForColleague(step)} />
       </span>
       <span className="run-tool-history-title">
         {localizedToolTitle(step, t)}
@@ -542,10 +556,13 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
         ? t('agent.chat.disclosure.toolInterrupted', 'Interrupted: {{tools}}', { tools: namedTools })
         : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', { tools: namedTools });
   const historyLabel = t('agent.chat.disclosure.toolHistory', 'Tool call history');
-  const statusStep = steps.find(step => step.status === status && !stepIsUnconfirmed(step))
+  const statusStep = (status === 'blocked' && steps.find(step => step.status === status
+    && !stepIsUnconfirmed(step) && !stepWaitingForColleague(step)))
+    || steps.find(step => step.status === status && !stepIsUnconfirmed(step))
     || steps.find(step => step.status === status) || currentStep;
   const unconfirmed = stepIsUnconfirmed(statusStep);
-  const markerLabel = stepMarkerLabel(status, t, unconfirmed);
+  const colleagueWaiting = stepWaitingForColleague(statusStep);
+  const markerLabel = stepMarkerLabel(status, t, unconfirmed, colleagueWaiting);
   return (
     <details data-testid="run-disclosure-tool-group" data-status={status} className="run-tool-group">
       <summary
@@ -554,7 +571,7 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
         aria-label={markerLabel ? `${historyLabel} · ${markerLabel}` : historyLabel}
       >
         <span className={status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
-          <StepIcon kind={currentStep.kind} running={status === 'running'} status={status} unconfirmed={unconfirmed} />
+          <StepIcon kind={currentStep.kind} running={status === 'running'} status={status} unconfirmed={unconfirmed} colleagueWaiting={colleagueWaiting} />
         </span>
         <span className="run-tool-group-label">{label}</span>
         <IconChevronRight className="run-tool-group-chevron" size={13} stroke={2.2} aria-hidden="true" />
@@ -588,8 +605,8 @@ function stepRenders(step: RunStepSnapshot): boolean {
  * rewritten delegation tool row, then a cancelled runtime action receipt.
  * Started notifications never own; they only repeat the lifecycle. */
 function stoppedDelegationCandidate(step: RunStepSnapshot): { task: string; rank: number } | null {
-  const summary = (step.details as { memberSummary?: { kind?: string; status?: string; taskId?: string } } | null)?.memberSummary;
-  if (summary?.kind === 'delegation' && summary.status === 'cancelled' && summary.taskId) {
+  const summary = (step.details as { memberSummary?: { kind?: string; status?: string; taskId?: string; errorClass?: string } } | null)?.memberSummary;
+  if (summary?.kind === 'delegation' && summary.status === 'cancelled' && summary.taskId && summary.errorClass !== 'cancelled') {
     return { task: summary.taskId, rank: step.systemEvent?.type === 'child_session' ? 0 : 1 };
   }
   const event = step.systemEvent;
@@ -694,6 +711,9 @@ export default function RunDisclosureBlock({
       const owner = stoppedDelegationOwner.get(candidate.task);
       return !owner || owner.id === step.id;
     })
+    // Waiting for a colleague is not a tool still executing. Reuse X3d's
+    // accessible waiting marker without changing the run's lifecycle/status.
+    .map(step => step.status !== 'done' && stepDelegationStillInProgress(step) ? { ...step, status: 'blocked' as const } : step)
     .filter(stepRenders);
   if (visibleSteps.length === 0) {
     if (timeline.status === 'idle') return null;

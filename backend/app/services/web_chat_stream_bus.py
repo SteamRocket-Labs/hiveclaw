@@ -12,6 +12,7 @@ from app.services.execution_receipts import canonical_payload_hash
 from app.services.session_event_contract import (
     SESSION_EVENT_COMPATIBILITY_SCHEMA,
     SESSION_EVENT_SCHEMA,
+    member_permission_payload,
     serialize_session_event,
 )
 
@@ -47,7 +48,7 @@ def _user_live_projection(envelope: dict[str, Any]) -> dict[str, Any]:
         # V1 compatibility rows are serialized as the user projection when
         # they enter the outbox because they do not carry canonical V2
         # redaction metadata. Their durable DB row remains operator truth.
-        return dict(envelope)
+        return member_permission_payload(envelope)
     raise ValueError("unsupported_session_event_delivery_schema")
 
 
@@ -155,7 +156,7 @@ async def _listen_web_chat_stream_once() -> None:
                 # new publishers mark their already-redacted envelope so the
                 # non-idempotent JSON-pointer redaction is not applied twice.
                 payload = (
-                    delivered_envelope
+                    member_permission_payload(delivered_envelope)
                     if envelope.get("projection_audience") == "user"
                     else _user_live_projection(delivered_envelope)
                 )

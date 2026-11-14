@@ -612,9 +612,27 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
  * original store, tool results and model history remain untouched. */
 function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatMessage[] {
   const terminals = new Map<string, string>();
+  const stoppedConversations = new Set<string>();
   const terminalSessions = new Map<string, Map<string, number>>();
   const startsBySession = new Map<string, Array<{ index: number; sequence: number }>>();
   const key = (value: unknown) => typeof value === 'string' ? value.replaceAll('-', '').toLowerCase() : '';
+  // A delegated run may be recorded before its authorized task message. Its
+  // sticky first sequence must not split the task into a preceding terminal
+  // block and a new running placeholder (run20 step6). Keep storage untouched.
+  messages = [...messages];
+  for (const message of [...messages]) {
+    const item = message.sessionItem;
+    if (item?.kind !== 'run' || item.payload?.task_type !== 'delegation' || !('run_id' in item.scope)) continue;
+    const runId = key(item.scope.run_id);
+    const runIndex = messages.indexOf(message);
+    const inputIndex = messages.findIndex(input => input.role === 'user'
+      && key(input.sessionItem?.payload?.legacy_run_id || input.sessionItem?.payload?.target_run_id
+        || recordValue(input.sessionItem?.payload?.metadata)?.runtime_task_id) === runId);
+    if (inputIndex > runIndex) {
+      messages.splice(runIndex, 1);
+      messages.splice(inputIndex, 0, message);
+    }
+  }
   const terminal = (value: unknown) => ['completed', 'failed', 'error', 'killed', 'cancelled', 'canceled', 'blocked', 'skipped'].includes(String(value));
   const metadataOf = (message: AgentChatMessage) => message.threadItem?.metadata || message.sessionItem?.payload || {};
   const recordSessionTerminal = (session: string, task: string, sequence: number) => {
@@ -637,6 +655,7 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
       || message.sessionItem?.kind === 'a2a_delegation') && terminal(status)) {
       const task = key(metadata.runtime_task_id || metadata.task_id);
       if (task) terminals.set(task, String(status));
+      if (task && childSession && ['killed', 'cancelled', 'canceled'].includes(String(status))) stoppedConversations.add(task);
       recordSessionTerminal(childSession, task, sequence);
     }
     const manifest = recordValue(metadata.result_manifest);
@@ -694,6 +713,10 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
     const status = statuses.find(status => ['failed', 'error'].includes(status!))
       || statuses.find(status => status !== 'completed') || 'completed';
     return { ...message, toolMemberSummary: { ...message.toolMemberSummary, kind: 'delegation',
+      // The terminal colleague row owns the stop sentence across blocks,
+      // including the frame before its linked child_session row arrives.
+      ...(['killed', 'cancelled', 'canceled'].includes(status)
+        && taskIds.some(id => stoppedConversations.has(key(id))) ? { errorClass: 'cancelled' } : {}),
       state: status === 'completed' ? 'done' : 'not_done', status: ['killed', 'canceled'].includes(status) ? 'cancelled' : status } };
   }).filter((message): message is AgentChatMessage => message !== null);
 }

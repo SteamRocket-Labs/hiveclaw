@@ -21,7 +21,11 @@ async def test_waiting_breaker_reloads_tasks_after_candidate_rollback(
     from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
     from app.models.runtime_task import RuntimeTask
     from app.models.tenant import Tenant
-    from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlementConflict,
+    )
 
     tenant_id = await _seed_tenant(owner_sessionmaker)
     service = RuntimeBudgetService(session_factory=app_user_sessionmaker)
@@ -36,6 +40,7 @@ async def test_waiting_breaker_reloads_tasks_after_candidate_rollback(
     )
     retained_tasks = []
     locked_batches = []
+    conflict_task_ids = []
     apply_breaker = service._apply_breaker
 
     async def retain_waiting_tasks(db, *args, **kwargs):
@@ -58,7 +63,11 @@ async def test_waiting_breaker_reloads_tasks_after_candidate_rollback(
 
         with monkeypatch.context() as patch:
             patch.setattr(db, "execute", ordered_execute)
-            return await apply_breaker(db, *args, **kwargs)
+            try:
+                return await apply_breaker(db, *args, **kwargs)
+            except RuntimeBudgetSettlementConflict as exc:
+                conflict_task_ids.append(exc.runtime_task_id)
+                raise
 
     monkeypatch.setattr(service, "_apply_breaker", retain_waiting_tasks)
     try:
@@ -162,6 +171,7 @@ async def test_waiting_breaker_reloads_tasks_after_candidate_rollback(
                 )
             )
         assert locked_batches == [pending_ids, [pending_ids[1]]]
+        assert conflict_task_ids == [pending_ids[0]]
         assert lock_calls == 2
         assert stored_run.status == "waiting_budget_approval"
         assert stored_run.used_tokens == 7

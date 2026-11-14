@@ -17,6 +17,7 @@ from typing import Any
 import uuid
 
 from sqlalchemy import Select, and_, exists, func, or_, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
@@ -1058,6 +1059,10 @@ class RuntimeBudgetService:
                             completed_at=current,
                         )
                 except Exception as exc:
+                    # DB/session errors can mean failed rollback, a lost connection, or repeating lock waits.
+                    # Fail and roll back the whole tick; isolate only errors from one row's own data.
+                    if isinstance(exc, SQLAlchemyError):
+                        raise
                     # Permanent failures filling the oldest-first limit (daemon: 32) delay newer rows until fixed.
                     # No quarantine marker is allowed here; use an operator fix or an owner-approved marker.
                     logger.error(
@@ -1165,6 +1170,9 @@ class RuntimeBudgetService:
             )
             reservation_events = result.scalars().all()
             for event in reservation_events:
+                budget_run_id = event.budget_run_id
+                runtime_task_id = event.runtime_task_id
+                source_event_id = event.id
                 run = None
                 task = None
                 try:
@@ -1285,14 +1293,18 @@ class RuntimeBudgetService:
                             task.budget_admission_status = "settled"
                             repaired = True
                 except Exception as exc:
+                    # DB/session errors can mean failed rollback, a lost connection, or repeating lock waits.
+                    # Fail and roll back the whole tick; isolate only errors from one row's own data.
+                    if isinstance(exc, SQLAlchemyError):
+                        raise
                     # Permanent failures filling the oldest-first limit (daemon: 32) delay newer rows until fixed.
                     # No quarantine marker is allowed here; use an operator fix or an owner-approved marker.
                     logger.error(
                         "Orphaned reservation failed: budget_run_id=%s runtime_task_id=%s source_event_id=%s "
                         "error_type=%s exception_runtime_task_id=%s",
-                        event.budget_run_id,
-                        event.runtime_task_id,
-                        event.id,
+                        budget_run_id,
+                        runtime_task_id,
+                        source_event_id,
                         type(exc).__name__,
                         getattr(exc, "runtime_task_id", None),
                     )
@@ -2355,7 +2367,8 @@ class RuntimeBudgetService:
                     if reservation is not None:
                         if reservation.runtime_task_id != task.id:
                             raise RuntimeBudgetSettlementConflict(
-                                f"reservation runtime task conflict for {run.id}:{reservation_key}"
+                                f"reservation runtime task conflict for {run.id}:{reservation_key}",
+                                runtime_task_id=task.id,
                             )
                         stamp_runtime_task_budget_actuals(
                             task,

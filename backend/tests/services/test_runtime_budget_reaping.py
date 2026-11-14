@@ -566,3 +566,127 @@ async def test_reaper_conflict_rolls_back_chat_outbox_transcript_and_callbacks(
             await db.execute(delete(Agent).where(Agent.id == agent_id))
             await db.execute(delete(User).where(User.id == user_id))
             await db.commit()
+
+
+@pytest.mark.parametrize("lane", ["reap_expired_runs", "reconcile_orphaned_reservations"])
+@pytest.mark.parametrize("failure_kind", ["rollback", "statement_timeout"])
+async def test_budget_database_errors_fail_tick_and_rollback_all_rows(
+    expired_budget_conflict,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    caplog,
+    lane,
+    failure_kind,
+):
+    from sqlalchemy.exc import DBAPIError, InterfaceError, SQLAlchemyError
+
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.services import runtime_terminal_settlement
+
+    case = expired_budget_conflict
+    async with owner_sessionmaker() as db:
+        reservation = await db.scalar(
+            select(RuntimeBudgetEvent).where(
+                RuntimeBudgetEvent.budget_run_id == case.run_ids[0],
+                RuntimeBudgetEvent.reservation_key == f"PRIVATE-BF2-{case.bad_task_id}",
+            )
+        )
+        reservation.runtime_task_id = case.bad_task_id
+        if lane == "reconcile_orphaned_reservations":
+            oldest = await db.scalar(select(func.min(RuntimeBudgetEvent.created_at)))
+            for index, (run_id, task_id) in enumerate(zip(case.run_ids, (case.bad_task_id, case.normal_task_id))):
+                run = await db.get(RuntimeBudgetRun, run_id)
+                run.max_background_tasks = 1
+                task = await db.get(RuntimeTask, task_id)
+                task.status = "completed"
+                task.completed_at = case.now
+                task.metadata_json = {"runtime_budget_actuals": {"tokens": 13, "background_tasks": 1}}
+                event = await db.scalar(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == run_id,
+                        RuntimeBudgetEvent.runtime_task_id == task_id,
+                    )
+                )
+                event.created_at = min(case.now, oldest or case.now) - timedelta(minutes=2 - index)
+        await db.commit()
+
+    injections = 0
+    rollback_calls = 0
+    if failure_kind == "rollback":
+        dialect = app_user_sessionmaker.kw["bind"].sync_engine.dialect
+        rollback_to = dialect.do_rollback_to_savepoint
+
+        def fail_first_rollback(connection, name):
+            nonlocal rollback_calls
+            rollback_calls += 1
+            if rollback_calls == 1:
+                # Raise client-side WITHOUT sending ROLLBACK TO. PostgreSQL is
+                # still connected and still contains the row's partial writes.
+                raise InterfaceError("ROLLBACK TO SAVEPOINT", {}, RuntimeError("another operation is in progress"))
+            return rollback_to(connection, name)
+
+        monkeypatch.setattr(dialect, "do_rollback_to_savepoint", fail_first_rollback)
+
+    async def fail_row(db):
+        nonlocal injections
+        injections += 1
+        if failure_kind == "rollback":
+            raise ValueError("PRIVATE-BF3-ROW-DATA")
+        # This must be an actual asyncpg/server failure, not a constructed
+        # DBAPIError. The SET LOCAL is scoped to this test's row transaction.
+        await db.execute(text("SET LOCAL statement_timeout = '10ms'"))
+        await db.execute(text("SELECT pg_sleep(1)"))
+        pytest.fail("PostgreSQL did not enforce statement_timeout")
+
+    if lane == "reap_expired_runs":
+        terminal = runtime_terminal_settlement.settle_and_enqueue_runtime_task_terminal
+
+        async def fail_one_task(db, task, **kwargs):
+            if task.id == case.bad_task_id:
+                await fail_row(db)
+            return await terminal(db, task, **kwargs)
+
+        monkeypatch.setattr(runtime_terminal_settlement, "settle_and_enqueue_runtime_task_terminal", fail_one_task)
+    else:
+        breaker = case.service._apply_breaker
+
+        async def fail_after_breaker(db, run, *args, **kwargs):
+            result = await breaker(db, run, *args, **kwargs)
+            if run.id == case.run_ids[0]:
+                await fail_row(db)
+            return result
+
+        monkeypatch.setattr(case.service, "_apply_breaker", fail_after_breaker)
+
+    before = [await case.snapshot(run_id) for run_id in case.run_ids]
+    caught = None
+    returned = None
+    with caplog.at_level(logging.ERROR, logger="app.services.runtime_budget_service"):
+        try:
+            returned = await getattr(case.service, lane)(now=case.now, limit=2)
+        except SQLAlchemyError as exc:
+            caught = exc
+    # Each snapshot opens a fresh owner session: inspect the database that
+    # actually committed/rolled back, not the invalidated ORM identity map.
+    after = [await case.snapshot(run_id) for run_id in case.run_ids]
+    assert isinstance(caught, InterfaceError if failure_kind == "rollback" else DBAPIError), {
+        "returned": returned,
+        "snapshots_unchanged": after == before,
+        "changed_runs": [run_id for run_id, old, new in zip(case.run_ids, before, after) if old != new],
+    }
+    assert returned is None
+    assert after == before
+    assert injections == 1
+    if failure_kind == "rollback":
+        assert rollback_calls == 1
+    else:
+        assert caught.orig.sqlstate == "57014"
+    # Database/session errors are tick failures, not per-row data errors:
+    # neither the failing nor any innocent run may be blamed by a row ERROR.
+    assert [
+        record
+        for record in caplog.records
+        if record.name == "app.services.runtime_budget_service" and record.levelno >= logging.ERROR
+    ] == []

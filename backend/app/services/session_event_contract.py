@@ -1762,7 +1762,7 @@ def _member_summary_projection(
             summary["filename"] = filename
     if kind == "mcp_app":
         summary["app_label"] = app_label
-    if kind in {"file_read", "delegation"} and state == "not_done" and result_obj and isinstance(result_obj.get("error_class"), str):
+    if kind in {"file_read", "delegation", "memory_search", "memory_read"} and state == "not_done" and result_obj and isinstance(result_obj.get("error_class"), str):
         summary["error_class"] = result_obj["error_class"]
     if kind in {"delegation", "colleague_result"} and result_obj:
         summary["status"] = "cancelled" if typed_status in {"killed", "cancelled"} else typed_status

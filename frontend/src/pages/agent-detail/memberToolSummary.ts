@@ -227,6 +227,9 @@ export function memberToolSummarySentence(summary: MemberToolSummary, t: TFuncti
     return t('agent.chat.disclosure.colleagueWorking', 'The colleague is working. The result will return here.');
   }
   if (summary.state === 'not_done') {
+    if (['memory_search', 'memory_read'].includes(summary.kind) && summary.errorClass === 'timeout') {
+      return toolFailureForDisplay({ ok: false, error_class: summary.errorClass }, t, 'failed');
+    }
     if (summary.kind === 'web_fetch' && summary.host) return extra('webFetchFailedHost', 'The web page {{host}} did not open', { host: summary.host });
     return t(`agent.chat.toolResults.memberSummary.${entry.notDone}`, FALLBACK[entry.notDone]);
   }

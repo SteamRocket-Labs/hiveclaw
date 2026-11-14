@@ -325,7 +325,7 @@ def create_fast_reflection_candidate(
             session_id=normalized_session_id,
             response_idempotency_key=response_idempotency_key,
             evidence_refs=source_attempt_ids,
-            reason=skip_reason or "system_reflection_source",
+            reason="system_reflection_source",
         )
 
     signal = _classify_signal(messages, metadata)

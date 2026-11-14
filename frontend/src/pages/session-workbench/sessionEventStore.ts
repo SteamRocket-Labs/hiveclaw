@@ -340,7 +340,12 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
         lifecycle: event.lifecycle, terminal: isTerminal(event), revision: (prior?.revision ?? 0) + 1,
         content,
         payload: sourceHeld || sourceWasHeld ? event.payload : { ...(prior?.payload || {}), ...event.payload,
-          ...(event.item_kind === 'run' ? { reason_code: event.payload.reason_code } : {}) },
+          ...(event.item_kind === 'run' ? { reason_code: event.payload.reason_code,
+            // Only a real admission/start can supply this fallback. The first
+            // run event of a continuation may instead be cancelling.
+            started_at: prior?.payload.started_at ?? event.payload.started_at
+              ?? (!prior && ['queued', 'running'].includes(event.lifecycle) ? event.occurred_at : undefined),
+          } : {}) },
         actor: event.actor,
         visibility: event.visibility,
         display: sourceHeld ? undefined : event.display ?? prior?.display,

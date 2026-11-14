@@ -250,7 +250,7 @@ export function stepDelegationStillInProgress(step: RunStepSnapshot): boolean {
   // — `projectMemberDelegationStates` keys rows by task id, so an untyped
   // started row or an in_progress summary without a task id must not set it.
   const summary = (step.details as { memberSummary?: { kind?: string; state?: string; taskId?: string } } | null)?.memberSummary;
-  if (summary?.kind === 'delegation' && summary.state === 'in_progress'
+  if (summary && ['delegation', 'colleague_result'].includes(summary.kind || '') && summary.state === 'in_progress'
     && typeof summary.taskId === 'string' && summary.taskId) return true;
   const event = step.systemEvent;
   if (!event || event.type !== 'runtime_action_started') return false;
@@ -632,6 +632,12 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean, 
   }
   if (message.role === 'event') {
     const status = String(message.eventStatus || '').toLowerCase();
+    const metadata = message.threadItem?.metadata || message.sessionItem?.payload || {};
+    // A first-task dispatch can arrive after the parent finished, on the
+    // child's run id. It is still real work, not an interrupted parent tool.
+    if (delegationReceiptExpected && message.eventType === 'runtime_action_started'
+      && metadata.action_kind === 'a2a_delegation' && (metadata.runtime_task_id || metadata.task_id)
+      && ['running', 'in_progress', 'pending', 'queued'].includes(status)) return 'running';
     if (status === 'running' || status === 'in_progress' || status === 'pending') return live('running');
     if (status === 'blocked' || status === 'skipped' || status === 'approval_required' || status === 'session_permission_required') return 'blocked';
     if (status === 'failed' || status === 'error') return 'failed';

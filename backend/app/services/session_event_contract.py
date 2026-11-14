@@ -1381,7 +1381,7 @@ MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
     "search_memory": "memory_search",
     "load_memory": "memory_read",
     # b) runtime / colleague result readers
-    "read_runtime_result": "colleague_result",
+    "read_runtime_result": "runtime_result",
     "check_async_task": "colleague_result",
     "task_output": "colleague_result",
     "check_subagent": "colleague_result",
@@ -1722,6 +1722,10 @@ def _member_summary_projection(
             # receipt's body is the same class; a remote MCP body is
             # untrusted data that never decides the member sentence.
             result_obj = None
+    if tool_name == "read_runtime_result" and result_obj and _status_text(result_obj.get("source_kind")) in {
+        "a2a_delegation", "a2a_continuation", "subagent",
+    }:
+        kind = "colleague_result"
     typed_status = _status_text(result_obj.get("status")) if result_obj else ""
     if kind is None and tool_name.startswith("search_") and typed_status:
         kind = "record_search"
@@ -1760,7 +1764,7 @@ def _member_summary_projection(
         summary["app_label"] = app_label
     if kind in {"file_read", "delegation"} and state == "not_done" and result_obj and isinstance(result_obj.get("error_class"), str):
         summary["error_class"] = result_obj["error_class"]
-    if kind == "delegation" and result_obj:
+    if kind in {"delegation", "colleague_result"} and result_obj:
         summary["status"] = "cancelled" if typed_status in {"killed", "cancelled"} else typed_status
     if (kind == "delegation" or (kind == "colleague_result" and state == "in_progress")) and result_obj:
         task_id = result_obj.get("task_id") or result_obj.get("runtime_task_id")

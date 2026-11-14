@@ -153,7 +153,14 @@ const FALLBACK: Record<SummarySentenceKey, string> = {
 export function memberToolSummarySentence(summary: MemberToolSummary, t: TFunction): string | null {
   const extra = (key: string, fallback: string, values?: Record<string, unknown>) => t(`agent.chat.toolResults.memberSummary.${key}`, fallback, values);
   if (summary.state === 'unknown') return t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.');
+  if (summary.kind === 'runtime_result') {
+    return summary.state === 'done' ? t('agent.chat.disclosure.resultReturned', 'Result returned')
+      : t('agent.chat.disclosure.resultReadFailed', "Couldn't read the result this time.");
+  }
   if (summary.kind === 'delegation') {
+    if (summary.errorClass === 'cancelled' && summary.taskId) {
+      return t('agent.chat.disclosure.system.colleagueEnded', 'The colleague task has ended');
+    }
     if (summary.errorClass && !summary.taskId) {
       return toolFailureForDisplay({ ok: false, error_class: summary.errorClass }, t, 'failed');
     }

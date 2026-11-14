@@ -2408,6 +2408,20 @@ def test_delegate_tool_result_builds_runtime_action_started_event():
     }
 
 
+@pytest.mark.parametrize("serialized", [False, True])
+def test_first_task_tool_recovery_leaves_started_event_to_dispatch(serialized):
+    import json
+
+    import app.services.web_chat_runtime as runtime
+
+    result = {"runtime_task_id": "child-task", "child_session_id": "child-session",
+        "first_task_draft_id": "accepted-draft", "status": "pending", "ok": True, "operation": "delegate"}
+    assert runtime._runtime_action_event_from_tool_result({
+        "name": "delegate_to_agent", "status": "done", "args": {"agent_name": "Colleague"},
+        "result": json.dumps(result) if serialized else result,
+    }) is None
+
+
 def test_spawn_subagent_tool_result_builds_runtime_action_started_event():
     import json
 

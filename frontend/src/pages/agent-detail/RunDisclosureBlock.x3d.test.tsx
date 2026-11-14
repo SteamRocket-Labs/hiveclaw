@@ -68,8 +68,10 @@ it.each(['zh', 'en'] as const)('X3d-1 marks a colleague still working live and a
     const { container, unmount } = renderMessages(messages);
     const row = memberRow(container, language === 'zh' ? '同事正在处理，结果回来后会在这里继续。' : 'The colleague is working. The result will return here.');
     expect(row, 'run-19 waiting sentence must remain available').toBeTruthy();
-    expect(row?.getAttribute('data-status')).toBe('running');
-    expect(row?.querySelector(`[role="img"][aria-label="${language === 'zh' ? '运行中' : 'Running'}"] .tabler-icon-loader-2`)).toBeTruthy();
+    // X5a r2: keep the waiting status, but this is passive colleague work,
+    // not an approval or anything requiring the member's attention.
+    expect(row?.getAttribute('data-status')).toBe('blocked');
+    expect(row?.querySelector(`[role="img"][aria-label="${language === 'zh' ? '等待同事' : 'Waiting for colleague'}"] .tabler-icon-clock`)).toBeTruthy();
     unmount();
   }
 });

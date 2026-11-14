@@ -640,16 +640,18 @@ function withColleagueRunId(events: ChatTranscriptEventPayload[], task: string):
 
 it('x2df: D and F hold when the colleague rows carry the task id as run_id, live and after reload', () => {
   const events = withColleagueRunId([...cancelledColleagueEvents()], 'stop-task');
-  // F: one stopped sentence per delegated task.
+  // X5a: F is one sentence per TASK across blocks, not one in EACH block.
+  // The dispatch and linked child can live in different runs (run20 step6).
   for (const messages of projectBoth(events)) {
     const model = timelineFor(messages);
+    let occurrences = 0;
     for (const cell of model.cells) {
       if (cell.kind !== 'active_run') continue;
       const { container, unmount } = renderBlock(cell.timeline);
-      const occurrences = (container.textContent || '').split('已停止，同事没有完成这项工作。').length - 1;
-      expect(occurrences, `one stopped row, got ${occurrences}:\n${container.textContent}`).toBe(1);
+      occurrences += (container.textContent || '').split('已停止，同事没有完成这项工作。').length - 1;
       unmount();
     }
+    expect(occurrences, 'exactly one stopped sentence across the task’s blocks').toBe(1);
   }
   // D: every reload prefix still renders the final status or none.
   const settledStatuses = new Map<string, string>();
@@ -850,13 +852,16 @@ export function memberStopEvents(): ChatTranscriptEventPayload[] {
 it('x2f: one member stop shows one stopped sentence per delegated task, live and after reload', () => {
   for (const messages of projectBoth(memberStopEvents())) {
     const model = timelineFor(messages);
+    // X5a: count across the whole delegated task, including separate runs;
+    // a generic stopped dispatch row must not repeat the child’s sentence.
+    let occurrences = 0;
     for (const cell of model.cells) {
       if (cell.kind !== 'active_run') continue;
       const { container, unmount } = renderBlock(cell.timeline);
-      const occurrences = (container.textContent || '').split('已停止，同事没有完成这项工作。').length - 1;
-      expect(occurrences, `exactly one stopped row per delegated task, got ${occurrences}:\n${container.textContent}`).toBe(1);
+      occurrences += (container.textContent || '').split('已停止，同事没有完成这项工作。').length - 1;
       unmount();
     }
+    expect(occurrences, 'exactly one stopped sentence per delegated task').toBe(1);
   }
 });
 

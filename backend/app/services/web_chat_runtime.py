@@ -1073,6 +1073,9 @@ def _runtime_action_event_from_tool_result(data: dict[str, Any]) -> dict[str, An
     child_session_id = str(payload.get("child_session_id") or payload.get("session_id") or "").strip()
 
     if tool_name in {"delegate_to_agent", "send_message_to_agent"}:
+        # First-task dispatch owns this signal, including tool recovery/replay.
+        if tool_name == "delegate_to_agent" and payload.get("first_task_draft_id"):
+            return None
         runtime_task_id = str(payload.get("runtime_task_id") or payload.get("task_id") or "").strip()
         if tool_name == "send_message_to_agent" and not runtime_task_id:
             return None

@@ -2665,6 +2665,7 @@
         "toolRunning": "正在调用 {{tool}}",
         "colleagueWorking": "同事正在处理，结果回来后会在这里继续。",
         "resultReturned": "已返回结果",
+        "resultReadFailed": "这次没读到结果。",
         "resultUnconfirmed": "结果尚未确认。",
         "resultSucceeded": "成功",
         "resultFile": "{{action}}：{{file}}。{{status}}",
@@ -2779,7 +2780,8 @@
         "openColleagueConversation": "查看这位同事的对话",
         "failedMarker": "未完成",
         "stoppedMarker": "已停止",
-        "blockedMarker": "等待处理"
+        "blockedMarker": "等待处理",
+        "colleagueWaitingMarker": "等待同事"
       },
       "artifacts": {
         "viewSource": "查看源码",

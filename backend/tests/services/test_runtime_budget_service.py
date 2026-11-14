@@ -1045,6 +1045,282 @@ async def test_reaper_expires_waiting_budget_approval_run(owner_sessionmaker):
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.parametrize("conflict_kind", ["runtime_task", "actuals", "breaker"])
+@pytest.mark.parametrize("conflict_first", [True, False], ids=["conflict_first", "conflict_last"])
+async def test_reconcile_orphaned_reservations_isolates_conflicts_across_tenants(
+    app_user_sessionmaker,
+    owner_sessionmaker,
+    caplog,
+    conflict_kind,
+    conflict_first,
+):
+    import logging
+
+    from sqlalchemy import func
+
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.models.tenant import Tenant
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlementConflict,
+    )
+
+    service = RuntimeBudgetService(session_factory=app_user_sessionmaker)
+    tenant_ids = [await _seed_tenant(owner_sessionmaker) for _ in range(2)]
+    run_ids = []
+    task_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
+    now = datetime.now(UTC)
+
+    async def snapshot(run_id):
+        async with owner_sessionmaker() as db:
+            return [
+                [dict(row) for row in (await db.execute(statement)).mappings()]
+                for statement in (
+                    select(RuntimeBudgetRun.__table__).where(RuntimeBudgetRun.id == run_id),
+                    select(RuntimeTask.__table__).where(RuntimeTask.budget_run_id == run_id).order_by(RuntimeTask.id),
+                    select(RuntimeBudgetEvent.__table__)
+                    .where(RuntimeBudgetEvent.budget_run_id == run_id)
+                    .order_by(RuntimeBudgetEvent.id),
+                )
+            ]
+
+    try:
+        for index, tenant_id in enumerate(tenant_ids):
+            run = await _create_run(
+                service,
+                tenant_id,
+                max_background_tasks=1 if index == 0 and conflict_kind == "breaker" else 5,
+            )
+            run_ids.append(run.id)
+            await service.reserve(
+                RuntimeBudgetReservation(
+                    budget_run_id=run.id,
+                    reservation_key="orphan-conflict" if index == 0 else "orphan-normal",
+                    runtime_task_id=task_ids[index],
+                    background_tasks=1,
+                    tokens=500,
+                )
+            )
+        async with owner_sessionmaker() as db:
+            # These candidates must lead even when earlier tests left reservations.
+            oldest = await db.scalar(select(func.min(RuntimeBudgetEvent.created_at)))
+            reservation_time = min(now, oldest or now)
+            reservations = []
+            for index, run_id in enumerate(run_ids):
+                reservation = await db.scalar(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == run_id,
+                        RuntimeBudgetEvent.event_type == "reservation",
+                    )
+                )
+                assert reservation is not None
+                # Explicit ordering proves both skipping an oldest conflict and
+                # preserving repairs already made before a later conflict.
+                reservation.created_at = reservation_time - timedelta(
+                    minutes=2 if (index == 0) == conflict_first else 1
+                )
+                reservations.append(reservation)
+                db.add(
+                    RuntimeTask(
+                        id=task_ids[index],
+                        tenant_id=tenant_ids[index],
+                        task_type="subagent",
+                        status="completed",
+                        completed_at=now,
+                        budget_run_id=run_id,
+                        budget_reservation_key=reservation.reservation_key,
+                        budget_admission_status="reserved",
+                        metadata_json={"runtime_budget_actuals": {"background_tasks": 1, "tokens": 29}},
+                    )
+                )
+            bad_event_id = reservations[0].id
+            if conflict_kind == "breaker":
+                # This conflict happens after usage, a settlement and the breaker
+                # transition have been flushed: catching alone cannot undo them.
+                db.add(
+                    RuntimeTask(
+                        id=task_ids[2],
+                        tenant_id=tenant_ids[0],
+                        task_type="subagent",
+                        status="pending",
+                        budget_run_id=run_ids[0],
+                        budget_reservation_key="orphan-conflict",
+                    )
+                )
+            else:
+                db.add(
+                    RuntimeBudgetEvent(
+                        tenant_id=tenant_ids[0],
+                        budget_run_id=run_ids[0],
+                        event_type="settlement",
+                        reservation_key="orphan-conflict",
+                        runtime_task_id=uuid.uuid4() if conflict_kind == "runtime_task" else task_ids[0],
+                        amounts_json={"background_tasks": 1, "tokens": 31 if conflict_kind == "actuals" else 29},
+                        metadata_json={"fixture": "conflicting settlement"},
+                    )
+                )
+            await db.commit()
+
+        conflicting_before = await snapshot(run_ids[0])
+        outcomes = []
+        with caplog.at_level(logging.ERROR, logger="app.services.runtime_budget_service"):
+            # Tick two revisits only the remaining conflict, not unrelated fixtures.
+            for batch_limit in (2, 1):
+                try:
+                    outcomes.append(await service.reconcile_orphaned_reservations(now=now, limit=batch_limit))
+                except RuntimeBudgetSettlementConflict as exc:
+                    # Keep both ticks and persisted state in a base-code failure.
+                    outcomes.append(str(exc))
+
+        assert await snapshot(run_ids[0]) == conflicting_before
+        normal_after = await snapshot(run_ids[1])
+        stored_run = normal_after[0][0]
+        stored_task = normal_after[1][0]
+        settlements = [event for event in normal_after[2] if event["event_type"] == "settlement"]
+        assert outcomes == [1, 0], {
+            "outcomes": outcomes,
+            "normal_reserved_tokens": stored_run["reserved_tokens"],
+            "normal_settlements": len(settlements),
+        }
+        assert stored_run["reserved_tokens"] == 0
+        assert stored_run["reserved_background_tasks"] == 0
+        assert stored_run["used_tokens"] == 29
+        assert stored_run["used_background_tasks"] == 1
+        assert stored_task["budget_admission_status"] == "settled"
+        assert len(settlements) == 1
+        assert settlements[0]["reason"] == "orphaned_reservation_reconciled"
+        assert settlements[0]["amounts_json"] == {"background_tasks": 1, "tokens": 29}
+        conflict_logs = [record for record in caplog.records if record.name == "app.services.runtime_budget_service"]
+        assert [(record.levelno, record.getMessage()) for record in conflict_logs] == [
+            (
+                logging.ERROR,
+                "Orphaned reservation settlement conflict: "
+                f"budget_run_id={run_ids[0]} reservation_key=orphan-conflict source_event_id={bad_event_id}",
+            )
+        ] * 2
+        assert all(record.exc_info is None for record in conflict_logs)
+    finally:
+        # A permanent conflict must not poison later maintenance tests sharing PG.
+        async with owner_sessionmaker() as db:
+            await db.execute(sa_delete(RuntimeTask).where(RuntimeTask.id.in_(task_ids)))
+            await db.execute(sa_delete(RuntimeBudgetRun).where(RuntimeBudgetRun.id.in_(run_ids)))
+            await db.execute(sa_delete(Tenant).where(Tenant.id.in_(tenant_ids)))
+            await db.commit()
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_reconcile_orphaned_conflict_releases_locks_and_reloads_same_run(
+    app_user_sessionmaker,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    from sqlalchemy import func
+
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.models.tenant import Tenant
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlement,
+    )
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=app_user_sessionmaker)
+    writer = RuntimeBudgetService(session_factory=app_user_sessionmaker)
+    run = await _create_run(service, tenant_id)
+    task_ids = [uuid.uuid4(), uuid.uuid4()]
+    try:
+        for index, key in enumerate(("conflict", "normal", "concurrent")):
+            await service.reserve(
+                RuntimeBudgetReservation(
+                    budget_run_id=run.id,
+                    reservation_key=key,
+                    runtime_task_id=task_ids[index] if index < 2 else None,
+                    tokens=100,
+                )
+            )
+        async with owner_sessionmaker() as db:
+            oldest = await db.scalar(select(func.min(RuntimeBudgetEvent.created_at)))
+            assert oldest is not None
+            for index, key in enumerate(("conflict", "normal")):
+                reservation = await db.scalar(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == run.id,
+                        RuntimeBudgetEvent.reservation_key == key,
+                    )
+                )
+                assert reservation is not None
+                reservation.created_at = oldest - timedelta(minutes=2 - index)
+                db.add(
+                    RuntimeTask(
+                        id=task_ids[index],
+                        tenant_id=tenant_id,
+                        task_type="subagent",
+                        status="completed",
+                        budget_run_id=run.id,
+                        budget_reservation_key=key,
+                        budget_admission_status="reserved",
+                        metadata_json={"runtime_budget_actuals": {"tokens": 7}},
+                    )
+                )
+            db.add(
+                RuntimeBudgetEvent(
+                    tenant_id=tenant_id,
+                    budget_run_id=run.id,
+                    event_type="settlement",
+                    reservation_key="conflict",
+                    runtime_task_id=uuid.uuid4(),
+                    amounts_json={},
+                )
+            )
+            await db.commit()
+
+        lock_run = service._lock_run
+        lock_calls = 0
+
+        async def lock_after_concurrent_settlement(db, budget_run_id):
+            nonlocal lock_calls
+            lock_calls += 1
+            if lock_calls == 2:
+                # A separate PostgreSQL transaction must acquire the rolled-back
+                # row lock before this tick ends. Its committed usage must survive
+                # re-locking an ORM instance read during the failed candidate.
+                await asyncio.wait_for(
+                    writer.settle(
+                        RuntimeBudgetSettlement(
+                            budget_run_id=run.id,
+                            reservation_key="concurrent",
+                            actual_tokens=13,
+                        )
+                    ),
+                    timeout=5,
+                )
+            return await lock_run(db, budget_run_id)
+
+        monkeypatch.setattr(service, "_lock_run", lock_after_concurrent_settlement)
+        assert await service.reconcile_orphaned_reservations(limit=2) == 1
+        async with owner_sessionmaker() as db:
+            stored_run = await db.get(RuntimeBudgetRun, run.id)
+            bad_task = await db.get(RuntimeTask, task_ids[0])
+            normal_task = await db.get(RuntimeTask, task_ids[1])
+        assert stored_run is not None and bad_task is not None and normal_task is not None
+        assert lock_calls == 2
+        assert stored_run.used_tokens == 13 + 7
+        assert stored_run.reserved_tokens == 100
+        assert bad_task.budget_admission_status == "reserved"
+        assert normal_task.budget_admission_status == "settled"
+    finally:
+        async with owner_sessionmaker() as db:
+            await db.execute(sa_delete(RuntimeTask).where(RuntimeTask.id.in_(task_ids)))
+            await db.execute(sa_delete(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))
+            await db.execute(sa_delete(Tenant).where(Tenant.id == tenant_id))
+            await db.commit()
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
 async def test_reconcile_orphaned_reservations_releases_terminal_task_reservation(owner_sessionmaker):
     from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
     from app.models.runtime_task import RuntimeTask

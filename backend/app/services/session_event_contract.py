@@ -2248,17 +2248,28 @@ def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     request = payload.get("permission_request")
     clean = dict(payload)
     if isinstance(request, Mapping):
+        from app.services.thread_items import _user_summary
+
         # Legacy carriers repeat request fields beside the nested request.
         # Use the same allowlist for those duplicates, not another strip list.
         clean = {key: value for key, value in clean.items()
-                 if key not in request or key in _MEMBER_PERMISSION_REQUEST_KEYS}
+                 if key not in request or key in _MEMBER_PERMISSION_REQUEST_KEYS or value != request[key]}
         clean["permission_request"] = member_permission_request(request)
+        summary = _user_summary(item_type="approval_request", event_type="permission", item_status="waiting_user",
+                                data=clean["permission_request"], content="")
+        for key in ("message", "text"):
+            if key in payload:
+                clean[key] = summary
     for key in ("payload", "metadata", "v2_payload"):
         if isinstance(clean.get(key), Mapping):
             clean[key] = member_permission_payload(clean[key])
     if isinstance(clean.get("parts"), list):
         clean["parts"] = [member_permission_payload(part) if isinstance(part, Mapping) else part
                           for part in clean["parts"]]
+        for original, projected in zip(payload["parts"], clean["parts"]):
+            if (isinstance(original, Mapping) and isinstance(original.get("permission_request"), Mapping)
+                and "text" in original and clean.get("content") == original["text"]):
+                clean["content"] = projected["text"]
     content = clean.get("content")
     metadata = payload.get("metadata")
     if isinstance(content, str) and (

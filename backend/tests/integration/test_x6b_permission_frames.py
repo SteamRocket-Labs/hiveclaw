@@ -16,26 +16,13 @@ from tests.integration.test_session_permission_execution_once import _mounted_cl
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-def test_permission_projection_preserves_authored_json_and_argument_fields():
-    from app.services.session_event_contract import serialize_session_event
-    from tests.services.test_session_event_contract import _event
-
-    authored = {"content": json.dumps({"permission_request": {"permission_mode": "example"}})}
-    assert serialize_session_event(_event(payload=authored), audience="user")["payload"] == authored
-    arguments = {"permission_request": {"permission_profile": "a proposed document field"}}
-    payload = {"permission_request": {"permission_request_id": "request", "arguments": arguments}}
-    assert serialize_session_event(
-        _event(item_kind="tool_permission", lifecycle="waiting", payload=payload), audience="user",
-    )["payload"] == payload
-
-
 def _assert_member_frame(frame):
     forbidden = {
         "pending_tool_frame", "round_state", "capability", "permission_mode",
-        "decision_reason", "permission_profile",
+        "decision_reason", "permission_profile", "eventCapability",
     }
-    # Check fields, including JSON embedded in legacy content; ordinary prose
-    # such as "capability policy" is not a serialized governance field.
+    # Check every carrier, including JSON embedded in legacy content. The
+    # separate prose assertion also rejects the actual internal field values.
     if isinstance(frame, dict):
         assert not forbidden.intersection(frame), forbidden.intersection(frame)
         for value in frame.values():
@@ -52,21 +39,25 @@ def _assert_member_frame(frame):
             _assert_member_frame(decoded)
 
 
+@pytest.mark.parametrize("member_check", ["fields", "prose"])
 @pytest.mark.parametrize(("tool_name", "arguments", "action"), [
     ("plaza_create_post", {"content": "Approved team update"}, "allow_once"),
     ("plaza_create_post", {"content": "Session-approved team update"}, "allow_session"),
     ("delete_file", {"path": "workspace/obsolete.txt"}, "deny"),
 ])
 async def test_member_permission_frames_and_original_reply(
-    native_workspace, owner_sessionmaker, monkeypatch, tool_name, arguments, action,  # noqa: F811
+    native_workspace, owner_sessionmaker, monkeypatch, tool_name, arguments, action, member_check,  # noqa: F811
 ):
     from sqlalchemy import select
 
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.audit import ChatMessage
     from app.models.plaza import PlazaPost
     from app.models.runtime_task import RuntimeTask
-    from app.models.session_v2 import SessionToolInvocation
+    from app.models.security_audit import ResourcePermission
+    from app.models.session_v2 import SessionEventOutbox
+    from app.services.chat_message_parts import serialize_chat_message
     from app.services import runtime_task_worker, session_tool_runtime, web_chat_runtime
     from app.services.session_event_contract import serialize_session_event
     from app.services.session_permission_runtime import _execution_evidence
@@ -119,9 +110,24 @@ async def test_member_permission_frames_and_original_reply(
         await db.commit()
         legacy = delivered[-1]
         operator_legacy = serialize_session_event(await db.get(ChatTranscriptEvent, uuid.UUID(legacy["event_id"])))
-        operator_canonical = serialize_session_event(canonical)
+        operator_serialized = serialize_session_event(canonical)
+        # The outbox keeps the full payload with its original direct-user
+        # visibility; an operator REST projection changes that visibility.
+        operator_canonical = copy.deepcopy((await db.scalar(select(SessionEventOutbox).where(
+            SessionEventOutbox.event_id == canonical.id))).envelope_json)
+        original_canonical = copy.deepcopy(operator_canonical)
         user_canonical = serialize_session_event(canonical, audience="user")
-        await web_chat_runtime.broadcast_web_chat_event(n.agent, n.session, user_canonical)
+        # The live producer publishes operator bytes; assert this branch before
+        # the raw legacy callback checks so its own regression cannot hide.
+        await web_chat_runtime.broadcast_web_chat_event(n.agent, n.session, operator_canonical)
+        assert delivered[-1]["event_id"] == str(canonical.id)
+        assert delivered[-1]["item_kind"] == "tool_permission"
+        _assert_member_frame(delivered[-1])
+
+        db.add(ResourcePermission(tenant_id=n.tenant, principal_type="user", principal_id=n.foreign,
+            resource_type="agent", resource_id=n.agent, actions=["operator.inspect"],
+            conditions={"operator_inspection": {"schema": "hive.agent.operator_inspection.v1"}}))
+        await db.commit()
 
         seed = SimpleNamespace(tenant_id=n.tenant, user_id=n.user, agent_id=n.agent,
                                session_id=n.session, run_id=n.run)
@@ -134,12 +140,42 @@ async def test_member_permission_frames_and_original_reply(
             legacy_reload = next(frame for frame in reload_frames if frame.get("event_id") == legacy["event_id"])
             v1 = await client.get(f"{path}/transcript")
             assert v1.status_code == 200, v1.text
+            messages = await client.get(f"{path}/messages")
+            assert messages.status_code == 200, messages.text
+            assert any(part.get("permission_request") for message in messages.json() for part in message.get("parts", []))
+            operator_seed = SimpleNamespace(**{**vars(seed), "user_id": n.foreign})
+            async with _mounted_client(n.app_user_sessionmaker, operator_seed) as operator:
+                operator_messages = await operator.get(f"{path}/messages", params={
+                    "operator_view": "true", "operator_reason": "Inspect the original pending permission",
+                })
+                assert operator_messages.status_code == 200, operator_messages.text
+            stored_messages = list(await db.scalars(select(ChatMessage).where(
+                ChatMessage.conversation_id == str(n.session)).order_by(ChatMessage.created_at)))
+            assert operator_messages.json() == [serialize_chat_message(message) for message in stored_messages]
+            operator_json = json.dumps(operator_messages.json())
+            for key in ("pending_tool_frame", "round_state", "capability", "permission_mode",
+                        "decision_reason", "permission_profile", "eventCapability"):
+                assert key in operator_json
             user = await db.get(User, n.user)
             views = await read_session_run_permissions(db, run=run, session=session, user=user)
             assert len(views) == 1
-            for frame in [*delivered, canonical_reload, legacy_reload, v1.json(), views,
+            for frame in [*delivered, canonical_reload, legacy_reload, v1.json(), messages.json(), views,
                           _user_live_projection(operator_legacy), _user_live_projection(operator_canonical)]:
-                _assert_member_frame(frame)
+                if member_check == "fields":
+                    _assert_member_frame(frame)
+                else:
+                    encoded = json.dumps(frame)
+                    for private in (raw_receipt["permission_request"]["capability"],
+                                    raw_receipt["permission_request"]["decision_reason"],
+                                    "do not create a backend approval request"):
+                        assert private not in encoded
+            if member_check == "prose":
+                confirmation = {"plaza_create_post": "需要你的确认：Plaza create post",
+                                "delete_file": "需要你的确认：Delete file"}[tool_name]
+                for message in messages.json():
+                    for part in message.get("parts", []):
+                        if part.get("permission_request"):
+                            assert message["content"] == part["text"] == confirmation
             request = user_canonical["payload"]["permission_request"]
             assert set(request) == {
                 "permission_request_id", "session_id", "runtime_task_id", "requested_by_user_id",
@@ -152,7 +188,8 @@ async def test_member_permission_frames_and_original_reply(
                         "decision_reason", "permission_profile"):
                 assert key in json.dumps(operator_legacy)
             assert "decision_reason" in operator_canonical["payload"]["permission_request"]
-            assert serialize_session_event(canonical) == operator_canonical
+            assert serialize_session_event(canonical) == operator_serialized
+            assert operator_canonical == original_canonical
             assert json.loads(str(result)) == raw_receipt
             response = await client.post(
                 f"{path}/permissions/{request['permission_request_id']}/resolve", json={"action": action},

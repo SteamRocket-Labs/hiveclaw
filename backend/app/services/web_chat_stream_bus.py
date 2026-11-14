@@ -156,7 +156,7 @@ async def _listen_web_chat_stream_once() -> None:
                 # new publishers mark their already-redacted envelope so the
                 # non-idempotent JSON-pointer redaction is not applied twice.
                 payload = (
-                    delivered_envelope
+                    member_permission_payload(delivered_envelope)
                     if envelope.get("projection_audience") == "user"
                     else _user_live_projection(delivered_envelope)
                 )

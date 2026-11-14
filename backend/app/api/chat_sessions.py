@@ -3048,4 +3048,10 @@ async def get_session_messages(
         else:
             out.append(serialize_chat_message(m, sender_name=sender_name, artifacts=artifacts))
 
+    if operator_view is not True:
+        from app.services.session_event_contract import member_permission_payload
+
+        out = [member_permission_payload(entry) for entry in out]
+        for entry in out:
+            entry.pop("eventCapability", None)
     return out

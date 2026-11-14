@@ -77,7 +77,10 @@ def build_identity_section(
             'naturally as their assistant (for example "我是你的助理"), and never quote an id or a status code '
             'as your identity.')
     else:
-        parts.append(f"Your current display name is {agent_name}. Use this display name when introducing yourself.")
+        parts.append(
+            f"Your current display name is {agent_name}. Use this display name when introducing yourself. "
+            "Use this name instead of any name in Personality."
+        )
         if member_assistant:
             parts.append(
                 "The member sees you by this display name. Introduce yourself naturally as their assistant, "

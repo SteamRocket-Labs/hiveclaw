@@ -159,7 +159,10 @@ def test_identity_names_are_single_line_quoted_values(suffix, expected_suffix):
     expected_company = json.dumps('Acme"' + expected_suffix, ensure_ascii=False)
     lines = section[section.index(soul) + len(soul):].strip().splitlines()
     assert len(lines) == 3  # Two identity lines with one blank separator.
-    assert lines[0] == f"Your current display name is {expected_agent}. Use this display name when introducing yourself."
+    assert lines[0] == (
+        f"Your current display name is {expected_agent}. Use this display name when introducing yourself. "
+        "Use this name instead of any name in Personality."
+    )
     assert lines[2] == f"Your company is {expected_company}. Use this name instead of any company name in Personality."
     assert f"You are {expected_agent}," in section
     assert all(c.isprintable() or c == '\n' for c in section)

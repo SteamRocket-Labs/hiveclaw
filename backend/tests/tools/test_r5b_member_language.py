@@ -61,6 +61,23 @@ def test_renamed_member_assistant_identity_uses_its_quoted_display_name(agent_na
         assert agent_name not in section
 
 
+@pytest.mark.parametrize("member_assistant", [True, False])
+def test_current_name_overrides_the_frozen_personality_name(member_assistant):
+    from app.runtime.prompt_sections.identity import build_identity_section
+
+    frozen_soul = '<soul_identity frozen="true"><name>My Assistant</name></soul_identity>'
+    section = build_identity_section(
+        "小周", role_description="The user's assistant", soul_text=frozen_soul, member_assistant=member_assistant
+    )
+    current_name = (
+        'Your current display name is "小周". Use this display name when introducing yourself. '
+        "Use this name instead of any name in Personality."
+    )
+    assert f"### Personality\n{frozen_soul}" in section
+    assert current_name in section
+    assert section.index(current_name) > section.index(frozen_soul)
+
+
 ERROR_CLASSES = (
     "provider_bad_request", "auth_or_permission", "quota_or_billing", "not_found", "timeout",
     "rate_limited", "provider_unavailable", "provider_error", "tool_execution_error", "bad_arguments",

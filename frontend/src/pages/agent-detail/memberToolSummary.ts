@@ -189,6 +189,9 @@ export function memberToolSummarySentence(summary: MemberToolSummary, t: TFuncti
       : extra('fileRead', 'Read a file');
   }
   // X3c: a successful write/edit row names the file (base name only).
+  if (['file_write', 'file_edit'].includes(summary.kind) && summary.state === 'not_done' && summary.errorClass === 'auth_or_permission') {
+    return t('agent.chat.disclosure.failure.permission', 'You do not have permission to complete this operation.');
+  }
   if (summary.kind === 'file_write') {
     if (summary.state !== 'done') return extra('fileWriteFailed', 'The file was not written this time.');
     return summary.filename ? extra('fileWriteNamed', 'Wrote the file “{{filename}}”', { filename: summary.filename })

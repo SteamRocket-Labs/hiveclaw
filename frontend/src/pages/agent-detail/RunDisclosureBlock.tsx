@@ -323,6 +323,8 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
       : step.status === 'interrupted' ? t('agent.chat.disclosure.stepInterrupted', 'Interrupted; no result was returned.')
       : step.status !== 'done' ? runtimeStatusLabel(step.status, t)
           : command ? t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.')
+            : step.systemEvent && ['tool_group_activation', 'pack_activation', 'deferred_tools_delta'].includes(step.systemEvent.type)
+              ? runtimeStatusLabel('done', t)
             : t('agent.chat.disclosure.resultReturned', 'Result returned');
     const action = localizedToolTitle(step, t);
     return <p>{file
@@ -350,9 +352,9 @@ function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepS
   const hasDetails = hasStepDetails(step);
   const preview = resultPreview && step.systemEvent?.type === 'child_session' && typeof step.details === 'string'
     ? step.details : step.summary;
-  // A failed read still has a target; only the same X3c-safe basename may
+  // A failed file operation still has a target; only the X3c-safe basename may
   // stay in the header beside its expanded failure explanation.
-  const keepFilename = ['read_file', 'fs_read', 'read_document'].includes(toolNameOf(step) || '')
+  const keepFilename = ['read_file', 'fs_read', 'read_document', 'write_file', 'fs_write', 'edit_file'].includes(toolNameOf(step) || '')
     && Boolean(preview) && memberFilename(preview) === preview;
   return (
     <div
@@ -762,7 +764,7 @@ export default function RunDisclosureBlock({
               ))}</span>
             )
           )}
-          <span className="run-disclosure-count">{t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length })}</span>
+          {visibleSteps.some(hasStepDetails) && <span className="run-disclosure-count">{t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length })}</span>}
         </button>
         {expanded && (
           <div className="run-disclosure-steps">

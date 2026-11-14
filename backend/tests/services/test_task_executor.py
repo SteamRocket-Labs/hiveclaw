@@ -409,3 +409,40 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
     assert all(event.listed_surface == "task_updates" for event in transcript_events)
     assert all(event.projection_status == "pending" for event in transcript_events)
     assert transcript_events[0].metadata_json["task_id"] == str(task_id)
+
+
+@pytest.mark.asyncio
+async def test_business_provider_reconciliation_is_not_an_ordinary_retryable_failure(monkeypatch):
+    from app.kernel.contracts import ProviderRequestNeedsReconciliation
+    from app.services import task_executor as executor
+
+    task_id, agent_id, owner_id, model_id, tenant_id = (uuid4() for _ in range(5))
+    task = SimpleNamespace(
+        id=task_id, title="Synthetic task", description="Synthetic facts", type="todo", status="pending",
+        completed_at=None, plan_id=uuid4(), plan_version=1, plan_hash="synthetic", plan_exempt_reason=None,
+        plan_authorization={"schema": "hive.plan_authorization_evidence.v1", "lease_id": "synthetic",
+            "canonical_args_hash": "synthetic", "target_ref": f"task:{task_id}:run",
+            "requester_user_id": str(owner_id), "session_id": "unit-session", "runtime_task_id": None,
+            "evidence_id": "unit-evidence"},
+    )
+    agent = SimpleNamespace(id=agent_id, name="Colleague", role_description="Helpful", primary_model_id=model_id,
+                            fallback_model_id=None, creator_id=owner_id, tenant_id=tenant_id)
+    model = SimpleNamespace(id=model_id, provider="openai", model="synthetic", api_key="synthetic", base_url=None,
+                            max_output_tokens=None, tenant_id=tenant_id)
+    sessions = [_FakeSession([task]), _FakeSession([
+        agent, model, SimpleNamespace(id=owner_id, tenant_id=tenant_id, is_active=True), None]), _FakeSession([])]
+
+    async def invoke(_request):
+        raise ProviderRequestNeedsReconciliation(provider_request_id="business-provider", error_class="provider_empty_response")
+
+    async def verify(**_kwargs):
+        return SimpleNamespace(lease_id="synthetic")
+
+    monkeypatch.setattr(executor, "resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr(executor, "tenant_scoped_session", lambda *_a, **_k: sessions.pop(0))
+    monkeypatch.setattr(executor, "TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(executor, "verify_consumed_plan_authorization_lease", verify)
+    monkeypatch.setattr(executor, "invoke_agent", invoke)
+    outcome = await executor.execute_task(task_id, agent_id)
+    assert outcome.status.value == "needs_reconciliation" and outcome.retryable is False
+    assert outcome.error_code == "provider_empty_response" and outcome.terminal_reason == "runtime_failure"

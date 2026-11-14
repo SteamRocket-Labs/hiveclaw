@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.kernel.contracts import (
-    ExecutionIdentityRef, SessionRestartRecoveryRequired, TerminalReason, ToolLifecyclePersistenceError,
+    ExecutionIdentityRef, ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired,
+    TerminalReason, ToolLifecyclePersistenceError,
 )
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
@@ -756,11 +757,11 @@ async def execute_task(
                 reflection_session_id=str(reflection_session_id),
             )
         logger.info(f"[TaskExec] Runtime reply: {reply[:80]}")
-    except (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError) as exc:
+    except (ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired, ToolLifecyclePersistenceError) as exc:
         return TaskExecutionOutcome(
             status=TaskExecutionStatus.NEEDS_RECONCILIATION,
             summary="Business task execution requires reconciliation before further work.",
-            error_code=getattr(exc, 'reason_code', 'tool_lifecycle_persistence_failed'),
+            error_code=getattr(exc, 'reason_code', getattr(exc, 'error_class', 'tool_lifecycle_persistence_failed')),
             retryable=False,
             reflection_session_id=str(reflection_session_id),
             terminal_reason='runtime_failure',

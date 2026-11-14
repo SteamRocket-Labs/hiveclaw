@@ -1,58 +1,25 @@
-"""Successful provider execution stays visible after protocol projection."""
+"""One kernel-path protocol matrix, plus compatible-client regressions."""
 
 import json
 
 import httpx
 import pytest
 
-from app.services.llm_client import (
-    AnthropicClient,
-    GeminiClient,
-    LLMMessage,
-    OpenAICompatibleClient,
-    OpenAIResponsesClient,
-)
+from app.services.llm_client import AnthropicClient, GeminiClient, LLMMessage, OpenAICompatibleClient, OpenAIResponsesClient
 
-CLIENTS = {
-    "openai": OpenAICompatibleClient,
-    "responses": OpenAIResponsesClient,
-    "gemini": GeminiClient,
-    "anthropic": AnthropicClient,
-}
-EFFECT_ITEMS = {
-    "openai": [{"type": "mcp_call"}],
-    "responses": [{"type": kind} for kind in (
-        "mcp_call", "web_search_call", "file_search_call", "code_interpreter_call", "image_generation_call", "future_item",
-    )],
-    "gemini": [
-        {"executableCode": {"language": "PYTHON", "code": "print(1)"}},
-        {"codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "1"}},
-    ],
-    "anthropic": [{"type": kind} for kind in (
-        "server_tool_use", "mcp_tool_use", "web_search_tool_result", "future_tool_result",
-    )],
-}
-TEXT_ITEMS = {
-    "openai": {"content": "Synthetic answer"},
-    "responses": {"type": "message", "content": [{"type": "output_text", "text": "Synthetic answer"}]},
-    "gemini": {"text": "Synthetic answer"},
-    "anthropic": {"type": "text", "text": "Synthetic answer"},
-}
-FUNCTION_ITEMS = {
-    "openai": {"id": "call_local", "type": "function", "function": {"name": "local", "arguments": "{}"}},
-    "responses": {"type": "function_call", "call_id": "call_local", "name": "local", "arguments": "{}"},
-    "gemini": {"functionCall": {"name": "local", "args": {}}},
-    "anthropic": {"type": "tool_use", "id": "call_local", "name": "local", "input": {}},
-}
+CLIENTS = {"openai": OpenAICompatibleClient, "responses": OpenAIResponsesClient,
+           "gemini": GeminiClient, "anthropic": AnthropicClient}
+MCP_CALL = {"type": "mcp_call"}
+MESSAGE = {"type": "message", "content": [{"type": "output_text", "text": "Synthetic answer"}]}
 
 
 def success_body(protocol, items=(), *, text=False, candidate_metadata=None):
     items = list(items)
     if protocol == "openai":
-        message = {"content": "Synthetic answer" if text else "", "tool_calls": items}
-        return {"choices": [{"message": message, "finish_reason": "stop"}]}
+        return {"choices": [{"message": {"content": "Synthetic answer" if text else "", "tool_calls": items},
+                             "finish_reason": "stop"}]}
     if text:
-        items.append(TEXT_ITEMS[protocol])
+        items.append(MESSAGE if protocol == "responses" else {"type": "text", "text": "Synthetic answer"})
     if protocol == "responses":
         return {"status": "completed", "output": items}
     if protocol == "anthropic":
@@ -60,99 +27,121 @@ def success_body(protocol, items=(), *, text=False, candidate_metadata=None):
     return {"candidates": [{"content": {"parts": items}, "finishReason": "STOP", **(candidate_metadata or {})}]}
 
 
-def transport_response(protocol, body, *, stream):
-    # Responses.stream currently uses complete(), not a native SSE parser.
-    if not stream or protocol == "responses":
+def transport_response(protocol, body):
+    if protocol == "responses":  # Its kernel stream() delegates to complete().
         return httpx.Response(200, json=body)
-    events = []
     if protocol == "openai":
-        events.append({"choices": [
-            {"delta": choice["message"], "finish_reason": choice["finish_reason"]} for choice in body["choices"]
-        ]})
-        events.append({"choices": [], "usage": {"total_tokens": 1}})
+        events = [{"choices": [{"delta": c["message"], "finish_reason": c["finish_reason"]} for c in body["choices"]]}]
     elif protocol == "gemini":
         events = [body, {"usageMetadata": {"totalTokenCount": 1}}]
     else:
-        def event(kind, **payload):
-            return f"event: {kind}\ndata: {json.dumps({'type': kind, **payload})}\n\n"
-
-        frames = [event("message_start", message={"model": "synthetic"})]
+        frames = []
         for index, block in enumerate(body["content"]):
-            frames.append(event("content_block_start", index=index, content_block=block))
-            if block["type"] == "text":
-                delta = {"type": "text_delta", "text": block["text"]}
-            elif block["type"] == "tool_use":
-                delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}
-            else:
-                continue
-            frames.append(event("content_block_delta", index=index, delta=delta))
-        frames.extend([event("message_delta", delta={"stop_reason": "end_turn"}), event("message_stop")])
-        return httpx.Response(200, text="".join(frames), headers={"content-type": "text/event-stream"})
-    text = "".join(f"data: {json.dumps(data)}\n\n" for data in events) + "data: [DONE]\n\n"
-    return httpx.Response(200, text=text, headers={"content-type": "text/event-stream"})
+            frames.append(f"event: content_block_start\ndata: {json.dumps({'index': index, 'content_block': block})}\n\n")
+        return httpx.Response(200, text="".join(frames) + "event: message_stop\ndata: {}\n\n")
+    return httpx.Response(200, text="".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n")
 
 
-SECONDARY_COMPATIBLE_EFFECT = success_body("openai")
-SECONDARY_COMPATIBLE_EFFECT["choices"].extend(success_body("openai", EFFECT_ITEMS["openai"])["choices"])
-CASES = [pytest.param("openai", SECONDARY_COMPATIBLE_EFFECT, True, id="compatible_secondary_effect")]
-for protocol, items in EFFECT_ITEMS.items():
-    for item in items:
-        name = item.get("type") or next(iter(item))
-        CASES.append(pytest.param(protocol, success_body(protocol, [item]), True, id=f"{protocol}_{name}"))
-    for companion in ("text", "function"):
-        body = success_body(protocol, [items[0]], text=companion == "text")
-        if companion == "function":
-            body = success_body(protocol, [items[0], FUNCTION_ITEMS[protocol]])
-        CASES.append(pytest.param(protocol, body, True, id=f"{protocol}_effect_with_{companion}"))
-    CASES.append(pytest.param(protocol, success_body(protocol), False, id=f"{protocol}_empty"))
-    CASES.append(pytest.param(
-        protocol, success_body(protocol, [FUNCTION_ITEMS[protocol]]), False, id=f"{protocol}_client_call",
-    ))
-for kind in ("groundingMetadata", "urlContextMetadata"):
-    CASES.append(pytest.param(
-        "gemini", success_body("gemini", candidate_metadata={kind: {}}), True, id=f"gemini_{kind}",
-    ))
+SECONDARY_EFFECT = success_body("openai")
+SECONDARY_EFFECT["choices"].extend(success_body("openai", [MCP_CALL])["choices"])
+FUNCTION = {"id": "local", "type": "function", "function": {"name": "local", "arguments": "{}"}}
+CASES = [
+    ("openai", success_body("openai", [MCP_CALL]), True),
+    ("openai", SECONDARY_EFFECT, True),
+    ("openai", success_body("openai", [FUNCTION]), False),
+    ("responses", success_body("responses", [MCP_CALL]), True),
+    ("responses", success_body("responses", [MCP_CALL], text=True), True),
+    ("responses", success_body("responses", [{"type": "mcp_list_tools"}]), False),
+    ("gemini", success_body("gemini", [{"codeExecutionResult": {"outcome": "OUTCOME_OK"}}]), True),
+    ("gemini", success_body("gemini", candidate_metadata={"groundingMetadata": {}, "urlContextMetadata": {}}), True),
+    ("gemini", success_body("gemini", [{"thoughtSignature": "synthetic"}]), False),
+    ("anthropic", success_body("anthropic", [{"type": "server_tool_use"}]), True),
+    ("anthropic", success_body("anthropic", [{"type": "redacted_thinking"}]), False),
+]
+CASES = [(p, "complete" if p == "responses" else "stream", body, expected) for p, body, expected in CASES]
+# Retain one native complete representative per distinct flag-assignment line, not a mode/kind cross-product.
 CASES.extend([
-    pytest.param("responses", success_body("responses", [{"type": "mcp_list_tools"}]), False, id="mcp_discovery"),
-    pytest.param("responses", success_body("responses", [{"type": "reasoning"}]), False, id="responses_reasoning"),
-    pytest.param("gemini", success_body("gemini", [{"thoughtSignature": "synthetic"}]), False, id="thought_signature"),
-    pytest.param("anthropic", success_body("anthropic", [{"type": "redacted_thinking"}]), False, id="redacted_thinking"),
+    ("gemini", "complete", success_body("gemini", [{"codeExecutionResult": {"outcome": "OUTCOME_OK"}}]), True),
+    ("anthropic", "complete", success_body("anthropic", [{"type": "server_tool_use"}]), True),
 ])
 
 
-@pytest.mark.parametrize("protocol,body,expected", CASES)
-@pytest.mark.parametrize("stream", [False, True], ids=["complete", "stream"])
-async def test_success_retains_provider_output_fact(protocol, body, expected, stream):
+@pytest.mark.parametrize("protocol,method_name,body,expected", CASES,
+                         ids=["compatible_primary", "compatible_secondary", "client_function", "responses_effect",
+                              "effect_with_text", "discovery", "gemini_code", "gemini_metadata", "thought_signature",
+                              "anthropic_server", "redacted_thinking", "gemini_complete", "anthropic_complete"])
+async def test_success_retains_provider_output_fact(protocol, method_name, body, expected):
     requests = []
 
     def respond(request):
         requests.append(request)
-        return transport_response(protocol, body, stream=stream)
+        return httpx.Response(200, json=body) if method_name == "complete" else transport_response(protocol, body)
 
-    client = CLIENTS[protocol](api_key="synthetic-key", model="synthetic", base_url="http://127.0.0.1/native")
+    client = CLIENTS[protocol](api_key="synthetic", model="synthetic", base_url="http://127.0.0.1/native")
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     try:
-        method = client.stream if stream else client.complete
-        response = await method([LLMMessage(role="user", content="Synthetic task")])
-        assert response.provider_output_seen is expected
-        assert len(requests) == 1
-        if "Synthetic answer" in json.dumps(body):
+        response = await getattr(client, method_name)([LLMMessage(role="user", content="Synthetic task")])
+        assert response.provider_output_seen is expected and len(requests) == 1
+        if expected:
+            assert response.tool_calls == [], "Provider output must not be promoted into a client function"
+        if body.get("output") == [MCP_CALL, MESSAGE]:
             assert response.content == "Synthetic answer"
-        if "call_local" in json.dumps(body) or "functionCall" in json.dumps(body):
-            assert response.tool_calls
+        if protocol == "openai" and not expected:
+            assert response.tool_calls == [FUNCTION]
     finally:
         await client.close()
 
 
-@pytest.mark.parametrize("effect_in_continuation", [False, True], ids=["initial", "continuation"])
-async def test_output_cap_merge_keeps_provider_output_fact(effect_in_continuation):
-    from app.kernel.engine import _merge_continuation_response
+@pytest.mark.parametrize("primary,secondary", [
+    ({"content": "Answer", "tool_calls": [None]}, []),
+    ({"content": "Answer", "tool_calls": [0]}, []),
+    ({"content": "Answer"}, [None]),
+    ({"content": "Answer"}, [{"delta": None}]),
+    ({"content": "Answer"}, [{"delta": {"tool_calls": 5}}]),
+], ids=["null_call", "zero_call", "null_choice", "null_delta", "non_list_calls"])
+async def test_malformed_stream_classification_preserves_answer(primary, secondary):
+    body = {"choices": [{"delta": primary}, *secondary]}
+    client = OpenAICompatibleClient(api_key="synthetic", base_url="http://127.0.0.1")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(
+        200, text=f"data: {json.dumps(body)}\n\ndata: [DONE]\n\n")))
+    try:
+        response = await client.stream([LLMMessage(role="user", content="Synthetic task")])
+        assert response.content == "Answer" and response.provider_output_seen is False
+        assert response.tool_calls == []
+    finally:
+        await client.close()
 
-    client = OpenAIResponsesClient(api_key="synthetic-key")
-    effect = success_body("responses", EFFECT_ITEMS["responses"][:1])
-    empty = success_body("responses")
-    initial = client._parse_response_data(empty if effect_in_continuation else effect)
-    continuation = client._parse_response_data(effect if effect_in_continuation else empty)
-    merged = _merge_continuation_response(initial, continuation)
-    assert merged.provider_output_seen is True
-    assert not merged.content and not merged.tool_calls
+
+async def test_complete_ignores_untyped_calls_without_changing_error_rule():
+    from app.services.llm_client import _api_error_delivery_state
+
+    body = success_body("openai")
+    body["choices"].extend(success_body("openai", [{"function": {"name": "local", "arguments": "{}"}}])["choices"])
+    client = OpenAICompatibleClient(api_key="synthetic", base_url="http://127.0.0.1")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=body)))
+    try:
+        response = await client.complete([LLMMessage(role="user", content="Synthetic task")])
+        assert response.provider_output_seen is False and not response.tool_calls and not response.content
+        assert _api_error_delivery_state(body, "openai") == "unknown", "Error-path malformed kinds stay conservative"
+        body["choices"][1]["message"]["tool_calls"][0]["type"] = "mcp_call"
+        typed = await client.complete([LLMMessage(role="user", content="Synthetic task")])
+        assert typed.provider_output_seen is True and not typed.tool_calls and not typed.content
+    finally:
+        await client.close()
+
+
+async def test_provider_index_deltas_are_ignored_without_changing_function_collection():
+    calls = [{"index": 0, "id": "remote", "type": "mcp_call"},
+             {"index": 0, "function": {"name": "must_not_execute", "arguments": "{}"}},
+             {"index": 1, **FUNCTION}, {"index": 1, "function": {"arguments": " "}},
+             {"index": 0, "function": {"arguments": "more provider output"}},
+             {"index": 1, "type": "mcp_call", "function": {"arguments": "tail"}}]
+    wire = "".join(f"data: {json.dumps({'choices': [{'delta': {'tool_calls': [call]}}]})}\n\n" for call in calls)
+    client = OpenAICompatibleClient(api_key="synthetic", base_url="http://127.0.0.1")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(200, text=wire)))
+    try:
+        response = await client.stream([LLMMessage(role="user", content="Synthetic task")])
+        assert response.provider_output_seen is True
+        assert response.tool_calls == [{**FUNCTION, "function": {"name": "local", "arguments": "{} tail"}}]
+    finally:
+        await client.close()

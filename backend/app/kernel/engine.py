@@ -4075,6 +4075,7 @@ async def _continue_after_output_cap(
     receipts: list[dict[str, Any]] = []
     while (
         _is_output_cap_finish_reason(getattr(response, "finish_reason", None))
+        and not getattr(response, "provider_output_seen", False)
         and not (getattr(response, "tool_calls", None) or [])
         and attempts < _STREAM_OUTPUT_CONTINUATION_MAX_ATTEMPTS
     ):

@@ -219,3 +219,33 @@ class TestDelegationFailureResultPage:
             payload=forged_payload,
             content=forged_content,
         )
+
+
+@pytest.mark.asyncio
+async def test_provider_only_empty_child_keeps_reconciliation_signal(monkeypatch):
+    from app.agents import orchestrator
+    from app.services.llm_client import LLMResponse
+    from tests.kernel.test_r18a_empty_search_guard import _FakeClient, _kernel, _request
+
+    client = _FakeClient([LLMResponse(content="", provider_output_seen=True, usage={"total_tokens": 3})])
+    failures = []
+
+    async def invoke(invocation):
+        request = _request()
+        request.model = invocation.model
+        request.model_request_prepare = lambda **_k: "delegated-provider"
+        request.model_request_fail = lambda **p: (failures.append(p), "needs_reconciliation")[1]
+        return await _kernel(client, lambda *_a, **_k: "").handle(request)
+
+    monkeypatch.setattr(orchestrator, "invoke_agent", invoke)
+    target = SimpleNamespace(id=uuid4(), name="Colleague", role_description="Helpful")
+    owner = uuid4()
+    result = await orchestrator._delegate(orchestrator.AgentDelegationRequest(
+        target=target, target_model=SimpleNamespace(provider="openai", model="synthetic"),
+        conversation_messages=[{"role": "user", "content": "Synthetic task"}], owner_id=owner,
+        session_id="unit-child", trace_id="r23e", depth=1, policy=orchestrator.OrchestrationPolicy(),
+        **_a2a_authority_kwargs(target=target, owner_id=owner, session_id="unit-child"),
+    ))
+    assert result.failed and result.terminal_reason == "delegation_session_reconciliation_required"
+    assert result.parts[0]["retryable"] is False and result.parts[0]["recovery_action"] == "reconcile"
+    assert len(client.calls) == 1 and failures[0]["retry_safe"] is False

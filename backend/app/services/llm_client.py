@@ -491,6 +491,24 @@ def _api_error_delivery_state(
     return "rejected"
 
 
+def _compatible_provider_output_seen(data: dict[str, Any], field: Literal["message", "delta"]) -> bool:
+    """Successful compatible responses count only readable item kinds, including partial streams."""
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        message = choice.get(field) if isinstance(choice, dict) else None
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if isinstance(call, dict) and "type" in call and _api_error_delivery_state(
+                {"choices": [{"message": {"tool_calls": [call]}}]}, "openai"
+            ) == "unknown":
+                return True
+    return False
+
+
 def _is_retryable_http_status(status_code: int) -> bool:
     # Automatic transport retry is allowed only for an explicit rate-limit
     # rejection. Semantic 4xx repair belongs to the kernel/model path.
@@ -822,6 +840,7 @@ class OpenAICompatibleClient(LLMClient):
         line: str,
         in_think: bool,
         tag_buffer: str,
+        tool_call_types: dict[int, Any] | None = None,
     ) -> tuple[LLMStreamChunk, bool, str]:
         """Parse a single SSE line from stream.
 
@@ -860,13 +879,15 @@ class OpenAICompatibleClient(LLMClient):
 
         choice = choices[0]
         delta = choice.get("delta", {})
-        for streamed_choice in choices:
-            for call in streamed_choice.get("delta", {}).get("tool_calls") or []:
-                # Argument/name continuation deltas need not repeat the item's kind.
-                if "type" in call:
-                    chunk.provider_output_seen |= _api_error_delivery_state(
-                        {"choices": [{"message": {"tool_calls": [call]}}]}, "openai"
-                    ) == "unknown"
+        chunk.provider_output_seen = _compatible_provider_output_seen(data, "delta")
+        calls = delta.get("tool_calls")
+        if tool_call_types is not None and isinstance(calls, list):
+            for call in calls:
+                if isinstance(call, dict) and "type" in call:
+                    try:
+                        tool_call_types.setdefault(call.get("index", 0), call["type"])
+                    except TypeError:  # An unreadable secondary index must not add a stream failure.
+                        continue
 
         if choice.get("finish_reason"):
             chunk.finish_reason = choice["finish_reason"]
@@ -975,7 +996,7 @@ class OpenAICompatibleClient(LLMClient):
             finish_reason=choice.get("finish_reason"),
             usage=data.get("usage"),
             model=data.get("model"),
-            provider_output_seen=_api_error_delivery_state(data, "openai") == "unknown",
+            provider_output_seen=_compatible_provider_output_seen(data, "message"),
         )
 
     async def stream(
@@ -996,6 +1017,7 @@ class OpenAICompatibleClient(LLMClient):
         full_content = ""
         full_reasoning = ""
         tool_calls_data: list[dict] = []
+        tool_call_types: dict[int, Any] = {}
         last_finish_reason: str | None = None
         final_usage: dict | None = None
         provider_output_seen = False
@@ -1013,7 +1035,6 @@ class OpenAICompatibleClient(LLMClient):
                 tool_calls_data, \
                 last_finish_reason, \
                 final_usage, \
-                provider_output_seen, \
                 in_think, \
                 tag_buffer
             had_partial = bool(full_content or full_reasoning or tool_calls_data or last_finish_reason or final_usage)
@@ -1022,7 +1043,6 @@ class OpenAICompatibleClient(LLMClient):
             tool_calls_data = []
             last_finish_reason = None
             final_usage = None
-            provider_output_seen = False
             in_think = False
             tag_buffer = ""
             if had_partial and on_chunk:
@@ -1054,7 +1074,9 @@ class OpenAICompatibleClient(LLMClient):
                         )
 
                     async for line in resp.aiter_lines():
-                        chunk, in_think, tag_buffer = self._parse_stream_line(line, in_think, tag_buffer)
+                        chunk, in_think, tag_buffer = self._parse_stream_line(
+                            line, in_think, tag_buffer, tool_call_types
+                        )
                         provider_output_seen |= chunk.provider_output_seen
 
                         if chunk.is_finished:
@@ -1070,6 +1092,10 @@ class OpenAICompatibleClient(LLMClient):
                             if on_thinking:
                                 await on_thinking(chunk.reasoning_content)
 
+                        if chunk.tool_call and tool_call_types.setdefault(
+                            chunk.tool_call.get("index", 0), chunk.tool_call.get("type", "function")
+                        ) != "function":
+                            chunk.tool_call = None
                         if chunk.tool_call:
                             idx = chunk.tool_call.get("index", 0)
                             while len(tool_calls_data) <= idx:
@@ -1138,7 +1164,9 @@ class OpenAICompatibleClient(LLMClient):
 
         return LLMResponse(
             content=full_content,
-            tool_calls=tool_calls_data,
+            tool_calls=[
+                call for index, call in enumerate(tool_calls_data) if tool_call_types.get(index, "function") == "function"
+            ],
             reasoning_content=full_reasoning or None,
             finish_reason=last_finish_reason,
             usage=final_usage,
@@ -1970,7 +1998,6 @@ class GeminiClient(LLMClient):
                             seen_tool_calls = set()
                             final_usage = None
                             final_finish_reason = None
-                            provider_output_seen = False
                             continue
                         raise LLMError(
                             f"HTTP {resp.status_code}: {error_body}",
@@ -2305,7 +2332,6 @@ class AnthropicClient(LLMClient):
                             last_finish_reason = None
                             final_usage = None
                             final_model = self.model
-                            provider_output_seen = False
                             continue
                         raise LLMError(
                             f"HTTP {resp.status_code}: {error_body}",

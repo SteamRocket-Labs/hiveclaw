@@ -1007,14 +1007,16 @@ async def _finalize_empty_provider_response(
     record_span: Any,
     turn_route_span_metadata: Any,
 ) -> Any:
+    retry_safe = not getattr(response, "provider_output_seen", False)
+    model_fail_state = None
     if request.model_request_fail is not None and provider_request_id is not None:
-        await support._maybe_await(
+        model_fail_state = await support._maybe_await(
             request.model_request_fail(
                 round_index=logical_round_index,
                 provider_request_id=provider_request_id,
                 error_class="provider_empty_response",
                 delivery_state="response_received",
-                retry_safe=not getattr(response, "provider_output_seen", False),
+                retry_safe=retry_safe,
             )
         )
     empty_usage_tokens = self._deps.extract_usage_tokens(response.usage)
@@ -1037,6 +1039,10 @@ async def _finalize_empty_provider_response(
     invocation_tokens = max(accumulated_tokens - initial_turn_tokens_used, 0)
     if request.agent_id and invocation_tokens > 0:
         await support._maybe_await(self._deps.record_token_usage(request.agent_id, invocation_tokens))
+    if provider_request_id is not None and not retry_safe and model_fail_state != "failed":
+        raise ProviderRequestNeedsReconciliation(
+            provider_request_id=provider_request_id, error_class="provider_empty_response"
+        )
     return support.InvocationResult(
         content="",
         tokens_used=accumulated_tokens,
@@ -2527,6 +2533,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             await _inject_loop_guard_warning(cost_loop_decision)
                         break
                     except (
+                        ProviderRequestNeedsReconciliation,
                         SessionRestartRecoveryRequired,
                         ToolLifecyclePersistenceError,
                         ExecutionAuthorityUnavailable,
@@ -3088,7 +3095,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     continuation_index=physical["continuation_index"],
                                     error_class="repeated_empty_search",
                                     delivery_state="response_received",
-                                    retry_safe=True,
+                                    retry_safe=not getattr(response, "provider_output_seen", False),
                                 )
                             )
                     accumulated_tokens += self._deps.extract_usage_tokens(response.usage) or 0

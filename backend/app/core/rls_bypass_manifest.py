@@ -1003,7 +1003,14 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # preparation changes in session_model_round and web_chat_runtime; BF's per-row
 # savepoints in runtime_budget_service (row errors isolated, database errors fail the
 # tick).
-RLS_BYPASS_SCOPES_SHA256 = "1a4a347aff8ce89d2a911cf33cc97c92f692a3ba719b6ec99929ea2c9981969f"
+# Land31 (R23c, Q2b, X5a, R23d, R25a, X6a, X5b, R23e, X6b) versus land30: still 797
+# entries and 123 callsites, no new bypass scope. Changed hashes are module sources and
+# bodies edited without new bypass writes: X6a's complete_tool_invocation display
+# metadata and session_tool_runtime source; X5a's append_session_events and
+# session_v2_persistence source; R23d's session_model_round source; R23c, X5a and X6b's
+# web_chat_runtime source (stop-intent ancestry read, delegation signals, member
+# permission projection at broadcast).
+RLS_BYPASS_SCOPES_SHA256 = "470867c3d934995c614e9e9719ecf4e3fc78f791047239fb58c2b122f302bc38"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

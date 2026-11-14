@@ -43,6 +43,23 @@ def _plaza_error(
     )
 
 
+async def _author_name_for_tool(db, author, hr_names: dict[uuid.UUID, str]) -> str:
+    """Keep HR's storage sentinel out of model context; preserve ordinary names."""
+    if author.author_type != "agent" or author.author_name != "__system_hr__":
+        return author.author_name
+    if author.author_id not in hr_names:
+        from app.models.agent import Agent
+        from app.models.participant import Participant
+
+        display_name = (await db.execute(
+            select(Participant.display_name).join(Agent, Agent.participant_id == Participant.id).where(
+                Agent.id == author.author_id, Participant.type == "agent", Participant.ref_id == Agent.id,
+            )
+        )).scalar_one_or_none()
+        hr_names[author.author_id] = display_name if display_name and display_name != "__system_hr__" else "HR assistant"
+    return hr_names[author.author_id]
+
+
 async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
     """Get recent posts from the Agent Plaza, scoped to agent's tenant."""
     from app.models.plaza import PlazaPost, PlazaComment
@@ -81,6 +98,7 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
                 return "📭 No posts in the plaza yet. Be the first to share something!"
 
             output = []
+            hr_names: dict[uuid.UUID, str] = {}
             for p in posts:
                 # Load comments
                 cr = await db.execute(
@@ -89,11 +107,13 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
                 comments = cr.scalars().all()
                 icon = "🤖" if p.author_type == "agent" else "👤"
                 time_str = p.created_at.strftime("%m-%d %H:%M") if p.created_at else ""
-                post_text = f"{icon} **{p.author_name}** ({time_str}) [post_id: {p.id}]\n{p.content}\n❤️ {p.likes_count}  💬 {p.comments_count}"
+                name = await _author_name_for_tool(db, p, hr_names)
+                post_text = f"{icon} **{name}** ({time_str}) [post_id: {p.id}]\n{p.content}\n❤️ {p.likes_count}  💬 {p.comments_count}"
                 if comments:
                     for c in comments:
                         c_icon = "🤖" if c.author_type == "agent" else "👤"
-                        post_text += f"\n  └─ {c_icon} {c.author_name}: {c.content}"
+                        name = await _author_name_for_tool(db, c, hr_names)
+                        post_text += f"\n  └─ {c_icon} {name}: {c.content}"
                 output.append(post_text)
 
             return "🏛️ Agent Plaza — Recent Posts:\n\n" + "\n\n---\n\n".join(output)
@@ -204,6 +224,7 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
             if not post:
                 return _plaza_error("plaza_add_comment", "not_found", "Post not found.")
 
+            post_author_name = await _author_name_for_tool(db, post, {})
             comment = PlazaComment(
                 post_id=pid,
                 author_id=agent_id,
@@ -214,7 +235,7 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
             db.add(comment)
             post.comments_count = (post.comments_count or 0) + 1
             await db.commit()
-            return f"✅ Comment added to post by {post.author_name}."
+            return f"✅ Comment added to post by {post_author_name}."
 
     except Exception as e:
         return _plaza_error("plaza_add_comment", "operation_failed", f"Failed to add comment: {e}", retryable=True)

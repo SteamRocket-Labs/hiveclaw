@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 
 from app.core.security import get_current_user
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
@@ -137,14 +138,23 @@ async def plaza_stats(
     )
     today_posts = (await db.execute(today_q)).scalar() or 0
     top_q = (
-        select(PlazaPost.author_name, PlazaPost.author_type, func.count(PlazaPost.id).label("post_count"))
+        select(
+            PlazaPost.author_id, PlazaPost.author_type,
+            func.array_agg(aggregate_order_by(
+                PlazaPost.author_name, PlazaPost.created_at.desc(), PlazaPost.id.desc(),
+            ))[1].label("name"),
+            func.count(PlazaPost.id).label("post_count"),
+        )
         .where(post_filter)
-        .group_by(PlazaPost.author_name, PlazaPost.author_type)
+        .group_by(PlazaPost.author_id, PlazaPost.author_type)
         .order_by(desc("post_count"))
         .limit(5)
     )
     top_result = await db.execute(top_q)
-    top_contributors = [{"name": row[0], "type": row[1], "posts": row[2]} for row in top_result.fetchall()]
+    top_contributors = [
+        {"author_id": row[0], "type": row[1], "name": row[2], "posts": row[3]}
+        for row in top_result.fetchall()
+    ]
     return {
         "total_posts": total_posts,
         "total_comments": total_comments,

@@ -1,0 +1,455 @@
+{
+  "activeRun": {
+    "run_id": "11111111111141118111111111111111",
+    "status": "suspended",
+    "created_at": "2026-11-14T18:28:01.235860+00:00",
+    "started_at": "2026-11-14T18:28:02.628540+00:00",
+    "completed_at": null,
+    "result_summary": "awaiting_session_permission"
+  },
+  "events": [
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-2",
+      "sequence": 1,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "session",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "item_id-3",
+      "item_kind": "human_input",
+      "kind": "human_input.accepted",
+      "lifecycle": "accepted",
+      "payload_schema": "hive.session.payload.human_input.accepted.v2",
+      "actor": {
+        "type": "user"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:28:00.244857+00:00",
+      "persisted_at": "2026-11-14T18:28:00.259304+00:00",
+      "payload": {
+        "intent": "start_turn",
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "Post a test message to the company plaza."
+          }
+        ]
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-6",
+      "sequence": 2,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "run",
+        "run_id": "11111111-1111-4111-8111-111111111111",
+        "turn_id": "turn_id-x7a",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "11111111-1111-4111-8111-111111111111",
+      "item_kind": "run",
+      "kind": "run.queued",
+      "lifecycle": "queued",
+      "payload_schema": "hive.session.payload.run.queued.v2",
+      "actor": {
+        "type": "runtime"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:28:02.506869+00:00",
+      "persisted_at": "2026-11-14T18:28:02.534503+00:00",
+      "payload": {
+        "run_id": "11111111-1111-4111-8111-111111111111"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-7",
+      "sequence": 3,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "round",
+        "run_id": "11111111-1111-4111-8111-111111111111",
+        "turn_id": "turn_id-x7a",
+        "round_id": "round_id-x7a",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "item_id-8",
+      "item_kind": "tool_call",
+      "kind": "tool_call.started",
+      "lifecycle": "started",
+      "payload_schema": "hive.session.payload.tool_call.started.v2",
+      "actor": {
+        "type": "tool"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:29:03.864913+00:00",
+      "persisted_at": "2026-11-14T18:29:03.874529+00:00",
+      "invocation_id": "invocation_id-9",
+      "provider_tool_use_id": "provider_tool_use_id-10",
+      "payload": {
+        "tool_name": "plaza_create_post",
+        "invocation_id": "invocation_id-9",
+        "provider_tool_use_id": "provider_tool_use_id-10"
+      }
+    },
+    {
+      "schema": "hive.session_event_compatibility",
+      "schema_version": 1,
+      "compatibility_status": "needs_reconciliation",
+      "reason": "unmapped_legacy_kind",
+      "event_id": "event_id-12",
+      "sequence": 4,
+      "legacy_kind": "legacy_unknown",
+      "legacy_lifecycle": "legacy_unknown",
+      "legacy_event_type": "permission",
+      "legacy_item_type": "approval_request",
+      "legacy_item_status": "waiting_user",
+      "occurred_at": "2026-11-14T18:29:06.354639+00:00",
+      "session_id": "session-x7a",
+      "run_id": "11111111-1111-4111-8111-111111111111",
+      "payload": {
+        "content": "Please approve this action.",
+        "metadata": {
+          "status": "session_permission_required",
+          "tool_name": "plaza_create_post",
+          "runtime_task_id": "11111111-1111-4111-8111-111111111111",
+          "permission_request_id": "item_id-15",
+          "permission_request": {
+            "arguments": {
+              "content": "A test post."
+            },
+            "tool_name": "plaza_create_post",
+            "expires_at": "2026-11-14T18:59:06.319593+00:00",
+            "session_id": "session-x7a",
+            "destructive": false,
+            "tool_display_name": "plaza_create_post",
+            "allow_session_allowed": true,
+            "permission_request_id": "item_id-15"
+          }
+        },
+        "parts": [
+          {
+            "type": "event",
+            "event_type": "permission",
+            "status": "session_permission_required",
+            "tool_name": "plaza_create_post",
+            "permission_request_id": "item_id-15",
+            "permission_request": {
+              "arguments": {
+                "content": "A test post."
+              },
+              "tool_name": "plaza_create_post",
+              "expires_at": "2026-11-14T18:59:06.319593+00:00",
+              "session_id": "session-x7a",
+              "destructive": false,
+              "tool_display_name": "plaza_create_post",
+              "allow_session_allowed": true,
+              "permission_request_id": "item_id-15"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-14",
+      "sequence": 5,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "round",
+        "run_id": "11111111-1111-4111-8111-111111111111",
+        "turn_id": "turn_id-x7a",
+        "round_id": "round_id-x7a",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "item_id-15",
+      "item_kind": "tool_permission",
+      "kind": "tool_permission.waiting",
+      "lifecycle": "waiting",
+      "payload_schema": "hive.session.payload.tool_permission.waiting.v2",
+      "actor": {
+        "type": "runtime"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:29:07.142887+00:00",
+      "persisted_at": "2026-11-14T18:29:07.150741+00:00",
+      "invocation_id": "invocation_id-9",
+      "provider_tool_use_id": "provider_tool_use_id-10",
+      "payload": {
+        "retryable": false,
+        "permission_request": {
+          "arguments": {
+            "content": "A test post."
+          },
+          "tool_name": "plaza_create_post",
+          "expires_at": "2026-11-14T18:59:06.319593+00:00",
+          "session_id": "session-x7a",
+          "destructive": false,
+          "runtime_task_id": "11111111-1111-4111-8111-111111111111",
+          "requested_by_user_id": "member-x7a",
+          "allow_session_allowed": true,
+          "permission_request_id": "item_id-15"
+        },
+        "invocation_id": "invocation_id-9",
+        "provider_tool_use_id": "provider_tool_use_id-10"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-16",
+      "sequence": 6,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "run",
+        "run_id": "11111111-1111-4111-8111-111111111111",
+        "turn_id": "turn_id-x7a",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "11111111-1111-4111-8111-111111111111",
+      "item_kind": "run",
+      "kind": "run.waiting",
+      "lifecycle": "waiting",
+      "payload_schema": "hive.session.payload.run.waiting.v2",
+      "actor": {
+        "type": "runtime"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:29:07.142922+00:00",
+      "persisted_at": "2026-11-14T18:29:07.151300+00:00",
+      "payload": {
+        "reason_code": "tool_permission_required",
+        "invocation_id": "invocation_id-9",
+        "permission_item_id": "item_id-15"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-17",
+      "sequence": 7,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "round",
+        "run_id": "11111111-1111-4111-8111-111111111111",
+        "turn_id": "turn_id-x7a",
+        "round_id": "round_id-x7a",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "item_id-15",
+      "item_kind": "tool_permission",
+      "kind": "tool_permission.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.tool_permission.completed.v2",
+      "actor": {
+        "type": "user"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:30:32.781359+00:00",
+      "persisted_at": "2026-11-14T18:30:32.789573+00:00",
+      "invocation_id": "invocation_id-9",
+      "provider_tool_use_id": "provider_tool_use_id-10",
+      "payload": {
+        "decision": "allow_once",
+        "invocation_id": "invocation_id-9",
+        "provider_tool_use_id": "provider_tool_use_id-10"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-19",
+      "sequence": 8,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "round",
+        "run_id": "11111111-1111-4111-8111-111111111111",
+        "turn_id": "turn_id-x7a",
+        "round_id": "round_id-x7a",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "item_id-20",
+      "item_kind": "tool_result",
+      "kind": "tool_result.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.tool_result.completed.v2",
+      "actor": {
+        "type": "tool"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:30:36.986006+00:00",
+      "persisted_at": "2026-11-14T18:30:36.998325+00:00",
+      "invocation_id": "invocation_id-9",
+      "provider_tool_use_id": "provider_tool_use_id-10",
+      "payload": {
+        "tool_name": "plaza_create_post",
+        "outcome": "success",
+        "retryable": false,
+        "invocation_id": "invocation_id-9",
+        "provider_tool_use_id": "provider_tool_use_id-10",
+        "content": "The test post was published."
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-21",
+      "sequence": 9,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "run",
+        "run_id": "11111111-1111-4111-8111-111111111111",
+        "turn_id": "turn_id-x7a",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "11111111-1111-4111-8111-111111111111",
+      "item_kind": "run",
+      "kind": "run.queued",
+      "lifecycle": "queued",
+      "payload_schema": "hive.session.payload.run.queued.v2",
+      "actor": {
+        "type": "runtime"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:30:37.188168+00:00",
+      "persisted_at": "2026-11-14T18:30:37.271930+00:00",
+      "payload": {
+        "reason_code": "session_permission_resolved",
+        "invocation_id": "invocation_id-9",
+        "source_result_id": "result_id-11"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-22",
+      "sequence": 10,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "round",
+        "run_id": "11111111-1111-4111-8111-111111111111",
+        "turn_id": "turn_id-x7a",
+        "round_id": "round_id-x7a",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "item_id-23",
+      "item_kind": "assistant_text",
+      "kind": "assistant_text.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.assistant_text.completed.v2",
+      "actor": {
+        "type": "assistant"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:31:01.069836+00:00",
+      "persisted_at": "2026-11-14T18:31:01.082824+00:00",
+      "payload": {
+        "phase": "unknown",
+        "block_index": 0,
+        "content": "The test post was published."
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-25",
+      "sequence": 11,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "round",
+        "run_id": "11111111-1111-4111-8111-111111111111",
+        "turn_id": "turn_id-x7a",
+        "round_id": "round_id-x7a",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "item_id-26",
+      "item_kind": "assistant_final",
+      "kind": "assistant_final.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.assistant_final.completed.v2",
+      "actor": {
+        "type": "assistant"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:31:02.886832+00:00",
+      "persisted_at": "2026-11-14T18:31:02.896251+00:00",
+      "payload": {
+        "parts": [],
+        "zero_copy": true,
+        "source_blocks": [
+          {
+            "item_id": "item_id-23",
+            "block_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "event_id": "event_id-27",
+      "sequence": 12,
+      "tenant_id": "tenant_id-4",
+      "scope": {
+        "level": "run",
+        "run_id": "11111111-1111-4111-8111-111111111111",
+        "turn_id": "turn_id-x7a",
+        "thread_id": "session-x7a",
+        "session_id": "session-x7a"
+      },
+      "item_id": "11111111-1111-4111-8111-111111111111",
+      "item_kind": "run",
+      "kind": "run.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.run.completed.v2",
+      "actor": {
+        "type": "runtime"
+      },
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "occurred_at": "2026-11-14T18:31:02.886846+00:00",
+      "persisted_at": "2026-11-14T18:31:02.896691+00:00",
+      "payload": {
+        "started_at": "2026-11-14T18:28:02.628540+00:00"
+      }
+    }
+  ]
+}

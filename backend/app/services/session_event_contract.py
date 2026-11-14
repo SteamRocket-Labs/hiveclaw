@@ -2231,6 +2231,49 @@ def _member_system_payload(payload: dict[str, Any], *, event_type: str) -> dict[
     return clean
 
 
+_MEMBER_PERMISSION_REQUEST_KEYS = frozenset({
+    "permission_request_id", "tool_name", "tool_display_name", "arguments",
+    "allow_session_allowed", "destructive", "risk_class", "confirmation_kind", "expires_at",
+    "session_id", "runtime_task_id", "requested_by_user_id",
+})
+
+
+def member_permission_request(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep the proposal, choices and requester bindings consumed by member cards."""
+    return {key: value for key, value in request.items() if key in _MEMBER_PERMISSION_REQUEST_KEYS}
+
+
+def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project permission copies in event carriers without traversing tool arguments."""
+    request = payload.get("permission_request")
+    clean = dict(payload)
+    if isinstance(request, Mapping):
+        # Legacy carriers repeat request fields beside the nested request.
+        # Use the same allowlist for those duplicates, not another strip list.
+        clean = {key: value for key, value in clean.items()
+                 if key not in request or key in _MEMBER_PERMISSION_REQUEST_KEYS}
+        clean["permission_request"] = member_permission_request(request)
+    for key in ("payload", "metadata", "v2_payload"):
+        if isinstance(clean.get(key), Mapping):
+            clean[key] = member_permission_payload(clean[key])
+    if isinstance(clean.get("parts"), list):
+        clean["parts"] = [member_permission_payload(part) if isinstance(part, Mapping) else part
+                          for part in clean["parts"]]
+    content = clean.get("content")
+    metadata = payload.get("metadata")
+    if isinstance(content, str) and (
+        isinstance(request, Mapping)
+        or isinstance(metadata, Mapping) and isinstance(metadata.get("permission_request"), Mapping)
+    ):
+        try:
+            decoded = json.loads(content)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, dict) and isinstance(decoded.get("permission_request"), Mapping):
+            clean["content"] = json.dumps(member_permission_payload(decoded), ensure_ascii=False)
+    return clean
+
+
 def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str, Any]:
     """Serialize one session event for an audience.
 
@@ -2261,6 +2304,8 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
             event["lifecycle"] = "cancelled"
             event["kind"] = f"{event['item_kind']}.cancelled"
             event["payload_schema"] = f"hive.session.payload.{event['item_kind']}.cancelled.v2"
+    if audience != "operator":
+        event["payload"] = member_permission_payload(event["payload"])
     return event
 
 

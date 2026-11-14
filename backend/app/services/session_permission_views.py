@@ -6,6 +6,7 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
 from app.services.session_model_inputs import _origin_dependencies
+from app.services.session_event_contract import member_permission_request
 from app.services.session_user_question import question_payload
 
 
@@ -54,6 +55,6 @@ async def read_session_run_permissions(db, *, run, session, user):
         if not complete:
             raise ContentInputReceiptError('tool_permission_unverified', 'Restore the committed tool input inventory.', 503)
         await _validate_input_dependencies(db, run.tenant_id, dependencies, user=user)
-        permissions.append({'session_id': str(session.id), 'request': request,
+        permissions.append({'session_id': str(session.id), 'request': member_permission_request(request),
             'can_resolve': can_resolve})
     return permissions

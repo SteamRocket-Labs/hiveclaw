@@ -201,9 +201,7 @@ async def test_parent_stop_crash_reclaims_prepared_child_without_sending(
 
 
 @pytest.mark.parametrize("accept_path", ["live", "recovered"])
-async def test_parent_stop_marks_nested_active_descendants_and_preserves_terminal_metadata(
-    owner_sessionmaker, monkeypatch, accept_path
-):
+async def test_parent_stop_accept_leaves_all_descendant_rows_unchanged(owner_sessionmaker, monkeypatch, accept_path):
     from app.models.tenant import Tenant
 
     tenant_id, user_id, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
@@ -266,8 +264,9 @@ async def test_parent_stop_marks_nested_active_descendants_and_preserves_termina
         assert fields["cancel_state"] == "cancelling" and fields["cancel_requested_by"] == str(user_id)
         for task_id, (status, metadata) in active.items():
             child = await db.get(RuntimeTask, task_id)
-            assert child.status == status, "The accept transaction only records intent"
-            assert child.metadata_json == {**metadata, **fields}
+            # Round 2 reads ancestors at execution admission; accept must not
+            # acquire descendant row locks or overwrite independent control ids.
+            assert child.status == status and child.metadata_json == metadata
         for task_id, (status, metadata) in unchanged.items():
             child = await db.get(RuntimeTask, task_id)
             assert child.status == status and child.metadata_json == metadata

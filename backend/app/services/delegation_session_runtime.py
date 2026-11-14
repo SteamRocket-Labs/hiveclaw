@@ -222,7 +222,10 @@ class DelegationSessionRuntime:
 
     @classmethod
     async def attach(cls, invocation, request):
-        from app.services.web_chat_runtime import _session_restart_resume_history
+        from app.services.web_chat_runtime import (
+            _session_restart_resume_history,
+            _stopped_by_self_or_delegation_ancestor,
+        )
 
         run_id = uuid.UUID(str(request.runtime_task_id))
         session_id = uuid.UUID(str(invocation.session_context.session_id))
@@ -260,6 +263,10 @@ class DelegationSessionRuntime:
                 if origin is not None:
                     invocation.messages[0]["context_origin"] = origin
             history, round_index, tokens, receipt = await _session_restart_resume_history(db, task)
+            if await _stopped_by_self_or_delegation_ancestor(db, task):
+                # Use the async delegation's existing cancellation settlement;
+                # never give an unprepared or between-round stopped run to the kernel.
+                raise asyncio.CancelledError
             from app.models.chat_transcript_event import ChatTranscriptEvent
             from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 

@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from loguru import logger
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import and_, case, func, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -1910,6 +1910,47 @@ async def _settle_committed_round_token_usage(
     }
 
 
+async def _stopped_by_self_or_delegation_ancestor(db: AsyncSession, task: RuntimeTask) -> bool:
+    # These existing stop paths do not cancel native delegation descendants.
+    # Preserve a direct stop on this task; exclude only ancestor propagation.
+    remote = or_(
+        RuntimeTask.task_type == "remote_a2a",
+        and_(
+            RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
+            RuntimeTask.metadata_json["schema"].astext == "hive.remote_a2a_task.v1",
+            RuntimeTask.metadata_json["remote_a2a"]["dispatch_kind"].astext == "session",
+        ),
+    )
+    excluded_ancestor = and_(
+        RuntimeTask.id != task.id,
+        or_(
+            RuntimeTask.metadata_json["terminal_commit_source"].astext == "unclaimed_session_cancel",
+            remote,
+        ),
+    )
+    columns = (
+        RuntimeTask.id,
+        case((RuntimeTask.task_type == "delegation", RuntimeTask.root_runtime_task_id)).label("parent_id"),
+        case((excluded_ancestor, None), else_=RuntimeTask.metadata_json["cancel_state"].astext).label("cancel_state"),
+    )
+    ancestors = (
+        select(*columns)
+        .where(RuntimeTask.id == task.id, RuntimeTask.tenant_id == task.tenant_id)
+        .cte("delegation_stop_ancestors", recursive=True)
+    )
+    ancestors = ancestors.union(
+        select(*columns)
+        .join(ancestors, RuntimeTask.id == ancestors.c.parent_id)
+        .where(RuntimeTask.tenant_id == task.tenant_id)
+    )
+    with db.no_autoflush:
+        return bool(
+            await db.scalar(
+                select(select(ancestors.c.id).where(ancestors.c.cancel_state.in_(("cancelling", "cancelled"))).exists())
+            )
+        )
+
+
 async def _session_restart_resume_history(
     db: AsyncSession,
     runtime_task: RuntimeTask,
@@ -2074,10 +2115,10 @@ async def _session_restart_resume_history(
             )
         if not recoverable:
             if (
-                (runtime_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}
-                and row.state in {"prepared", "streaming"}
+                row.state in {"prepared", "streaming"}
                 and row.seal_json is None
                 and not invocations
+                and await _stopped_by_self_or_delegation_ancestor(db, runtime_task)
             ):
                 placeholder = (row.model_request_snapshot_json or {}).get("phase") == "awaiting_exact_snapshot"
                 await fail_model_request(
@@ -3769,7 +3810,6 @@ async def cancel_web_chat_run(
 async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
     """Bound best-effort child cancellation independently of the parent's receipt."""
     from app.agents.orchestrator import cancel_async_delegation
-    from app.services.session_control_input import cancellable_delegation_descendants_statement
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
     tasks = {}
@@ -3786,11 +3826,35 @@ async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
         try:
             tenant_id = await resolve_tenant_for_agent(_run_id(agent_id))
             async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
-                delegated = list(
-                    await db.scalars(cancellable_delegation_descendants_statement(run_id=run_uuid, tenant_id=tenant_id))
+                children = (
+                    select(RuntimeTask.id)
+                    .where(
+                        RuntimeTask.root_runtime_task_id == run_uuid,
+                        RuntimeTask.tenant_id == tenant_id,
+                        RuntimeTask.task_type == "delegation",
+                    )
+                    .cte("cancel_delegation_children", recursive=True)
                 )
-            for child in delegated:
-                tasks[asyncio.create_task(cancel_child(child.id, child.parent_agent_id))] = child.id
+                children = children.union(
+                    select(RuntimeTask.id)
+                    .join(
+                        children,
+                        RuntimeTask.root_runtime_task_id == children.c.id,
+                    )
+                    .where(RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == "delegation")
+                )
+                delegated = list(
+                    (
+                        await db.execute(
+                            select(RuntimeTask.id, RuntimeTask.parent_agent_id).where(
+                                RuntimeTask.id.in_(select(children.c.id)),
+                                RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
+                            )
+                        )
+                    ).all()
+                )
+            for child_id, parent_id in delegated:
+                tasks[asyncio.create_task(cancel_child(child_id, parent_id))] = child_id
             if tasks:
                 await asyncio.wait(tasks)
         except Exception as exc:  # noqa: BLE001 - child lookup is best-effort too.
@@ -3841,6 +3905,7 @@ async def signal_web_chat_cancel(
             run_uuid.hex,
             type(exc).__name__,
         )
+        await _cancel_web_chat_delegation_children(run_uuid=run_uuid, agent_id=agent_id, user_id=user_id)
         return CancelSignalDeliveryReceipt(
             run_id=run_uuid.hex,
             delivery_state="unavailable",

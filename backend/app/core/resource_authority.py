@@ -128,6 +128,15 @@ async def load_explicit_resource_grant_ids(
     eliminating the previous one-query-per-row authorization loop.
     """
 
+    return (
+        await load_explicit_resource_grant_ids_by_action(db, user=user, resource_kind=resource_kind, actions=(action,))
+    )[action]
+
+
+async def load_explicit_resource_grant_ids_by_action(
+    db: AsyncSession, *, user: User, resource_kind: str, actions: Iterable[str]
+) -> dict[str, set[uuid.UUID]]:
+    """Evaluate each requested action against one live set of principal grants."""
     principal_clauses = [and_(ResourcePermission.principal_type == "user", ResourcePermission.principal_id == user.id)]
     department_id = getattr(user, "department_id", None)
     if getattr(user, "role", None) != "platform_admin" and department_id:
@@ -144,24 +153,27 @@ async def load_explicit_resource_grant_ids(
     tenant_id = getattr(user, "tenant_id", None)
     if tenant_id is not None:
         statement = statement.where(ResourcePermission.tenant_id == tenant_id)
-    permissions = (await db.execute(statement)).scalars().all()
+    permissions = (await db.execute(statement.execution_options(populate_existing=True))).scalars().all()
     context = {"tenant_id": str(tenant_id) if tenant_id else None}
-    effects_by_resource: dict[uuid.UUID, set[str]] = {}
-    for permission in permissions:
-        if permission.resource_id is None or not permission_effect_applies(
-            permission,
-            action=action,
-            context=context,
-        ):
-            continue
-        effects_by_resource.setdefault(permission.resource_id, set()).add(
-            str(getattr(permission, "effect", "allow") or "allow")
-        )
-    return {
-        resource_id
-        for resource_id, effects in effects_by_resource.items()
-        if "allow" in effects and "deny" not in effects
-    }
+    grants = {}
+    for action in actions:
+        effects_by_resource: dict[uuid.UUID, set[str]] = {}
+        for permission in permissions:
+            if permission.resource_id is None or not permission_effect_applies(
+                permission,
+                action=action,
+                context=context,
+            ):
+                continue
+            effects_by_resource.setdefault(permission.resource_id, set()).add(
+                str(getattr(permission, "effect", "allow") or "allow")
+            )
+        grants[action] = {
+            resource_id
+            for resource_id, effects in effects_by_resource.items()
+            if "allow" in effects and "deny" not in effects
+        }
+    return grants
 
 
 async def _audit_scoped_business_admin_resource_access(
@@ -244,10 +256,19 @@ async def authorize_resource_action(
         if runtime_principal.agent_id != agent_id:
             from app.services.project_context import project_source_read_allowed
 
-            cross_agent_input = (resource_kind in {"chat_artifact", "workspace_file"} and action == "read"
-                and ((runtime_principal.purpose == "a2a_delegation" and not runtime_principal.autonomous
-                    and bool(runtime_principal.session_id) and bool(runtime_principal.delegation_id))
-                    or project_source_read_allowed(user.tenant_id, runtime_principal)))
+            cross_agent_input = (
+                resource_kind in {"chat_artifact", "workspace_file"}
+                and action == "read"
+                and (
+                    (
+                        runtime_principal.purpose == "a2a_delegation"
+                        and not runtime_principal.autonomous
+                        and bool(runtime_principal.session_id)
+                        and bool(runtime_principal.delegation_id)
+                    )
+                    or project_source_read_allowed(user.tenant_id, runtime_principal)
+                )
+            )
             if not cross_agent_input:
                 raise HTTPException(status_code=403, detail="Runtime resource authority context mismatch")
             from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor
@@ -255,7 +276,9 @@ async def authorize_resource_action(
             try:
                 _principal, user = await _runtime_input_actor(db, user.tenant_id, runtime_principal)
             except ContentInputReceiptError as exc:
-                raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+                raise HTTPException(
+                    status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}
+                ) from exc
     agent, access_level = agent_access or await (
         check_agent_operator_reachability(db, user, agent_id)
         if runtime_principal is None and allow_manager_override and action == "read"
@@ -274,30 +297,51 @@ async def authorize_resource_action(
         artifact = await db.get(ChatArtifact, resource_id)
         if artifact is None or artifact.agent_id != agent_id or artifact.tenant_id != agent.tenant_id:
             raise HTTPException(status_code=404, detail="Artifact not found")
-        if (runtime_principal is None and action in {"read", "download"}
-            and artifact.source == "remote_a2a_return" and artifact.authority_state == OWNED_AUTHORITY_STATE):
+        if (
+            runtime_principal is None
+            and action in {"read", "download"}
+            and artifact.source == "remote_a2a_return"
+            and artifact.authority_state == OWNED_AUTHORITY_STATE
+        ):
             try:
                 # The published group snapshot is read through its own exact
                 # packet and source closure, without granting its workspace path.
                 async with tenant_scoped_session(agent.tenant_id) as source_db:
-                    published = await _published_remote_group_artifact(source_db, user=user, artifact=artifact, action=action)
+                    published = await _published_remote_group_artifact(
+                        source_db, user=user, artifact=artifact, action=action
+                    )
                 if published:
-                    return ResourceAuthorityDecision(agent=agent, access_level=access_level, resource_kind=resource_kind,
-                        resource_id=resource_id, action=action, authority_source="shared_group_remote_artifact")
+                    return ResourceAuthorityDecision(
+                        agent=agent,
+                        access_level=access_level,
+                        resource_kind=resource_kind,
+                        resource_id=resource_id,
+                        action=action,
+                        authority_source="shared_group_remote_artifact",
+                    )
             except ContentInputReceiptError as exc:
-                raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+                raise HTTPException(
+                    status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}
+                ) from exc
         try:
             # Source inspection can write its own tenant audit. Finish that
             # scoped transaction before path inspection takes the request's
             # audit-chain lock; nested writers would wait on their own caller.
             # Source readers still never inherit an ambient administrator bypass.
             async with tenant_scoped_session(agent.tenant_id) as source_db:
-                await validate_artifact_content_receipt(source_db, agent.tenant_id, user, artifact,
-                    runtime_principal=runtime_principal)
+                await validate_artifact_content_receipt(
+                    source_db, agent.tenant_id, user, artifact, runtime_principal=runtime_principal
+                )
             # A snapshot or a session owner cannot enlarge its source audience.
             await authorize_workspace_path(
-                db, user, agent_id=agent_id, path=artifact.path, action="read", path_exists=True,
-                allow_manager_override=allow_manager_override, manager_override_reason=manager_override_reason,
+                db,
+                user,
+                agent_id=agent_id,
+                path=artifact.path,
+                action="read",
+                path_exists=True,
+                allow_manager_override=allow_manager_override,
+                manager_override_reason=manager_override_reason,
                 agent_access=(agent, access_level),
                 runtime_principal=runtime_principal,
             )
@@ -318,9 +362,16 @@ async def authorize_resource_action(
                 authority_source="resource_owner",
                 full_control=True,
             )
-        if (resource_facts[0] if resource_facts is not None else await _root_session_owned_by_user(
-            db, root_session_id=root_session_id, agent_id=agent_id, user_id=user.id,
-        )):
+        if (
+            resource_facts[0]
+            if resource_facts is not None
+            else await _root_session_owned_by_user(
+                db,
+                root_session_id=root_session_id,
+                agent_id=agent_id,
+                user_id=user.id,
+            )
+        ):
             return ResourceAuthorityDecision(
                 agent=agent,
                 access_level=access_level,
@@ -343,8 +394,11 @@ async def authorize_resource_action(
     # turning business access into a 403 or a grant requirement.
     from app.core.source_read_purpose import business_inspection_allowed
 
-    if (runtime_principal is None and business_inspection_allowed()
-        and is_scoped_business_admin(user, resource_tenant_id=getattr(agent, "tenant_id", None))):
+    if (
+        runtime_principal is None
+        and business_inspection_allowed()
+        and is_scoped_business_admin(user, resource_tenant_id=getattr(agent, "tenant_id", None))
+    ):
         if audit:
             await _audit_scoped_business_admin_resource_access(
                 db,
@@ -374,11 +428,19 @@ async def authorize_resource_action(
         principals = [("user", user.id)]
         if user.role != "platform_admin" and getattr(user, "department_id", None):
             principals.append(("department", user.department_id))
-        granted = classify_loaded_permissions(permission_rows(resource_facts[1]), principals=principals,
-            action=action, context={"tenant_id": str(user.tenant_id) if user.tenant_id else None}) == "allow"
+        granted = (
+            classify_loaded_permissions(
+                permission_rows(resource_facts[1]),
+                principals=principals,
+                action=action,
+                context={"tenant_id": str(user.tenant_id) if user.tenant_id else None},
+            )
+            == "allow"
+        )
     else:
         granted = state == OWNED_AUTHORITY_STATE and await _has_explicit_resource_grant(
-            db, user=user, resource_kind=resource_kind, resource_id=resource_id, action=action)
+            db, user=user, resource_kind=resource_kind, resource_id=resource_id, action=action
+        )
     if state == OWNED_AUTHORITY_STATE and granted:
         return ResourceAuthorityDecision(
             agent=agent,
@@ -389,10 +451,23 @@ async def authorize_resource_action(
             authority_source="resource_grant",
         )
 
-    if (resource_kind == "chat_artifact" and action in {"read", "download"} and runtime_principal is None
-        and state == OWNED_AUTHORITY_STATE and await _published_group_artifact(db, user=user, artifact=artifact, action=action)):
-        return ResourceAuthorityDecision(agent=agent, access_level=access_level, resource_kind=resource_kind,
-            resource_id=resource_id, action=action, authority_source="shared_group_remote_artifact" if artifact.source == "remote_a2a_return" else "shared_group_terminal_artifact")
+    if (
+        resource_kind == "chat_artifact"
+        and action in {"read", "download"}
+        and runtime_principal is None
+        and state == OWNED_AUTHORITY_STATE
+        and await _published_group_artifact(db, user=user, artifact=artifact, action=action)
+    ):
+        return ResourceAuthorityDecision(
+            agent=agent,
+            access_level=access_level,
+            resource_kind=resource_kind,
+            resource_id=resource_id,
+            action=action,
+            authority_source="shared_group_remote_artifact"
+            if artifact.source == "remote_a2a_return"
+            else "shared_group_terminal_artifact",
+        )
 
     if runtime_principal is None and allow_manager_override and action == "read":
         authority_source = await authorize_agent_operator_inspection(
@@ -436,22 +511,47 @@ async def _published_group_artifact(db, *, user, artifact, action) -> bool:
     from app.services.shared_group_authority import require_current_group_member
 
     session = await db.get(ChatSession, artifact.session_id)
-    if (session is None or session.audience_kind != "group" or session.tenant_id != artifact.tenant_id
-        or session.agent_id != artifact.agent_id or artifact.root_session_id != (session.root_session_id or session.id)):
+    if (
+        session is None
+        or session.audience_kind != "group"
+        or session.tenant_id != artifact.tenant_id
+        or session.agent_id != artifact.agent_id
+        or artifact.root_session_id != (session.root_session_id or session.id)
+    ):
         return False
     task = await db.get(RuntimeTask, artifact.runtime_task_id) if artifact.runtime_task_id else None
-    if (task is None or task.tenant_id != artifact.tenant_id or task.parent_agent_id != artifact.agent_id
-        or task.parent_session_id != str(session.id) or task.root_user_id != artifact.owner_user_id):
+    if (
+        task is None
+        or task.tenant_id != artifact.tenant_id
+        or task.parent_agent_id != artifact.agent_id
+        or task.parent_session_id != str(session.id)
+        or task.root_user_id != artifact.owner_user_id
+    ):
         return False
-    outcome = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.tenant_id == artifact.tenant_id,
-        SessionRunOutcome.session_id == session.id, SessionRunOutcome.run_id == task.id,
-        SessionRunOutcome.state == "terminal_committed"))
+    outcome = await db.scalar(
+        select(SessionRunOutcome).where(
+            SessionRunOutcome.tenant_id == artifact.tenant_id,
+            SessionRunOutcome.session_id == session.id,
+            SessionRunOutcome.run_id == task.id,
+            SessionRunOutcome.state == "terminal_committed",
+        )
+    )
     if outcome is None or artifact_part_from_model(artifact) not in (outcome.seal_json or {}).get("parts", []):
         return False
     additional = [("department", user.department_id)] if user.role != "platform_admin" and user.department_id else []
-    if await classify_permission(db, principal_type="user", principal_id=user.id, additional_principals=additional,
-        resource_type="chat_artifact", resource_id=artifact.id, action=action,
-        context={"tenant_id": str(user.tenant_id)}) == "deny":
+    if (
+        await classify_permission(
+            db,
+            principal_type="user",
+            principal_id=user.id,
+            additional_principals=additional,
+            resource_type="chat_artifact",
+            resource_id=artifact.id,
+            action=action,
+            context={"tenant_id": str(user.tenant_id)},
+        )
+        == "deny"
+    ):
         raise HTTPException(403, detail="Artifact access is explicitly denied")
     await require_current_group_member(db, session=session, user=user)
     return True
@@ -465,35 +565,72 @@ async def _published_remote_group_artifact(db, *, user, artifact, action) -> boo
     from app.services.shared_group_authority import require_current_group_member
 
     session = await db.get(ChatSession, artifact.session_id)
-    if (session is None or session.audience_kind != "group" or session.tenant_id != artifact.tenant_id
-        or session.agent_id != artifact.agent_id or artifact.root_session_id != (session.root_session_id or session.id)):
+    if (
+        session is None
+        or session.audience_kind != "group"
+        or session.tenant_id != artifact.tenant_id
+        or session.agent_id != artifact.agent_id
+        or artifact.root_session_id != (session.root_session_id or session.id)
+    ):
         return False
     task = await db.get(RuntimeTask, artifact.runtime_task_id) if artifact.runtime_task_id else None
-    if (task is None or task.tenant_id != artifact.tenant_id or task.parent_agent_id != artifact.agent_id
-        or task.parent_session_id != str(session.id) or task.root_user_id != artifact.owner_user_id):
+    if (
+        task is None
+        or task.tenant_id != artifact.tenant_id
+        or task.parent_agent_id != artifact.agent_id
+        or task.parent_session_id != str(session.id)
+        or task.root_user_id != artifact.owner_user_id
+    ):
         return False
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.services.remote_a2a_artifacts import group_event_ref
     from app.services.content_input_receipts import validate_artifact_content_receipt
 
-    event = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.tenant_id == session.tenant_id,
-        ChatTranscriptEvent.session_id == session.id, ChatTranscriptEvent.run_id == task.id,
-        ChatTranscriptEvent.message_id == artifact.message_id,
-        ChatTranscriptEvent.event_type == "remote_a2a_artifacts"))
+    event = await db.scalar(
+        select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.tenant_id == session.tenant_id,
+            ChatTranscriptEvent.session_id == session.id,
+            ChatTranscriptEvent.run_id == task.id,
+            ChatTranscriptEvent.message_id == artifact.message_id,
+            ChatTranscriptEvent.event_type == "remote_a2a_artifacts",
+        )
+    )
     expected = artifact_part_from_model(artifact)
-    identity_fields = ("type", "artifact_id", "path", "revision_id", "runtime_task_id", "source",
-        "owner_agent_id", "source_agent_id", "download_agent_id")
+    identity_fields = (
+        "type",
+        "artifact_id",
+        "path",
+        "revision_id",
+        "runtime_task_id",
+        "source",
+        "owner_agent_id",
+        "source_agent_id",
+        "download_agent_id",
+    )
     # Public parts omit private storage/hash fields and use publication time.
     # Bind stable identity/version, then verify the pinned content receipt.
-    if event is None or not any(all(part.get(key) == expected.get(key) for key in identity_fields)
-        for part in event.parts_json or [] if isinstance(part, dict)):
+    if event is None or not any(
+        all(part.get(key) == expected.get(key) for key in identity_fields)
+        for part in event.parts_json or []
+        if isinstance(part, dict)
+    ):
         return False
     await group_event_ref(db, session=session, event=event, user=user)
     await validate_artifact_content_receipt(db, artifact.tenant_id, user, artifact)
     additional = [("department", user.department_id)] if user.role != "platform_admin" and user.department_id else []
-    if await classify_permission(db, principal_type="user", principal_id=user.id, additional_principals=additional,
-        resource_type="chat_artifact", resource_id=artifact.id, action=action,
-        context={"tenant_id": str(user.tenant_id)}) == "deny":
+    if (
+        await classify_permission(
+            db,
+            principal_type="user",
+            principal_id=user.id,
+            additional_principals=additional,
+            resource_type="chat_artifact",
+            resource_id=artifact.id,
+            action=action,
+            context={"tenant_id": str(user.tenant_id)},
+        )
+        == "deny"
+    ):
         raise HTTPException(403, detail="Artifact access is explicitly denied")
     await require_current_group_member(db, session=session, user=user)
     return True

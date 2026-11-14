@@ -957,6 +957,7 @@ async def prepare_model_request(
         session_id=session_id,
         messages=messages,
         wire_messages=list(canonical_wire_request.get("messages") or []),
+        locked_session=locked_session,
     )
     await _validate_or_withhold_model_sources(
         db,

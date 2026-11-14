@@ -279,6 +279,39 @@ async def test_explicit_resource_grants_are_loaded_once_with_canonical_condition
 
 
 @pytest.mark.asyncio
+async def test_workspace_actions_share_one_live_grant_read():
+    from app.core.resource_authority import load_explicit_resource_grant_ids_by_action
+
+    user = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), department_id=None)
+    resource = uuid4()
+    permission = SimpleNamespace(
+        resource_id=resource, actions=["read", "write"], conditions={}, effect="allow", revoked_at=None, expires_at=None
+    )
+    denial = SimpleNamespace(
+        resource_id=resource, actions=["write"], conditions={}, effect="deny", revoked_at=None, expires_at=None
+    )
+
+    class GrantDB:
+        calls = 0
+
+        async def execute(self, _statement):
+            self.calls += 1
+            return _ScalarResult([permission, denial])
+
+    db = GrantDB()
+    grants = await load_explicit_resource_grant_ids_by_action(
+        db, user=user, resource_kind="workspace_file", actions=("read", "write")
+    )
+    assert grants == {"read": {resource}, "write": set()}
+    assert db.calls == 1
+    permission.revoked_at = datetime.now(timezone.utc)
+    assert await load_explicit_resource_grant_ids_by_action(
+        db, user=user, resource_kind="workspace_file", actions=("read", "write")
+    ) == {"read": set(), "write": set()}
+    assert db.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_platform_admin_resource_grants_use_only_the_exact_user_principal():
     from app.core.resource_authority import load_explicit_resource_grant_ids
 

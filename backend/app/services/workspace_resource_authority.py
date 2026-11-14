@@ -22,13 +22,16 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import (
-    authorize_loaded_session_access, check_agent_access, check_agent_operator_reachability, is_scoped_business_admin,
+    authorize_loaded_session_access,
+    check_agent_access,
+    check_agent_operator_reachability,
+    is_scoped_business_admin,
 )
 from app.core.resource_authority import (
     OWNED_AUTHORITY_STATE,
     QUARANTINED_AUTHORITY_STATE,
     authorize_resource_action,
-    load_explicit_resource_grant_ids,
+    load_explicit_resource_grant_ids_by_action,
     normalize_workspace_resource_path,
     workspace_resource_id,
 )
@@ -64,23 +67,35 @@ def workspace_glob_read_observation(root: str, pattern: str, *, matched_paths: l
         if normalized_root or not isinstance(matched_paths, list):
             return None
         for path in matched_paths:
-            if (not isinstance(path, str) or not (path == "workspace" or path.startswith("workspace/"))
-                or ".." in PurePosixPath(path).parts or "\\" in path
-                or normalize_workspace_resource_path(path) != path):
+            if (
+                not isinstance(path, str)
+                or not (path == "workspace" or path.startswith("workspace/"))
+                or ".." in PurePosixPath(path).parts
+                or "\\" in path
+                or normalize_workspace_resource_path(path) != path
+            ):
                 return None
-        return {"kind": "authorized_workspace_glob_listing", "root": normalized_root, "pattern": pattern,
-            "matched_paths": list(matched_paths)}
+        return {
+            "kind": "authorized_workspace_glob_listing",
+            "root": normalized_root,
+            "pattern": pattern,
+            "matched_paths": list(matched_paths),
+        }
     return {"kind": "authorized_workspace_glob_listing", "root": normalized_root, "pattern": pattern}
 
 
 def _is_session_source_path(path: str) -> bool:
-    return any(path == root or path.startswith(f"{root}/")
-        for root in ("memory/t0/sessions", "memory/t2/sessions", "memory/sessions", "memory/session_state", "logs"))
+    return any(
+        path == root or path.startswith(f"{root}/")
+        for root in ("memory/t0/sessions", "memory/t2/sessions", "memory/sessions", "memory/session_state", "logs")
+    )
 
 
 async def native_private_session_source_ids(db, *, tenant_id, agent_id, user_id, session_id, source_path=None):
     private_sessions = select(ChatSession.id).where(
-        ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id, ChatSession.user_id == user_id,
+        ChatSession.tenant_id == tenant_id,
+        ChatSession.agent_id == agent_id,
+        ChatSession.user_id == user_id,
         or_(ChatSession.audience_kind.is_(None), ChatSession.audience_kind == "private"),
     )
     worker = await db.scalar(private_sessions.where(ChatSession.id == session_id)) if session_id else None
@@ -98,7 +113,7 @@ async def native_private_session_source_ids(db, *, tenant_id, agent_id, user_id,
 def _session_source_id(path: str) -> str | None:
     for prefix in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/", "memory/session_state/"):
         if path.startswith(prefix):
-            return path[len(prefix):].split("/", 1)[0]
+            return path[len(prefix) :].split("/", 1)[0]
     return None
 
 
@@ -117,8 +132,13 @@ def session_source_path_allowed(path: str, session_source_ids: frozenset[str] | 
 
 
 async def authorize_browser_session_source(
-    db: AsyncSession, user: User, *, agent_id: uuid.UUID, path: str,
-    operator_view: bool = False, operator_reason: str | None = None,
+    db: AsyncSession,
+    user: User,
+    *,
+    agent_id: uuid.UUID,
+    path: str,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
 ) -> str | None:
     normalized = normalize_workspace_resource_path(path)
     from app.services.learned_skill_sources import authorize_browser_learning_path
@@ -130,8 +150,12 @@ async def authorize_browser_session_source(
             return learned
     except ContentInputReceiptError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
-    if (normalized == "memory/explicit" or normalized.startswith("memory/explicit/")
-        or normalized == "runtime_artifacts/asset_transactions" or normalized.startswith("runtime_artifacts/asset_transactions/")):
+    if (
+        normalized == "memory/explicit"
+        or normalized.startswith("memory/explicit/")
+        or normalized == "runtime_artifacts/asset_transactions"
+        or normalized.startswith("runtime_artifacts/asset_transactions/")
+    ):
         from app.services.content_input_receipts import ContentInputReceiptError
         from app.services.explicit_memory_authority import authorize_browser_memory_path
 
@@ -142,36 +166,72 @@ async def authorize_browser_session_source(
     source_id = None
     for root in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/", "memory/session_state/"):
         if normalized.startswith(root):
-            source_id = normalized[len(root):].split("/", 1)[0]
+            source_id = normalized[len(root) :].split("/", 1)[0]
             break
     if source_id is None:
         return None
-    agent, access = await (check_agent_operator_reachability(db, user, agent_id) if operator_view
-        else check_agent_access(db, user, agent_id))
+    agent, access = await (
+        check_agent_operator_reachability(db, user, agent_id)
+        if operator_view
+        else check_agent_access(db, user, agent_id)
+    )
     try:
         session_id = uuid.UUID(source_id)
     except ValueError:
         session_id = None
-    session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id,
-        ChatSession.agent_id == agent_id, ChatSession.tenant_id == agent.tenant_id,
-    ).execution_options(populate_existing=True)) if session_id is not None else None
+    session = (
+        await db.scalar(
+            select(ChatSession)
+            .where(
+                ChatSession.id == session_id,
+                ChatSession.agent_id == agent_id,
+                ChatSession.tenant_id == agent.tenant_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if session_id is not None
+        else None
+    )
     if session is not None:
-        authority = await authorize_loaded_session_access(db, user, agent=agent, session=session,
-            access_level=access, action="file_source:read", operator_view=operator_view, operator_reason=operator_reason)
+        authority = await authorize_loaded_session_access(
+            db,
+            user,
+            agent=agent,
+            session=session,
+            access_level=access,
+            action="file_source:read",
+            operator_view=operator_view,
+            operator_reason=operator_reason,
+        )
         if session.audience_kind in {None, "private"} or authority != "session_owner":
             return authority
         if not is_scoped_business_admin(user, resource_tenant_id=agent.tenant_id):
-            raise HTTPException(status_code=503, detail={"code": "session_source_audience_unavailable",
-                "message": "This source requires its live shared-audience reader. Administrator inspection remains available."})
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "session_source_audience_unavailable",
+                    "message": "This source requires its live shared-audience reader. Administrator inspection remains available.",
+                },
+            )
     # Unknown legacy files and shared-owner overrides require audited inspection authority.
     if is_scoped_business_admin(user, resource_tenant_id=agent.tenant_id) or operator_view:
-        decision = await authorize_resource_action(db, user, agent_id=agent_id, resource_kind="workspace_file",
-            resource_id=workspace_resource_id(agent_id, normalized), action="read",
-            authority_state=QUARANTINED_AUTHORITY_STATE, allow_manager_override=operator_view,
-            manager_override_reason=operator_reason, agent_access=(agent, access))
+        decision = await authorize_resource_action(
+            db,
+            user,
+            agent_id=agent_id,
+            resource_kind="workspace_file",
+            resource_id=workspace_resource_id(agent_id, normalized),
+            action="read",
+            authority_state=QUARANTINED_AUTHORITY_STATE,
+            allow_manager_override=operator_view,
+            manager_override_reason=operator_reason,
+            agent_access=(agent, access),
+        )
         return decision.authority_source
-    raise WorkspaceAuthorityError("session_source_unverified",
-        "This session source has no current authority binding. Preserve it and reconcile its provenance.")
+    raise WorkspaceAuthorityError(
+        "session_source_unverified",
+        "This session source has no current authority binding. Preserve it and reconcile its provenance.",
+    )
 
 
 _WORKSPACE_EFFECT_ACTIONS = ("write", "delete", "create", "deliver")
@@ -203,11 +263,16 @@ def resolve_workspace_storage_path(workspace: Path, path: str) -> Path:
             )
         from app.services.chat_artifact_delivery import is_chat_artifact_snapshot_storage_path
 
-        if (_is_workspace_path(requested) or _is_workspace_path(resolved)
-            or _is_session_source_path(requested) or _is_session_source_path(resolved)
-            or is_chat_artifact_snapshot_storage_path(requested) or is_chat_artifact_snapshot_storage_path(resolved)
+        if (
+            _is_workspace_path(requested)
+            or _is_workspace_path(resolved)
+            or _is_session_source_path(requested)
+            or _is_session_source_path(resolved)
+            or is_chat_artifact_snapshot_storage_path(requested)
+            or is_chat_artifact_snapshot_storage_path(resolved)
             or requested.startswith("runtime_artifacts/workspace_content_versions/")
-            or resolved.startswith("runtime_artifacts/workspace_content_versions/")):
+            or resolved.startswith("runtime_artifacts/workspace_content_versions/")
+        ):
             # Configured parent roots may be OS aliases; resource paths may not be.
             current = root
             for part in Path(requested).parts:
@@ -233,12 +298,16 @@ def resolve_workspace_storage_path(workspace: Path, path: str) -> Path:
 @contextmanager
 def _workspace_parent_descriptor(workspace: Path, path: str, *, create: bool = False):
     if os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"):
-        raise WorkspaceAuthorityError("workspace_storage_unavailable", "Safe workspace file access is unavailable on this host.")
+        raise WorkspaceAuthorityError(
+            "workspace_storage_unavailable", "Safe workspace file access is unavailable on this host."
+        )
     target = resolve_workspace_storage_path(workspace, path)
     try:
         parts = target.relative_to(workspace.resolve()).parts
     except ValueError as exc:
-        raise WorkspaceAuthorityError("workspace_resource_changed", "The Agent directory changed; reconcile it before retrying.") from exc
+        raise WorkspaceAuthorityError(
+            "workspace_resource_changed", "The Agent directory changed; reconcile it before retrying."
+        ) from exc
     if not parts:
         raise WorkspaceAuthorityError("workspace_resource_changed", "The requested resource is not a regular file.")
     directory = None
@@ -262,14 +331,24 @@ def _workspace_parent_descriptor(workspace: Path, path: str, *, create: bool = F
         try:
             current = resolve_workspace_storage_path(workspace, parent_path).stat()
         except WorkspaceAuthorityError as exc:
-            raise WorkspaceAuthorityError("workspace_resource_changed", "The parent directory changed during access; reconcile before retrying.") from exc
+            raise WorkspaceAuthorityError(
+                "workspace_resource_changed", "The parent directory changed during access; reconcile before retrying."
+            ) from exc
         if (current.st_dev, current.st_ino) != (parent_info.st_dev, parent_info.st_ino):
-            raise WorkspaceAuthorityError("workspace_resource_changed", "The parent directory moved during access; reconcile before retrying.")
+            raise WorkspaceAuthorityError(
+                "workspace_resource_changed", "The parent directory moved during access; reconcile before retrying."
+            )
     except OSError as exc:
         import errno
 
-        code = "workspace_resource_changed" if exc.errno in {errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EISDIR, errno.EEXIST} else "workspace_storage_unavailable"
-        raise WorkspaceAuthorityError(code, "Workspace file access changed or is unavailable; reconcile the path and retry.") from exc
+        code = (
+            "workspace_resource_changed"
+            if exc.errno in {errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EISDIR, errno.EEXIST}
+            else "workspace_storage_unavailable"
+        )
+        raise WorkspaceAuthorityError(
+            code, "Workspace file access changed or is unavailable; reconcile the path and retry."
+        ) from exc
     finally:
         if directory is not None:
             os.close(directory)
@@ -293,18 +372,31 @@ def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb", write_o
     descriptor = None
     try:
         with _workspace_parent_descriptor(workspace, path, create=create) as (directory, name):
-            flags = {"rb": os.O_RDONLY, "wb": os.O_WRONLY | os.O_CREAT, "xb": os.O_WRONLY | os.O_CREAT | os.O_EXCL, "r+b": os.O_RDWR}[mode]
+            flags = {
+                "rb": os.O_RDONLY,
+                "wb": os.O_WRONLY | os.O_CREAT,
+                "xb": os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                "r+b": os.O_RDWR,
+            }[mode]
             if write_observation is not None:
                 flags = os.O_RDWR | (os.O_CREAT | os.O_EXCL if create else 0)
             try:
-                descriptor = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
+                descriptor = os.open(
+                    name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory
+                )
             except (FileExistsError, FileNotFoundError) as exc:
                 if write_observation is not None:
-                    raise WorkspaceAuthorityError("workspace_predecessor_changed", "The predecessor changed before writing. Read the current file and revise the write.") from exc
+                    raise WorkspaceAuthorityError(
+                        "workspace_predecessor_changed",
+                        "The predecessor changed before writing. Read the current file and revise the write.",
+                    ) from exc
                 raise
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
-                raise WorkspaceAuthorityError("workspace_resource_changed", "The file changed or has shared ownership; reconcile it before retrying.")
+                raise WorkspaceAuthorityError(
+                    "workspace_resource_changed",
+                    "The file changed or has shared ownership; reconcile it before retrying.",
+                )
             if create and write_observation is None:
                 os.ftruncate(descriptor, 0)
             handle = os.fdopen(descriptor, "r+b" if write_observation is not None else mode)
@@ -313,9 +405,17 @@ def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb", write_o
                 if write_observation is not None:
                     write_observation.descriptor = {"device": opened.st_dev, "inode": opened.st_ino}
                     if write_observation.expected_exists:
-                        write_observation.observed_predecessor_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
-                        if write_observation.observed_predecessor_sha256 != write_observation.expected_predecessor_sha256:
-                            raise WorkspaceAuthorityError("workspace_predecessor_changed", "The predecessor bytes changed before writing. Read the current file and revise the write.")
+                        write_observation.observed_predecessor_sha256 = hashlib.file_digest(
+                            handle, "sha256"
+                        ).hexdigest()
+                        if (
+                            write_observation.observed_predecessor_sha256
+                            != write_observation.expected_predecessor_sha256
+                        ):
+                            raise WorkspaceAuthorityError(
+                                "workspace_predecessor_changed",
+                                "The predecessor bytes changed before writing. Read the current file and revise the write.",
+                            )
                     handle.seek(0)
                     if mode == "wb":
                         handle.truncate(0)
@@ -327,21 +427,32 @@ def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb", write_o
                     handle.seek(0)
                     write_observation.observed_output_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
                     final = os.fstat(handle.fileno())
-                    if not stat.S_ISREG(final.st_mode) or final.st_nlink != 1 or (
-                        (final.st_dev, final.st_ino) != (opened.st_dev, opened.st_ino)
-                    ) or (
-                        write_observation.expected_output_sha256 is not None
-                        and write_observation.observed_output_sha256 != write_observation.expected_output_sha256
+                    if (
+                        not stat.S_ISREG(final.st_mode)
+                        or final.st_nlink != 1
+                        or ((final.st_dev, final.st_ino) != (opened.st_dev, opened.st_ino))
+                        or (
+                            write_observation.expected_output_sha256 is not None
+                            and write_observation.observed_output_sha256 != write_observation.expected_output_sha256
+                        )
                     ):
-                        raise WorkspaceAuthorityError("workspace_resource_changed", "The writer descriptor bytes changed after writing; reconcile the output before retrying.")
+                        raise WorkspaceAuthorityError(
+                            "workspace_resource_changed",
+                            "The writer descriptor bytes changed after writing; reconcile the output before retrying.",
+                        )
                 try:
                     current = resolve_workspace_storage_path(workspace, path).stat()
                 except WorkspaceAuthorityError as exc:
                     if write:
-                        raise WorkspaceAuthorityError("workspace_resource_changed", "The path changed after writing; reconcile the file before a new mutation.") from exc
+                        raise WorkspaceAuthorityError(
+                            "workspace_resource_changed",
+                            "The path changed after writing; reconcile the file before a new mutation.",
+                        ) from exc
                     raise
                 if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
-                    raise WorkspaceAuthorityError("workspace_resource_changed", "The file moved during access; reconcile it before retrying.")
+                    raise WorkspaceAuthorityError(
+                        "workspace_resource_changed", "The file moved during access; reconcile it before retrying."
+                    )
         if write_observation is not None and write_observation.expected_output_sha256 is not None:
             write_observation.verified = True
     finally:
@@ -351,27 +462,39 @@ def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb", write_o
 
 def delete_workspace_path(workspace: Path, path: str, *, directory: bool = False) -> None:
     if os.unlink not in os.supports_dir_fd or os.stat not in os.supports_dir_fd:
-        raise WorkspaceAuthorityError("workspace_storage_unavailable", "Safe workspace deletion is unavailable on this host.")
+        raise WorkspaceAuthorityError(
+            "workspace_storage_unavailable", "Safe workspace deletion is unavailable on this host."
+        )
     with _workspace_parent_descriptor(workspace, path) as (parent, name):
         info = os.stat(name, dir_fd=parent, follow_symlinks=False)
         if stat.S_ISLNK(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1):
-            raise WorkspaceAuthorityError("workspace_resource_alias_forbidden", "Use an independent canonical resource before deleting.")
+            raise WorkspaceAuthorityError(
+                "workspace_resource_alias_forbidden", "Use an independent canonical resource before deleting."
+            )
         if directory:
             if not stat.S_ISDIR(info.st_mode):
-                raise WorkspaceAuthorityError("workspace_resource_changed", "The resource is no longer a directory; reconcile before deleting.")
+                raise WorkspaceAuthorityError(
+                    "workspace_resource_changed", "The resource is no longer a directory; reconcile before deleting."
+                )
             if not shutil.rmtree.avoids_symlink_attacks:
-                raise WorkspaceAuthorityError("workspace_storage_unavailable", "Safe recursive deletion is unavailable on this host.")
+                raise WorkspaceAuthorityError(
+                    "workspace_storage_unavailable", "Safe recursive deletion is unavailable on this host."
+                )
             shutil.rmtree(name, dir_fd=parent)
         else:
             if not stat.S_ISREG(info.st_mode):
-                raise WorkspaceAuthorityError("workspace_resource_changed", "The resource is no longer a regular file; reconcile before deleting.")
+                raise WorkspaceAuthorityError(
+                    "workspace_resource_changed", "The resource is no longer a regular file; reconcile before deleting."
+                )
             os.unlink(name, dir_fd=parent)
         try:
             os.stat(name, dir_fd=parent, follow_symlinks=False)
         except FileNotFoundError:
             pass
         else:
-            raise WorkspaceAuthorityError("workspace_resource_changed", "The path was recreated during deletion; reconcile before retrying.")
+            raise WorkspaceAuthorityError(
+                "workspace_resource_changed", "The path was recreated during deletion; reconcile before retrying."
+            )
 
 
 def write_workspace_file(workspace: Path, path: str, content: bytes, *, observation=None) -> None:
@@ -382,7 +505,9 @@ def write_workspace_file(workspace: Path, path: str, content: bytes, *, observat
 
 
 def snapshot_workspace_file(
-    workspace: Path, path: str, expected_sha256: str | None = None,
+    workspace: Path,
+    path: str,
+    expected_sha256: str | None = None,
 ) -> tuple[TemporaryDirectory[str], Path]:
     """Keep a private copy of descriptor-validated bytes through response delivery."""
     snapshot_dir = None
@@ -396,14 +521,18 @@ def snapshot_workspace_file(
                 digest.update(chunk)
                 snapshot.write(chunk)
         if expected_sha256 is not None and not hmac.compare_digest(digest.hexdigest(), expected_sha256):
-            raise WorkspaceAuthorityError("workspace_resource_changed", "File contents changed after delivery authorization.")
+            raise WorkspaceAuthorityError(
+                "workspace_resource_changed", "File contents changed after delivery authorization."
+            )
         os.utime(snapshot_path, ns=(source_info.st_atime_ns, source_info.st_mtime_ns))
         return snapshot_dir, snapshot_path
     except BaseException as exc:
         if snapshot_dir is not None:
             snapshot_dir.cleanup()
         if isinstance(exc, OSError):
-            raise WorkspaceAuthorityError("workspace_storage_unavailable", "Download storage is unavailable; retry the request.") from exc
+            raise WorkspaceAuthorityError(
+                "workspace_storage_unavailable", "Download storage is unavailable; retry the request."
+            ) from exc
         raise
 
 
@@ -423,8 +552,10 @@ class WorkspaceInputRead:
     def verify_digest(self, digest: str) -> None:
         self.observed_sha256 = digest
         if self.carrier_kind != "workspace_artifact" and self.observed_sha256 != self.content_sha256:
-            raise WorkspaceAuthorityError("workspace_content_unverified",
-                "The file bytes no longer match the verified input receipt. Regenerate from authorized inputs.")
+            raise WorkspaceAuthorityError(
+                "workspace_content_unverified",
+                "The file bytes no longer match the verified input receipt. Regenerate from authorized inputs.",
+            )
 
 
 @dataclass(slots=True)
@@ -455,7 +586,10 @@ class WorkspaceOutputWrite:
     def verify_predecessor(self, data: bytes) -> None:
         self.observed_predecessor_sha256 = hashlib.sha256(data).hexdigest()
         if not self.expected_exists or self.observed_predecessor_sha256 != self.expected_predecessor_sha256:
-            raise WorkspaceAuthorityError("workspace_predecessor_changed", "The bytes used by the edit changed after preflight. Read the current file and revise the edit.")
+            raise WorkspaceAuthorityError(
+                "workspace_predecessor_changed",
+                "The bytes used by the edit changed after preflight. Read the current file and revise the edit.",
+            )
 
 
 @dataclass
@@ -471,15 +605,23 @@ class WorkspaceExecutionInputs:
             if read is None or not digest or read.observed_sha256 != digest:
                 self.unbound.append(path)
             elif read.receipt_id is not None:
-                self.sources.append({"source_kind": "workspace_artifact", "source_id": str(read.receipt_id),
-                    "source_version": read.content_sha256})
+                self.sources.append(
+                    {
+                        "source_kind": "workspace_artifact",
+                        "source_id": str(read.receipt_id),
+                        "source_version": read.content_sha256,
+                    }
+                )
         self.observed = True
 
     def snapshot(self) -> dict:
         sources = sorted({(row["source_kind"], row["source_id"], row["source_version"]) for row in self.sources})
-        return {"schema": "hive.workspace_execution_inputs.v1", "observed": self.observed,
+        return {
+            "schema": "hive.workspace_execution_inputs.v1",
+            "observed": self.observed,
             "sources": [dict(zip(("source_kind", "source_id", "source_version"), row)) for row in sources],
-            "unbound": sorted(set(self.unbound))}
+            "unbound": sorted(set(self.unbound)),
+        }
 
 
 @dataclass(frozen=True)
@@ -506,10 +648,13 @@ class WorkspaceAuthorityScope:
         normalized = normalize_workspace_resource_path(path)
         from app.services.learned_skill_sources import managed_learning_path
 
-        if not managed_learning_path(normalized) and not any(normalized == root or normalized.startswith(root + "/")
-            for root in self.learning_roots):
+        if not managed_learning_path(normalized) and not any(
+            normalized == root or normalized.startswith(root + "/") for root in self.learning_roots
+        ):
             return None
-        return any(file == normalized or file.startswith(normalized + "/") for file, _revision, _digest in self.learning_files)
+        return any(
+            file == normalized or file.startswith(normalized + "/") for file, _revision, _digest in self.learning_files
+        )
 
     def can_read_session_source(self, path: str) -> bool | None:
         return session_source_path_allowed(path, self.session_source_ids)
@@ -531,7 +676,9 @@ class WorkspaceAuthorityScope:
             return False
         if is_recovery_manifest_storage_path(normalized):
             return False
-        if normalized == "runtime_artifacts/asset_transactions" or normalized.startswith("runtime_artifacts/asset_transactions/"):
+        if normalized == "runtime_artifacts/asset_transactions" or normalized.startswith(
+            "runtime_artifacts/asset_transactions/"
+        ):
             return action == "read" and self.operator_view
         if normalized == "memory/explicit" or normalized.startswith("memory/explicit/"):
             return action == "read" and self.can_read(normalized)
@@ -561,7 +708,9 @@ class WorkspaceAuthorityScope:
         if normalized == "memory/explicit" or normalized.startswith("memory/explicit/"):
             observed = self.input_read(normalized)
             return observed is not None and observed.carrier_kind == "explicit_memory"
-        if normalized == "runtime_artifacts/asset_transactions" or normalized.startswith("runtime_artifacts/asset_transactions/"):
+        if normalized == "runtime_artifacts/asset_transactions" or normalized.startswith(
+            "runtime_artifacts/asset_transactions/"
+        ):
             return False
         if not _is_workspace_path(normalized):
             return True
@@ -663,8 +812,14 @@ def authorize_workspace_tool_path(
             "workspace_resource_path_required",
             "User-owned tool inputs and outputs must be stored below workspace/.",
         )
-    if authority_scope is not None and not _is_workspace_path(normalized) and not authority_scope.can_perform(normalized, action):
-        raise WorkspaceAuthorityError('workspace_resource_forbidden', 'This source is outside the current runtime authority.')
+    if (
+        authority_scope is not None
+        and not _is_workspace_path(normalized)
+        and not authority_scope.can_perform(normalized, action)
+    ):
+        raise WorkspaceAuthorityError(
+            "workspace_resource_forbidden", "This source is outside the current runtime authority."
+        )
     if authority_scope is None or not _is_workspace_path(normalized):
         return normalized
     if (normalized in authority_scope.known_paths and not authority_scope.can_perform(normalized, action)) or (
@@ -725,20 +880,35 @@ async def _canonical_root_session(
     key = ("workspace_root", agent_id, user.id, resource_tenant_id, session_id)
     if rows is not None and key in rows:
         return rows[key]
-    session = rows[(ChatSession, session_id)] if rows is not None and (ChatSession, session_id) in rows else (
-        await db.execute(
-            select(ChatSession).where(
-                ChatSession.id == session_id,
-                or_(ChatSession.agent_id == agent_id,
-                    (ChatSession.peer_agent_id == agent_id)
-                    & (ChatSession.tenant_id == resource_tenant_id)
-                    & (ChatSession.source_channel == "agent") & (ChatSession.session_kind == "agent_chat")),
+    session = (
+        rows[(ChatSession, session_id)]
+        if rows is not None and (ChatSession, session_id) in rows
+        else (
+            await db.execute(
+                select(ChatSession).where(
+                    ChatSession.id == session_id,
+                    or_(
+                        ChatSession.agent_id == agent_id,
+                        (ChatSession.peer_agent_id == agent_id)
+                        & (ChatSession.tenant_id == resource_tenant_id)
+                        & (ChatSession.source_channel == "agent")
+                        & (ChatSession.session_kind == "agent_chat"),
+                    ),
+                )
             )
+        ).scalar_one_or_none()
+    )
+    if (
+        rows is not None
+        and (ChatSession, session_id) in rows
+        and session is not None
+        and session.agent_id != agent_id
+        and not (
+            session.peer_agent_id == agent_id
+            and session.tenant_id == resource_tenant_id
+            and session.source_channel == "agent"
+            and session.session_kind == "agent_chat"
         )
-    ).scalar_one_or_none()
-    if rows is not None and (ChatSession, session_id) in rows and session is not None and session.agent_id != agent_id and not (
-        session.peer_agent_id == agent_id and session.tenant_id == resource_tenant_id
-        and session.source_channel == "agent" and session.session_kind == "agent_chat"
     ):
         session = None
     shared_member = False
@@ -789,7 +959,8 @@ async def authorize_workspace_path(
     agent, access_level = agent_access or await (
         check_agent_operator_reachability(db, user, agent_id)
         if runtime_principal is None and allow_manager_override and action == "read"
-        else _input_agent_access(db, user, agent_id) if _preflight_inputs(db) is not None
+        else _input_agent_access(db, user, agent_id)
+        if _preflight_inputs(db) is not None
         else check_agent_access(db, user, agent_id)
     )
     if agent.tenant_id is None:
@@ -797,8 +968,11 @@ async def authorize_workspace_path(
     from app.config import get_settings
 
     resolve_workspace_storage_path(Path(get_settings().AGENT_DATA_DIR) / str(agent_id), normalized)
-    manifest = (await _load_manifest(db, agent_id=agent_id, path=normalized, for_update=for_update)
-        if source_facts is None else source_facts[0])
+    manifest = (
+        await _load_manifest(db, agent_id=agent_id, path=normalized, for_update=for_update)
+        if source_facts is None
+        else source_facts[0]
+    )
     root_session_id = await _canonical_root_session(
         db,
         agent_id=agent_id,
@@ -1040,11 +1214,15 @@ async def load_workspace_authority_scope(
     if operator_view and collection_decision.full_control:
         from app.services.learned_skill_sources import learning_file_access
 
-        learning_roots, learning_files = await learning_file_access(db, tenant_id=resolved_agent_access[0].tenant_id,
-            agent_id=agent_id, user=user)
+        learning_roots, learning_files = await learning_file_access(
+            db, tenant_id=resolved_agent_access[0].tenant_id, agent_id=agent_id, user=user
+        )
         return WorkspaceAuthorityScope(
-            agent_id=agent_id, user_id=user.id, root_session_id=canonical_root,
-            allowed_paths=frozenset(manifest.path for manifest in manifests), operator_view=True,
+            agent_id=agent_id,
+            user_id=user.id,
+            root_session_id=canonical_root,
+            allowed_paths=frozenset(manifest.path for manifest in manifests),
+            operator_view=True,
             authority_source=collection_decision.authority_source,
             known_paths=frozenset(manifest.path for manifest in manifests),
             collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS),
@@ -1079,29 +1257,45 @@ async def load_workspace_authority_scope(
         if decision.full_control:
             full_control_paths.add(manifest.path)
             action_permissions.update((manifest.path, action) for action in _WORKSPACE_EFFECT_ACTIONS)
-    grant_candidates = [manifest for manifest in manifests
-        if manifest.path not in full_control_paths and manifest.authority_state == OWNED_AUTHORITY_STATE]
+    grant_candidates = [
+        manifest
+        for manifest in manifests
+        if manifest.path not in full_control_paths and manifest.authority_state == OWNED_AUTHORITY_STATE
+    ]
     if grant_candidates:
-        for action in _WORKSPACE_EFFECT_ACTIONS:
-            resource_ids = await load_explicit_resource_grant_ids(db, user=user, resource_kind="workspace_file", action=action)
-            action_permissions.update((manifest.path, action) for manifest in grant_candidates
-                if workspace_resource_id(agent_id, manifest.path) in resource_ids)
+        grants = await load_explicit_resource_grant_ids_by_action(
+            db, user=user, resource_kind="workspace_file", actions=_WORKSPACE_EFFECT_ACTIONS
+        )
+        for action, resource_ids in grants.items():
+            action_permissions.update(
+                (manifest.path, action)
+                for manifest in grant_candidates
+                if workspace_resource_id(agent_id, manifest.path) in resource_ids
+            )
     from app.services.learned_skill_sources import learning_file_access
 
-    learning_roots, learning_files = await learning_file_access(db, tenant_id=resolved_agent_access[0].tenant_id,
-        agent_id=agent_id, request=runtime_principal, user=user)
+    learning_roots, learning_files = await learning_file_access(
+        db, tenant_id=resolved_agent_access[0].tenant_id, agent_id=agent_id, request=runtime_principal, user=user
+    )
     return WorkspaceAuthorityScope(
         agent_id=agent_id,
         user_id=user.id,
         root_session_id=canonical_root,
         allowed_paths=frozenset(allowed),
         operator_view=operator_view,
-        authority_source=(collection_decision.authority_source if operator_view else
-            next(iter(authority_sources)) if len(authority_sources) == 1 else "resource_scope"),
+        authority_source=(
+            collection_decision.authority_source
+            if operator_view
+            else next(iter(authority_sources))
+            if len(authority_sources) == 1
+            else "resource_scope"
+        ),
         known_paths=frozenset(manifest.path for manifest in manifests),
         full_control_paths=frozenset(full_control_paths),
         action_permissions=frozenset(action_permissions),
-        collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS) if collection_decision and collection_decision.full_control else frozenset(),
+        collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS)
+        if collection_decision and collection_decision.full_control
+        else frozenset(),
         learning_roots=learning_roots,
         learning_files=learning_files,
     )
@@ -1216,7 +1410,7 @@ async def record_workspace_tool_mutations(*, context, tool_name: str, arguments:
                 source=f"tool:{tool_name}",
                 content_hash=content_hash,
                 allow_owner_rebind=False,
-                authority_state=OWNED_AUTHORITY_STATE if getattr(context, 'machine_credential_id', None) else None,
+                authority_state=OWNED_AUTHORITY_STATE if getattr(context, "machine_credential_id", None) else None,
             )
         await db.commit()
 

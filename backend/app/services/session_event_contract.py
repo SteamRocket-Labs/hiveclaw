@@ -2244,6 +2244,9 @@ def member_permission_request(request: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _member_permission_json(value: str) -> str:
+    # Every broadcast passes here; skip parsing large tool results that cannot hold a request.
+    if "permission_request" not in value:
+        return value
     try:
         decoded = json.loads(value)
     except ValueError:
@@ -2283,7 +2286,7 @@ def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             clean[key] = _member_permission_json(clean[key])
     content = clean.get("content")
     metadata = payload.get("metadata")
-    if isinstance(content, str):
+    if isinstance(content, str) and "permission_request" in content:
         try:
             decoded = json.loads(content)
         except ValueError:

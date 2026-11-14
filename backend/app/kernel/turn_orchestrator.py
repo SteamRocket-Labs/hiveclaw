@@ -1014,7 +1014,7 @@ async def _finalize_empty_provider_response(
                 provider_request_id=provider_request_id,
                 error_class="provider_empty_response",
                 delivery_state="response_received",
-                retry_safe=True,
+                retry_safe=not getattr(response, "provider_output_seen", False),
             )
         )
     empty_usage_tokens = self._deps.extract_usage_tokens(response.usage)

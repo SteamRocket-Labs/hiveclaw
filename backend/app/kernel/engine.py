@@ -3418,6 +3418,9 @@ def _merge_continuation_response(base: LLMResponse, continuation: LLMResponse) -
     continuation_signature = getattr(continuation, "reasoning_signature", None)
     if continuation_signature:
         base.reasoning_signature = continuation_signature
+    base.provider_output_seen = (
+        getattr(base, "provider_output_seen", False) or getattr(continuation, "provider_output_seen", False)
+    )
     base.tool_calls = getattr(continuation, "tool_calls", None) or []
     base.finish_reason = getattr(continuation, "finish_reason", None)
     base.usage = _merge_usage_dicts(getattr(base, "usage", None), getattr(continuation, "usage", None))

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import delete, func, inspect, select, text
+from sqlalchemy import delete, event, func, inspect, select, text
+from sqlalchemy.orm import with_loader_criteria
 
 from tests.services.test_runtime_budget_service import _create_run, _seed_tenant
 
@@ -23,6 +25,29 @@ async def expired_budget_conflict(app_user_sessionmaker, owner_sessionmaker, mon
     variant = getattr(request, "param", "conflict_first")
     service = RuntimeBudgetService(session_factory=app_user_sessionmaker)
     tenant_ids = [await _seed_tenant(owner_sessionmaker) for _ in range(2)]
+    budget_session = service._budget_session
+
+    def owned_rows(state):
+        if state.is_select:
+            state.statement = state.statement.options(
+                *(
+                    with_loader_criteria(model, model.tenant_id.in_(tenant_ids), include_aliases=True)
+                    for model in (RuntimeBudgetRun, RuntimeBudgetEvent)
+                )
+            )
+
+    @asynccontextmanager
+    async def own_budget_session(operation):
+        # Keep BOTH tenants for real cross-tenant conflict isolation, but exclude
+        # earlier tests' rows before the worker applies its exact batch limit.
+        async with budget_session(operation) as db:
+            event.listen(db.sync_session, "do_orm_execute", owned_rows)
+            try:
+                yield db
+            finally:
+                event.remove(db.sync_session, "do_orm_execute", owned_rows)
+
+    monkeypatch.setattr(service, "_budget_session", own_budget_session)
     run_ids = []
     task_ids = [uuid.uuid4() for _ in range(3)]
     now = datetime.now(UTC)

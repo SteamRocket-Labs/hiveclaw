@@ -559,20 +559,29 @@ async def test_output_continuation_cancel_does_not_erase_prior_provider_send(
         await asyncio.gather(worker, return_exceptions=True)
 
 
-async def _reclaim_stopped_run(owner, seed, monkeypatch):
+async def _reclaim_stopped_run(owner, app_user_sessionmaker, seed, monkeypatch):
     from datetime import UTC, datetime, timedelta
 
+    from app.database import tenant_scoped_session
     from app.models.runtime_task import RuntimeTask
     from app.services import web_chat_runtime
-    from tests.integration.test_web_chat_worker_restart_kernel_recovery import _claim_run
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
 
     async with owner() as db:
         run = await db.get(RuntimeTask, seed["run_id"])
         assert run.status == "running" and run.metadata_json["cancel_state"] == "cancelling"
         run.claim_expires_at = datetime.now(UTC) - timedelta(seconds=1)
         await db.commit()
-    claimed = await _claim_run(owner, seed["run_id"], "r23b-reclaimed-worker")
+    # Scope discovery before its 25-row limit; filtering a full foreign batch
+    # afterwards can never reach this test's expired claim.
+    async with tenant_scoped_session(
+        seed["tenant_id"], session_factory=app_user_sessionmaker, require_tenant=True
+    ) as db:
+        claimed = await RuntimeTaskClaimService(
+            db=db, worker_id="r23b-reclaimed-worker", task_types=("web_chat_turn",), lease_seconds=60
+        ).claim_available(batch_size=25)
     assert len(claimed) == 1 and claimed[0].attempt_count == 2
+    assert claimed[0].id == seed["run_id"], "Reclaim exactly the stopped run, not another tenant's work"
     assert claimed[0].metadata_json["reclaimed_expired_claim"] is True
     loaded = []
     resume = web_chat_runtime._session_restart_resume_history
@@ -661,7 +670,7 @@ async def test_round2_prepare_and_cancel_finish_in_the_same_turn(t2_work, owner_
 
 @pytest.mark.parametrize("snapshot", ["placeholder", "full", "full_effectful"])
 async def test_round2_crash_after_accepted_stop_is_reclaimed_without_sending(
-    t2_work, owner_sessionmaker, monkeypatch, snapshot
+    t2_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, snapshot
 ):
     import app.runtime.invoker as invoker
     from app.models.runtime_task import RuntimeTask
@@ -720,7 +729,7 @@ async def test_round2_crash_after_accepted_stop_is_reclaimed_without_sending(
         monkeypatch.setattr(rounds, "bind_round_inputs", bind)
         monkeypatch.setattr(rounds, "prepare_model_request", prepare)
         monkeypatch.setattr(AsyncSession, "commit", commit)
-        await _reclaim_stopped_run(owner_sessionmaker, seed, monkeypatch)
+        await _reclaim_stopped_run(owner_sessionmaker, app_user_sessionmaker, seed, monkeypatch)
         assert provider.requests == [], "A reclaimed stopped task must never send"
         expected = "needs_reconciliation" if snapshot == "full_effectful" else "failed"
         assert await _assert_sealed_once(owner_sessionmaker, seed, result_id, expected) == version + 1
@@ -734,7 +743,7 @@ async def test_round2_crash_after_accepted_stop_is_reclaimed_without_sending(
 
 
 async def test_round2_asyncio_cancel_in_continuation_prepare_preserves_sent_root(
-    t2_work, owner_sessionmaker, monkeypatch
+    t2_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch
 ):
     import app.runtime.invoker as invoker
     from app.models.runtime_task import RuntimeTask
@@ -782,7 +791,7 @@ async def test_round2_asyncio_cancel_in_continuation_prepare_preserves_sent_root
             result_id = root.id
         monkeypatch.setattr(rounds, "prepare_model_request", prepare)
         monkeypatch.setattr(AsyncSession, "commit", commit)
-        await _reclaim_stopped_run(owner_sessionmaker, seed, monkeypatch)
+        await _reclaim_stopped_run(owner_sessionmaker, app_user_sessionmaker, seed, monkeypatch)
         assert len(provider.requests) == 1
         await _assert_sealed_once(owner_sessionmaker, seed, result_id, "needs_reconciliation")
     finally:
@@ -945,7 +954,9 @@ async def test_round2_stream_error_during_stop_preserves_r18a(t2_work, owner_ses
         await asyncio.gather(worker, return_exceptions=True)
 
 
-async def test_round2_durable_stop_survives_death_before_any_prepared_row(t2_work, owner_sessionmaker, monkeypatch):
+async def test_round2_durable_stop_survives_death_before_any_prepared_row(
+    t2_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch
+):
     import app.runtime.invoker as invoker
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionModelResult
@@ -979,7 +990,7 @@ async def test_round2_durable_stop_survives_death_before_any_prepared_row(t2_wor
                 await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
             )
         monkeypatch.setattr(rounds, "bind_round_inputs", bind)
-        await _reclaim_stopped_run(owner_sessionmaker, seed, monkeypatch)
+        await _reclaim_stopped_run(owner_sessionmaker, app_user_sessionmaker, seed, monkeypatch)
         assert provider.requests == [], "Recreate the event from durable intent even without a prepared row"
         async with owner_sessionmaker() as db:
             run = await db.get(RuntimeTask, seed["run_id"])

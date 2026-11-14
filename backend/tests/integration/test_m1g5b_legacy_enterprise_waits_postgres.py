@@ -42,6 +42,11 @@ async def test_worker_recovers_original_round_without_replaying_enterprise_execu
     for module in ["app.database", "app.tools.resolver", "app.tools.governance_resolver"]:
         monkeypatch.setattr(f"{module}.async_session", app_user_sessionmaker)
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
+    # An earlier import may have cached the pre-hermetic root. The API writer
+    # and real approval executor must use this fixture's same filesystem.
+    workspace_root = Path(get_settings().AGENT_DATA_DIR)
+    monkeypatch.setattr(agent_tools, "WORKSPACE_ROOT", workspace_root)
+    monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", workspace_root)
     import app.services.runtime_task_worker as worker
     monkeypatch.setattr(worker, "_STATE", {})
     monkeypatch.setattr(session_approval, "_enterprise_permission_after_id", None)
@@ -51,7 +56,7 @@ async def test_worker_recovers_original_round_without_replaying_enterprise_execu
         calls.append(kwargs)
 
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", no_wakeup)
-    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "workspace"
+    workspace = workspace_root / str(agent_id) / "workspace"
     workspace.mkdir(parents=True)
     async with owner_sessionmaker() as db:
         await register_workspace_path(

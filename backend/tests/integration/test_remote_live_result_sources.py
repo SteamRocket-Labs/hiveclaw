@@ -1,6 +1,7 @@
 """Live remote results use the same current sources as saved result readers."""
 
 import json
+from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 import pytest
@@ -34,11 +35,11 @@ BODY = "REMOTE_RESULT_FROM_PINNED_ORIGINAL_CONTEXT"
 
 @pytest.mark.parametrize("source_change", ["none", "before_refresh", "during_refresh"])
 async def test_live_remote_refresh_revalidates_saved_packet_sources(
-    remote_work,
+    remote_work,  # noqa: F811
     app_user_sessionmaker,
     monkeypatch,
     tmp_path,
-    source_change,  # noqa: F811
+    source_change,
 ):
     from app.api import chat_sessions
     from app.models.user import User
@@ -157,9 +158,19 @@ async def test_live_remote_refresh_revalidates_saved_packet_sources(
                 reader = await db.get(User, seed["owner"])
                 _task, _result, _session, packet = await load_packet(db, seed["tenant"], dependency, user=reader)
                 assert BODY in json.dumps(packet)
-        returned = await RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker).drain_once(
-            worker_id="remote-live-original-return"
-        )
+        notices = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
+
+        @asynccontextmanager
+        async def own_notice_session(_operation):
+            # R20b no longer consumes unrelated mail as a side effect. Keep the
+            # exact two-return assertion inside this fixture's own tenant too.
+            async with tenant_scoped_session(
+                seed["tenant"], session_factory=app_user_sessionmaker, require_tenant=True
+            ) as db:
+                yield db
+
+        monkeypatch.setattr(notices, "_worker_session", own_notice_session)
+        returned = await notices.drain_once(worker_id="remote-live-original-return")
         assert returned["claimed"] == returned["delivered"] == 2, returned
         observed["original_work_return"] = returned
         (tmp_path / "live-result-source.json").write_text(json.dumps(observed, indent=2, default=str))

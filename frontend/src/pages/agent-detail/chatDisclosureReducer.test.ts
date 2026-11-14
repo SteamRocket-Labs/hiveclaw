@@ -655,7 +655,8 @@ describe('chatDisclosureReducer', () => {
       ['Read file', 'tool_history'],
       ['Search files', 'tool_history'],
       ['Search web', 'tool_history'],
-      ['Tool call', 'tool_history'],
+      // X5b: load_skill gets a specific title; its retrieval presentation stays unchanged.
+      ['Load skill', 'tool_history'],
       ['Tool call', 'external'],
       ['Write file', 'surface'],
       ['Run command', 'surface'],

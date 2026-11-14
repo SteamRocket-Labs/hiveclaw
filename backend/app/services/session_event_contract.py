@@ -1707,6 +1707,7 @@ def _member_summary_projection(
             stored_kind = _text(member_target.get("kind"))
             kind = stored_kind if stored_kind in _MEMBER_TARGET_KINDS else "file_write"
     result_obj: Any = None
+    error_envelope = False
     if isinstance(result, str) and result.strip():
         # A native refusal envelope is typed JSON even when preceded by a
         # human sentence. Only the exact envelope fields decide the summary.
@@ -1762,7 +1763,12 @@ def _member_summary_projection(
             summary["filename"] = filename
     if kind == "mcp_app":
         summary["app_label"] = app_label
-    if kind in {"file_read", "delegation"} and state == "not_done" and result_obj and isinstance(result_obj.get("error_class"), str):
+    if (
+        (kind in {"file_read", "delegation"} or (kind in {"memory_search", "memory_read"} and error_envelope))
+        and state == "not_done"
+        and result_obj
+        and isinstance(result_obj.get("error_class"), str)
+    ):
         summary["error_class"] = result_obj["error_class"]
     if kind in {"delegation", "colleague_result"} and result_obj:
         summary["status"] = "cancelled" if typed_status in {"killed", "cancelled"} else typed_status

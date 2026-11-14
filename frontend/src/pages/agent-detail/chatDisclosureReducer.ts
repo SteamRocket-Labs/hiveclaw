@@ -140,6 +140,12 @@ const WEB_SEARCH_TOOL_NAMES = new Set([
   'tavily_search',
   'web_search',
 ]);
+// All page-fetch channels registered in backend/app/tools/handlers/search.py.
+// Share the exact set between titles and legacy args-only host summaries.
+const WEB_FETCH_TOOL_NAMES = new Set([
+  'web_fetch', 'advanced_web_fetch', 'anysearch_extract', 'exa_fetch',
+  'tavily_extract', 'firecrawl_fetch', 'xcrawl_scrape',
+]);
 const COMMAND_TOOLS = new Set(['execute_code', 'run_command']);
 const A2A_TOOLS = new Set([
   'cancel_async_task',
@@ -376,6 +382,7 @@ function summarizeToolMessage(message: AgentChatMessage): string {
   }
   if (COMMAND_TOOLS.has(name)) return '';
   if (FILE_TOOL_NAMES.has(name)) return summarizeFileTool(message);
+  if (WEB_FETCH_TOOL_NAMES.has(name)) return summarizeSearchTool(message);
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeSearchTool(message);
   const path = stringArg(message, ['path', 'file_path', 'target_path', 'source_path']);
   const filename = memberFilename(path);
@@ -467,7 +474,10 @@ export function titleForToolMessage(message: Pick<AgentChatMessage, 'toolName'>)
   if (name === 'list_files' || name === 'fs_list') return 'List files';
   if (name === 'grep_search' || name === 'glob_search') return 'Search files';
   if (name === 'web_search') return 'Search web';
-  if (name === 'web_fetch' || name === 'firecrawl_fetch' || name === 'xcrawl_scrape') return 'Fetch web page';
+  if (WEB_FETCH_TOOL_NAMES.has(name)) return 'Fetch web page';
+  if (name === 'get_current_time') return 'Check time';
+  if (name === 'load_skill') return 'Load skill';
+  if (name === 'plaza_get_new_posts') return 'Browse Plaza';
   if (COMMAND_TOOLS.has(name)) return 'Run command';
   if (name === 'office_document_apply') return 'Edit document';
   if (name.includes('workflow')) return 'Workflow step';

@@ -348,6 +348,10 @@ function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepS
   const hasDetails = hasStepDetails(step);
   const preview = resultPreview && step.systemEvent?.type === 'child_session' && typeof step.details === 'string'
     ? step.details : step.summary;
+  // A failed read still has a target; only the same X3c-safe basename may
+  // stay in the header beside its expanded failure explanation.
+  const keepFilename = ['read_file', 'fs_read', 'read_document'].includes(toolNameOf(step) || '')
+    && Boolean(preview) && memberFilename(preview) === preview;
   return (
     <div
       data-testid="run-disclosure-step"
@@ -372,7 +376,7 @@ function RunStepRow({ step, resultPreview, viewerOwnsSession }: { step: RunStepS
             <span className="run-step-caret" />
           )}
           <span className="run-step-title">{localizedToolTitle(step, t)}</span>
-          {preview && !(expanded && ['failed', 'cancelled'].includes(step.status)) && <span className="run-step-summary">{
+          {preview && (keepFilename || !(expanded && ['failed', 'cancelled'].includes(step.status))) && <span className="run-step-summary">{
             preview.includes('[REDACTED_SECRET]')
               ? <PastedCredentialText content={preview} />
               : <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown>

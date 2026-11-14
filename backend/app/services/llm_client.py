@@ -450,83 +450,41 @@ def delivery_state_from_http_status(status_code: int) -> Literal["rejected", "un
 def _api_error_delivery_state(
     data: dict[str, Any], protocol: Literal["openai", "responses", "gemini", "anthropic"]
 ) -> Literal["rejected", "unknown"]:
-    """Allow replay only for recognised text, reasoning and client-side calls."""
-
-    def known_items(items: Any, kinds: set[str]) -> bool:
-        return items is None or (
-            isinstance(items, list)
-            and all(
-                isinstance(item, dict) and isinstance(item.get("type"), str) and item["type"] in kinds for item in items
-            )
-        )
-
+    """'rejected' means no provider-side effect seen; partial generation may already be billed."""
     if protocol == "responses":
-        output = data.get("output")
-        if not known_items(output, {"message", "reasoning", "function_call"}):
+        # MCP tools/list is discovery only, so replaying it has no side effect.
+        items, kinds = data.get("output"), {"message", "reasoning", "function_call", "mcp_list_tools"}
+    elif protocol == "anthropic":
+        items, kinds = data.get("content"), {"text", "thinking", "redacted_thinking", "tool_use"}
+    else:
+        # Gemini thoughtSignature carries reasoning metadata, not provider execution.
+        kinds = {"function"} if protocol == "openai" else {"text", "thought", "functionCall", "thoughtSignature"}
+        entries = data.get("choices" if protocol == "openai" else "candidates")
+        if entries is not None and not isinstance(entries, list):
             return "unknown"
-        if data.get("output_text") is not None and not isinstance(data["output_text"], str):
-            return "unknown"
-        for item in output or []:
-            if item["type"] == "message":
-                content = item.get("content")
-                if not known_items(content, {"output_text", "text", "reasoning"}):
-                    return "unknown"
-                if any(
-                    not isinstance(block.get(key, ""), str) for block in content or [] for key in ("text", "summary")
-                ):
-                    return "unknown"
-            elif item["type"] == "function_call" and not isinstance(item.get("arguments", ""), (str, dict)):
+        items = []
+        for entry in entries or []:
+            if not isinstance(entry, dict):
                 return "unknown"
-    elif protocol == "openai":
-        choices = data.get("choices")
-        if choices is not None and not isinstance(choices, list):
-            return "unknown"
-        for choice in choices or []:
-            if not isinstance(choice, dict) or not isinstance(message := choice.get("message"), dict):
+            if protocol == "gemini" and ("groundingMetadata" in entry or "urlContextMetadata" in entry):
                 return "unknown"
-            if any(
-                value is not None and not isinstance(value, str)
-                for value in (message.get("content"), message.get("reasoning_content"))
-            ):
-                return "unknown"
-            calls = message.get("tool_calls")
-            if not known_items(calls, {"function"}) or any(
-                not isinstance(call.get("function"), dict) for call in calls or []
-            ):
-                return "unknown"
-    elif protocol == "gemini":
-        candidates = data.get("candidates")
-        if candidates is not None and not isinstance(candidates, list):
-            return "unknown"
-        part_types = {"text": str, "thought": bool, "functionCall": dict}
-        for candidate in candidates or []:
-            if not isinstance(candidate, dict) or "groundingMetadata" in candidate:
-                return "unknown"
-            content = candidate.get("content", {})
+            content = entry.get("message" if protocol == "openai" else "content") or {}
             if not isinstance(content, dict):
                 return "unknown"
-            parts = content.get("parts")
+            parts = content.get("tool_calls" if protocol == "openai" else "parts")
             if parts is not None and not isinstance(parts, list):
                 return "unknown"
-            for part in parts or []:
-                if (
-                    not isinstance(part, dict)
-                    or not part
-                    or any(
-                        key not in part_types or not isinstance(value, part_types[key]) for key, value in part.items()
-                    )
-                ):
-                    return "unknown"
-    else:
-        content = data.get("content")
-        if not known_items(content, {"text", "thinking", "redacted_thinking", "tool_use"}):
+            items.extend(parts or [])
+    if items is not None and not isinstance(items, list):
+        return "unknown"
+    for item in items or []:
+        if not isinstance(item, dict):
             return "unknown"
-        for block in content or []:
-            text_key = {"text": "text", "thinking": "thinking", "redacted_thinking": "data"}.get(block["type"])
-            if text_key is not None and not isinstance(block.get(text_key, ""), str):
+        if protocol == "gemini":
+            if item.keys() - kinds:
                 return "unknown"
-            if block["type"] == "tool_use" and not isinstance(block.get("input", {}), dict):
-                return "unknown"
+        elif not isinstance(item.get("type"), str) or item["type"] not in kinds:
+            return "unknown"
     return "rejected"
 
 

@@ -153,7 +153,6 @@ async def test_api_error_with_other_supported_output(client_type, payload, expec
     "item_type",
     [
         "mcp_call",
-        "mcp_list_tools",
         "web_search_call",
         "file_search_call",
         "code_interpreter_call",
@@ -170,6 +169,20 @@ async def test_responses_provider_executed_items_are_unknown(item_type):
     [
         (OpenAICompatibleClient, {"error": "Synthetic failure", "choices": [None]}),
         (OpenAICompatibleClient, {"error": "Synthetic failure", "choices": [{"message": {"tool_calls": [None]}}]}),
+        (OpenAIResponsesClient, {"error": "Synthetic failure", "output": [{"type": []}]}),
+        (GeminiClient, {"error": "Synthetic failure", "candidates": [None]}),
+        (GeminiClient, {"error": "Synthetic failure", "candidates": [{"content": [{"text": "Partial output"}]}]}),
+        (AnthropicClient, {"type": "error", "error": "Synthetic failure", "content": [{"type": []}]}),
+    ],
+)
+async def test_unreadable_api_error_kind_remains_an_llm_error(client_type, payload):
+    error = await _observe_error(client_type, payload)
+    assert error.delivery_state == "unknown"
+
+
+@pytest.mark.parametrize(
+    "client_type,payload",
+    [
         (
             OpenAICompatibleClient,
             {
@@ -177,18 +190,78 @@ async def test_responses_provider_executed_items_are_unknown(item_type):
                 "choices": [{"message": {"tool_calls": [{"type": "function", "function": "Not a function object"}]}}],
             },
         ),
-        (OpenAIResponsesClient, {"error": "Synthetic failure", "output": [{"type": []}]}),
         (OpenAIResponsesClient, {"error": "Synthetic failure", "output": [{"type": "message", "content": [None]}]}),
         (OpenAIResponsesClient, {"error": "Synthetic failure", "output_text": {"unexpected": "object"}}),
-        (GeminiClient, {"error": "Synthetic failure", "candidates": [None]}),
-        (GeminiClient, {"error": "Synthetic failure", "candidates": [{"content": [{"text": "Partial output"}]}]}),
         (GeminiClient, {"error": "Synthetic failure", "candidates": [{"content": {"parts": [{"text": {}}]}}]}),
-        (AnthropicClient, {"type": "error", "error": "Synthetic failure", "content": [{"type": []}]}),
         (AnthropicClient, {"type": "error", "error": "Synthetic failure", "content": [{"type": "text", "text": {}}]}),
     ],
 )
-async def test_malformed_api_error_output_remains_an_llm_error(client_type, payload):
+async def test_malformed_values_inside_non_effect_kind_are_rejected(client_type, payload):
+    # Controller round 4: the readable non-effect kind decides; its field values cannot prove provider execution.
     error = await _observe_error(client_type, payload)
+    assert error.delivery_state == "rejected"
+
+
+@pytest.mark.parametrize(
+    "client_type,output",
+    [
+        (
+            OpenAIResponsesClient,
+            {"output": [{"type": "message", "content": [{"type": "refusal", "refusal": "Synthetic refusal"}]}]},
+        ),
+        (
+            GeminiClient,
+            {
+                "candidates": [
+                    {"content": {"parts": [{"functionCall": {"name": "f", "args": {}}, "thoughtSignature": "sig"}]}}
+                ]
+            },
+        ),
+        (
+            GeminiClient,
+            {"candidates": [{"content": {"parts": [{"text": "Partial", "thought": True, "thoughtSignature": "sig"}]}}]},
+        ),
+        (OpenAIResponsesClient, {"output": [{"type": "mcp_list_tools"}]}),
+        (
+            OpenAIResponsesClient,
+            {
+                "output": [
+                    {"type": "mcp_list_tools"},
+                    {"type": "message", "content": [{"type": "output_text", "text": "Partial"}]},
+                ]
+            },
+        ),
+        (OpenAICompatibleClient, {"choices": [{"message": None}]}),
+        (GeminiClient, {"candidates": [{"content": None}]}),
+        (
+            OpenAICompatibleClient,
+            {
+                "choices": [
+                    {"message": {"tool_calls": [{"type": "function", "function": {"name": "f", "arguments": None}}]}}
+                ]
+            },
+        ),
+        (OpenAICompatibleClient, {"choices": [{"message": {"tool_calls": [{"type": "function", "function": None}]}}]}),
+        (OpenAIResponsesClient, {"output": [{"type": "function_call", "name": "f", "arguments": None}]}),
+        (AnthropicClient, {"content": [{"type": "tool_use", "name": "f", "input": None}]}),
+        (GeminiClient, {"candidates": [{"content": {"parts": [{}]}}]}),
+    ],
+)
+async def test_discovery_metadata_and_values_do_not_change_non_effect_kind(client_type, output):
+    # MCP discovery and reasoning metadata carry no provider-side effect, even with null call values.
+    error = await _observe_error(client_type, {"type": "error", "error": "Synthetic failure", **output})
+    assert error.delivery_state == "rejected"
+
+
+@pytest.mark.parametrize(
+    "client_type,output",
+    [
+        (GeminiClient, {"candidates": [{"content": {"parts": []}, "urlContextMetadata": {"urlMetadata": []}}]}),
+        (OpenAIResponsesClient, {"output": [{"type": "mcp_list_tools"}, COMPLETED_EFFECT]}),
+    ],
+)
+async def test_provider_execution_is_not_hidden_by_discovery_or_empty_parts(client_type, output):
+    error = await _observe_error(client_type, {"error": "Synthetic failure", **output})
     assert error.delivery_state == "unknown"
 
 

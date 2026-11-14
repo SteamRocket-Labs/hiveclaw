@@ -469,6 +469,10 @@ function projectCanonicalItem(
           // class. Preserve it through the existing summary string field.
           if (typeof reason === 'string' && reason) summary.errorClass = reason;
         }
+        if (summary && ['file_write', 'file_edit'].includes(summary.kind)
+          && (pairedResult?.payload.outcome ?? item.payload.outcome) === 'denied') {
+          summary.errorClass = 'auth_or_permission';
+        }
         return summary ? memberSummaryWithArgs(summary, toolArgs) : undefined;
       })(),
       artifacts: extractArtifactParts(pairedResult?.payload ?? item.payload),

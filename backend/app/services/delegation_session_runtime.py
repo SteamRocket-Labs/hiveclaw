@@ -351,10 +351,12 @@ class DelegationSessionRuntime:
                 await db.commit()
             except rounds.ModelRoundNeedsReconciliation as exc:
                 commit = asyncio.ensure_future(db.commit())
-                try:
-                    await asyncio.shield(commit)
-                except asyncio.CancelledError:
-                    await commit
+                while not commit.done():
+                    try:
+                        await asyncio.shield(commit)
+                    except asyncio.CancelledError:
+                        pass
+                commit.result()
                 raise SessionRestartRecoveryRequired(
                     reason_code="model_round_needs_reconciliation", detail={"run_id": str(self.scope["run_id"])}
                 ) from exc

@@ -792,7 +792,10 @@ async def test_round2_asyncio_cancel_in_continuation_prepare_preserves_sent_root
 
 
 @pytest.mark.parametrize("lane", ["web", "delegated"])
-async def test_round2_reconciliation_commit_survives_cancel(t2_work, owner_sessionmaker, monkeypatch, lane):
+@pytest.mark.parametrize("cancel_count", [1, 2], ids=["one_cancel", "two_cancels"])
+async def test_round2_reconciliation_commit_survives_cancel(
+    t2_work, owner_sessionmaker, monkeypatch, lane, cancel_count
+):
     from types import SimpleNamespace
 
     from app.models.agent import Agent
@@ -854,6 +857,7 @@ async def test_round2_reconciliation_commit_survives_cancel(t2_work, owner_sessi
         expected_error = SessionRestartRecoveryRequired
     ready, release = asyncio.Event(), asyncio.Event()
     commit = AsyncSession.commit
+    commit_tasks = []
 
     async def require_reconciliation(db, **_kwargs):
         # Exercise the actual transaction's exception/commit boundary with
@@ -866,6 +870,7 @@ async def test_round2_reconciliation_commit_survives_cancel(t2_work, owner_sessi
 
     async def pause_commit(db):
         if db.info.pop("r23b_reconciliation_commit", False):
+            commit_tasks.append(asyncio.current_task())
             ready.set()
             await release.wait()
         await commit(db)
@@ -878,6 +883,9 @@ async def test_round2_reconciliation_commit_survives_cancel(t2_work, owner_sessi
         event.set()
         task.cancel()
         await asyncio.sleep(0)
+        if cancel_count == 2:
+            task.cancel()
+            await asyncio.sleep(0)
         release.set()
         outcome = (await asyncio.gather(task, return_exceptions=True))[0]
         async with owner_sessionmaker() as db:
@@ -886,6 +894,7 @@ async def test_round2_reconciliation_commit_survives_cancel(t2_work, owner_sessi
             )
             assert row.state == "needs_reconciliation", (lane, row.state, type(outcome).__name__)
         assert isinstance(outcome, expected_error), outcome
+        assert len(commit_tasks) == 1, "Cancellation must keep awaiting the same single commit"
     finally:
         release.set()
         if not task.done():
@@ -1039,6 +1048,106 @@ async def test_round2_stop_during_preparation_race_cleanup_is_still_unsent(t2_wo
             row = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
             result_id = row.id
         await _assert_sealed_once(owner_sessionmaker, seed, result_id, "failed")
+    finally:
+        release.set()
+        if not worker.done():
+            worker.cancel()
+        await gather(worker, return_exceptions=True)
+
+
+@pytest.mark.parametrize("sent", [True, False], ids=["stream", "prepare"])
+async def test_round3_work_error_and_stop_during_cleanup(monkeypatch, sent):
+    import app.kernel.engine as kernel
+    from app.services.session_model_round import ModelRoundNeedsReconciliation
+
+    event, cleanup, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    error = ConnectionError("Provider socket failed") if sent else ModelRoundNeedsReconciliation("ambiguous prepare")
+    gather = asyncio.gather
+
+    class FailingClient:
+        async def stream(self):
+            raise error
+
+    async def hold_cleanup(*tasks, **kwargs):
+        result = await gather(*tasks, **kwargs)
+        cleanup.set()
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(asyncio, "gather", hold_cleanup)
+    task = asyncio.create_task(
+        kernel._await_with_cancel(FailingClient().stream, cancel_event=event, provider_request_sent=sent)
+    )
+    try:
+        await asyncio.wait_for(cleanup.wait(), timeout=5)
+        event.set()
+        release.set()
+        outcome = (await gather(task, return_exceptions=True))[0]
+        if sent:
+            assert isinstance(outcome, kernel._KernelCancelledError), type(outcome).__name__
+            assert outcome.provider_request_sent is True
+        else:
+            assert outcome is error, "Preparation must propagate the original reconciliation exception unchanged"
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await gather(task, return_exceptions=True)
+
+
+async def test_round3_stream_error_cleanup_seals_effectful_request_as_uncertain(
+    t2_work, owner_sessionmaker, monkeypatch
+):
+    import app.runtime.invoker as invoker
+    from app.models.session_v2 import SessionModelResult
+    from app.services import session_model_round as rounds
+
+    seed = t2_work
+    raised, cleanup, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    gather, prepare = asyncio.gather, rounds.prepare_model_request
+    held = False
+
+    class FailingProvider(ScriptedLLMClient):
+        async def stream(self, **kwargs):
+            self.requests.append(kwargs)
+            raised.set()
+            raise ConnectionError("Provider failed before the stop arrived")
+
+    async def prepare_effectful(db, **kwargs):
+        kwargs["wire_request"] = {**kwargs["wire_request"], "mcp_servers": [{"name": "possibly-sent"}]}
+        return await prepare(db, **kwargs)
+
+    def hold_stream_cleanup(*tasks, **kwargs):
+        nonlocal held
+        joined = gather(*tasks, **kwargs)
+        if raised.is_set() and not held and len(tasks) == 2 and all(isinstance(t, asyncio.Task) for t in tasks):
+            held = True
+
+            async def after_join():
+                result = await joined
+                cleanup.set()
+                await release.wait()
+                return result
+
+            return after_join()
+        return joined
+
+    provider = FailingProvider([])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
+    monkeypatch.setattr(rounds, "prepare_model_request", prepare_effectful)
+    monkeypatch.setattr(asyncio, "gather", hold_stream_cleanup)
+    _control_channel(monkeypatch, seed, remote=False)
+    worker = await _dispatch(owner_sessionmaker, seed["run_id"])
+    try:
+        await asyncio.wait_for(cleanup.wait(), timeout=20)
+        assert (await _stop(owner_sessionmaker, seed))["accepted"] is True
+        release.set()
+        await asyncio.wait_for(asyncio.shield(worker), timeout=10)
+        assert len(provider.requests) == 1
+        async with owner_sessionmaker() as db:
+            row = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
+            result_id = row.id
+        await _assert_sealed_once(owner_sessionmaker, seed, result_id, "needs_reconciliation")
     finally:
         release.set()
         if not worker.done():

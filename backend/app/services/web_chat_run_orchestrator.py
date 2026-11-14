@@ -1397,10 +1397,12 @@ async def _prepare_session_model_request_transaction(state: _WebChatRunState, **
             )
         except ModelRoundNeedsReconciliation:
             commit = asyncio.ensure_future(db.commit())
-            try:
-                await asyncio.shield(commit)
-            except asyncio.CancelledError:
-                await commit
+            while not commit.done():
+                try:
+                    await asyncio.shield(commit)
+                except asyncio.CancelledError:
+                    pass
+            commit.result()
             raise
         state.active_provider_request_id = provider_request_id
         await db.commit()

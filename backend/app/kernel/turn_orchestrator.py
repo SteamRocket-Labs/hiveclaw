@@ -2407,7 +2407,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 "title": "Runtime Reminder",
                                 "round": round_i,
                                 "count": len(_transient_reminders),
-                                "chars": sum((len(t) for t in _transient_reminders)),
+                                "chars": sum(len(t) for t in _transient_reminders),
                                 "context_candidates": _runtime_reminder_candidates,
                             },
                         }

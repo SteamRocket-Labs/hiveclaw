@@ -3993,6 +3993,7 @@ async def _await_with_cancel(
 
     work_task = asyncio.ensure_future(operation())
     cancel_task = asyncio.create_task(cancel_event.wait())
+    work_error: Exception | None = None
     try:
         done, _pending = await asyncio.wait(
             {work_task, cancel_task},
@@ -4004,19 +4005,20 @@ async def _await_with_cancel(
                 await work_task
             except asyncio.CancelledError:
                 pass
-            except Exception:
-                if not provider_request_sent:
-                    raise
             raise _KernelCancelledError(provider_request_sent=provider_request_sent)
         result = await work_task
+    except Exception as exc:
+        work_error = exc
     finally:
         cancel_task.cancel()
         if not work_task.done():
             work_task.cancel()
         # Join these tasks; a session may separately shield its post-commit close.
         await asyncio.gather(work_task, cancel_task, return_exceptions=True)
-    if cancel_event.is_set():
+    if cancel_event.is_set() and (provider_request_sent or work_error is None):
         raise _KernelCancelledError(provider_request_sent=provider_request_sent)
+    if work_error is not None:
+        raise work_error
     return result
 
 

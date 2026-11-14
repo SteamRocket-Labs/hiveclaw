@@ -56,6 +56,7 @@ const BANNED_WORDS = [
   'Agent', 'agent', 'A2A',
   'Delegation', 'Team', 'Workers', 'Workflow', 'Activity', 'BACKGROUND',
   'snapshot', 'My Assistant', 'Send Email', 'Copy', 'Collapse Sidebar', 'Scroll to bottom', 'Open ',
+  'Active', 'idle', 'stopped', 'tokens left', "The user's assistant", 'Legacy failed HR draft', 'Provisioning cannot resume', 'folder(s)', 'file(s)',
 ];
 const SNAKE_CASE_RE = /[a-z]+_[a-z_]+/;
 const PATH_RE = /workspace\/|(?:^|\s)\/(?:tmp|usr|home|var)\//;
@@ -109,6 +110,12 @@ function findInternalWords(text: string): string[] {
 // The default timeline's own copy namespaces (the conversation screen a
 // member sees; operator panels have their own surfaces outside this scan).
 const DEFAULT_SCREEN_KEY_ROOTS = [
+  // B8: creation, directory and expanded runtime copy are member/admin UI too.
+  'employees.hrRecovery',
+  'employees.status',
+  'assistant',
+  'sessionGoal',
+  'workspace.digitalEmployees',
   'agent.chat',
   'agent.upload',
   'agent.phase',
@@ -177,6 +184,11 @@ function storedTitle(parts: unknown): string {
 }
 
 describe('default screen language (B2)', () => {
+  it.each(['Active', 'idle', 'stopped', '750 tokens left', "The user's assistant", 'Legacy failed HR draft',
+    'Provisioning cannot resume', 'root: 5 folder(s), 3 file(s)', 'BACKGROUND-AGENT'])
+  ('detects the B8 platform-copy regression: %s', text => {
+    expect(findInternalWords(text).length).toBeGreaterThan(0);
+  });
   it('keeps internal vocabulary out of the zh copy the default timeline uses', () => {
     const failures: string[] = [];
     for (const root of DEFAULT_SCREEN_KEY_ROOTS) {
@@ -486,11 +498,11 @@ describe('default screen language (B2)', () => {
     expect(summary).toContain('boss@example.com');
     expect(summary).toContain('Q3 复盘');
     expect(summary).toContain('请查收');
-    // X1-r3 ruling 4: opening the plain-label fold shows the complete JSON —
-    // the baseline intent these two inverted lines had left always-true.
+    // B8: the complete proposal keeps every value, with a Chinese schema label
+    // instead of the model-supplied argument name (not typed by the member).
     fireEvent.click(screen.getByRole('button', { name: '查看将要执行的完整内容' }));
     const pre = view.container.querySelector('pre');
-    expect(pre?.textContent).toContain('"to": "boss@example.com"');
+    expect(pre?.textContent).toContain('"收件人": "boss@example.com"');
     expect(pre?.textContent).toContain('Q3 复盘');
     expect(pre?.textContent).toContain('请查收');
     cleanup();

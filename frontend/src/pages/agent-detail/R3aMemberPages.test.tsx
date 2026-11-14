@@ -150,9 +150,9 @@ it('applies the Chinese default to an editor opened before the assistant binding
   mount(<AgentDetailHeader agent={agent} agentId="bot" canManage isOperatorOnly={false} isSystemHr={false}
     onError={vi.fn()} statusKey="idle" />);
   fireEvent.click(screen.getByRole('button', { name: /为你处理工作的助理/ }));
-  // The editor mounted while the binding was still loading, so the textarea
-  // starts on the stored sentinel.
-  expect((await screen.findByRole('textbox') as HTMLTextAreaElement).value).toBe("The user's assistant");
+  // B8: the exact platform default is display copy, not identity or authority.
+  // Even an unresolved binding must show the localized default immediately.
+  expect((await screen.findByRole('textbox') as HTMLTextAreaElement).value).toBe(zh.assistant.role);
   resolveBinding({ state: 'active', agent: { id: 'bot', name: 'Provisioned Assistant' } });
   // The localized default applies once the binding id arrives, and an
   // untouched save still writes nothing (the sentinel row keeps its bytes).
@@ -160,6 +160,27 @@ it('applies the Chinese default to an editor opened before the assistant binding
   fireEvent.click(screen.getByRole('button', { name: zh.common.save }));
   await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
   expect(update).not.toHaveBeenCalled();
+});
+
+it('B8 preserves responsibilities typed while the assistant binding is still loading', async () => {
+  let resolveBinding: (binding: unknown) => void = () => {};
+  vi.spyOn(assistantApi, 'get').mockReturnValue(new Promise(resolve => { resolveBinding = resolve; }) as never);
+  useAuthStore.setState({ user: { id: 'member', role: 'member', tenant_id: 'company' } as never });
+  const agent = { id: 'bot', name: 'Provisioned Assistant', role_description: "The user's assistant", role_revision: 'a'.repeat(64) };
+  const update = vi.spyOn(agentApi, 'update').mockResolvedValue({ role_description: '我写下的新职责', role_revision: 'b'.repeat(64) } as never);
+  mount(<AgentDetailHeader agent={agent} agentId="bot" canManage isOperatorOnly={false} isSystemHr={false}
+    onError={vi.fn()} statusKey="idle" />);
+  fireEvent.click(screen.getByRole('button', { name: /为你处理工作的助理/ }));
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '我写下的新职责' } });
+  resolveBinding({ state: 'active', agent: { id: 'bot', name: 'Provisioned Assistant' } });
+  await screen.findByRole('heading', { name: '我的助理' });
+  // A binding response must not remount the editor and silently lose the draft.
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('我写下的新职责'));
+  fireEvent.click(screen.getByRole('button', { name: zh.common.save }));
+  await waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith('bot', {
+    role_description: '我写下的新职责', expected_role_revision: agent.role_revision,
+  }));
+  expect(agent.role_description).toBe("The user's assistant");
 });
 
 it.each(['My Assistant ↔ 周报助手', 'Delegation: My Assistant'])('localizes the delegated title in the header and history: %s', (title) => {

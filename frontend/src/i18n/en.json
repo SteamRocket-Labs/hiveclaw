@@ -416,6 +416,8 @@
       "runningSummary": "Running",
       "elapsed": "Elapsed",
       "tokens": "Tokens",
+      "tokenUsage": "{{value}} tokens",
+      "toolUses": "{{value}} tools",
       "tools": "Tools",
       "memberEnter": "Enter",
       "memberEnterTitle": "Open member session",
@@ -2606,6 +2608,7 @@
         "unavailable": "Permission details could not be refreshed. Refresh the assignment.",
         "title": "Tool permission",
         "actionDetails": "Action details",
+        "unnamedParameter": "Parameter {{number}}",
         "changed": "This permission request is no longer current. Refresh the assignment.",
         "allowOnce": "Allow once",
         "allowSession": "Allow for this session",
@@ -6077,6 +6080,12 @@
       "budget_limited": "Budget reached",
       "complete": "Complete",
       "cancelled": "Stopped"
+    },
+    "duration": {
+      "lessThanMinute": "<1m",
+      "minutes": "{{minutes}}m",
+      "hours": "{{hours}}h",
+      "hoursMinutes": "{{hours}}h {{minutes}}m"
     },
     "facts": {
       "tokensLeft": "{{count}} tokens left",

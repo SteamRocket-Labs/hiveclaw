@@ -130,7 +130,7 @@ export function auditSourceText(source, text, calleeRules = TRANSLATION_CALLEE_R
     true,
     source.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
-  if (!isTranslationSource(sourceFile)) {
+  if (!isTranslationSource(sourceFile) && !calleeRules.some((rule) => rule.source === source)) {
     return { staticCalls: [], dynamicCalls: [], chineseDefaults: [] };
   }
   const translationCallees = new Set([

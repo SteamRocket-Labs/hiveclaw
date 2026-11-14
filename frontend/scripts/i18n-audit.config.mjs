@@ -1,5 +1,10 @@
 export const TRANSLATION_CALLEE_RULES = [
   {
+    source: 'src/utils/approvalArgumentsForDisplay.ts',
+    callee: 't',
+    reason: 'The approval display formatter receives the real translator from both production permission renderers.',
+  },
+  {
     source: 'src/pages/agent-detail/AgentAwareSection.tsx',
     callee: 'translate',
     reason: 'The plan-review builder receives react-i18next t and uses literal keys with English fallbacks.',

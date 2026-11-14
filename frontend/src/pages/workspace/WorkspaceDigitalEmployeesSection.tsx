@@ -77,6 +77,15 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
     });
 
     const userById = new Map(users.map((user) => [user.id, user]));
+    const employeeName = (employee: { id: string; name: string }) => {
+        const agent = agents.find((item) => item.id === employee.id);
+        const owner = agent && userById.get(agent.owner_user_id || agent.creator_id);
+        return assistantNameForSharedDisplay({
+            name: employee.name, isAgent: true,
+            authorAgentId: employee.id, viewerAssistantId: assistantAgentId,
+            ownerName: owner?.display_name || owner?.email || null, t,
+        });
+    };
 
     const invalidateEmployeeLists = () => {
         queryClient.invalidateQueries({ queryKey: retirementQueryKey });
@@ -164,7 +173,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
         if (await requestAppConfirm({
             title: t('workspace.digitalEmployees.endInactiveTracking', 'End tracking for inactive requesters'),
             message: t('workspace.digitalEmployees.endInactiveTrackingConfirm', 'End local tracking of {{count}} unresolved requests for {{name}} whose original requesters are inactive? External execution remains unknown. This records your management decision without transferring private work or credentials. Retry retirement separately after reviewing the result.',
-                { count: employee.inactive_requester_work_count, name: employee.name }),
+                { count: employee.inactive_requester_work_count, name: employeeName(employee) }),
             confirmLabel: t('workspace.digitalEmployees.endInactiveTracking', 'End tracking for inactive requesters'),
             danger: true,
         })) endTrackingMutation.mutate(employee);
@@ -179,7 +188,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
             message: t(
                 'workspace.digitalEmployees.deactivateEmployeeConfirm',
                 'Deactivate {{name}}? It stops taking new work and in-flight work is withdrawn. Files, memory and conversations are kept, and it can be restored later. Scheduled tasks stay off after restore until their owner re-enables them.',
-                { name: agent.name },
+                { name: employeeName(agent) },
             ),
             confirmLabel: t('workspace.digitalEmployees.deactivateEmployeeButton', 'Deactivate'),
             danger: true,
@@ -260,7 +269,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                     <h4>{t('workspace.digitalEmployees.deactivatedTitle', 'Deactivated digital employees')}</h4>
                     <p>{t('workspace.digitalEmployees.deactivatedDesc', 'Deactivated employees keep their files, memory and conversations. Unconfirmed external work stays listed for review; ending local tracking does not confirm that the external runner stopped.')}</p>
                     <ul>{pendingRetirements.map((employee) => <li key={employee.id}>
-                        <Link to={`/agents/${employee.id}`} className="ws-employees-deactivated-link">{employee.name}</Link>
+                        <Link to={`/agents/${employee.id}`} className="ws-employees-deactivated-link">{employeeName(employee)}</Link>
                         {' '}
                         {!!employee.remote_work_count && t('workspace.digitalEmployees.unconfirmedRemoteWork', '{{count}} unconfirmed external task(s)', { count: employee.remote_work_count })}
                         {' '}
@@ -307,11 +316,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                                     return (
                                         <tr key={agent.id} className="ws-employees-row">
                                             <td className="ws-employees-td">
-                                                <div className="ws-employees-name">{assistantNameForSharedDisplay({
-                                                    name: agent.name, isAgent: true,
-                                                    authorAgentId: agent.id, viewerAssistantId: assistantAgentId,
-                                                    ownerName: owner?.display_name || owner?.email || null, t,
-                                                })}</div>
+                                                <div className="ws-employees-name">{employeeName(agent)}</div>
                                                 <div className="ws-employees-role">
                                                     {/* X1-r3 ruling 7: only the viewer's own assistant row keeps the
                                                         possessive role label; another member's default assistant is

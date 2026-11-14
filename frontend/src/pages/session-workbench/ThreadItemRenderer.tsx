@@ -14,6 +14,7 @@ import {
 import type { ThreadItem, ThreadItemStatus, ThreadItemType } from '../../api/domains/threadItems.generated';
 import { runtimeFailurePresentation, type RuntimeFailurePresentation } from './runtimeFailurePresentation';
 import { approvalActionLabel, isSimpleWorkspaceRead } from './approvalActionPresentation';
+import { approvalArgumentsForDisplay } from '../../utils/approvalArgumentsForDisplay';
 import './ThreadItemWorkbench.css';
 
 type Detail = { label: string; value: React.ReactNode };
@@ -361,7 +362,7 @@ export function ThreadItemRenderer({
         className="thread-item-arguments"
         aria-label={t('agent.chat.permission.actionDetails', 'Action details')}
         style={{ maxHeight: '240px', overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
-      >{JSON.stringify(approvalArguments, null, 2)}</pre>}
+      >{approvalArgumentsForDisplay(approvalArguments, t)}</pre>}
     </>
   );
   const detailBody = details.length > 0 && (

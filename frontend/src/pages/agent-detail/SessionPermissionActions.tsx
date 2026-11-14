@@ -1,5 +1,6 @@
 import React from 'react';
 import type { SessionPermissionRequest } from './chatRuntime';
+import { approvalArgumentsForDisplay } from '../../utils/approvalArgumentsForDisplay';
 
 export function permissionOnceOnlyMessageKey(request: SessionPermissionRequest): string {
   return request.risk_class === 'destructive_delete'
@@ -20,7 +21,7 @@ export default function SessionPermissionActions({
    * details affordance there (B2 r2); standalone permission rows keep the
    * requester's "inspect the exact proposal" disclosure. */
   showArgumentDetails?: boolean;
-  t: (key: string, fallback: string) => string;
+  t: (key: string, fallback: string, values?: Record<string, unknown>) => string;
 }) {
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -49,7 +50,7 @@ export default function SessionPermissionActions({
           <pre
             aria-label={t('agent.chat.permission.actionDetails', 'Action details')}
             style={{ maxHeight: '320px', overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
-          >{JSON.stringify(permissionRequest.arguments, null, 2)}</pre>
+          >{approvalArgumentsForDisplay(permissionRequest.arguments, t)}</pre>
         </details>
       )}
       <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>

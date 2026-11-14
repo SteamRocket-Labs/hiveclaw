@@ -144,11 +144,15 @@ export function scrollToRuntimeLinkMarker(runtimeId: string | null | undefined):
   marker?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-export function runtimeMetricSummary(item: RuntimeSectionItemModel): string {
+export function runtimeMetricSummary(item: RuntimeSectionItemModel, t?: RuntimeStatusTranslator): string {
   return [
     item.metrics.elapsedLabel,
-    item.metrics.tokenLabel ? `${item.metrics.tokenLabel} tokens` : null,
-    item.metrics.toolUseLabel ? `${item.metrics.toolUseLabel} tools` : null,
+    item.metrics.tokenLabel ? t
+      ? t('sessionWorkbench.rightPanel.tokenUsage', '{{value}} tokens', { value: item.metrics.tokenLabel })
+      : `${item.metrics.tokenLabel} tokens` : null,
+    item.metrics.toolUseLabel ? t
+      ? t('sessionWorkbench.rightPanel.toolUses', '{{value}} tools', { value: item.metrics.toolUseLabel })
+      : `${item.metrics.toolUseLabel} tools` : null,
   ].filter(Boolean).join(' · ');
 }
 
@@ -157,6 +161,7 @@ const DURABLE_RUNTIME_RESULT_RECEIPT = /^Durable result committed: ref=runtime-r
 export function runtimeItemDisplayMeta(
   item: RuntimeSectionItemModel,
   resultDeliveredLabel = 'Result delivered',
+  t?: RuntimeStatusTranslator,
 ): string {
   const metadata = isRuntimeRecord(item.raw.metadata) ? item.raw.metadata : {};
   const role = stringValue(
@@ -170,7 +175,7 @@ export function runtimeItemDisplayMeta(
   const userFacingSummary = DURABLE_RUNTIME_RESULT_RECEIPT.test(summary)
     ? resultDeliveredLabel
     : summary;
-  return [role, userFacingSummary, runtimeMetricSummary(item)].filter(Boolean).join(' · ');
+  return [role, userFacingSummary, runtimeMetricSummary(item, t)].filter(Boolean).join(' · ');
 }
 
 export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel, t?: RuntimeStatusTranslator): string {
@@ -214,7 +219,10 @@ export function subagentWorkerRecoveryModel(worker: RuntimeSectionItemModel): {
 
 export function runtimeItemDisplayLabel(item: RuntimeSectionItemModel, fallback: string): string {
   const label = stringValue(item.label).trim();
-  if (!label || label === item.id || isUuidLike(label)) return fallback;
+  // The API falls back to task_type when no authored name exists. Treat that
+  // exact typed value as a missing display name, not as a title to translate.
+  if (!label || label === item.id || isUuidLike(label)
+    || label === item.runtimeKind || label === stringValue(item.raw.task_type)) return fallback;
   return label;
 }
 
@@ -349,6 +357,7 @@ export function SessionRuntimePanel({
     const meta = runtimeItemDisplayMeta(
       item,
       t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
+      t,
     );
     const content = (
       <>
@@ -434,6 +443,7 @@ export function SessionRuntimePanel({
     const meta = runtimeItemDisplayMeta(
       workflow,
       t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
+      t,
     );
     const content = (
       <>
@@ -471,11 +481,12 @@ export function SessionRuntimePanel({
     const meta = runtimeItemDisplayMeta(
       member,
       t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
+      t,
     );
     return (
       <div key={member.id || fallback} className="session-runtime-row" data-testid="session-agent-team-member-row">
         <span className="session-runtime-row-main">
-          <span className="session-runtime-row-title">{member.label || fallback}</span>
+          <span className="session-runtime-row-title">{runtimeItemDisplayLabel(member, fallback)}</span>
           <span className="session-runtime-row-meta">{meta}</span>
         </span>
         <span className="session-runtime-status">{runtimeItemDisplayStatus(member, t)}</span>
@@ -500,6 +511,7 @@ export function SessionRuntimePanel({
     const meta = runtimeItemDisplayMeta(
       worker,
       t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
+      t,
     );
     const recovery = subagentWorkerRecoveryModel(worker);
     const workerAction = (
@@ -524,7 +536,7 @@ export function SessionRuntimePanel({
     return (
       <div key={worker.id || fallback} className="session-runtime-row" data-testid="session-subagent-worker-row">
         <span className="session-runtime-row-main">
-          <span className="session-runtime-row-title">{worker.label || fallback}</span>
+          <span className="session-runtime-row-title">{runtimeItemDisplayLabel(worker, fallback)}</span>
           <span className="session-runtime-row-meta">{meta}</span>
         </span>
         <span className="session-runtime-status">{runtimeItemDisplayStatus(worker, t)}</span>
@@ -562,9 +574,9 @@ export function SessionRuntimePanel({
       ) : (
         runtimeConsole.workflow.items.map((workflow, index) => (
           <div key={workflow.id} className="session-runtime-team">
-            {renderWorkflowRoot(workflow, `workflow-${index + 1}`)}
-            {workflow.steps.map((step, stepIndex) => renderRuntimeItem(step, `workflow-step-${stepIndex + 1}`))}
-            {workflow.leafCalls.map((leafCall, leafIndex) => renderRuntimeItem(leafCall, `workflow-leaf-${leafIndex + 1}`))}
+            {renderWorkflowRoot(workflow, `${t('sessionWorkbench.rightPanel.workflowRuns', 'Workflow runs')}-${index + 1}`)}
+            {workflow.steps.map((step, stepIndex) => renderRuntimeItem(step, `${t('sessionWorkbench.threadItem.field.step', 'Step')}-${stepIndex + 1}`))}
+            {workflow.leafCalls.map((leafCall, leafIndex) => renderRuntimeItem(leafCall, `${t('sessionWorkbench.rightPanel.tools', 'Tools')}-${leafIndex + 1}`))}
           </div>
         ))
       )}
@@ -592,7 +604,7 @@ export function SessionRuntimePanel({
                 {t('sessionWorkbench.rightPanel.noTeamMembers', 'No team members have started yet.')}
               </div>
             ) : (
-              team.members.map((member, index) => renderTeamMemberItem(team, member, `team-member-${index + 1}`))
+              team.members.map((member, index) => renderTeamMemberItem(team, member, `${t('sessionWorkbench.threadItem.field.agent', 'Digital employee')}-${index + 1}`))
             )}
           </div>
         ))
@@ -607,7 +619,7 @@ export function SessionRuntimePanel({
           {t('sessionWorkbench.rightPanel.noPeerA2A', 'No peer digital-employee delegations in this session.')}
         </div>
       ) : (
-        runtimeConsole.peerA2A.items.map((delegation, index) => renderRuntimeItem(delegation, `peer-a2a-${index + 1}`))
+        runtimeConsole.peerA2A.items.map((delegation, index) => renderRuntimeItem(delegation, `${t('sessionWorkbench.rightPanel.runtimeSegments.a2a', 'Delegation')}-${index + 1}`))
       )}
     </div>
   );
@@ -617,7 +629,7 @@ export function SessionRuntimePanel({
       {runtimeConsole.workers.items.length === 0 ? (
         <div className="session-runtime-empty">{t('sessionWorkbench.rightPanel.noSubagents', 'No one-shot Sub-agent workers in this session.')}</div>
       ) : (
-        runtimeConsole.workers.items.map((worker, index) => renderSubagentWorkerItem(worker, `subagent-worker-${index + 1}`))
+        runtimeConsole.workers.items.map((worker, index) => renderSubagentWorkerItem(worker, `${t('sessionWorkbench.rightPanel.subagents', 'Assistants')}-${index + 1}`))
       )}
     </div>
   );

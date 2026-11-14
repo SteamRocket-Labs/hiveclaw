@@ -91,6 +91,13 @@ test('audits only explicitly registered translation wrapper callees', () => {
   assert.deepEqual(auditSourceText('src/Other.tsx', source, wrapperRules).staticCalls, []);
 });
 
+test('audits an explicitly registered pure display helper without a React import (B8)', () => {
+  const source = `export function format(value, t) { return t('card.title', 'Title'); }`;
+  const rules = [{ source: 'src/format.ts', callee: 't', reason: 'Production renderers supply their translator.' }];
+  assert.deepEqual(auditSourceText('src/format.ts', source, rules).staticCalls.map(call => call.key), ['card.title']);
+  assert.deepEqual(auditSourceText('src/unrelated.ts', source, rules).staticCalls, []);
+});
+
 test('detects Chinese literal and defaultValue fallbacks through the AST', () => {
   const source = `
     import { useTranslation } from 'react-i18next';

@@ -6,7 +6,8 @@ import SessionPermissionActions from './SessionPermissionActions';
 import type { SessionPermissionRequest } from './chatRuntime';
 
 afterEach(cleanup);
-const t = (_key: string, fallback: string) => fallback;
+const t = (_key: string, fallback: string, values?: Record<string, unknown>) =>
+  fallback.replace(/\{\{(\w+)\}\}/g, (_, key) => String(values?.[key] ?? ''));
 
 it('lets the requester inspect the exact proposal before sending one decision', async () => {
   const request: SessionPermissionRequest = {
@@ -19,7 +20,12 @@ it('lets the requester inspect the exact proposal before sending one decision', 
   const { container } = render(<SessionPermissionActions permissionRequest={request} onResolveSessionPermission={resolve} t={t} />);
   fireEvent.click(screen.getByText('Action details'));
   const preview = screen.getByLabelText('Action details');
-  expect(JSON.parse(preview.textContent!)).toEqual(request.arguments);
+  // B8: platform schema keys are display labels, not execution JSON. Still
+  // require every literal value/type and nesting, then send the untouched request.
+  expect(JSON.parse(preview.textContent!)).toEqual({
+    name: request.arguments!.name, first_task: request.arguments!.first_task,
+    'Parameter 3': ['store facts'], 'Parameter 4': true, 'Parameter 5': '<script>example</script>',
+  });
   expect(container.querySelector('details')?.open).toBe(true);
   expect(container.querySelector('script')).toBeNull();
   expect(resolve).not.toHaveBeenCalled();

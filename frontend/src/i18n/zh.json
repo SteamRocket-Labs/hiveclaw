@@ -1440,6 +1440,7 @@
     "toolFailuresSampled": "最新有限样本"
   },
   "agent": {
+    "editName": "点击编辑名称",
     "roleSettings": {
       "title": "员工职责",
       "scope": "描述这位员工应该完成的工作。应用访问和操作权限需单独授权，新职责将用于后续工作。",

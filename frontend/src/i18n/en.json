@@ -1440,6 +1440,7 @@
     "toolFailuresSampled": "latest bounded sample"
   },
   "agent": {
+    "editName": "Click to edit name",
     "roleSettings": {
       "title": "Employee responsibilities",
       "scope": "Describe the work this employee should do. Application access and action permissions are authorized separately. Changes apply to subsequent work.",

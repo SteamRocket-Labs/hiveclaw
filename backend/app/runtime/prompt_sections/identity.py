@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from app.services.assistant_binding import ASSISTANT_EMPLOYEE_NAME
 from app.services.bootstrap_soul import project_bootstrap_soul_role
 
 
@@ -55,6 +56,7 @@ def build_identity_section(
     """
     template = _IDENTITY_BY_MODE.get(invocation_scope, _DEFAULT_IDENTITY)
     # Match the member's bound-assistant label without renaming stored identity.
+    uses_default_assistant_name = agent_name in ("", ASSISTANT_EMPLOYEE_NAME)
     agent_name = _quoted_display_name(agent_name)
     identity = template.format(agent_name="the requesting member's own assistant" if member_assistant else agent_name)
 
@@ -68,14 +70,22 @@ def build_identity_section(
             soul_text = project_bootstrap_soul_role(soul_text, role_description)
         parts.append(f"### Personality\n{soul_text}")
 
-    if member_assistant:
+    if member_assistant and uses_default_assistant_name:
         parts.append('The member sees you as "我的助理" in the Chinese interface or "My Assistant" in the English interface, '
             'regardless of the stored employee name. In member replies, call yourself by the name that matches the '
             'member\'s language ("我的助理" when writing Chinese, "My Assistant" in English), introduce yourself '
             'naturally as their assistant (for example "我是你的助理"), and never quote an id or a status code '
             'as your identity.')
     else:
-        parts.append(f"Your current display name is {agent_name}. Use this display name when introducing yourself.")
+        parts.append(
+            f"Your current display name is {agent_name}. Use this display name when introducing yourself. "
+            "Use this name instead of any name in Personality."
+        )
+        if member_assistant:
+            parts.append(
+                "The member sees you by this display name. Introduce yourself naturally as their assistant, "
+                "using this name, and never quote an id or a status code as your identity."
+            )
     if company_name:
         parts.append(f"Your company is {_quoted_display_name(company_name)}. Use this name instead of any company name in Personality.")
 

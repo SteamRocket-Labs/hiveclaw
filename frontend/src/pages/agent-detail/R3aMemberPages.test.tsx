@@ -6,6 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import zh from '../../i18n/zh.json';
+import en from '../../i18n/en.json';
 import { translateFromCatalog } from '../../test/i18nMock';
 import { useAuthStore } from '../../stores';
 import { runtimeBudgetApi } from '../../api/domains/runtimeBudgets';
@@ -27,6 +28,7 @@ import AgentStatusSection from './AgentStatusSection';
 import AgentDetailHeader, { AgentDetailNavigation } from './AgentDetailHeader';
 import AppSidebar from '../layout/AppSidebar';
 import RunDisclosureBlock from './RunDisclosureBlock';
+import { assistantBindingQuery } from '../assistant/assistantScope';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({
   t: (key: string, fallback?: any, options?: any) => translateFromCatalog(zh, key, fallback, options),
@@ -36,9 +38,14 @@ vi.mock('./ToolAccounts', () => ({ default: () => null }));
 
 afterEach(() => { cleanup(); useAuthStore.setState({ user: null }); vi.restoreAllMocks(); });
 
-function mount(children: React.ReactNode) {
+function mount(children: React.ReactNode, assistantId?: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter>{children}</MemoryRouter></QueryClientProvider>);
+  if (assistantId) client.setQueryData(assistantBindingQuery('member', 'company', 'member').queryKey, {
+    state: 'active', agent: { id: assistantId },
+  });
+  return render(children, { wrapper: ({ children }) => (
+    <QueryClientProvider client={client}><MemoryRouter>{children}</MemoryRouter></QueryClientProvider>
+  ) });
 }
 
 const own = { id: 'work', user_id: 'member', title: '销售报告', session_kind: 'human_chat' };
@@ -122,6 +129,62 @@ it('renders the assistant name, avatar and default role in Chinese before bindin
   expect(container.querySelector('.agent-detail-avatar')?.textContent).toBe('我');
 });
 
+const ownAssistantNames = [
+  { state: 'renamed', name: '小周', label: '小周' },
+  { state: 'stored default', name: 'My Assistant', label: '我的助理' },
+  { state: 'row not loaded', name: undefined, label: '我的助理' },
+];
+const assistantMember = { id: 'member', role: 'member', tenant_id: 'company' };
+
+function assistantSidebar(agent: Record<string, unknown>) {
+  return <AppSidebar user={assistantMember} theme="light" isSidebarCollapsed={false} onToggleSidebar={vi.fn()}
+    agents={[{ id: 'newer', name: 'My Assistant', last_active_at: '2026-11-13T00:00:00Z' }, agent]}
+    tenants={[]} currentTenant="company" onSwitchTenant={vi.fn()} isChinese
+    onToggleTheme={vi.fn()} onOpenNotifications={vi.fn()} unreadCount={0} accountMenuRef={React.createRef()}
+    showAccountMenu={false} onToggleAccountMenu={vi.fn()} onToggleLang={vi.fn()}
+    onOpenAccountSettings={vi.fn()} onLogout={vi.fn()} versionDisplay={null} hrAgent={null} />;
+}
+
+it.each(ownAssistantNames)('F1 page title preserves the own assistant name from $state through rename', ({ name, label }) => {
+  useAuthStore.setState({ user: assistantMember as never });
+  const agent = { id: 'bot', name };
+  const header = (row: typeof agent) => <AgentDetailHeader agent={row} agentId="bot" canManage
+    isOperatorOnly={false} isSystemHr={false} onError={vi.fn()} statusKey="idle" />;
+  const { rerender } = mount(header(agent), 'bot');
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(label);
+  expect(screen.getByRole('heading', { level: 1 }).getAttribute('title')).toBe('点击编辑名称');
+  expect(translateFromCatalog(en, 'agent.editName')).toBe('Click to edit name');
+  rerender(header({ ...agent, name: '小周' }));
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('小周');
+  expect(screen.queryByRole('heading', { name: '我的助理' })).toBeNull();
+});
+
+it.each(ownAssistantNames)('F1 sidebar preserves the own assistant name and first position from $state through rename', ({ name, label }) => {
+  const agent = { id: 'bot', name, last_active_at: '2026-01-01T00:00:00Z' };
+  const { container, rerender } = mount(assistantSidebar(agent), 'bot');
+  const links = () => Array.from(container.querySelectorAll('.sidebar-agent-link'));
+  expect(links().map(link => link.getAttribute('href'))).toEqual(['/agents/bot#chat', '/agents/newer#chat']);
+  expect(links()[0].querySelector('.sidebar-item-text')?.textContent).toBe(label);
+  expect(links()[0].getAttribute('title')).toBe(label);
+  expect(links()[0].getAttribute('aria-label')).toBe(translateFromCatalog(zh, 'layout.openNamed', { name: label }));
+  rerender(assistantSidebar({ ...agent, name: '小周' }));
+  expect(links().map(link => link.getAttribute('href'))).toEqual(['/agents/bot#chat', '/agents/newer#chat']);
+  expect(links()[0].querySelector('.sidebar-item-text')?.textContent).toBe('小周');
+  expect(links()[0].getAttribute('title')).toBe('小周');
+  expect(links()[0].getAttribute('aria-label')).toBe(translateFromCatalog(zh, 'layout.openNamed', { name: '小周' }));
+});
+
+it.each(ownAssistantNames)('F1 chat preserves the own assistant name from $state through rename', ({ name, label }) => {
+  const agent = name === undefined ? undefined : { id: 'bot', name };
+  const conversation = (row: typeof agent) => chat({ agent: row, agentId: 'bot', currentUser: assistantMember,
+    sessions: [], activeSession: null });
+  const { rerender } = mount(conversation(agent), 'bot');
+  expect(screen.getByText(translateFromCatalog(zh, 'agent.chat.startConversation', { name: label }))).toBeTruthy();
+  rerender(conversation({ id: 'bot', name: '小周' }));
+  expect(screen.getByText(translateFromCatalog(zh, 'agent.chat.startConversation', { name: '小周' }))).toBeTruthy();
+  expect(screen.queryByText(translateFromCatalog(zh, 'agent.chat.startConversation', { name: '我的助理' }))).toBeNull();
+});
+
 it('opens the bound assistant description editor on the Chinese default without rewriting the stored row', async () => {
   vi.spyOn(assistantApi, 'get').mockResolvedValue({ state: 'active', agent: { id: 'bot', name: 'Provisioned Assistant' } } as never);
   useAuthStore.setState({ user: { id: 'member', role: 'member', tenant_id: 'company' } as never });
@@ -129,9 +192,7 @@ it('opens the bound assistant description editor on the Chinese default without 
   const agent = { id: 'bot', name: 'Provisioned Assistant', role_description: "The user's assistant", role_revision: 'a'.repeat(64) };
   mount(<AgentDetailHeader agent={agent} agentId="bot" canManage isOperatorOnly={false} isSystemHr={false}
     onError={vi.fn()} statusKey="idle" />);
-  // The header name flips to the localized assistant title only once the
-  // binding resolves, so the editor deterministically sees the binding id.
-  await screen.findByRole('heading', { name: '我的助理' });
+  await screen.findByRole('heading', { name: 'Provisioned Assistant' });
   fireEvent.click(screen.getByRole('button', { name: /为你处理工作的助理/ }));
   const textarea = await screen.findByRole('textbox');
   // The member edits the localized default; the stored sentinel row is untouched.
@@ -173,7 +234,7 @@ it('B8 preserves responsibilities typed while the assistant binding is still loa
   fireEvent.click(screen.getByRole('button', { name: /为你处理工作的助理/ }));
   fireEvent.change(screen.getByRole('textbox'), { target: { value: '我写下的新职责' } });
   resolveBinding({ state: 'active', agent: { id: 'bot', name: 'Provisioned Assistant' } });
-  await screen.findByRole('heading', { name: '我的助理' });
+  await screen.findByRole('heading', { name: 'Provisioned Assistant' });
   // A binding response must not remount the editor and silently lose the draft.
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('我写下的新职责'));
   fireEvent.click(screen.getByRole('button', { name: zh.common.save }));

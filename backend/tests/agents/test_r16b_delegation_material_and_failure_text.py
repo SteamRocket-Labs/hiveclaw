@@ -222,20 +222,22 @@ class TestDelegationFailureResultPage:
 
 
 @pytest.mark.asyncio
-async def test_provider_only_empty_child_keeps_reconciliation_signal(monkeypatch):
+@pytest.mark.parametrize("empty_search", [False, True], ids=["empty", "empty_search"])
+async def test_provider_only_empty_child_keeps_reconciliation_signal(monkeypatch, empty_search):
     from app.agents import orchestrator
     from app.services.llm_client import LLMResponse
-    from tests.kernel.test_r18a_empty_search_guard import _FakeClient, _kernel, _request
+    from tests.kernel.test_r18a_empty_search_guard import EMPTY_RESULT, _FakeClient, _kernel, _request, _round, _search_call
 
-    client = _FakeClient([LLMResponse(content="", provider_output_seen=True, usage={"total_tokens": 3})])
+    searches = [_round([_search_call(i)]) for i in range(1, 6)] if empty_search else []
+    client = _FakeClient([*searches, LLMResponse(content="", provider_output_seen=True, usage={"total_tokens": 3})])
     failures = []
 
     async def invoke(invocation):
         request = _request()
         request.model = invocation.model
-        request.model_request_prepare = lambda **_k: "delegated-provider"
+        request.model_request_prepare = lambda **p: f"delegated-provider-{p['round_index']}"
         request.model_request_fail = lambda **p: (failures.append(p), "needs_reconciliation")[1]
-        return await _kernel(client, lambda *_a, **_k: "").handle(request)
+        return await _kernel(client, lambda *_a, **_k: EMPTY_RESULT).handle(request)
 
     monkeypatch.setattr(orchestrator, "invoke_agent", invoke)
     target = SimpleNamespace(id=uuid4(), name="Colleague", role_description="Helpful")
@@ -248,4 +250,4 @@ async def test_provider_only_empty_child_keeps_reconciliation_signal(monkeypatch
     ))
     assert result.failed and result.terminal_reason == "delegation_session_reconciliation_required"
     assert result.parts[0]["retryable"] is False and result.parts[0]["recovery_action"] == "reconcile"
-    assert len(client.calls) == 1 and failures[0]["retry_safe"] is False
+    assert len(client.calls) == (6 if empty_search else 1) and failures[0]["retry_safe"] is False

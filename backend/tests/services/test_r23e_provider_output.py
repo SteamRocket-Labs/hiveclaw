@@ -49,6 +49,7 @@ CASES = [
     ("openai", success_body("openai", [MCP_CALL]), True),
     ("openai", SECONDARY_EFFECT, True),
     ("openai", success_body("openai", [FUNCTION]), False),
+    ("openai", success_body("openai", [{**FUNCTION, "type": None}]), False),
     ("responses", success_body("responses", [MCP_CALL]), True),
     ("responses", success_body("responses", [MCP_CALL], text=True), True),
     ("responses", success_body("responses", [{"type": "mcp_list_tools"}]), False),
@@ -67,7 +68,7 @@ CASES.extend([
 
 
 @pytest.mark.parametrize("protocol,method_name,body,expected", CASES,
-                         ids=["compatible_primary", "compatible_secondary", "client_function", "responses_effect",
+                         ids=["compatible_primary", "compatible_secondary", "client_function", "client_function_null", "responses_effect",
                               "effect_with_text", "discovery", "gemini_code", "gemini_metadata", "thought_signature",
                               "anthropic_server", "redacted_thinking", "gemini_complete", "anthropic_complete"])
 async def test_success_retains_provider_output_fact(protocol, method_name, body, expected):
@@ -92,31 +93,37 @@ async def test_success_retains_provider_output_fact(protocol, method_name, body,
         await client.close()
 
 
-@pytest.mark.parametrize("primary,secondary", [
-    ({"content": "Answer", "tool_calls": [None]}, []),
-    ({"content": "Answer", "tool_calls": [0]}, []),
-    ({"content": "Answer"}, [None]),
-    ({"content": "Answer"}, [{"delta": None}]),
-    ({"content": "Answer"}, [{"delta": {"tool_calls": 5}}]),
-], ids=["null_call", "zero_call", "null_choice", "null_delta", "non_list_calls"])
-async def test_malformed_stream_classification_preserves_answer(primary, secondary):
+@pytest.mark.parametrize("primary,secondary,expected_calls,seen", [
+    ({"content": "Answer", "tool_calls": [None]}, [], [], False),
+    ({"content": "Answer", "tool_calls": [0]}, [], [], False),
+    ({"content": "Answer"}, [None], [], False),
+    ({"content": "Answer"}, [{"delta": None}], [], False),
+    ({"content": "Answer"}, [{"delta": {"tool_calls": 5}}], [], False),
+    ({"content": "Answer", "tool_calls": [{"index": 0, **FUNCTION}, {"index": [1], "type": "mcp_call"}]},
+     [], [FUNCTION], True),
+], ids=["null_call", "zero_call", "null_choice", "null_delta", "non_list_calls", "unhashable_secondary_index"])
+async def test_malformed_stream_classification_preserves_answer(primary, secondary, expected_calls, seen):
     body = {"choices": [{"delta": primary}, *secondary]}
     client = OpenAICompatibleClient(api_key="synthetic", base_url="http://127.0.0.1")
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(
         200, text=f"data: {json.dumps(body)}\n\ndata: [DONE]\n\n")))
     try:
         response = await client.stream([LLMMessage(role="user", content="Synthetic task")])
-        assert response.content == "Answer" and response.provider_output_seen is False
-        assert response.tool_calls == []
+        assert response.content == "Answer" and response.provider_output_seen is seen
+        assert response.tool_calls == expected_calls
     finally:
         await client.close()
 
 
-async def test_complete_ignores_untyped_calls_without_changing_error_rule():
+@pytest.mark.parametrize("null_type", [False, True], ids=["missing", "null"])
+async def test_complete_ignores_untyped_calls_without_changing_error_rule(null_type):
     from app.services.llm_client import _api_error_delivery_state
 
     body = success_body("openai")
-    body["choices"].extend(success_body("openai", [{"function": {"name": "local", "arguments": "{}"}}])["choices"])
+    call = {"function": {"name": "local", "arguments": "{}"}}
+    if null_type:
+        call["type"] = None
+    body["choices"].extend(success_body("openai", [call])["choices"])
     client = OpenAICompatibleClient(api_key="synthetic", base_url="http://127.0.0.1")
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=body)))
     try:
@@ -143,5 +150,10 @@ async def test_provider_index_deltas_are_ignored_without_changing_function_colle
         response = await client.stream([LLMMessage(role="user", content="Synthetic task")])
         assert response.provider_output_seen is True
         assert response.tool_calls == [{**FUNCTION, "function": {"name": "local", "arguments": "{} tail"}}]
+        # R23e S1: without pre-collection discard, index 1 creates a phantom index-0 function.
+        single = {"choices": [{"delta": {"tool_calls": [{"index": 1, "id": "r", "type": "mcp_call"}]}}]}
+        wire = f"data: {json.dumps(single)}\n\n"
+        single_response = await client.stream([LLMMessage(role="user", content="Synthetic single frame")])
+        assert single_response.provider_output_seen is True and single_response.tool_calls == []
     finally:
         await client.close()

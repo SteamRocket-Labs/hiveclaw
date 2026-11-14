@@ -502,7 +502,7 @@ def _compatible_provider_output_seen(data: dict[str, Any], field: Literal["messa
         if not isinstance(calls, list):
             continue
         for call in calls:
-            if isinstance(call, dict) and "type" in call and _api_error_delivery_state(
+            if isinstance(call, dict) and call.get("type") is not None and _api_error_delivery_state(
                 {"choices": [{"message": {"tool_calls": [call]}}]}, "openai"
             ) == "unknown":
                 return True
@@ -883,8 +883,10 @@ class OpenAICompatibleClient(LLMClient):
         calls = delta.get("tool_calls")
         if tool_call_types is not None and isinstance(calls, list):
             for call in calls:
-                if isinstance(call, dict) and "type" in call:
+                if isinstance(call, dict) and call.get("type") is not None:
                     try:
+                        if isinstance(calls[0], dict) and calls[0].get("type") is None:
+                            tool_call_types.setdefault(calls[0].get("index", 0), "function")
                         tool_call_types.setdefault(call.get("index", 0), call["type"])
                     except TypeError:  # An unreadable secondary index must not add a stream failure.
                         continue
@@ -1093,7 +1095,8 @@ class OpenAICompatibleClient(LLMClient):
                                 await on_thinking(chunk.reasoning_content)
 
                         if chunk.tool_call and tool_call_types.setdefault(
-                            chunk.tool_call.get("index", 0), chunk.tool_call.get("type", "function")
+                            chunk.tool_call.get("index", 0),
+                            chunk.tool_call["type"] if chunk.tool_call.get("type") is not None else "function",
                         ) != "function":
                             chunk.tool_call = None
                         if chunk.tool_call:

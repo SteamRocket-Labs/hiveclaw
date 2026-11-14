@@ -49,7 +49,8 @@ async def test_output_cap_never_continues_after_provider_output(stage):
         await client.close()
 
 
-@pytest.mark.parametrize("settlement", ["needs_reconciliation", None], ids=["ledger_hold", "undecided"])
+@pytest.mark.parametrize("settlement", ["needs_reconciliation", None, "failed"],
+                         ids=["ledger_hold", "undecided", "effect_free_failed"])
 async def test_empty_provider_result_raises_after_recording_tokens_without_fallback(settlement):
     failures, charged = [], []
     response = LLMResponse(content="", provider_output_seen=True, usage={"total_tokens": 3}, finish_reason="stop")
@@ -65,28 +66,46 @@ async def test_empty_provider_result_raises_after_recording_tokens_without_fallb
         return settlement
 
     request.model_request_fail = fail
-    with pytest.raises(ProviderRequestNeedsReconciliation) as caught:
-        await kernel.handle(request)
-    assert caught.value.provider_request_id == "provider-r23e"
-    assert caught.value.error_class == "provider_empty_response"
+    if settlement == "failed":
+        # R23e S1: the trusted effect-free settlement stays a plain provider failure.
+        result = await kernel.handle(request)
+        assert result.terminal_reason is TerminalReason.PROVIDER_ERROR
+    else:
+        with pytest.raises(ProviderRequestNeedsReconciliation) as caught:
+            await kernel.handle(request)
+        assert caught.value.provider_request_id == "provider-r23e"
+        assert caught.value.error_class == "provider_empty_response"
     assert failures == [{"round_index": 1, "provider_request_id": "provider-r23e",
                          "error_class": "provider_empty_response", "delivery_state": "response_received", "retry_safe": False}]
     assert charged == [(request.agent_id, 3)] and len(client.calls) == 1
 
 
-async def test_discarded_empty_search_summary_is_not_retry_safe_after_provider_output():
-    failures, executed = [], []
-    client = _FakeClient([*[_round([_search_call(i)]) for i in range(1, 6)],
-                         LLMResponse(content="", provider_output_seen=True, usage={"total_tokens": 3})])
+@pytest.mark.parametrize("settlement", ["needs_reconciliation", "failed"])
+async def test_discarded_empty_search_summary_is_not_retry_safe_after_provider_output(settlement):
+    failures, executed, charged = [], [], []
+    searches = [_round([_search_call(i)]) for i in range(1, 6)]
+    for response in searches:
+        response.usage = {"total_tokens": 0}  # Isolate the summary's single token charge.
+    client = _FakeClient([*searches, LLMResponse(content="", provider_output_seen=True, usage={"total_tokens": 3})])
     request = _request()
     request.model.provider_options = {"mcp_servers": [{"name": "synthetic"}]}
     request.model_request_prepare = lambda **p: f"provider-{p['round_index']}"
-    request.model_request_fail = lambda **p: failures.append(p)
-    result = await _kernel(client, lambda name, *_a, **_k: (executed.append(name), EMPTY_RESULT)[1]).handle(request)
+    request.model_request_fail = lambda **p: (failures.append(p), settlement)[1]
+    kernel = _kernel(client, lambda name, *_a, **_k: (executed.append(name), EMPTY_RESULT)[1])
+    kernel._deps = replace(kernel._deps, record_token_usage=lambda *args, **_k: charged.append(args))
+    if settlement == "failed":
+        result = await kernel.handle(request)
+        assert result.terminal_reason is TerminalReason.LOOP_GUARD and not result.failure_retryable
+    else:
+        # R23e N1: preserve the hold only after accounting; no empty-search answer escapes to delegation.
+        with pytest.raises(ProviderRequestNeedsReconciliation) as caught:
+            await kernel.handle(request)
+        assert caught.value.provider_request_id == "provider-6"
+        assert caught.value.error_class == "provider_empty_response"
     assert failures == [{"round_index": 6, "provider_request_id": "provider-6", "continuation_index": 0,
                          "error_class": "repeated_empty_search", "delivery_state": "response_received", "retry_safe": False}]
     assert len(client.calls) == 6 and executed == ["search_company_kb"] * 5
-    assert result.terminal_reason is TerminalReason.LOOP_GUARD and not result.failure_retryable
+    assert charged == [(request.agent_id, 3)]
 
 
 async def test_all_choice_zero_provider_indices_are_fenced_before_first_item_projection():
@@ -155,3 +174,62 @@ async def test_all_choice_zero_provider_indices_are_fenced_before_first_item_pro
         assert executed == []
     finally:
         await control_client.close()
+
+
+async def test_selected_untyped_function_survives_same_chunk_provider_type_and_text_still_completes():
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    requests, projected, executed = [], [], []
+    local = {"index": 0, "id": "local-0", "function": {"name": "local", "arguments": "{}"}}
+    body = {"choices": [{"delta": {"tool_calls": [local, {"index": 0, "type": "mcp_call"}]},
+                         "finish_reason": "tool_calls"}], "usage": {"total_tokens": 1}}
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, text=f"data: {json.dumps(body)}\n\ndata: [DONE]\n\n")
+
+    client = OpenAICompatibleClient(api_key="synthetic", model="local", base_url="http://127.0.0.1")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    real_stream = client.stream
+
+    async def observe(**kwargs):
+        response = await real_stream(**kwargs)
+        projected.append(response)
+        return response
+
+    client.stream = observe
+
+    def execute(name, *_a, **_k):
+        executed.append(name)
+        # Use the existing trusted-tool terminal contract, not a round cap, to end on this tool round.
+        return ToolContentEnvelope(text="Local tool finished", terminal_signal="waiting_for_user")
+
+    result = await _kernel(client, execute, tools=("local",)).handle(_request())
+    assert projected[0].tool_calls == [{"id": "local-0", "type": "function", "function": local["function"]}]
+    assert projected[0].provider_output_seen is True and executed == ["local"] and len(requests) == 1
+    assert result.terminal_reason is TerminalReason.TURN_STOP and result.tool_terminal_signal == "waiting_for_user"
+
+    # Null on an unselected index must not lock it to a non-function kind before a later function delta.
+    first = {"choices": [{"delta": {"tool_calls": [
+        {**local, "type": "function"}, {"index": 1, "type": None},
+    ]}}]}
+    second = {"index": 1, "id": "local-1", "type": "function", "function": {"name": "next", "arguments": "{}"}}
+    frames = [first, {"choices": [{"delta": {"tool_calls": [second]}}]}]
+    wire = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames)
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(200, text=wire)))
+    try:
+        null_secondary = await real_stream([LLMMessage(role="user", content="Synthetic null continuation")])
+        assert null_secondary.provider_output_seen is False
+        assert null_secondary.tool_calls == [
+            {"id": "local-0", "type": "function", "function": local["function"]},
+            {"id": "local-1", "type": "function", "function": second["function"]},
+        ]
+    finally:
+        await client.close()
+
+    # Grok nit: the ordinary text+provider-output branch must also traverse the real kernel, without a database.
+    text_client = _FakeClient([LLMResponse(content="Synthetic answer", provider_output_seen=True,
+                                         usage={"total_tokens": 1}, finish_reason="stop")])
+    text_result = await _kernel(text_client, lambda *_a, **_k: pytest.fail("No client tool is requested")).handle(_request())
+    assert text_result.content == "Synthetic answer" and text_result.terminal_reason is TerminalReason.TURN_STOP
+    assert len(text_client.calls) == 1

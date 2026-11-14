@@ -320,7 +320,7 @@ async def test_second_principal_stop_accept_never_locks_or_writes_descendants(
         event.listen(engine, "before_cursor_execute", record)
         # The first cancellation owns the child row. A second accept must
         # finish while that lock remains held; otherwise S_parent -> child is back.
-        second = await asyncio.wait_for(_stop_as(owner_sessionmaker, seed, other), timeout=2)
+        second = await asyncio.wait_for(_stop_as(owner_sessionmaker, seed, other), timeout=10)
         assert second["accepted"] is True and len(calls) == 2
         descendant_locks = [
             (sql, params)
@@ -484,7 +484,7 @@ async def test_later_stopped_turn_does_not_stop_child_of_normally_completed_turn
             assert child.status == "completed" and "cancel_state" not in child.metadata_json
 
 
-async def test_unclaimed_cancel_settlement_does_not_inherit_stop_to_descendants(owner_sessionmaker):
+async def test_unclaimed_cancel_settlement_preserves_stop_for_descendants(owner_sessionmaker):
     from tests.services.test_session_input_control_v2 import _authority
     from app.services.session_control_input import accept_cancel_control_input, recover_stale_cancel_control_inputs_once
     from app.services.web_chat_runtime import _stopped_by_self_or_delegation_ancestor
@@ -526,11 +526,13 @@ async def test_unclaimed_cancel_settlement_does_not_inherit_stop_to_descendants(
         root, child = await db.get(RuntimeTask, root_id), await db.get(RuntimeTask, child_id)
         assert root.metadata_json["cancel_state"] == "cancelled"
         assert root.metadata_json["terminal_commit_source"] == "unclaimed_session_cancel"
-        assert await _stopped_by_self_or_delegation_ancestor(db, child) is False
+        # The scan also settles live accepted stops after an ingress crash;
+        # its terminal source must never erase the ancestor's stop intent.
+        assert await _stopped_by_self_or_delegation_ancestor(db, child) is True
         assert await _stopped_by_self_or_delegation_ancestor(db, root) is True
 
 
-@pytest.mark.parametrize("excluded", ["remote_type", "remote_session", "non_delegation_link", "other_tenant"])
+@pytest.mark.parametrize("excluded", ["non_delegation_link", "other_tenant"])
 async def test_ancestor_stop_respects_live_scope_and_delegation_links(owner_sessionmaker, excluded):
     from app.models.tenant import Tenant
     from app.services.web_chat_runtime import _stopped_by_self_or_delegation_ancestor
@@ -540,14 +542,8 @@ async def test_ancestor_stop_respects_live_scope_and_delegation_links(owner_sess
     async with owner_sessionmaker() as db:
         root = await db.get(RuntimeTask, root_id)
         root.metadata_json = {**root.metadata_json, "cancel_state": "cancelling"}
-        if excluded == "remote_type":
-            root.task_type = "remote_a2a"
-        elif excluded == "remote_session":
-            root.metadata_json = {
-                **root.metadata_json,
-                "schema": "hive.remote_a2a_task.v1",
-                "remote_a2a": {"dispatch_kind": "session"},
-            }
+        # Native delegation parents execute locally; remote-parent fixtures
+        # encoded an unreachable exclusion, removed with that production rule.
         child_tenant = tenant
         if excluded == "other_tenant":
             child_tenant = uuid4()

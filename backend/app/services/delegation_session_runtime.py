@@ -223,6 +223,7 @@ class DelegationSessionRuntime:
     @classmethod
     async def attach(cls, invocation, request):
         from app.services.web_chat_runtime import (
+            _seal_stopped_model_request,
             _session_restart_resume_history,
             _stopped_by_self_or_delegation_ancestor,
         )
@@ -262,10 +263,37 @@ class DelegationSessionRuntime:
                 )
                 if origin is not None:
                     invocation.messages[0]["context_origin"] = origin
+            stopped = await _stopped_by_self_or_delegation_ancestor(db, task)
             history, round_index, tokens, receipt = await _session_restart_resume_history(db, task)
-            if await _stopped_by_self_or_delegation_ancestor(db, task):
+            if stopped:
+                from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+
+                # The contiguous history frontier can stop before a later
+                # open request; cancellation must preserve its delivery facts.
+                for row in await db.scalars(
+                    select(SessionModelResult).where(
+                        SessionModelResult.tenant_id == task.tenant_id,
+                        SessionModelResult.run_id == task.id,
+                        SessionModelResult.state.in_(("prepared", "streaming")),
+                    )
+                ):
+                    if row.seal_json is not None or await db.scalar(
+                        select(SessionToolInvocation.id)
+                        .where(
+                            SessionToolInvocation.tenant_id == task.tenant_id,
+                            SessionToolInvocation.run_id == task.id,
+                            SessionToolInvocation.provider_request_id == row.provider_request_id,
+                        )
+                        .limit(1)
+                    ):
+                        raise SessionRestartRecoveryRequired(
+                            reason_code="round_requires_reconciliation",
+                            detail={"round_id": row.round_id, "state": row.state},
+                        )
+                    await _seal_stopped_model_request(db, task, row)
                 # Use the async delegation's existing cancellation settlement;
                 # never give an unprepared or between-round stopped run to the kernel.
+                await db.commit()
                 raise asyncio.CancelledError
             from app.models.chat_transcript_event import ChatTranscriptEvent
             from app.services.session_v2_persistence import SessionEventDraft, append_session_events

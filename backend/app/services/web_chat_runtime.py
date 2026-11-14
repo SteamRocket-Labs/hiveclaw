@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from loguru import logger
-from sqlalchemy import and_, case, func, or_, select, tuple_
+from sqlalchemy import case, func, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -1911,27 +1911,10 @@ async def _settle_committed_round_token_usage(
 
 
 async def _stopped_by_self_or_delegation_ancestor(db: AsyncSession, task: RuntimeTask) -> bool:
-    # These existing stop paths do not cancel native delegation descendants.
-    # Preserve a direct stop on this task; exclude only ancestor propagation.
-    remote = or_(
-        RuntimeTask.task_type == "remote_a2a",
-        and_(
-            RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
-            RuntimeTask.metadata_json["schema"].astext == "hive.remote_a2a_task.v1",
-            RuntimeTask.metadata_json["remote_a2a"]["dispatch_kind"].astext == "session",
-        ),
-    )
-    excluded_ancestor = and_(
-        RuntimeTask.id != task.id,
-        or_(
-            RuntimeTask.metadata_json["terminal_commit_source"].astext == "unclaimed_session_cancel",
-            remote,
-        ),
-    )
     columns = (
         RuntimeTask.id,
         case((RuntimeTask.task_type == "delegation", RuntimeTask.root_runtime_task_id)).label("parent_id"),
-        case((excluded_ancestor, None), else_=RuntimeTask.metadata_json["cancel_state"].astext).label("cancel_state"),
+        RuntimeTask.metadata_json["cancel_state"].astext.label("cancel_state"),
     )
     ancestors = (
         select(*columns)
@@ -1949,6 +1932,35 @@ async def _stopped_by_self_or_delegation_ancestor(db: AsyncSession, task: Runtim
                 select(select(ancestors.c.id).where(ancestors.c.cancel_state.in_(("cancelling", "cancelled"))).exists())
             )
         )
+
+
+async def _seal_stopped_model_request(db: AsyncSession, runtime_task: RuntimeTask, row: Any) -> None:
+    from app.services.session_model_round import fail_model_request
+
+    round_index = _round_index_from_id(row.round_id)
+    placeholder = (row.model_request_snapshot_json or {}).get("phase") == "awaiting_exact_snapshot"
+    await fail_model_request(
+        db,
+        tenant_id=row.tenant_id,
+        agent_id=runtime_task.child_agent_id
+        if runtime_task.task_type == "delegation"
+        else runtime_task.parent_agent_id,
+        session_id=row.session_id,
+        run_id=row.run_id,
+        turn_id=row.turn_id,
+        round_index=round_index,
+        continuation_index=_continuation_index_from_round_id(row.round_id),
+        provider_request_id=row.provider_request_id,
+        error_class="cancelled",
+        delivery_state="rejected" if placeholder else "unknown",
+        retry_safe=False,
+        provider_request_sent=not placeholder,
+    )
+    await db.commit()
+    raise SessionRestartRecoveryRequired(
+        reason_code="round_requires_reconciliation",
+        detail={"round_index": round_index, "round_id": row.round_id, "state": row.state},
+    )
 
 
 async def _session_restart_resume_history(
@@ -1996,7 +2008,7 @@ async def _session_restart_resume_history(
 
     from app.models.session_v2 import SessionModelResult, SessionToolInvocation, SessionTurnInput
     from app.services.session_human_input import input_parts_to_runtime_messages
-    from app.services.session_model_round import commit_sealed_model_round, fail_model_request
+    from app.services.session_model_round import commit_sealed_model_round
     from app.services.session_round_obligation import release_dispatched_plans_without_sealed_result
     from app.services.session_tool_runtime import UNRESOLVED_TOOL_EFFECT_STATES
     from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
@@ -2120,28 +2132,7 @@ async def _session_restart_resume_history(
                 and not invocations
                 and await _stopped_by_self_or_delegation_ancestor(db, runtime_task)
             ):
-                placeholder = (row.model_request_snapshot_json or {}).get("phase") == "awaiting_exact_snapshot"
-                await fail_model_request(
-                    db,
-                    tenant_id=row.tenant_id,
-                    agent_id=runtime_task.child_agent_id
-                    if runtime_task.task_type == "delegation"
-                    else runtime_task.parent_agent_id,
-                    session_id=row.session_id,
-                    run_id=row.run_id,
-                    turn_id=row.turn_id,
-                    round_index=round_index,
-                    provider_request_id=row.provider_request_id,
-                    error_class="cancelled",
-                    delivery_state="rejected" if placeholder else "unknown",
-                    retry_safe=False,
-                    provider_request_sent=not placeholder,
-                )
-                await db.commit()
-                raise SessionRestartRecoveryRequired(
-                    reason_code="round_requires_reconciliation",
-                    detail={"round_index": round_index, "round_id": row.round_id, "state": row.state},
-                )
+                await _seal_stopped_model_request(db, runtime_task, row)
             failure_seal = dict(row.seal_json or {})
             if (
                 row.state == "failed"

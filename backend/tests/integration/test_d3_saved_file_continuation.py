@@ -3,7 +3,6 @@
 import hashlib
 import json
 import sys
-import time
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -328,10 +327,7 @@ async def test_saved_derived_file_uses_the_same_source_reader_as_file_tools(
         ports=SimpleNamespace(runtime=SimpleNamespace(tenant_scoped_session=lambda tenant:
             tenant_scoped_session(tenant, session_factory=app_user_sessionmaker)),
             events=SimpleNamespace(broadcast=AsyncMock())))
-    started = time.monotonic()
     messages = _mid_run_items_to_user_messages(await _bind_session_round_inputs(state, 1))
-    print("Q2B_CONTINUATION", json.dumps({"source_access": source_access,
-        "elapsed_ms": round((time.monotonic() - started) * 1000, 2), "caught": caught}))
     selected = [m for m in messages if m.context_origin and m.context_origin.kind == "selected_workspace_file"]
     assert len(selected) == 1
     allowed = source_access == "member_grant"
@@ -342,6 +338,10 @@ async def test_saved_derived_file_uses_the_same_source_reader_as_file_tools(
     assert (saved_text in selected[0].content) is allowed, caught
     assert (notice in selected[0].content) is (not allowed)
     assert bool(caught) is (not allowed)
+    if not allowed:
+        assert caught[0]["code"] == (
+            "content_source_unavailable" if source_access == "unverifiable" else "content_source_access_denied"
+        )
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
         request_id = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent,

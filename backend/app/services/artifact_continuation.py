@@ -78,7 +78,8 @@ async def saved_file_context(db, *, tenant_id, agent_id, session_id, run_id, use
                               "source_version": receipt.content_sha256}
                 _, user = await _runtime_input_actor(db, tenant_id, principal)
                 session = await db.get(ChatSession, session_id)
-                # Match the working-copy source reader used by file tools.
+                # Keep this reader choice in step with _validate_workspace_tool_input
+                # in content_input_receipts.py.
                 member_read = session.user_id is not None and session.audience_kind != "group"
                 with source_recipient_read(session_id=session.id, user_id=user.id) if member_read else nullcontext():
                     await _validate_workspace_dependency(db, tenant_id, dependency, user=user,

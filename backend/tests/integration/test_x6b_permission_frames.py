@@ -39,14 +39,13 @@ def _assert_member_frame(frame):
             _assert_member_frame(decoded)
 
 
-@pytest.mark.parametrize("member_check", ["fields", "prose"])
 @pytest.mark.parametrize(("tool_name", "arguments", "action"), [
     ("plaza_create_post", {"content": "Approved team update"}, "allow_once"),
     ("plaza_create_post", {"content": "Session-approved team update"}, "allow_session"),
     ("delete_file", {"path": "workspace/obsolete.txt"}, "deny"),
 ])
 async def test_member_permission_frames_and_original_reply(
-    native_workspace, owner_sessionmaker, monkeypatch, tool_name, arguments, action, member_check,  # noqa: F811
+    native_workspace, owner_sessionmaker, monkeypatch, tool_name, arguments, action,  # noqa: F811
 ):
     from sqlalchemy import select
 
@@ -143,6 +142,8 @@ async def test_member_permission_frames_and_original_reply(
             messages = await client.get(f"{path}/messages")
             assert messages.status_code == 200, messages.text
             assert any(part.get("permission_request") for message in messages.json() for part in message.get("parts", []))
+            owner_operator = await client.get(f"{path}/messages", params={"operator_view": "true"})
+            assert owner_operator.status_code == 200, owner_operator.text
             operator_seed = SimpleNamespace(**{**vars(seed), "user_id": n.foreign})
             async with _mounted_client(n.app_user_sessionmaker, operator_seed) as operator:
                 operator_messages = await operator.get(f"{path}/messages", params={
@@ -159,23 +160,20 @@ async def test_member_permission_frames_and_original_reply(
             user = await db.get(User, n.user)
             views = await read_session_run_permissions(db, run=run, session=session, user=user)
             assert len(views) == 1
-            for frame in [*delivered, canonical_reload, legacy_reload, v1.json(), messages.json(), views,
+            for frame in [owner_operator.json(), *delivered, canonical_reload, legacy_reload, v1.json(), messages.json(), views,
                           _user_live_projection(operator_legacy), _user_live_projection(operator_canonical)]:
-                if member_check == "fields":
-                    _assert_member_frame(frame)
-                else:
-                    encoded = json.dumps(frame)
-                    for private in (raw_receipt["permission_request"]["capability"],
-                                    raw_receipt["permission_request"]["decision_reason"],
-                                    "do not create a backend approval request"):
-                        assert private not in encoded
-            if member_check == "prose":
-                confirmation = {"plaza_create_post": "需要你的确认：Plaza create post",
-                                "delete_file": "需要你的确认：Delete file"}[tool_name]
-                for message in messages.json():
-                    for part in message.get("parts", []):
-                        if part.get("permission_request"):
-                            assert message["content"] == part["text"] == confirmation
+                _assert_member_frame(frame)
+                encoded = json.dumps(frame)
+                for private in (raw_receipt["permission_request"]["capability"],
+                                raw_receipt["permission_request"]["decision_reason"],
+                                "do not create a backend approval request"):
+                    assert private not in encoded
+            confirmation = {"plaza_create_post": "需要你的确认：Plaza create post",
+                            "delete_file": "需要你的确认：Delete file"}[tool_name]
+            for message in [*messages.json(), *owner_operator.json()]:
+                for part in message.get("parts", []):
+                    if part.get("permission_request"):
+                        assert message["content"] == part["text"] == confirmation
             request = user_canonical["payload"]["permission_request"]
             assert set(request) == {
                 "permission_request_id", "session_id", "runtime_task_id", "requested_by_user_id",
@@ -208,3 +206,55 @@ async def test_member_permission_frames_and_original_reply(
         await db.refresh(session)
         grants = (session.transcript_metadata_json or {}).get("session_permission_grants", [])
         assert bool(grants) is (action == "allow_session")
+
+
+async def test_stored_tool_permission_results_are_projected_on_messages_and_v1_reload(
+    native_workspace, owner_sessionmaker,  # noqa: F811
+):
+    from app.services.chat_transcript import append_session_event
+
+    n = native_workspace
+    async with owner_sessionmaker() as db:
+        invocation, effective, turn = await _prepare_write(
+            db, n, tool_name="delete_file", arguments={"path": "workspace/obsolete.txt"},
+        )
+        receipt = str(await n.service.execute(
+            "delete_file", effective, agent_id=n.agent, user_id=n.user, session_id=str(n.session),
+            runtime_task_id=str(n.run), turn_id=turn, tool_call_id=invocation.provider_tool_use_id,
+            emit_runtime_hooks=False,
+        ))
+        request = json.loads(receipt)["permission_request"]
+        results = [receipt, "ordinary result\n", ' { "ok": true, "result": "normal" } ']
+        events = []
+        for result in results:
+            events.append(await append_session_event(
+                db=db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session, user_id=n.user,
+                actor_type="tool", event_type="tool_result", role="tool_call", t0_role="tool",
+                content=json.dumps({"name": "delete_file", "args": effective, "status": "done", "result": result}),
+                metadata={"tool_name": "delete_file", "status": "done"}, source="task_executor",
+            ))
+        await db.commit()
+        seed = SimpleNamespace(tenant_id=n.tenant, user_id=n.user, agent_id=n.agent,
+                               session_id=n.session, run_id=n.run)
+        async with _mounted_client(n.app_user_sessionmaker, seed) as client:
+            path = f"/api/agents/{n.agent}/sessions/{n.session}"
+            messages = await client.get(f"{path}/messages")
+            # Schema-1 stored rows reload through the compatibility envelope.
+            reload = await client.get(f"{path}/transcript", params={"schema_version": 2})
+        assert messages.status_code == reload.status_code == 200
+        rows = [message for message in messages.json() if message.get("role") == "tool_call"]
+        assert len(rows) == len(results)
+        frames = [next(frame for frame in reload.json() if frame["event_id"] == str(event.event_id))
+                  for event in events]
+        _assert_member_frame([rows[0], frames[0]])
+        for private in (request["capability"], request["decision_reason"], "do not create a backend approval request"):
+            assert private not in json.dumps([rows[0], frames[0]])
+        projected = rows[0]["toolResult"]
+        assert projected == rows[0]["parts"][0]["result"]
+        assert json.loads(projected)["permission_request"]["permission_request_id"] == request["permission_request_id"]
+        assert json.loads(frames[0]["payload"]["content"])["result"] == projected
+        for row, frame, result in zip(rows[1:], frames[1:], results[1:]):
+            assert row["toolResult"] == row["parts"][0]["result"] == result
+            assert json.loads(frame["payload"]["content"])["result"] == result
+        assert events[0].chat_message.content == events[0].transcript_event.content
+        assert json.loads(events[0].transcript_event.content)["result"] == receipt

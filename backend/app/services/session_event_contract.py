@@ -2243,6 +2243,16 @@ def member_permission_request(request: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in request.items() if key in _MEMBER_PERMISSION_REQUEST_KEYS}
 
 
+def _member_permission_json(value: str) -> str:
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        return value
+    if isinstance(decoded, dict) and isinstance(decoded.get("permission_request"), Mapping):
+        return json.dumps(member_permission_payload(decoded), ensure_ascii=False)
+    return value
+
+
 def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Project permission copies in event carriers without traversing tool arguments."""
     request = payload.get("permission_request")
@@ -2250,13 +2260,15 @@ def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(request, Mapping):
         from app.services.thread_items import _user_summary
 
-        # Legacy carriers repeat request fields beside the nested request.
-        # Use the same allowlist for those duplicates, not another strip list.
-        clean = {key: value for key, value in clean.items()
-                 if key not in request or key in _MEMBER_PERMISSION_REQUEST_KEYS or value != request[key]}
+        # Internal governance siblings are private regardless of their values;
+        # all other event fields keep their own meaning beside the request.
+        for key in ("capability", "permission_mode", "decision_reason", "pending_tool_frame",
+                    "round_state", "permission_profile"):
+            clean.pop(key, None)
         clean["permission_request"] = member_permission_request(request)
-        summary = _user_summary(item_type="approval_request", event_type="permission", item_status="waiting_user",
-                                data=clean["permission_request"], content="")
+        pending = payload.get("status", "session_permission_required") == "session_permission_required"
+        summary = _user_summary(item_type="approval_request" if pending else "approval_decision", event_type="permission",
+                                item_status="waiting_user" if pending else "succeeded", data=clean["permission_request"], content="")
         for key in ("message", "text"):
             if key in payload:
                 clean[key] = summary
@@ -2266,22 +2278,25 @@ def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(clean.get("parts"), list):
         clean["parts"] = [member_permission_payload(part) if isinstance(part, Mapping) else part
                           for part in clean["parts"]]
-        for original, projected in zip(payload["parts"], clean["parts"]):
-            if (isinstance(original, Mapping) and isinstance(original.get("permission_request"), Mapping)
-                and "text" in original and clean.get("content") == original["text"]):
-                clean["content"] = projected["text"]
+    for key in ("toolResult", "result"):
+        if isinstance(clean.get(key), str):
+            clean[key] = _member_permission_json(clean[key])
     content = clean.get("content")
     metadata = payload.get("metadata")
-    if isinstance(content, str) and (
-        isinstance(request, Mapping)
-        or isinstance(metadata, Mapping) and isinstance(metadata.get("permission_request"), Mapping)
-    ):
+    if isinstance(content, str):
         try:
             decoded = json.loads(content)
         except ValueError:
             decoded = None
-        if isinstance(decoded, dict) and isinstance(decoded.get("permission_request"), Mapping):
-            clean["content"] = json.dumps(member_permission_payload(decoded), ensure_ascii=False)
+        if isinstance(decoded, dict) and isinstance(decoded.get("result"), str):
+            result = _member_permission_json(decoded["result"])
+            if result != decoded["result"]:
+                decoded["result"] = result
+                content = json.dumps(decoded, ensure_ascii=False)
+        if (isinstance(request, Mapping)
+            or isinstance(metadata, Mapping) and isinstance(metadata.get("permission_request"), Mapping)):
+            content = _member_permission_json(content)
+        clean["content"] = content
     return clean
 
 

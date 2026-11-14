@@ -2991,7 +2991,7 @@ async def get_session_messages(
         if operator_view is True
         else check_agent_history_access(db, current_user, agent_id)
     )
-    await _authorize_loaded_session(
+    authority_source = await _authorize_loaded_session(
         db=db,
         session=session,
         agent=agent,
@@ -3048,10 +3048,17 @@ async def get_session_messages(
         else:
             out.append(serialize_chat_message(m, sender_name=sender_name, artifacts=artifacts))
 
-    if operator_view is not True:
+    if authority_source != "operator_inspect_grant":
         from app.services.session_event_contract import member_permission_payload
 
-        out = [member_permission_payload(entry) for entry in out]
-        for entry in out:
+        projected = []
+        for original in out:
+            entry = member_permission_payload(original)
+            for part, clean_part in zip(original.get("parts", []), entry.get("parts", [])):
+                if (isinstance(part.get("permission_request"), dict)
+                    and "text" in part and original.get("content") == part["text"]):
+                    entry["content"] = clean_part["text"]
             entry.pop("eventCapability", None)
+            projected.append(entry)
+        out = projected
     return out

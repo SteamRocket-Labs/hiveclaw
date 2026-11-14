@@ -49,10 +49,11 @@ async def test_permission_events_share_scope_and_keep_rendered_choices(
         )
         await web_chat_runtime.broadcast_web_chat_event(n.agent, n.session, committed)
 
-    for index, (tool_name, arguments, allow_session) in enumerate([
-        ("plaza_create_post", {"content": "Team update"}, True),
-        ("delete_file", {"path": "workspace/obsolete.txt"}, False),
-        ("retire_memory", {"memory_id": "obsolete-entry", "reason": "obsolete"}, False),
+    for index, (tool_name, arguments, allow_session, later_receipt) in enumerate([
+        ("plaza_create_post", {"content": "Team update"}, True, False),
+        ("delete_file", {"path": "workspace/obsolete.txt"}, False, False),
+        ("retire_memory", {"memory_id": "obsolete-entry", "reason": "obsolete"}, False, False),
+        ("plaza_create_post", {"content": "Team update"}, True, True),
     ], start=1):
         if tool_name == "retire_memory":
             assert is_destructive_tool(tool_name) and not _detect_destructive_delete(tool_name, arguments)
@@ -67,6 +68,13 @@ async def test_permission_events_share_scope_and_keep_rendered_choices(
                 tool_call_id=invocation.provider_tool_use_id, event_callback=publish_legacy,
                 emit_runtime_hooks=False, trace_metadata_sink=trace,
             )
+            if later_receipt:
+                # POST_TOOL_USE can rewrite the receipt after the first frame.
+                receipt = json.loads(str(result))
+                receipt["permission_request"]["expires_at"] = (
+                    datetime.now().astimezone() + timedelta(days=1)
+                ).isoformat()
+                result = json.dumps(receipt)
             with monkeypatch.context() as clock:
                 clock.setattr(session_tool_runtime, "datetime", LaterDatetime)
                 waiting = await session_tool_runtime.complete_tool_invocation(
@@ -93,13 +101,19 @@ async def test_permission_events_share_scope_and_keep_rendered_choices(
 
     fixture = tmp_path / "permission-frames.json"
     fixture.write_text(json.dumps(frames))
+    report_file = tmp_path / "vitest-report.json"
     rendered = subprocess.run(
-        ["npx", "--no-install", "vitest", "run", "src/pages/session-workbench/ApprovalFrames.x6a.test.tsx"],
+        ["npx", "--no-install", "vitest", "run", "src/pages/session-workbench/ApprovalFrames.x6a.test.tsx",
+         "--reporter=json", f"--outputFile={report_file}"],
         cwd=Path(__file__).resolve().parents[3] / "frontend",
         env={**os.environ, "NODE_OPTIONS": "--no-experimental-webstorage", "HC_X6A_PERMISSION_FRAMES": str(fixture)},
         capture_output=True, text=True, timeout=60,
     )
     print(rendered.stdout + rendered.stderr)
+    assert rendered.returncode == 0, rendered.stdout + rendered.stderr
+    report = json.loads(report_file.read_text())
+    assert report["numPassedTests"] == 2 * len(frames)
+    assert report["numPendingTests"] == 0
     for frame in frames:
         first = frame["legacy"]["payload"]["metadata"]["permission_request"]
         second = frame["canonical"]["payload"]["permission_request"]
@@ -107,6 +121,7 @@ async def test_permission_events_share_scope_and_keep_rendered_choices(
         assert first["allow_session_allowed"] is second["allow_session_allowed"] is frame["allow_session"]
         assert first["destructive"] is second["destructive"] is not frame["allow_session"]
         assert first["arguments"] == second["arguments"]
-        assert first["created_at"] == second["created_at"]
+        # created_at is not rendered, and this assertion pinned the receipt parse that this round removes.
         assert first["expires_at"] == second["expires_at"]
-    assert rendered.returncode == 0, rendered.stdout + rendered.stderr
+        assert first.get("risk_class") == second.get("risk_class")
+        assert first.get("confirmation_kind") == second.get("confirmation_kind")

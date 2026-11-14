@@ -1003,10 +1003,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # preparation changes in session_model_round and web_chat_runtime; BF's per-row
 # savepoints in runtime_budget_service (row errors isolated, database errors fail the
 # tick).
-# X6a: reviewed permission-card metadata/display-clock changes in
-# complete_tool_invocation and its module source. The 123 bypass callsites,
-# query predicates, locks, and ORM targets are unchanged (797 digest entries).
-RLS_BYPASS_SCOPES_SHA256 = "d4901c6a2d78b6543187b516360629d8f432f7a79034a042da3635d5896776fa"
+RLS_BYPASS_SCOPES_SHA256 = "1a4a347aff8ce89d2a911cf33cc97c92f692a3ba719b6ec99929ea2c9981969f"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

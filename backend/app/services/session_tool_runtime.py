@@ -851,13 +851,6 @@ async def complete_tool_invocation(
             "risk_class": _DESTRUCTIVE_DELETE_RISK_CLASS,
             "confirmation_kind": _DESTRUCTIVE_DELETE_CONFIRMATION_KIND,
         } if destructive_delete else {}
-        try:
-            permission_result = json.loads(provider_result_content)
-        except ValueError:
-            permission_result = {}
-        original_request = permission_result.get("permission_request") if isinstance(permission_result, dict) else None
-        if not isinstance(original_request, dict) or original_request.get("permission_request_id") != str(permission_item_id):
-            original_request = {}
         from app.services.plan_mode_runtime_context import interactive_plan_mode_metadata
 
         # Runtime protocol state belongs to this exact waiting invocation. A
@@ -897,10 +890,8 @@ async def complete_tool_invocation(
                             "decision_reason": ", ".join(decision.get("reason_codes") or []),
                             "allow_session_allowed": not destructive,
                             "destructive": destructive,
-                            # Keep the original card's display clock; the invocation's
-                            # authoritative expiry below retains the existing policy.
-                            "created_at": original_request.get("created_at") or permission_created_at.isoformat(),
-                            "expires_at": original_request.get("expires_at") or permission_expires_at.isoformat(),
+                            "created_at": permission_created_at.isoformat(),
+                            "expires_at": decision.get("expires_at") or permission_expires_at.isoformat(),
                             **risk_metadata,
                         },
                     },

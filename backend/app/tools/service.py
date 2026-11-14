@@ -629,6 +629,7 @@ def _record_final_tool_decision(
             None,
         ),
         approval_id=getattr(governance_context, "approval_id", None),
+        expires_at=getattr(governance_context, "expires_at", None),
         runtime_task_id=runtime_context.runtime_task_id,
         session_id=runtime_context.session_id,
         trace_id=(runtime_context.round_state or {}).get("trace_id"),

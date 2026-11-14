@@ -184,10 +184,12 @@ function stepMarkerLabel(status: RunStepSnapshot['status'] | undefined, t: TFunc
 }
 
 function stepWaitingForColleague(step: RunStepSnapshot): boolean {
-  const status = (step.details as { memberSummary?: { status?: string } } | null)?.memberSummary?.status;
+  const summary = (step.details as { memberSummary?: { kind?: string; state?: string; status?: string } } | null)?.memberSummary;
+  const observedRunning = summary?.kind === 'colleague_result' && summary.state === 'in_progress';
   // A new delegation is also suspended, so that status cannot distinguish
   // passive colleague work from waiting for a member; keep its clock marker.
-  return stepDelegationStillInProgress(step) && !['waiting_approval', 'waiting_budget_approval'].includes(status || '');
+  return (observedRunning || stepDelegationStillInProgress(step))
+    && !['waiting_approval', 'waiting_budget_approval'].includes(summary?.status || '');
 }
 
 function stepIsUnconfirmed(step: RunStepSnapshot): boolean {
@@ -713,7 +715,8 @@ export default function RunDisclosureBlock({
     })
     // Waiting for a colleague is not a tool still executing. Reuse X3d's
     // accessible waiting marker without changing the run's lifecycle/status.
-    .map(step => step.status !== 'done' && stepDelegationStillInProgress(step) ? { ...step, status: 'blocked' as const } : step)
+    .map(step => step.status !== 'done' && (stepDelegationStillInProgress(step) || stepWaitingForColleague(step))
+      ? { ...step, status: 'blocked' as const } : step)
     .filter(stepRenders);
   if (visibleSteps.length === 0) {
     if (timeline.status === 'idle') return null;

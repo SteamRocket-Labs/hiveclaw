@@ -48,7 +48,9 @@ export default function AgentDetailHeader({
   const { t, i18n } = useTranslation();
   const user = useAuthStore((state) => state.user);
   const assistantAgentId = useAssistantAgentId(user);
-  const name = agentId === assistantAgentId ? t('assistant.title') : assistantNameForDisplay(agent.name, t('assistant.title', 'My Assistant'));
+  const name = agentId === assistantAgentId
+    ? assistantNameForDisplay(agent.name, t('assistant.title')) || t('assistant.title')
+    : assistantNameForDisplay(agent.name, t('assistant.title', 'My Assistant'));
   const role = assistantRoleForDisplay(agent.role_description, t('assistant.role', "The user's assistant"));
   // The editor localizes only the exact stored default, just like the header.
   // Waiting for a binding must not expose English or reset a member's draft.
@@ -138,7 +140,7 @@ export default function AgentDetailHeader({
           ) : (
             <h1
               className={`page-title agent-detail-name${canManage ? ' is-editable' : ''}`}
-              title={canManage ? 'Click to edit name' : undefined}
+              title={canManage ? t('agent.editName') : undefined}
               onClick={() => {
                 if (!canManage) return;
                 setNameInput(agent.name);

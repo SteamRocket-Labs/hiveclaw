@@ -1072,7 +1072,9 @@ function AgentChatSection({
     : '';
   const agentDisplayName = agent?.agent_class === 'internal_system' && agent?.name === '__system_hr__'
     ? t('agentCreate.hrAgentName', 'HR Agent')
-    : effectiveAgentId === assistantAgentId ? t('assistant.title') : assistantNameForDisplay(agent?.name || '', t('assistant.title', 'My Assistant'));
+    : effectiveAgentId === assistantAgentId
+      ? assistantNameForDisplay(agent?.name || '', t('assistant.title')) || t('assistant.title')
+      : assistantNameForDisplay(agent?.name || '', t('assistant.title', 'My Assistant'));
   const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);
   const permissionModeVisible = sessionPermissionModeVisible(agent, sessionPermissionMode, planModeRequested, goalModeRequested);
   const projectContextAvailable = !operatorView && !isDraftSession && activeSession?.audience_kind !== 'group' && Boolean(currentUser?.id && activeSessionId);

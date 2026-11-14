@@ -235,7 +235,9 @@ export default function AppSidebar({
           {sortedAgents.map((agent) => {
             const badge = getAgentBadgeStatus(agent);
             const sourceBadge = getAgentSourceBadge(agent, t, user);
-            const name = String(agent.id) === assistantAgentId ? t('assistant.title') : assistantNameForDisplay(agent.name, t('assistant.title', 'My Assistant'));
+            const name = String(agent.id) === assistantAgentId
+              ? assistantNameForDisplay(agent.name, t('assistant.title')) || t('assistant.title')
+              : assistantNameForDisplay(agent.name, t('assistant.title', 'My Assistant'));
             const avatarChar = (name.replace(/^(?:\s*\[[^\]]*\])+/, '').match(/[\p{L}\p{N}]/u)?.[0] || '?').toUpperCase();
             const isAgentRowActive = String(activeAgentId || '') === String(agent.id);
             // B5: opening a bot opens its conversation (#chat is the workbench),

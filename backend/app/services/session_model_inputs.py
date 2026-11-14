@@ -113,9 +113,18 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
         proof["source_hash"] = _hash(proof)
         source_id = uuid.uuid5(result_id, f"kernel-context:{index}:{proof['source_hash']}")
         captures.append((message, source_id, proof))
-    existing = {row.id: row for row in await db.scalars(select(InvocationSpan).where(
-        InvocationSpan.id.in_([source_id for _message, source_id, _proof in captures]))
-        .execution_options(populate_existing=True))} if captures else {}
+    existing = (
+        {
+            row.id: row
+            for row in await db.scalars(
+                select(InvocationSpan)
+                .where(InvocationSpan.id.in_([source_id for _message, source_id, _proof in captures]))
+                .execution_options(populate_existing=True)
+            )
+        }
+        if captures
+        else {}
+    )
     for message, source_id, proof in captures:
         row = existing.get(source_id)
         if row is not None:
@@ -282,6 +291,7 @@ async def _build_model_input_bindings(
     wire_messages: list[dict[str, Any]],
     history=None,
     before_sequence: int | None = None,
+    locked_session: ChatSession | None = None,
 ) -> dict[str, Any]:
     from app.services.session_human_input import input_parts_to_runtime_messages
     from app.services.session_semantic_history import (
@@ -349,8 +359,18 @@ async def _build_model_input_bindings(
                 continue
     from app.models.invocation_span import InvocationSpan
 
-    kernel_rows = {row.id: row for row in await db.scalars(select(InvocationSpan).where(
-        InvocationSpan.id.in_(kernel_ids.values())).execution_options(populate_existing=True))} if kernel_ids else {}
+    kernel_rows = (
+        {
+            row.id: row
+            for row in await db.scalars(
+                select(InvocationSpan)
+                .where(InvocationSpan.id.in_(kernel_ids.values()))
+                .execution_options(populate_existing=True)
+            )
+        }
+        if kernel_ids
+        else {}
+    )
     kernel_origins = {}
     for ref, source_id in kernel_ids.items():
         origin = await _validated_context_message_origin(
@@ -379,21 +399,37 @@ async def _build_model_input_bindings(
                 input_ids.append(uuid.UUID(ref.removeprefix("session-input:")))
             except ValueError:
                 pass
-    inputs = (
+    from app.models.session_v2 import SessionCommand
+
+    input_rows = (
         list(
             (
-                await db.scalars(
-                    select(SessionTurnInput).where(
+                await db.execute(
+                    select(SessionTurnInput, SessionCommand)
+                    .join(SessionCommand, SessionCommand.id == SessionTurnInput.command_id)
+                    .join(ChatSession, ChatSession.id == SessionTurnInput.session_id)
+                    .where(
                         SessionTurnInput.tenant_id == tenant_id,
                         SessionTurnInput.session_id == session_id,
                         SessionTurnInput.id.in_(input_ids),
                         SessionTurnInput.status.in_(["bound", "applied"]),
+                        SessionCommand.tenant_id == tenant_id,
+                        SessionCommand.session_id == SessionTurnInput.session_id,
+                        ChatSession.tenant_id == tenant_id,
+                        ChatSession.agent_id == agent_id,
                     )
                 )
             ).all()
         )
         if input_ids
         else []
+    )
+    inputs = [row for row, _command in input_rows]
+    # The caller may retain this Session's transcript advisory for the whole
+    # assembly. Its input/command rows can then be passed to the origin reader.
+    # Other readers keep their existing per-origin reads.
+    origin_rows = (
+        {f"session-input:{row.id}": (row, command) for row, command in input_rows} if locked_session is not None else {}
     )
     input_commands = {f"session-input:{row.id}": str(row.command_id) for row in inputs}
     for message in input_parts_to_runtime_messages(inputs, answer_projections=await answer_projections(db, inputs)):
@@ -420,6 +456,29 @@ async def _build_model_input_bindings(
         else []
     )
     result_refs = {row.provider_request_id: f"session-model-result:{row.id}" for row in results}
+    model_ids = []
+    for ref in refs:
+        if isinstance(ref, str) and ref.startswith("session-model-result:"):
+            try:
+                model_ids.append(uuid.UUID(ref.split(":", 1)[1]))
+            except ValueError:
+                continue
+    if model_ids and locked_session is not None:
+        model_rows = await db.scalars(
+            select(SessionModelResult)
+            .join(ChatSession, ChatSession.id == SessionModelResult.session_id)
+            .where(
+                SessionModelResult.id.in_(model_ids),
+                SessionModelResult.tenant_id == tenant_id,
+                SessionModelResult.session_id == session_id,
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == agent_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        origin_rows.update((f"session-model-result:{row.id}", row) for row in model_rows)
+    if locked_session is not None:
+        origin_rows.update((f"session-model-result:{row.id}", row) for row in results)
     invocations = (
         list(
             (
@@ -485,10 +544,13 @@ async def _build_model_input_bindings(
         ref = entry["source_ref"]
         if ref not in resolved:
             if ref in kernel_origins:
-                resolved[ref] = await _context_origin_dependencies(db, tenant_id=tenant_id,
-                    agent_id=agent_id, origin=kernel_origins[ref])
+                resolved[ref] = await _context_origin_dependencies(
+                    db, tenant_id=tenant_id, agent_id=agent_id, origin=kernel_origins[ref]
+                )
             else:
-                resolved[ref] = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
+                resolved[ref] = await _origin_dependencies(
+                    db, tenant_id=tenant_id, agent_id=agent_id, ref=ref, origin_rows=origin_rows
+                )
         refs, complete = resolved[ref]
         entry["dependencies"] = refs
         entry["dependency_status"] = "resolved" if complete else "incomplete"
@@ -532,8 +594,10 @@ def model_output_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     if not complete:
         return dependencies, False
     entries = result.model_request_snapshot_json["input_bindings"].get("messages", [])
-    return dependencies, not any(entry.get("status") == "withheld"
-        and entry.get("code") == "session_permission_frame_unbound" for entry in entries)
+    return dependencies, not any(
+        entry.get("status") == "withheld" and entry.get("code") == "session_permission_frame_unbound"
+        for entry in entries
+    )
 
 
 def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
@@ -547,14 +611,20 @@ def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
         if retained is snapshot:
             return value
     digest = _immutable_model_digest(result) if isinstance(snapshot, dict) else None
-    if not isinstance(snapshot, dict) or (digest if digest is not None else _hash(snapshot)) != result.model_request_hash:
+    if (
+        not isinstance(snapshot, dict)
+        or (digest if digest is not None else _hash(snapshot)) != result.model_request_hash
+    ):
         return [], False
     bindings = snapshot.get("input_bindings")
     if not isinstance(bindings, dict) or bindings.get("schema") != "hive.model_input_bindings.v1":
         return [], False
     dependencies = _stored_dependencies(bindings.get("dependencies"))
     coverage = bindings.get("dependency_coverage")
-    value = dependencies or [], dependencies is not None and isinstance(coverage, dict) and coverage.get("complete") is True
+    value = (
+        dependencies or [],
+        dependencies is not None and isinstance(coverage, dict) and coverage.get("complete") is True,
+    )
     if scope is not None and scope.active and scope.source_catalog:
         scope.model_inputs[key] = (snapshot, value)
     return value
@@ -652,19 +722,33 @@ def _body_free_tool_feedback_bound(*, invocation, event, model, payload, content
     """Recognize exact native feedback bytes, never an arbitrary failed read."""
     from types import SimpleNamespace
 
-    if (model is None or event.result_id != model.id or event.content_hash != _hash(content)
-        or payload.get("content_or_error_ref") != invocation.receipt_ref):
+    if (
+        model is None
+        or event.result_id != model.id
+        or event.content_hash != _hash(content)
+        or payload.get("content_or_error_ref") != invocation.receipt_ref
+    ):
         return False
     if invocation.effect_state == "prepared_not_started" and payload.get("outcome") == "aborted":
         try:
-            return (invocation.receipt_ref == f"session-permission-batch-abort:{invocation.provider_tool_use_id}"
-                and json.loads(content) == {"schema": "hive.tool_batch_abort.v1", "status": "aborted",
-                    "reason_code": "session_permission_batch_suspended_before_sibling_start", "retryable": True,
-                    "provider_tool_use_id": invocation.provider_tool_use_id})
+            return (
+                invocation.receipt_ref == f"session-permission-batch-abort:{invocation.provider_tool_use_id}"
+                and json.loads(content)
+                == {
+                    "schema": "hive.tool_batch_abort.v1",
+                    "status": "aborted",
+                    "reason_code": "session_permission_batch_suspended_before_sibling_start",
+                    "retryable": True,
+                    "provider_tool_use_id": invocation.provider_tool_use_id,
+                }
+            )
         except (ValueError, TypeError):
             return False
-    if (invocation.effect_state != "failed" or payload.get("outcome") != "failed"
-        or invocation.receipt_ref != f"tool-frame:{_hash(content)}"):
+    if (
+        invocation.effect_state != "failed"
+        or payload.get("outcome") != "failed"
+        or invocation.receipt_ref != f"tool-frame:{_hash(content)}"
+    ):
         return False
     tool = invocation.tool_name
     arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
@@ -672,28 +756,57 @@ def _body_free_tool_feedback_bound(*, invocation, event, model, payload, content
     if tool in {"read_file", "edit_file"}:
         from app.services.agent_tool_domains.workspace import _workspace_error
 
-        candidates.append(_workspace_error(tool, "not_found", f"File not found: {arguments.get('path')}",
-            actionable_hint=("Check the path or use glob_search/list_files to discover the correct file first."
-                if tool == "read_file" else None)))
-        candidates.extend(_workspace_error(tool, "auth_or_permission", message) for message in (
-            "Access denied for this resource owner.", "Access denied for this path."))
+        candidates.append(
+            _workspace_error(
+                tool,
+                "not_found",
+                f"File not found: {arguments.get('path')}",
+                actionable_hint=(
+                    "Check the path or use glob_search/list_files to discover the correct file first."
+                    if tool == "read_file"
+                    else None
+                ),
+            )
+        )
+        candidates.extend(
+            _workspace_error(tool, "auth_or_permission", message)
+            for message in ("Access denied for this resource owner.", "Access denied for this path.")
+        )
         if tool == "edit_file":
-            candidates.append(_workspace_error(tool, "bad_arguments",
-                f"Could not find the target text in {arguments.get('path')}.",
-                actionable_hint="Read the file first and provide a unique exact old_text match."))
+            candidates.append(
+                _workspace_error(
+                    tool,
+                    "bad_arguments",
+                    f"Could not find the target text in {arguments.get('path')}.",
+                    actionable_hint="Read the file first and provide a unique exact old_text match.",
+                )
+            )
     if tool == "check_async_task":
         from app.services.agent_tool_domains.messaging import _normalize_messaging_result
 
-        candidates.extend(_normalize_messaging_result(tool, message) for message in (
-            "❌ RuntimeTask not found", "❌ This task does not belong to the current agent",
-            "❌ Please provide exactly one of task_id or message_id"))
+        candidates.extend(
+            _normalize_messaging_result(tool, message)
+            for message in (
+                "❌ RuntimeTask not found",
+                "❌ This task does not belong to the current agent",
+                "❌ Please provide exactly one of task_id or message_id",
+            )
+        )
     try:
         _prefix, marker, encoded = content.rpartition("<tool_error>")
         body = json.loads(encoded.removesuffix("</tool_error>")) if marker else {}
-        if tool in {"browser_manage", "browser_observe"} and body.get("reason_code") in {
-            "browser_device_not_configured", "browser_runtime_frame_unavailable", "browser_arguments_invalid",
-            "browser_state_unavailable", "browser_revision_conflict",
-        } and body.get("effect") in {"not_started", "unknown"}:
+        if (
+            tool in {"browser_manage", "browser_observe"}
+            and body.get("reason_code")
+            in {
+                "browser_device_not_configured",
+                "browser_runtime_frame_unavailable",
+                "browser_arguments_invalid",
+                "browser_state_unavailable",
+                "browser_revision_conflict",
+            }
+            and body.get("effect") in {"not_started", "unknown"}
+        ):
             from app.services.browser_control import BrowserControlError
             from app.tools.handlers.browser import _error
 
@@ -701,14 +814,33 @@ def _body_free_tool_feedback_bound(*, invocation, event, model, payload, content
             if body["reason_code"] != "browser_revision_conflict" or (
                 type(revision) is int and type(epoch) is int and revision >= 0 and epoch >= 0
             ):
-                candidates.append(str(_error(SimpleNamespace(tool_name=tool), BrowserControlError(
-                    body["reason_code"], 503, effect=body["effect"], current_revision=revision, current_epoch=epoch))))
+                candidates.append(
+                    str(
+                        _error(
+                            SimpleNamespace(tool_name=tool),
+                            BrowserControlError(
+                                body["reason_code"],
+                                503,
+                                effect=body["effect"],
+                                current_revision=revision,
+                                current_epoch=epoch,
+                            ),
+                        )
+                    )
+                )
         if tool == "reconcile_memory_write" and body.get("reason_code") == "explicit_memory_operation_required":
             from app.services.content_input_receipts import ContentInputReceiptError
             from app.tools.handlers.memory import _memory_authority_error
 
-            candidates.append(_memory_authority_error(tool, ContentInputReceiptError(
-                "explicit_memory_operation_required", "Choose a retained operation before retrying or cancelling.")))
+            candidates.append(
+                _memory_authority_error(
+                    tool,
+                    ContentInputReceiptError(
+                        "explicit_memory_operation_required",
+                        "Choose a retained operation before retrying or cancelling.",
+                    ),
+                )
+            )
     except (ValueError, TypeError, AttributeError):
         return False
     # Reconstruction checks the entire envelope, including every diagnostic field.
@@ -790,7 +922,7 @@ async def permission_abort_result_bound(db, *, invocation, event, content):
         return False
 
 
-async def _origin_dependencies(db, *, tenant_id, agent_id, ref, current_model_state=None):
+async def _origin_dependencies(db, *, tenant_id, agent_id, ref, current_model_state=None, origin_rows=None):
     from app.services.historical_model_inputs import source_resolution
     from app.services.content_input_receipts import _preflight_inputs, _DISCLOSURE_SOURCE_VALIDATIONS
 
@@ -800,8 +932,14 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref, current_model_st
     if reuse_resolution and key in cached:
         return cached[key]
     with source_resolution():
-        result = await _resolve_origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref,
-            current_model_state=current_model_state)
+        result = await _resolve_origin_dependencies(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            ref=ref,
+            current_model_state=current_model_state,
+            origin_rows=origin_rows,
+        )
     if reuse_resolution:
         cached[key] = result
     return result
@@ -821,15 +959,21 @@ async def _context_origin_dependencies(db, *, tenant_id, agent_id, origin):
                 return dependencies or [], False
     if dependencies is not None and origin["dependency_coverage"]["complete"] is False:
         return await recover_context_dependencies(
-            db, tenant_id=tenant_id, agent_id=agent_id, origin=origin, dependencies=dependencies)
+            db, tenant_id=tenant_id, agent_id=agent_id, origin=origin, dependencies=dependencies
+        )
     return dependencies or [], dependencies is not None and origin["dependency_coverage"]["complete"] is True
 
 
-async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_model_state=None):
+async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_model_state=None, origin_rows=None):
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.organization_identity import ContentInputReceipt
     from app.models.session_v2 import SessionCommand
-    from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence, _preflight_inputs, _DISCLOSURE_SOURCE_VALIDATIONS
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError,
+        load_workspace_input_evidence,
+        _preflight_inputs,
+        _DISCLOSURE_SOURCE_VALIDATIONS,
+    )
     from app.services.knowledge_provenance import KNOWLEDGE_TOOL_NAMES, build_knowledge_provenance
     from app.services.session_semantic_history import _event_payload, _source_scope_run_id, is_member_stop_run_event
     from app.services.historical_model_inputs import recover_model_dependencies
@@ -895,12 +1039,19 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
     except (ValueError, TypeError):
         return [], False
     if kind == "session-run-cancelled":
-        event = await db.scalar(select(ChatTranscriptEvent).join(ChatSession,
-            ChatSession.id == ChatTranscriptEvent.session_id).where(
-                ChatTranscriptEvent.id == source_id, ChatTranscriptEvent.tenant_id == tenant_id,
-                ChatTranscriptEvent.agent_id == agent_id, ChatSession.tenant_id == tenant_id,
-                ChatSession.agent_id == agent_id, ChatTranscriptEvent.item_kind == "run",
-                ChatTranscriptEvent.lifecycle == "cancelled"))
+        event = await db.scalar(
+            select(ChatTranscriptEvent)
+            .join(ChatSession, ChatSession.id == ChatTranscriptEvent.session_id)
+            .where(
+                ChatTranscriptEvent.id == source_id,
+                ChatTranscriptEvent.tenant_id == tenant_id,
+                ChatTranscriptEvent.agent_id == agent_id,
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == agent_id,
+                ChatTranscriptEvent.item_kind == "run",
+                ChatTranscriptEvent.lifecycle == "cancelled",
+            )
+        )
         # Binding is the cancelled event plus its control id. This mechanical
         # stop notice contains no user/document/tool body dependencies. The
         # query above already pins item_kind/lifecycle, so the shared member-
@@ -921,20 +1072,24 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
             "complete"
         ) is True
     if kind == "session-input":
-        row = await db.scalar(
-            select(SessionTurnInput)
-            .join(SessionCommand, SessionCommand.id == SessionTurnInput.command_id)
-            .join(ChatSession, ChatSession.id == SessionTurnInput.session_id)
-            .where(
-                SessionTurnInput.tenant_id == tenant_id,
-                SessionTurnInput.id == source_id,
-                SessionCommand.tenant_id == tenant_id,
-                SessionCommand.session_id == SessionTurnInput.session_id,
-                ChatSession.tenant_id == tenant_id,
-                ChatSession.agent_id == agent_id,
-            )
-        )
-        command = await db.get(SessionCommand, row.command_id) if row is not None else None
+        retained = (origin_rows or {}).get(ref)
+        if retained is None:
+            retained = (
+                await db.execute(
+                    select(SessionTurnInput, SessionCommand)
+                    .join(SessionCommand, SessionCommand.id == SessionTurnInput.command_id)
+                    .join(ChatSession, ChatSession.id == SessionTurnInput.session_id)
+                    .where(
+                        SessionTurnInput.tenant_id == tenant_id,
+                        SessionTurnInput.id == source_id,
+                        SessionCommand.tenant_id == tenant_id,
+                        SessionCommand.session_id == SessionTurnInput.session_id,
+                        ChatSession.tenant_id == tenant_id,
+                        ChatSession.agent_id == agent_id,
+                    )
+                )
+            ).first()
+        row, command = retained if retained is not None else (None, None)
         if (
             command is None
             or command.request_hash != _hash({"command_kind": command.command_kind, "request": command.request_json})
@@ -970,17 +1125,19 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
             {"source_kind": "remote_a2a_result", "source_id": str(result.id), "source_version": result.sha256}
         ], True
     if kind == "session-model-result":
-        result = await db.scalar(
-            select(SessionModelResult)
-            .join(ChatSession, ChatSession.id == SessionModelResult.session_id)
-            .where(
-                SessionModelResult.id == source_id,
-                SessionModelResult.tenant_id == tenant_id,
-                ChatSession.tenant_id == tenant_id,
-                ChatSession.agent_id == agent_id,
+        result = (origin_rows or {}).get(ref)
+        if result is None:
+            result = await db.scalar(
+                select(SessionModelResult)
+                .join(ChatSession, ChatSession.id == SessionModelResult.session_id)
+                .where(
+                    SessionModelResult.id == source_id,
+                    SessionModelResult.tenant_id == tenant_id,
+                    ChatSession.tenant_id == tenant_id,
+                    ChatSession.agent_id == agent_id,
+                )
+                .execution_options(populate_existing=True)
             )
-            .execution_options(populate_existing=True)
-        )
         return await recover_model_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, result=result)
     if kind not in {"session-tool-result", "session-tool-permission"}:
         return [], False
@@ -988,15 +1145,20 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
     retained = cached.get(("session_source", SessionToolInvocation, source_id)) if cached is not None else None
     catalog = cached is not None and _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog
     retained_binding = retained is not None and (
-        current_model_state is not None if catalog else retained[1].agent_id == agent_id)
-    invocation = retained[0] if retained_binding else await db.scalar(
-        select(SessionToolInvocation)
-        .join(ChatSession, ChatSession.id == SessionToolInvocation.session_id)
-        .where(
-            SessionToolInvocation.id == source_id,
-            SessionToolInvocation.tenant_id == tenant_id,
-            ChatSession.tenant_id == tenant_id,
-            ChatSession.agent_id == agent_id,
+        current_model_state is not None if catalog else retained[1].agent_id == agent_id
+    )
+    invocation = (
+        retained[0]
+        if retained_binding
+        else await db.scalar(
+            select(SessionToolInvocation)
+            .join(ChatSession, ChatSession.id == SessionToolInvocation.session_id)
+            .where(
+                SessionToolInvocation.id == source_id,
+                SessionToolInvocation.tenant_id == tenant_id,
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == agent_id,
+            )
         )
     )
     if invocation is None:
@@ -1054,15 +1216,23 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
         return dependencies, complete and valid
     if invocation.result_event_id is None:
         return [], False
-    event = retained[2] if (retained is not None and retained[0] is invocation
-        and retained[2] is not None and retained[2].agent_id == agent_id) else await db.scalar(
-        select(ChatTranscriptEvent).where(
-            ChatTranscriptEvent.id == invocation.result_event_id,
-            ChatTranscriptEvent.tenant_id == tenant_id,
-            ChatTranscriptEvent.agent_id == agent_id,
-            ChatTranscriptEvent.session_id == invocation.session_id,
-            ChatTranscriptEvent.run_id == invocation.run_id,
-            ChatTranscriptEvent.invocation_id == invocation.id,
+    event = (
+        retained[2]
+        if (
+            retained is not None
+            and retained[0] is invocation
+            and retained[2] is not None
+            and retained[2].agent_id == agent_id
+        )
+        else await db.scalar(
+            select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.id == invocation.result_event_id,
+                ChatTranscriptEvent.tenant_id == tenant_id,
+                ChatTranscriptEvent.agent_id == agent_id,
+                ChatTranscriptEvent.session_id == invocation.session_id,
+                ChatTranscriptEvent.run_id == invocation.run_id,
+                ChatTranscriptEvent.invocation_id == invocation.id,
+            )
         )
     )
     if event is None:
@@ -1072,27 +1242,47 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
     if not isinstance(content, str) or payload.get("content_hash") != _hash(content):
         return [], False
     model_key = (invocation.session_id, invocation.run_id, invocation.provider_request_id)
-    model = cached["tool_models"][model_key] if cached is not None and model_key in cached.get("tool_models", {}) else await db.scalar(
-        select(SessionModelResult)
-        .where(
-            SessionModelResult.tenant_id == tenant_id,
-            SessionModelResult.session_id == invocation.session_id,
-            SessionModelResult.run_id == invocation.run_id,
-            SessionModelResult.provider_request_id == invocation.provider_request_id,
+    model = (
+        cached["tool_models"][model_key]
+        if cached is not None and model_key in cached.get("tool_models", {})
+        else await db.scalar(
+            select(SessionModelResult)
+            .where(
+                SessionModelResult.tenant_id == tenant_id,
+                SessionModelResult.session_id == invocation.session_id,
+                SessionModelResult.run_id == invocation.run_id,
+                SessionModelResult.provider_request_id == invocation.provider_request_id,
+            )
+            .execution_options(populate_existing=True)
         )
-        .execution_options(populate_existing=True)
     )
-    if (cached is not None and _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog
-        and model_key in cached.get("tool_models", {}) and model is not None):
+    if (
+        cached is not None
+        and _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog
+        and model_key in cached.get("tool_models", {})
+        and model is not None
+    ):
         from types import SimpleNamespace
 
         from app.services.source_read_queries import model_source_state_columns
 
-        live = current_model_state if current_model_state is not None else (await db.execute(
-            select(*model_source_state_columns()).where(SessionModelResult.id == model.id,
-                SessionModelResult.tenant_id == tenant_id))).first()
-        values = dict(zip(("state", "reconciliation_owner", "round_committed_event_id", "seal_json"), live or (None,) * 4))
-        model = SimpleNamespace(**{**{name: value for name, value in vars(model).items() if not name.startswith("_")}, **values})
+        live = (
+            current_model_state
+            if current_model_state is not None
+            else (
+                await db.execute(
+                    select(*model_source_state_columns()).where(
+                        SessionModelResult.id == model.id, SessionModelResult.tenant_id == tenant_id
+                    )
+                )
+            ).first()
+        )
+        values = dict(
+            zip(("state", "reconciliation_owner", "round_committed_event_id", "seal_json"), live or (None,) * 4)
+        )
+        model = SimpleNamespace(
+            **{**{name: value for name, value in vars(model).items() if not name.startswith("_")}, **values}
+        )
     dependencies, inherited_complete = await recover_model_dependencies(
         db, tenant_id=tenant_id, agent_id=agent_id, result=model
     )
@@ -1105,13 +1295,18 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
             "source_version": tool_result_source_hash(payload),
         },
     ]
-    if _body_free_tool_feedback_bound(invocation=invocation, event=event, model=model, payload=payload, content=content):
+    if _body_free_tool_feedback_bound(
+        invocation=invocation, event=event, model=model, payload=payload, content=content
+    ):
         return _unique_dependencies(dependencies), inherited_complete
     # A runtime refusal contains no read source; retain its settled feedback.
-    if (invocation.effect_state == "prepared_not_started" and payload.get("outcome") in {"denied", "unavailable"}
+    if (
+        invocation.effect_state == "prepared_not_started"
+        and payload.get("outcome") in {"denied", "unavailable"}
         and payload.get("content_or_error_ref") == invocation.receipt_ref
         and event.content_hash == payload["content_hash"]
-        and str(invocation.receipt_ref or "").startswith("tool-decision:")):
+        and str(invocation.receipt_ref or "").startswith("tool-decision:")
+    ):
         return _unique_dependencies(dependencies), inherited_complete
     if (payload.get("metadata") or {}).get("native_tool_timeout_receipt") is not None:
         from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
@@ -1632,28 +1827,47 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
     if invocation.tool_name not in KNOWLEDGE_TOOL_NAMES:
         # Connector and other ordinary tool results are already bound to their
         # exact settled invocation. Other file and skill reads still need their leaves.
-        complete = ((invocation.effect_state, payload.get("outcome"))
-                in {("effect_committed", "success"), ("failed", "failed")}
-            and model is not None and event.result_id == model.id
+        complete = (
+            (invocation.effect_state, payload.get("outcome")) in {("effect_committed", "success"), ("failed", "failed")}
+            and model is not None
+            and event.result_id == model.id
             and event.content_hash == payload["content_hash"]
             and payload.get("content_or_error_ref") == invocation.receipt_ref
-            and invocation.receipt_ref == f"tool-frame:{payload['content_hash']}")
+            and invocation.receipt_ref == f"tool-frame:{payload['content_hash']}"
+        )
         if invocation.tool_name in {"read_file", "read_document", "fs_read"}:
             mode = arguments.get("mode", "text") if isinstance(arguments, dict) else None
-            complete = (complete and payload.get("outcome") == "success" and isinstance(arguments, dict)
+            complete = (
+                complete
+                and payload.get("outcome") == "success"
+                and isinstance(arguments, dict)
                 and invocation.effective_args_hash == _hash({"tool_name": invocation.tool_name, "arguments": arguments})
                 and "workspace_input_receipt" not in metadata
-                and (invocation.tool_name != "fs_read" or isinstance(mode, str) and mode.strip().lower() in {"text", "document"}))
+                and (
+                    invocation.tool_name != "fs_read"
+                    or isinstance(mode, str)
+                    and mode.strip().lower() in {"text", "document"}
+                )
+            )
             if complete:
                 from app.models.runtime_task import RuntimeTask
-                from app.services.workspace_resource_authority import native_private_session_source_ids, session_source_path_allowed
+                from app.services.workspace_resource_authority import (
+                    native_private_session_source_ids,
+                    session_source_path_allowed,
+                )
 
                 task = await db.get(RuntimeTask, invocation.run_id)
                 complete = task is not None and task.tenant_id == tenant_id and task.root_user_id is not None
                 if complete:
                     # Reuse M1G40 authority from the settled call's requester, never from tool arguments.
-                    sources = await native_private_session_source_ids(db, tenant_id=tenant_id, agent_id=agent_id,
-                        user_id=task.root_user_id, session_id=invocation.session_id, source_path=arguments.get("path"))
+                    sources = await native_private_session_source_ids(
+                        db,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        user_id=task.root_user_id,
+                        session_id=invocation.session_id,
+                        source_path=arguments.get("path"),
+                    )
                     complete = session_source_path_allowed(arguments.get("path"), sources) is True
         return _unique_dependencies(dependencies), inherited_complete and complete
     provenance = build_knowledge_provenance(invocation.tool_name, content)

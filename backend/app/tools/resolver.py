@@ -11,7 +11,6 @@ from sqlalchemy import select
 
 from app.core.execution_context import get_execution_identity
 from app.database import async_session, tenant_scoped_session
-from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError
 from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_runtime_task
@@ -21,7 +20,9 @@ from app.tools.workspace import ensure_workspace
 logger = logging.getLogger(__name__)
 
 
-async def _resolve_budget_run_id_from_runtime_task(runtime_task_id: str | None) -> str | None:
+async def _resolve_budget_run_id_from_runtime_task(
+    runtime_task_id: str | None, *, tenant_id: uuid.UUID | None = None
+) -> str | None:
     if not runtime_task_id:
         return None
     try:
@@ -29,10 +30,11 @@ async def _resolve_budget_run_id_from_runtime_task(runtime_task_id: str | None) 
     except (TypeError, ValueError, AttributeError):
         return None
     try:
-        tenant_id = await resolve_tenant_for_runtime_task(
-            task_id,
-            session_factory=async_session,
-        )
+        if tenant_id is None:
+            tenant_id = await resolve_tenant_for_runtime_task(
+                task_id,
+                session_factory=async_session,
+            )
         if tenant_id is None:
             return None
         async with tenant_scoped_session(
@@ -112,23 +114,39 @@ class ToolRuntimeResolver:
         except (TypeError, ValueError):
             session_uuid = None
         from app.services.machine_runtime_authority import machine_task_actor, load_machine_workspace_scope
+
         machine_actor, workspace_authority_scope = None, None
         if user_id is None and runtime_task_id:
             from fastapi import HTTPException
             from app.services.machine_runtime_authority import MachineRuntimeAuthorityDenied
 
             try:
-                async with tenant_scoped_session(tenant, session_factory=async_session, require_tenant=True) as machine_db:
-                    machine_actor = await machine_task_actor(machine_db, tenant_id=tenant, agent_id=agent_id,
-                        runtime_task_id=runtime_task_id, session_id=session_id, user_id=user_id)
-                    workspace_authority_scope = (await load_machine_workspace_scope(machine_db, actor=machine_actor, session_id=session_uuid)
-                        if machine_actor is not None else None)
+                async with tenant_scoped_session(
+                    tenant, session_factory=async_session, require_tenant=True
+                ) as machine_db:
+                    machine_actor = await machine_task_actor(
+                        machine_db,
+                        tenant_id=tenant,
+                        agent_id=agent_id,
+                        runtime_task_id=runtime_task_id,
+                        session_id=session_id,
+                        user_id=user_id,
+                    )
+                    workspace_authority_scope = (
+                        await load_machine_workspace_scope(machine_db, actor=machine_actor, session_id=session_uuid)
+                        if machine_actor is not None
+                        else None
+                    )
             except HTTPException as exc:
-                raise MachineRuntimeAuthorityDenied('Current machine authority is unavailable') from exc
+                raise MachineRuntimeAuthorityDenied("Current machine authority is unavailable") from exc
         if machine_actor is None:
             workspace_authority_scope = await self.workspace_authority_loader(
-                tenant_id=tenant, agent_id=agent_id, user_id=user_id, session_id=session_uuid,
-                runtime_task_id=runtime_task_id)
+                tenant_id=tenant,
+                agent_id=agent_id,
+                user_id=user_id,
+                session_id=session_uuid,
+                runtime_task_id=runtime_task_id,
+            )
         try:
             exact_secret_boundary = await self.secret_boundary_loader(
                 tenant_id=tenant,
@@ -166,7 +184,9 @@ class ToolRuntimeResolver:
                 error_code="policy_dependency_unavailable",
             )
         resolved_budget_run_id = (
-            str(budget_run_id) if budget_run_id else await _resolve_budget_run_id_from_runtime_task(runtime_task_id)
+            str(budget_run_id)
+            if budget_run_id
+            else await _resolve_budget_run_id_from_runtime_task(runtime_task_id, tenant_id=tenant)
         )
         return ToolExecutionContext(
             agent_id=agent_id,
@@ -255,7 +275,10 @@ async def _load_workspace_authority_scope(
                 source="tool_runtime",
                 agent_id=agent_id,
             )
-        from app.services.workspace_resource_authority import load_workspace_authority_scope, native_private_session_source_ids
+        from app.services.workspace_resource_authority import (
+            load_workspace_authority_scope,
+            native_private_session_source_ids,
+        )
         from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
         scope = await load_workspace_authority_scope(
@@ -263,10 +286,18 @@ async def _load_workspace_authority_scope(
             user,
             agent_id=agent_id,
             session_id=session_id,
-            runtime_principal=AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=user_id,
-                session_id=str(session_id) if session_id else None, runtime_task_id=runtime_task_id),
+            runtime_principal=AgentRuntimePrincipal(
+                agent_id=agent_id,
+                requester_user_id=user_id,
+                session_id=str(session_id) if session_id else None,
+                runtime_task_id=runtime_task_id,
+            ),
         )
         sources = await native_private_session_source_ids(
-            authority_db, tenant_id=tenant_id, agent_id=agent_id, user_id=user_id, session_id=session_id,
+            authority_db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
         )
         return replace(scope, session_source_ids=sources)

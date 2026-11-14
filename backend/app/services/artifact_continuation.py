@@ -2,17 +2,20 @@
 
 import hashlib
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy import and_, or_, select
 
 from app.config import get_settings
+from app.core.source_read_purpose import source_recipient_read
+from app.models.chat_session import ChatSession
 from app.models.session_v2 import SessionTurnInput
 from app.models.invocation_span import InvocationSpan
 from app.runtime.context_candidates import ContextMessageOrigin
 from app.services.content_input_receipts import (
-    ContentInputReceiptError, _validate_workspace_dependency, latest_workspace_receipt,
+    ContentInputReceiptError, _runtime_input_actor, _validate_workspace_dependency, latest_workspace_receipt,
 )
 from app.services.llm_client import LLMMessage
 from app.services.personal_knowledge_access import AgentRuntimePrincipal
@@ -73,8 +76,13 @@ async def saved_file_context(db, *, tenant_id, agent_id, session_id, run_id, use
                 changed = expected != receipt.content_sha256
                 dependency = {"source_kind": "workspace_artifact", "source_id": str(receipt.id),
                               "source_version": receipt.content_sha256}
-                await _validate_workspace_dependency(db, tenant_id, dependency, user=None,
-                    runtime_request=principal, active_receipts=frozenset())
+                _, user = await _runtime_input_actor(db, tenant_id, principal)
+                session = await db.get(ChatSession, session_id)
+                # Match the working-copy source reader used by file tools.
+                member_read = session.user_id is not None and session.audience_kind != "group"
+                with source_recipient_read(session_id=session.id, user_id=user.id) if member_read else nullcontext():
+                    await _validate_workspace_dependency(db, tenant_id, dependency, user=user,
+                        runtime_request=None if member_read else principal, active_receipts=frozenset())
                 if changed:
                     text = "文件已不是你保存时的版本，本次未使用它。请重新打开确认后再继续，其他问题可以继续处理。"
                     raise ValueError("saved_version_changed")

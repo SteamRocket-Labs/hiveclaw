@@ -347,7 +347,10 @@ async def bind_round_inputs(
         )
     from app.services.session_user_question import answer_projections
 
-    return [*input_parts_to_runtime_messages(rows, answer_projections=await answer_projections(db, rows)), *carry_messages]
+    return [
+        *input_parts_to_runtime_messages(rows, answer_projections=await answer_projections(db, rows)),
+        *carry_messages,
+    ]
 
 
 def _unsettled_effect_states() -> tuple[str, ...]:
@@ -445,17 +448,37 @@ def split_context_message(message, sections):
         if not text:
             continue
         start = remainder.index(text)
-        remainder = remainder[:start] + remainder[start + len(text):]
+        remainder = remainder[:start] + remainder[start + len(text) :]
         refs, unknown = section["sources"], section["unbound"]
-        parts.append(LLMMessage(role=message.role, content=text, context_origin=ContextMessageOrigin.capture(
-            kind=origin.kind, role=message.role, content=text, sources=refs, unbound=unknown,
-            sections=[{key: section[key] for key in ("name", "source_ref") if key in section}]
-                if section.get("name") else [])))
+        parts.append(
+            LLMMessage(
+                role=message.role,
+                content=text,
+                context_origin=ContextMessageOrigin.capture(
+                    kind=origin.kind,
+                    role=message.role,
+                    content=text,
+                    sources=refs,
+                    unbound=unknown,
+                    sections=[{key: section[key] for key in ("name", "source_ref") if key in section}]
+                    if section.get("name")
+                    else [],
+                ),
+            )
+        )
         sources = [ref for ref in sources if ref not in refs]
         unbound = [reason for reason in unbound if reason not in unknown]
     if remainder.strip():
-        parts.insert(0, LLMMessage(role=message.role, content=remainder, context_origin=ContextMessageOrigin.capture(
-            kind=origin.kind, role=message.role, content=remainder, sources=sources, unbound=unbound)))
+        parts.insert(
+            0,
+            LLMMessage(
+                role=message.role,
+                content=remainder,
+                context_origin=ContextMessageOrigin.capture(
+                    kind=origin.kind, role=message.role, content=remainder, sources=sources, unbound=unbound
+                ),
+            ),
+        )
     return parts
 
 
@@ -465,8 +488,9 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
 
     note = "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"
     if indexes is None:
-        indexes = [entry["message_index"] for entry in input_bindings["messages"]
-            if source in entry.get("dependencies", [])]
+        indexes = [
+            entry["message_index"] for entry in input_bindings["messages"] if source in entry.get("dependencies", [])
+        ]
     if not indexes:
         # Delegated instructions can inherit dependencies without inheriting their bodies.
         indexes = [len(messages)]
@@ -505,34 +529,53 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
                 indexes.add(j)
     indexes.update(index for index, origin in pairs.items() if origin in indexes)
     for index, replacement in {**partial, **{i: {"role": "system", "content": note} for i in indexes}}.items():
-        origin = (messages[index].get("context_origin") if isinstance(messages[index], dict)
-            else getattr(messages[index], "context_origin", None))
-        if isinstance(origin, ContextMessageOrigin) and any(section.get("name") == "skill_catalog" for section in origin.sections):
+        origin = (
+            messages[index].get("context_origin")
+            if isinstance(messages[index], dict)
+            else getattr(messages[index], "context_origin", None)
+        )
+        if isinstance(origin, ContextMessageOrigin) and any(
+            section.get("name") == "skill_catalog" for section in origin.sections
+        ):
             replacement["content"] = "技能目录内容暂时无法核实，已略过；请使用其余内容继续，需要时向用户询问。"
         # Replacing the complete payload also removes arguments and private
         # reasoning; unaffected sibling calls keep their own paired results.
         wire_messages[index] = replacement
         # Dict messages may also be the caller's provider wire payload.
         if replacement["role"] == "system" and not isinstance(messages[index], dict):
-            replacement = {**replacement, "context_origin": ContextMessageOrigin.capture(
-                kind="source_withholding_notice", role="system", content=replacement["content"],
-                sources=(), unbound=())}
+            replacement = {
+                **replacement,
+                "context_origin": ContextMessageOrigin.capture(
+                    kind="source_withholding_notice",
+                    role="system",
+                    content=replacement["content"],
+                    sources=(),
+                    unbound=(),
+                ),
+            }
         messages[index] = dict(replacement) if isinstance(messages[index], dict) else LLMMessage(**replacement)
     for entry in input_bindings["messages"]:
         if entry["message_index"] in indexes:
             entry.update(status="withheld", code=code, dependencies=[], dependency_status="resolved")
         elif entry["message_index"] in partial:
             entry.update(code=code, message_hash=_sha256(partial[entry["message_index"]]))
-    retained = [*(ref for ref in unattached if ref != source),
-        *(ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", []))]
+    retained = [
+        *(ref for ref in unattached if ref != source),
+        *(ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", [])),
+    ]
     input_bindings["dependencies"][:] = [ref for ref in input_bindings["dependencies"] if ref in retained]
 
 
-async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, session_id, run_id,
-    input_bindings, messages, wire_request):
+async def _validate_or_withhold_model_sources(
+    db, *, tenant_id, agent_id, session_id, run_id, input_bindings, messages, wire_request
+):
     from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.runtime.context_candidates import ContextMessageOrigin
-    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies, group_source_read
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError,
+        _validate_input_dependencies,
+        group_source_read,
+    )
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.services.delegation_context_sources import PERMISSION_INPUT_KEYS
     from app.services.shared_group_authority import validate_shared_group_model_inputs
@@ -545,10 +588,13 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
     await validate_model_sources(db, task=task, dependencies=input_bindings["dependencies"], effect="model_request")
     # Compiler-bound platform constants have resolved, empty dependencies;
     # unbound data has no such proof, even when sent with the system role.
-    unbound = [entry["message_index"] for entry in input_bindings["messages"]
-        if entry.get("dependency_status") != "resolved"]
+    unbound = [
+        entry["message_index"] for entry in input_bindings["messages"] if entry.get("dependency_status") != "resolved"
+    ]
     if unbound:
-        permission_unbound = {index for index in unbound
+        permission_unbound = {
+            index
+            for index in unbound
             if isinstance(origin := getattr(messages[index], "context_origin", None), ContextMessageOrigin)
             and any(section.get("name") in PERMISSION_INPUT_KEYS for section in origin.sections)
         }
@@ -558,20 +604,36 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                 entry["code"] = "session_permission_frame_unbound"
         input_bindings["status"] = "resolved"
         input_bindings["dependency_coverage"]["complete"] = True
-    group_principal = await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id,
-        session_id=session_id, run_id=run_id, input_bindings={**input_bindings, "dependencies": []})
+    group_principal = await validate_shared_group_model_inputs(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        input_bindings={**input_bindings, "dependencies": []},
+    )
     from app.services.delegation_input_origin import delegated_instruction_memory_reader
 
-    memory_principal = (AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=task.root_user_id,
-        session_id=str(session_id), runtime_task_id=str(task.id), purpose="interactive_session") if task else None)
+    memory_principal = (
+        AgentRuntimePrincipal(
+            agent_id=agent_id,
+            requester_user_id=task.root_user_id,
+            session_id=str(session_id),
+            runtime_task_id=str(task.id),
+            purpose="interactive_session",
+        )
+        if task
+        else None
+    )
     principals = {group_principal: group_principal} if group_principal is not None else {}
     memory_principal = principals.setdefault(memory_principal, memory_principal)
     memory_readers = {}
     for entry in input_bindings["messages"]:
         if not any(ref["source_kind"] == "explicit_memory" for ref in entry.get("dependencies", [])):
             continue
-        reader = await delegated_instruction_memory_reader(db, task=task, agent_id=agent_id,
-            session_id=session_id, source_ref=entry.get("source_ref", ""))
+        reader = await delegated_instruction_memory_reader(
+            db, task=task, agent_id=agent_id, session_id=session_id, source_ref=entry.get("source_ref", "")
+        )
         if reader is not None:
             memory_readers[entry["message_index"]] = principals.setdefault(reader, reader)
     # Reuse source walks and rows; resolve reader authority on each validation.
@@ -587,19 +649,24 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                 for key in list(rows):
                     if isinstance(key, tuple) and key[0] == "platform_skill_sources":
                         del rows[key]
-            source_key = tuple(source[key] for key in ("source_kind", "source_id", "source_version")) if source else None
+            source_key = (
+                tuple(source[key] for key in ("source_kind", "source_id", "source_version")) if source else None
+            )
             try:
                 if group_principal is not None:
                     scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
                     await _validate_input_dependencies(db, tenant_id, dependencies, runtime_request=group_principal)
-                await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
+                await validate_native_trigger_model_sources(
+                    db, task=task, dependencies=dependencies, effect="model_request"
+                )
                 if source is not None and source["source_kind"] == "explicit_memory" and memory_readers:
                     readers, inherited_indexes = {}, []
                     for entry in input_bindings["messages"]:
                         if source in entry.get("dependencies", []):
                             reader = memory_readers.get(entry["message_index"])
-                            if reader is None and entry.get("source_ref", "").startswith((
-                                "session-model-result:", "session-tool-result:")):
+                            if reader is None and entry.get("source_ref", "").startswith(
+                                ("session-model-result:", "session-tool-result:")
+                            ):
                                 inherited_indexes.append(entry["message_index"])
                             else:
                                 readers.setdefault(reader or memory_principal, []).append(entry["message_index"])
@@ -611,24 +678,40 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                             continue
                         reader = reader or memory_principal
                         try:
-                            scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
-                            await validate_memory_model_sources(db, task=task, agent_id=agent_id,
-                                session_id=session_id, dependencies=dependencies, principal=reader)
+                            scope.verified = {
+                                key: value for key, value in scope.verified.items() if key[-1] != source_key
+                            }
+                            await validate_memory_model_sources(
+                                db,
+                                task=task,
+                                agent_id=agent_id,
+                                session_id=session_id,
+                                dependencies=dependencies,
+                                principal=reader,
+                            )
                         except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
                             _withhold_model_source(messages, wire_request, input_bindings, source, exc.code, indexes)
                         else:
                             inherited_verified = inherited_verified or reader in memory_readers.values()
                 else:
                     scope.verified = {key: value for key, value in scope.verified.items() if key[-1] != source_key}
-                    await validate_memory_model_sources(db, task=task, agent_id=agent_id,
-                        session_id=session_id, dependencies=dependencies, principal=memory_principal)
+                    await validate_memory_model_sources(
+                        db,
+                        task=task,
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        dependencies=dependencies,
+                        principal=memory_principal,
+                    )
             except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
                 if source is None or exc.code == "group_model_sources_unavailable":
                     raise
-                if group_principal is not None and not any(source in entry.get("dependencies", [])
-                    for entry in input_bindings["messages"]):
-                    raise ContentInputReceiptError("group_model_sources_unavailable",
-                        "这次对话暂时无法确认访问范围，请重试。", 503) from exc
+                if group_principal is not None and not any(
+                    source in entry.get("dependencies", []) for entry in input_bindings["messages"]
+                ):
+                    raise ContentInputReceiptError(
+                        "group_model_sources_unavailable", "这次对话暂时无法确认访问范围，请重试。", 503
+                    ) from exc
                 _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
 
     # Defer non-tool rows within a group, but never cross into the next group.
@@ -692,7 +775,11 @@ async def prepare_model_request(
     await lock_transcript_session(db, session_id=session_id)
     round_id = _round_id(run_id, round_index, continuation_index)
     result_id = _result_id(run_id, round_id)
-    from app.services.session_model_inputs import build_model_input_bindings, capture_context_message_origins, message_snapshot
+    from app.services.session_model_inputs import (
+        build_model_input_bindings,
+        capture_context_message_origins,
+        message_snapshot,
+    )
 
     if not isinstance(messages, list):
         messages = list(messages)
@@ -854,10 +941,23 @@ async def prepare_model_request(
         candidate_provider_request_id = result.provider_request_id
     else:
         candidate_provider_request_id = f"hive:{run_id}:{request_lane}:attempt:1"
-    await capture_context_message_origins(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
-        run_id=run_id, result_id=result_id, messages=messages)
-    input_bindings = await build_model_input_bindings(db, tenant_id=tenant_id, agent_id=agent_id,
-        session_id=session_id, messages=messages, wire_messages=list(canonical_wire_request.get("messages") or []))
+    await capture_context_message_origins(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        result_id=result_id,
+        messages=messages,
+    )
+    input_bindings = await build_model_input_bindings(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        messages=messages,
+        wire_messages=list(canonical_wire_request.get("messages") or []),
+    )
     await _validate_or_withhold_model_sources(
         db,
         tenant_id=tenant_id,
@@ -1676,8 +1776,10 @@ async def commit_model_response(
 def provider_request_has_effect(wire: dict[str, Any]) -> bool:
     provider_request = {**wire, **dict(wire.get("reasoning") or {})}
     tools = provider_request.get("tools", [])
-    return bool(provider_request.get("mcp_servers")) or not isinstance(tools, list) or any(
-        not isinstance(tool, dict) or tool.get("type") != "function" for tool in tools
+    return (
+        bool(provider_request.get("mcp_servers"))
+        or not isinstance(tools, list)
+        or any(not isinstance(tool, dict) or tool.get("type") != "function" for tool in tools)
     )
 
 
@@ -1690,26 +1792,42 @@ async def fail_model_request(
     run_id: uuid.UUID,
     turn_id: str,
     round_index: int,
-    provider_request_id: str,
+    provider_request_id: str | None,
     error_class: str,
     delivery_state: str = "unknown",
     retry_safe: bool,
     continuation_index: int = 0,
+    provider_request_sent: bool = True,
 ) -> str | None:
     from app.services.chat_transcript import lock_transcript_session
-    from app.services.runtime_task_fence import assert_runtime_task_fence, clear_runtime_task_fence, reset_runtime_task_fence
+    from app.services.runtime_task_fence import (
+        assert_runtime_task_fence,
+        clear_runtime_task_fence,
+        reset_runtime_task_fence,
+    )
 
     # Choose cancellation and provider failure under the same advisory → row
     # locks as the terminal write, including failures without a sealable round.
     await lock_transcript_session(db, session_id=session_id)
     token = clear_runtime_task_fence()
     try:
-        run_task = await db.scalar(select(RuntimeTask).where(
-            RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id,
-            or_(and_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id)),
-                and_(RuntimeTask.task_type.in_(("delegation", "business_task")), RuntimeTask.child_agent_id == agent_id,
-                    func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session_id.hex)),
-        ).with_for_update().execution_options(populate_existing=True))
+        run_task = await db.scalar(
+            select(RuntimeTask)
+            .where(
+                RuntimeTask.id == run_id,
+                RuntimeTask.tenant_id == tenant_id,
+                or_(
+                    and_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id)),
+                    and_(
+                        RuntimeTask.task_type.in_(("delegation", "business_task")),
+                        RuntimeTask.child_agent_id == agent_id,
+                        func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session_id.hex,
+                    ),
+                ),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
     finally:
         reset_runtime_task_fence(token)
     round_id = _round_id(run_id, round_index, continuation_index)
@@ -1722,13 +1840,18 @@ async def fail_model_request(
         )
         .with_for_update()
     )
-    if (
-        result is None
-        or result.provider_request_id != provider_request_id
-        or result.state not in {"prepared", "streaming"}
-    ):
+    if result is None or result.state not in {"prepared", "streaming"}:
         return
     snapshot = result.model_request_snapshot_json if isinstance(result.model_request_snapshot_json, dict) else {}
+    if provider_request_id is None:
+        # Input binding can commit a placeholder before request preparation.
+        # It has never owned provider bytes. A full snapshot still requires
+        # its exact request identity, including when cancellation races a commit.
+        if provider_request_sent or snapshot.get("phase") != "awaiting_exact_snapshot":
+            return
+        provider_request_id = result.provider_request_id
+    elif result.provider_request_id != provider_request_id:
+        return
     wire_request = snapshot.get("wire_request")
     # R18a round 2/3: a snapshot without its exact wire request cannot prove
     # the send was effect-free, so it fails closed into reconciliation. This
@@ -1737,11 +1860,14 @@ async def fail_model_request(
     # (needs_reconciliation) instead of ending killed. Neither is reachable on
     # a live path — prepare writes the full wire before the kernel ever holds
     # the request id — but the boundary itself stays fail-closed.
-    provider_effect = (
+    # Only the trusted preparation callback can prove no provider send took
+    # place. Ordinary provider cancellation/failure keeps the R18a default.
+    provider_effect = provider_request_sent and (
         True if not isinstance(wire_request, dict) else provider_request_has_effect(dict(wire_request))
     )
-    if error_class == "cancelled" or (run_task is not None and
-        (run_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}):
+    if error_class == "cancelled" or (
+        run_task is not None and (run_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}
+    ):
         error_class = "cancelled"
         retry_safe = False
     cancelled = error_class == "cancelled" and not provider_effect
@@ -1782,7 +1908,11 @@ async def fail_model_request(
             else:
                 metadata["session_v2_reconciliation"] = failure
             run_task.status = "killed" if cancelled else "needs_reconciliation"
-            run_task.result_summary = "Generation stopped." if cancelled else "Provider send outcome is ambiguous; operator reconciliation is required."
+            run_task.result_summary = (
+                "Generation stopped."
+                if cancelled
+                else "Provider send outcome is ambiguous; operator reconciliation is required."
+            )
             run_task.metadata_json = metadata
             run_task.completed_at = datetime.now(timezone.utc)
             run_task.claim_version = int(run_task.claim_version or 0) + 1
@@ -1803,16 +1933,28 @@ async def fail_model_request(
         except ValueError as exc:
             if str(exc) != "fork_input_for_run_not_found":
                 raise
-    drafts = [SessionEventDraft(
-        item_id=result.id, item_kind="result_commit", lifecycle=result.state,
-        scope=_scope(session_id, turn_id, run_id, round_id), actor={"type": "runtime"},
-        payload=dict(result.seal_json), result_id=result.id,
-    )]
+    drafts = [
+        SessionEventDraft(
+            item_id=result.id,
+            item_kind="result_commit",
+            lifecycle=result.state,
+            scope=_scope(session_id, turn_id, run_id, round_id),
+            actor={"type": "runtime"},
+            payload=dict(result.seal_json),
+            result_id=result.id,
+        )
+    ]
     if run_task is not None:
-        drafts.append(SessionEventDraft(
-            item_id=run_id, item_kind="run", lifecycle="cancelled" if cancelled else "needs_reconciliation",
-            scope=_run_scope(session_id, turn_id, run_id), actor={"type": "runtime"}, payload=failure,
-        ))
+        drafts.append(
+            SessionEventDraft(
+                item_id=run_id,
+                item_kind="run",
+                lifecycle="cancelled" if cancelled else "needs_reconciliation",
+                scope=_run_scope(session_id, turn_id, run_id),
+                actor={"type": "runtime"},
+                payload=failure,
+            )
+        )
     await append_session_events(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, drafts=drafts)
     if run_task is not None:
         from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
@@ -1820,7 +1962,9 @@ async def fail_model_request(
         await settle_and_enqueue_runtime_task_terminal(
             db,
             run_task,
-            terminal_source="session_model_round:cancelled" if cancelled else "session_model_round:ambiguous_provider_send",
+            terminal_source="session_model_round:cancelled"
+            if cancelled
+            else "session_model_round:ambiguous_provider_send",
             root_reason_code="user_cancel" if cancelled else "ambiguous_provider_send_terminal",
         )
     return result.state

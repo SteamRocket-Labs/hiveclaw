@@ -198,7 +198,11 @@ async def _lock_runtime_task_for_session_mutation(
     agent_uuid = agent_id if isinstance(agent_id, uuid.UUID) else uuid.UUID(str(agent_id))
     session_uuid = session_id if isinstance(session_id, uuid.UUID) else uuid.UUID(str(session_id))
     await _lock_session_runtime_mutation(db, session_id=session_uuid)
-    from app.services.runtime_task_fence import assert_runtime_task_fence, clear_runtime_task_fence, reset_runtime_task_fence
+    from app.services.runtime_task_fence import (
+        assert_runtime_task_fence,
+        clear_runtime_task_fence,
+        reset_runtime_task_fence,
+    )
 
     # Observe settled rows so finalizers can decline a second write. Active
     # rows still require the original worker claim under the same lock.
@@ -1521,7 +1525,9 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
                 _empty_company_search_replay_note(payload, args)
                 if tool_name == "search_company_kb" and not rows and payload.get("status") == "empty"
                 else (
-                    ("Call query_company_ontology/get_company_object/explain_company_fact again if the content is needed.")
+                    (
+                        "Call query_company_ontology/get_company_object/explain_company_fact again if the content is needed."
+                    )
                     if tool_name
                     in {
                         "query_company_ontology",
@@ -1949,7 +1955,7 @@ async def _session_restart_resume_history(
 
     from app.models.session_v2 import SessionModelResult, SessionToolInvocation, SessionTurnInput
     from app.services.session_human_input import input_parts_to_runtime_messages
-    from app.services.session_model_round import commit_sealed_model_round
+    from app.services.session_model_round import commit_sealed_model_round, fail_model_request
     from app.services.session_round_obligation import release_dispatched_plans_without_sealed_result
     from app.services.session_tool_runtime import UNRESOLVED_TOOL_EFFECT_STATES
     from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
@@ -2067,6 +2073,34 @@ async def _session_restart_resume_history(
                 },
             )
         if not recoverable:
+            if (
+                (runtime_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}
+                and row.state in {"prepared", "streaming"}
+                and row.seal_json is None
+                and not invocations
+            ):
+                placeholder = (row.model_request_snapshot_json or {}).get("phase") == "awaiting_exact_snapshot"
+                await fail_model_request(
+                    db,
+                    tenant_id=row.tenant_id,
+                    agent_id=runtime_task.child_agent_id
+                    if runtime_task.task_type == "delegation"
+                    else runtime_task.parent_agent_id,
+                    session_id=row.session_id,
+                    run_id=row.run_id,
+                    turn_id=row.turn_id,
+                    round_index=round_index,
+                    provider_request_id=row.provider_request_id,
+                    error_class="cancelled",
+                    delivery_state="rejected" if placeholder else "unknown",
+                    retry_safe=False,
+                    provider_request_sent=not placeholder,
+                )
+                await db.commit()
+                raise SessionRestartRecoveryRequired(
+                    reason_code="round_requires_reconciliation",
+                    detail={"round_index": round_index, "round_id": row.round_id, "state": row.state},
+                )
             failure_seal = dict(row.seal_json or {})
             if (
                 row.state == "failed"
@@ -2484,9 +2518,10 @@ async def broadcast_web_chat_event(
     agent_id: uuid.UUID, session_id: str | uuid.UUID | None, event: dict[str, Any]
 ) -> None:
     event_payload = dict(event)
-    if event_payload.get("schema") == "hive.session_event_compatibility" and int(
-        event_payload.get("schema_version") or 0
-    ) == 1:
+    if (
+        event_payload.get("schema") == "hive.session_event_compatibility"
+        and int(event_payload.get("schema_version") or 0) == 1
+    ):
         # X2 A: a committed compatibility envelope (an unmapped legacy runtime
         # event such as tool_group_activation) is durable transcript evidence
         # the reload path renders. Wrapping it in the live thread-item jacket
@@ -3750,18 +3785,33 @@ async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
         try:
             tenant_id = await resolve_tenant_for_agent(_run_id(agent_id))
             async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
-                children = select(RuntimeTask.id).where(
-                    RuntimeTask.root_runtime_task_id == run_uuid,
-                    RuntimeTask.tenant_id == tenant_id,
-                    RuntimeTask.task_type == "delegation",
-                ).cte("cancel_delegation_children", recursive=True)
-                children = children.union(select(RuntimeTask.id).join(
-                    children, RuntimeTask.root_runtime_task_id == children.c.id,
-                ).where(RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == "delegation"))
-                delegated = list((await db.execute(select(RuntimeTask.id, RuntimeTask.parent_agent_id).where(
-                    RuntimeTask.id.in_(select(children.c.id)),
-                    RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
-                ))).all())
+                children = (
+                    select(RuntimeTask.id)
+                    .where(
+                        RuntimeTask.root_runtime_task_id == run_uuid,
+                        RuntimeTask.tenant_id == tenant_id,
+                        RuntimeTask.task_type == "delegation",
+                    )
+                    .cte("cancel_delegation_children", recursive=True)
+                )
+                children = children.union(
+                    select(RuntimeTask.id)
+                    .join(
+                        children,
+                        RuntimeTask.root_runtime_task_id == children.c.id,
+                    )
+                    .where(RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == "delegation")
+                )
+                delegated = list(
+                    (
+                        await db.execute(
+                            select(RuntimeTask.id, RuntimeTask.parent_agent_id).where(
+                                RuntimeTask.id.in_(select(children.c.id)),
+                                RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
+                            )
+                        )
+                    ).all()
+                )
             for child_id, parent_id in delegated:
                 tasks[asyncio.create_task(cancel_child(child_id, parent_id))] = child_id
             if tasks:
@@ -4165,13 +4215,16 @@ async def _enqueue_web_terminal_boundary(db: AsyncSession, task: RuntimeTask) ->
 
 
 def _terminal_status_with_cancel(
-    task: RuntimeTask, status: str, metadata_json: dict[str, Any] | None,
+    task: RuntimeTask,
+    status: str,
+    metadata_json: dict[str, Any] | None,
 ) -> tuple[str, dict[str, Any] | None]:
     # Call only while holding the run row lock. Unknown provider/tool effects
     # keep their explicit needs_reconciliation outcome.
-    if status in {"completed", "failed", "suspended"} and (
-        task.metadata_json or {}
-    ).get("cancel_state") in {"cancelling", "cancelled"}:
+    if status in {"completed", "failed", "suspended"} and (task.metadata_json or {}).get("cancel_state") in {
+        "cancelling",
+        "cancelled",
+    }:
         return "killed", {**(metadata_json or {}), "terminal_reason": "user_cancel", "cancelled_by_user": True}
     return status, metadata_json
 
@@ -5638,7 +5691,11 @@ async def _update_runtime_task(
         source="durable_web_run_status_update",
     ) as db:
         if status in _TERMINAL_STATUSES or status == "suspended":
-            from app.services.runtime_task_fence import assert_runtime_task_fence, clear_runtime_task_fence, reset_runtime_task_fence
+            from app.services.runtime_task_fence import (
+                assert_runtime_task_fence,
+                clear_runtime_task_fence,
+                reset_runtime_task_fence,
+            )
             from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
 
             token = clear_runtime_task_fence()
@@ -5660,18 +5717,23 @@ async def _update_runtime_task(
             if task is None:
                 return
         recovery = (metadata_json or {}).get("session_v2_reconciliation") or {}
-        if status == "needs_reconciliation" and recovery.get("reason") == "ambiguous_provider_send" and (
-            task.metadata_json or {}
-        ).get("cancel_state") in {"cancelling", "cancelled"}:
+        if (
+            status == "needs_reconciliation"
+            and recovery.get("reason") == "ambiguous_provider_send"
+            and (task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}
+        ):
             from app.models.session_v2 import SessionModelResult
             from app.services.session_model_round import provider_request_has_effect
 
             # An unsealable failure may have committed before Stop. Decide
             # from this exact request's existing snapshot under the run lock.
-            snapshot = await db.scalar(select(SessionModelResult.model_request_snapshot_json).where(
-                SessionModelResult.tenant_id == tenant_id, SessionModelResult.run_id == run_uuid,
-                SessionModelResult.provider_request_id == recovery.get("provider_request_id"),
-            ))
+            snapshot = await db.scalar(
+                select(SessionModelResult.model_request_snapshot_json).where(
+                    SessionModelResult.tenant_id == tenant_id,
+                    SessionModelResult.run_id == run_uuid,
+                    SessionModelResult.provider_request_id == recovery.get("provider_request_id"),
+                )
+            )
             wire = (snapshot or {}).get("wire_request")
             if isinstance(wire, dict) and not provider_request_has_effect(wire):
                 status, metadata_json = "killed", {"terminal_reason": "user_cancel", "cancelled_by_user": True}
@@ -5706,9 +5768,14 @@ async def _update_runtime_task(
             except ApprovalTicketError:
                 from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
 
-                task.status, task.result_summary, task.completed_at = "failed", "approval_return_unavailable", datetime.now(timezone.utc)
-                await settle_and_enqueue_runtime_task_terminal(db, task,
-                    terminal_source="company_approval_return", root_reason_code="approval_return_unavailable")
+                task.status, task.result_summary, task.completed_at = (
+                    "failed",
+                    "approval_return_unavailable",
+                    datetime.now(timezone.utc),
+                )
+                await settle_and_enqueue_runtime_task_terminal(
+                    db, task, terminal_source="company_approval_return", root_reason_code="approval_return_unavailable"
+                )
                 await _enqueue_web_terminal_boundary(db, task)
                 return "failed"
         if channel_delivery_text:
@@ -6899,7 +6966,11 @@ async def _reconcile_claimed_web_chat_terminal_ghost(run_uuid: uuid.UUID) -> boo
             from app.services.session_terminal_outcome import recover_terminal_candidates_once
 
             recovered = await recover_terminal_candidates_once(
-                db, worker_id=task.claimed_by, run_id=run_uuid, tenant_id=tenant_id, limit=1,
+                db,
+                worker_id=task.claimed_by,
+                run_id=run_uuid,
+                tenant_id=tenant_id,
+                limit=1,
             )
             if recovered["terminal_committed"]:
                 return True

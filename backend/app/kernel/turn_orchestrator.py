@@ -201,7 +201,6 @@ def _build_turn_route_span_metadata(request: Any) -> dict[str, Any]:
     }
 
 
-
 def _bind_system_prompt_suffix_sections(
     protected_sections: list[str],
     request: Any,
@@ -223,17 +222,38 @@ def _bind_system_prompt_suffix_sections(
         from app.runtime.context import ensure_runtime_assembly_state
 
         state = ensure_runtime_assembly_state(session_ctx)
-        stop = next((message for message in reversed(request.messages)
-            if message.get("stop_notice_active")
-            and str(message.get("source_ref", "")).startswith("session-run-cancelled:")), None
-        ) if getattr(request, "member_authored_turn", False) else None
+        stop = (
+            next(
+                (
+                    message
+                    for message in reversed(request.messages)
+                    if message.get("stop_notice_active")
+                    and str(message.get("source_ref", "")).startswith("session-run-cancelled:")
+                ),
+                None,
+            )
+            if getattr(request, "member_authored_turn", False)
+            else None
+        )
         if stop is not None:
             from app.services.session_semantic_history import _USER_STOP_NOTICE
 
             sections.append(_USER_STOP_NOTICE)
-            state.record_context_sources(agent_id=request.agent_id, content=_USER_STOP_NOTICE,
-                sources=(), unbound=(), sections=[{"name": "member_stop", "content": _USER_STOP_NOTICE,
-                    "sources": (), "unbound": (), "source_ref": stop["source_ref"]}])
+            state.record_context_sources(
+                agent_id=request.agent_id,
+                content=_USER_STOP_NOTICE,
+                sources=(),
+                unbound=(),
+                sections=[
+                    {
+                        "name": "member_stop",
+                        "content": _USER_STOP_NOTICE,
+                        "sources": (),
+                        "unbound": (),
+                        "source_ref": stop["source_ref"],
+                    }
+                ],
+            )
         if source_maps is not None:
             sources, unbound = source_maps
             offset = int(bool((request.system_prompt_suffix or "").strip()))
@@ -349,18 +369,27 @@ async def _execute_committed_provider_round(
             request_options["tool_choice"] = {"type": "none"}
         else:
             request_tools = []
-        stream_messages = [*stream_messages, support._context_message(
-            role="system", kind="runtime_reminder", unbound=(),
-            content=(("Stop searching. Finish this turn with a normal assistant reply in the member's language, "
-                "using the material already found in this turn. "
-                "Plainly say what could not be found or confirmed. "
-                if empty_search_material_found else
-                "Finish this turn with a normal assistant reply in the member's language, "
-                "plainly saying that no matching material was found. "
-                ) + "Also report any action already committed in this same turn, grounded in successful tool results. "
-                "Do not claim actions that were only proposed, denied, failed, or unknown. "
-                "This is the final reply for this turn. Any tool call you return will not run."),
-        )]
+        stream_messages = [
+            *stream_messages,
+            support._context_message(
+                role="system",
+                kind="runtime_reminder",
+                unbound=(),
+                content=(
+                    (
+                        "Stop searching. Finish this turn with a normal assistant reply in the member's language, "
+                        "using the material already found in this turn. "
+                        "Plainly say what could not be found or confirmed. "
+                        if empty_search_material_found
+                        else "Finish this turn with a normal assistant reply in the member's language, "
+                        "plainly saying that no matching material was found. "
+                    )
+                    + "Also report any action already committed in this same turn, grounded in successful tool results. "
+                    "Do not claim actions that were only proposed, denied, failed, or unknown. "
+                    "This is the final reply for this turn. Any tool call you return will not run."
+                ),
+            ),
+        ]
     reasoning_kwargs = {
         **support.build_reasoning_kwargs(active_model, tools_enabled=bool(request_tools)),
         **request_options,
@@ -376,26 +405,34 @@ async def _execute_committed_provider_round(
     provider_request_id: str | None = None
     prepare_receipt: dict[str, Any] | None = None
     if request.model_request_prepare is not None:
-        prepared = await support._maybe_await(
-            request.model_request_prepare(
-                round_index=logical_round_index,
-                messages=stream_messages,
-                tools=request_tools or None,
-                provider=provider,
-                model=model,
-                wire_request=wire_request,
-                continuation_index=0,
-                provider_idempotency_supported=provider_idempotency_supported,
-                provider_idempotency_key_applied=False,
+
+        async def prepare_request() -> None:
+            nonlocal provider_request_id, prepare_receipt
+            prepared = await support._maybe_await(
+                request.model_request_prepare(
+                    round_index=logical_round_index,
+                    messages=stream_messages,
+                    tools=request_tools or None,
+                    provider=provider,
+                    model=model,
+                    wire_request=wire_request,
+                    continuation_index=0,
+                    provider_idempotency_supported=provider_idempotency_supported,
+                    provider_idempotency_key_applied=False,
+                )
             )
+            if isinstance(prepared, dict):
+                # The durable seal is authoritative on committed-round resume.
+                prepare_receipt = dict(prepared)
+                provider_request_id = str(prepare_receipt.get("provider_request_id") or "") or None
+            elif prepared is not None:
+                provider_request_id = str(prepared)
+            # Retain identity even when preparation and cancellation finish together.
+            attempt_state["provider_request_id"] = provider_request_id
+
+        await support._await_with_cancel(
+            prepare_request, cancel_event=request.cancel_event, provider_request_sent=False
         )
-        if isinstance(prepared, dict):
-            # A committed-round resume receipt: the caller's durable seal is
-            # the authoritative model-authored response for this round.
-            prepare_receipt = dict(prepared)
-            provider_request_id = str(prepare_receipt.get("provider_request_id") or "") or None
-        elif prepared is not None:
-            provider_request_id = str(prepared)
 
     llm_started_ms = support.monotonic_ms()
     attempt_state.update(
@@ -482,9 +519,16 @@ async def _execute_committed_provider_round(
         # R20b round 4/I5: output continuations retain Anthropic's history definitions too.
         continuation_client = SimpleNamespace(stream=lambda **kw: client.stream(**{**kw, "tools": request_tools}))
         if continuation_prepare is not None:
+
             def prepare_continuation(**payload):
-                return request.model_request_prepare(**{**payload, "tools": request_tools,
-                    "wire_request": {**payload["wire_request"], "tools": request_tools}})
+                return request.model_request_prepare(
+                    **{
+                        **payload,
+                        "tools": request_tools,
+                        "wire_request": {**payload["wire_request"], "tools": request_tools},
+                    }
+                )
+
             continuation_prepare = prepare_continuation
     response, continuation_receipts = await support._continue_after_output_cap(
         client=continuation_client,
@@ -503,9 +547,13 @@ async def _execute_committed_provider_round(
     )
     if final_reply_only and (response.tool_calls or not str(response.content or "").strip()):
         # Settle every physical response before rejecting this summary's tools or empty output.
-        return {"response": response, "provider_request_id": provider_request_id,
-            "llm_started_ms": llm_started_ms, "discarded_summary": True,
-            "continuation_receipts": continuation_receipts}
+        return {
+            "response": response,
+            "provider_request_id": provider_request_id,
+            "llm_started_ms": llm_started_ms,
+            "discarded_summary": True,
+            "continuation_receipts": continuation_receipts,
+        }
     has_model_output = bool(response.tool_calls) or bool(isinstance(response.content, str) and response.content.strip())
     if not has_model_output:
         return {
@@ -649,22 +697,36 @@ async def _finalize_model_response(
         await _flush_buffered_chunks()
     complete_response = partial(
         _completed_model_response,
-        support=support, request=request, response=response, runtime_config=runtime_config,
-        api_messages=api_messages, logical_round_index=logical_round_index,
-        accumulated_tokens=accumulated_tokens, tools_for_llm=tools_for_llm,
-        collected_parts=collected_parts, last_model_result_receipt=last_model_result_receipt,
-        final_content=final_content, _record_new_token_usage=_record_new_token_usage,
+        support=support,
+        request=request,
+        response=response,
+        runtime_config=runtime_config,
+        api_messages=api_messages,
+        logical_round_index=logical_round_index,
+        accumulated_tokens=accumulated_tokens,
+        tools_for_llm=tools_for_llm,
+        collected_parts=collected_parts,
+        last_model_result_receipt=last_model_result_receipt,
+        final_content=final_content,
+        _record_new_token_usage=_record_new_token_usage,
     )
-    if ((logical_round_index < max_rounds or final_reply_only)
+    if (
+        (logical_round_index < max_rounds or final_reply_only)
         and provider_request_id
         and (last_model_result_receipt or {}).get("provider_request_id") == provider_request_id
-        and (last_model_result_receipt or {}).get("continuation", {}).get("verdict") == "continue"):
+        and (last_model_result_receipt or {}).get("continuation", {}).get("verdict") == "continue"
+    ):
         # A message can arrive after the provider's input snapshot. The sealed
         # round already records that obligation; bind it on the next round.
-        api_messages.append(LLMMessage(role="assistant", content=final_content,
-            reasoning_content=response.reasoning_content,
-            reasoning_signature=getattr(response, "reasoning_signature", None),
-            source_ref=f"session-provider-result:{provider_request_id}"))
+        api_messages.append(
+            LLMMessage(
+                role="assistant",
+                content=final_content,
+                reasoning_content=response.reasoning_content,
+                reasoning_signature=getattr(response, "reasoning_signature", None),
+                source_ref=f"session-provider-result:{provider_request_id}",
+            )
+        )
         return None
     if final_reply_only:
         # R20b round 4: pending input can continue normally; summary Stop hooks cannot.
@@ -869,10 +931,18 @@ async def _finalize_model_response(
 
 
 async def _completed_model_response(
-    *, support: Any, request: Any, response: Any, runtime_config: Any,
-    api_messages: list[Any], logical_round_index: int, accumulated_tokens: int,
-    tools_for_llm: list[dict[str, Any]], collected_parts: list[dict[str, Any]],
-    last_model_result_receipt: dict[str, Any] | None, final_content: str,
+    *,
+    support: Any,
+    request: Any,
+    response: Any,
+    runtime_config: Any,
+    api_messages: list[Any],
+    logical_round_index: int,
+    accumulated_tokens: int,
+    tools_for_llm: list[dict[str, Any]],
+    collected_parts: list[dict[str, Any]],
+    last_model_result_receipt: dict[str, Any] | None,
+    final_content: str,
     _record_new_token_usage: Any,
 ) -> InvocationResult:
     # Subagent runs execute under the parent's agent_id but are
@@ -1182,7 +1252,11 @@ async def _project_loop_guard_warning(
 
 
 async def _project_loop_guard_terminal_evidence(
-    decision: LoopGuardDecision, *, api_messages: list, _context_message: Any, _emit_event: Any,
+    decision: LoopGuardDecision,
+    *,
+    api_messages: list,
+    _context_message: Any,
+    _emit_event: Any,
     empty_search_material_found: bool = False,
 ) -> None:
     import json
@@ -1193,10 +1267,13 @@ async def _project_loop_guard_terminal_evidence(
     }
     empty_search = decision.reason == "repeated_empty_search"
     guidance = (
-        ("The last searches returned no new material." if empty_search_material_found
-            else "The searches returned no matching material.")
-        if empty_search else
-        "The governed runtime has recorded that this side-effect-free retry path is exhausted "
+        (
+            "The last searches returned no new material."
+            if empty_search_material_found
+            else "The searches returned no matching material."
+        )
+        if empty_search
+        else "The governed runtime has recorded that this side-effect-free retry path is exhausted "
         "without state progress. Treat this as evidence, not as a platform-authored semantic "
         "conclusion. Decide whether another available capability can make progress or whether "
         "to answer now; preserve uncertainty and cite the most useful recovery action."
@@ -1223,9 +1300,11 @@ async def _project_loop_guard_terminal_evidence(
                 "type": "event",
                 "event_type": "loop_guard_terminal_evidence",
                 "title": "Retry evidence available",
-                "text": ("The model received empty-search evidence for its final reply; tool calls will not run."
-                    if empty_search else
-                    "The model received typed non-progress evidence with its authorized tools intact."),
+                "text": (
+                    "The model received empty-search evidence for its final reply; tool calls will not run."
+                    if empty_search
+                    else "The model received typed non-progress evidence with its authorized tools intact."
+                ),
                 "status": "warning",
                 **decision.trace_event,
             },
@@ -1257,6 +1336,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _TOOL_RESULTS_AGGREGATE_BUDGET = support._TOOL_RESULTS_AGGREGATE_BUDGET
     _WORK_LEDGER_ENABLED_METADATA_KEY = support._WORK_LEDGER_ENABLED_METADATA_KEY
     _apply_mechanical_compaction_with_lifecycle_hooks = support._apply_mechanical_compaction_with_lifecycle_hooks
+    _await_with_cancel = support._await_with_cancel
     _build_cancelled_result = support._build_cancelled_result
     _build_error_result = support._build_error_result
     _build_frozen_prompt_cache_key = support._build_frozen_prompt_cache_key
@@ -1406,16 +1486,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             )
 
         async def resolve_memory():
-            return await _maybe_await(
-                self._deps.resolve_memory_context(request, runtime_config.tenant_id)
-            )
+            return await _maybe_await(self._deps.resolve_memory_context(request, runtime_config.tenant_id))
 
         async def resolve_other_contexts():
             retrieval = ""
             if self._deps.resolve_retrieval_context:
-                retrieval = await _maybe_await(
-                    self._deps.resolve_retrieval_context(request, runtime_config.tenant_id)
-                )
+                retrieval = await _maybe_await(self._deps.resolve_retrieval_context(request, runtime_config.tenant_id))
             metadata = ""
             if self._deps.resolve_runtime_metadata_context:
                 try:
@@ -1563,7 +1639,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         # request, breaking the 413 ceiling.
         dynamic_sources["company_connections"] = ()
         dynamic_unbound["company_connections"] = ()
-        permissions_platform_constant = not dynamic_sources["permissions_context"] and not dynamic_unbound["permissions_context"]
+        permissions_platform_constant = (
+            not dynamic_sources["permissions_context"] and not dynamic_unbound["permissions_context"]
+        )
 
         def _dynamic_source_refs():
             from app.services.session_model_inputs import _unique_dependencies
@@ -1593,14 +1671,21 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         def _dynamic_message_sections():
             cursor = 0
             sections = []
-            for section in sorted((s for s in dynamic_context_section_ledger if s.get("selected")),
-                key=lambda s: s["render_order"]):
+            for section in sorted(
+                (s for s in dynamic_context_section_ledger if s.get("selected")), key=lambda s: s["render_order"]
+            ):
                 end = cursor + section["rendered_chars"]
                 key = _dynamic_source_key(section)
-                sections.append({"name": section["name"], "content": dynamic_prompt_suffix[cursor:end],
-                    "sources": dynamic_sources.get(key, ()),
-                    "unbound": () if section.get("platform_constant") else dynamic_unbound.get(
-                        key, (f"dynamic_section_sources_unbound:{section['name']}",))})
+                sections.append(
+                    {
+                        "name": section["name"],
+                        "content": dynamic_prompt_suffix[cursor:end],
+                        "sources": dynamic_sources.get(key, ()),
+                        "unbound": ()
+                        if section.get("platform_constant")
+                        else dynamic_unbound.get(key, (f"dynamic_section_sources_unbound:{section['name']}",)),
+                    }
+                )
                 cursor = end + 2
             return sections
 
@@ -1796,8 +1881,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 mcp_server_refs=list(session_ctx.metadata.get("mcp_server_refs") or []),
                 hook_added_context=hook_added_context,
                 available_agent_types=list(session_ctx.metadata.get("available_agent_types") or []),
-                messages=[{key: value for key, value in message.items() if key != "stop_notice_active"}
-                    for message in request.messages],
+                messages=[
+                    {key: value for key, value in message.items() if key != "stop_notice_active"}
+                    for message in request.messages
+                ],
                 frozen_context_dependency_manifest=_frozen_context_manifest,
             )
             prompt_manifest["dynamic_context_section_ledger"] = {
@@ -1866,9 +1953,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         delivered_chunk_count = 0
         streamed_thinking: list[str] = []
         _callback_failure_count: int = 0
-        loop_guard = LoopGuard(runtime_task_id=(
-            session_ctx.metadata.get("runtime_task_id") or session_ctx.metadata.get("task_id")
-        ) if session_ctx else None)
+        loop_guard = LoopGuard(
+            runtime_task_id=(session_ctx.metadata.get("runtime_task_id") or session_ctx.metadata.get("task_id"))
+            if session_ctx
+            else None
+        )
         # Runtime reminders (T-G1): one scheduler per invocation; texts are
         # transient (per-round stream clone only — never api_messages).
         reminder_scheduler = ReminderScheduler(build_default_reminder_specs())
@@ -2198,8 +2287,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             for round_i in range(remaining_rounds + 2):
                 logical_round_index = initial_round_index + round_i + 1
                 if round_i >= remaining_rounds and not (
-                    _summary_input_continuation_pending
-                    or (_loop_guard_summary_pending and round_i == remaining_rounds)
+                    _summary_input_continuation_pending or (_loop_guard_summary_pending and round_i == remaining_rounds)
                 ):
                     break
                 _summary_input_continuation_pending = False
@@ -2219,7 +2307,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     )
                 if not final_empty_search_reply and request.round_input_bind is not None:
                     bound_round_inputs = _mid_run_items_to_user_messages(
-                        await _maybe_await(request.round_input_bind(logical_round_index))
+                        await _await_with_cancel(
+                            lambda: _maybe_await(request.round_input_bind(logical_round_index)),
+                            cancel_event=request.cancel_event,
+                            provider_request_sent=False,
+                        )
                     )
                     if bound_round_inputs:
                         api_messages.extend(bound_round_inputs)
@@ -2237,7 +2329,15 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         )
                 if not final_empty_search_reply and request.mid_run_message_drain is not None:
                     try:
-                        drained = _mid_run_items_to_user_messages(await _maybe_await(request.mid_run_message_drain()))
+                        drained = _mid_run_items_to_user_messages(
+                            await _await_with_cancel(
+                                lambda: _maybe_await(request.mid_run_message_drain()),
+                                cancel_event=request.cancel_event,
+                                provider_request_sent=False,
+                            )
+                        )
+                    except _KernelCancelledError:
+                        raise
                     except Exception as drain_exc:
                         drained = []
                         logger.warning("[Kernel] mid-run message drain failed: %s", drain_exc)
@@ -2316,7 +2416,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 # Apply capability-driven cache hints.
                 ptl_retries = 0
                 while True:
-                    await _prepare_api_messages_for_request()
+                    await _await_with_cancel(
+                        _prepare_api_messages_for_request,
+                        cancel_event=request.cancel_event,
+                        provider_request_sent=False,
+                    )
                     stream_messages = _clone_api_messages(api_messages)
                     if _transient_reminders:
                         stream_messages = stream_messages + [
@@ -2337,12 +2441,17 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             for content in (resolved_memory_context, resolved_permissions_context):
                                 if content and content in part.content:
                                     sections = ensure_runtime_assembly_state(session_ctx).context_sections_for(
-                                        agent_id=request.agent_id, content=content)
+                                        agent_id=request.agent_id, content=content
+                                    )
                                     break
                             if not sections and part.content == _USER_STOP_NOTICE:
-                                sections = tuple(section for section in ensure_runtime_assembly_state(
-                                    session_ctx).context_sections_for(agent_id=request.agent_id, content=part.content)
-                                    if section.get("name") == "member_stop")
+                                sections = tuple(
+                                    section
+                                    for section in ensure_runtime_assembly_state(session_ctx).context_sections_for(
+                                        agent_id=request.agent_id, content=part.content
+                                    )
+                                    if section.get("name") == "member_stop"
+                                )
                             stream_messages.extend(split_context_message(part, sections) if sections else [part])
                     if self._deps.apply_vision_transform:
                         stream_messages = self._deps.apply_vision_transform(
@@ -2431,16 +2540,20 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             terminal_reason=TerminalReason.MEMORY_UNAVAILABLE,
                             failure_code=exc.code,
                         )
-                    except _KernelCancelledError:
+                    except _KernelCancelledError as exc:
                         provider_request_id = provider_attempt_state.get("provider_request_id")
                         llm_started_ms = int(provider_attempt_state["llm_started_ms"])
-                        if request.model_request_fail is not None and provider_request_id is not None:
+                        if request.model_request_fail is not None and (
+                            provider_request_id is not None or not exc.provider_request_sent
+                        ):
                             await _maybe_await(
                                 request.model_request_fail(
                                     round_index=logical_round_index,
                                     provider_request_id=provider_request_id,
                                     error_class="cancelled",
+                                    delivery_state="unknown" if exc.provider_request_sent else "rejected",
                                     retry_safe=False,
+                                    provider_request_sent=exc.provider_request_sent,
                                 )
                             )
                         await _record_span(
@@ -2963,28 +3076,41 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         )
 
                 if provider_round.get("discarded_summary"):
-                    for physical in [{"provider_request_id": provider_request_id, "continuation_index": 0},
-                                     *provider_round.get("continuation_receipts", [])]:
+                    for physical in [
+                        {"provider_request_id": provider_request_id, "continuation_index": 0},
+                        *provider_round.get("continuation_receipts", []),
+                    ]:
                         if request.model_request_fail is not None and physical["provider_request_id"] is not None:
-                            await _maybe_await(request.model_request_fail(
-                                round_index=logical_round_index, provider_request_id=physical["provider_request_id"],
-                                continuation_index=physical["continuation_index"],
-                                error_class="repeated_empty_search", delivery_state="response_received",
-                                retry_safe=True,
-                            ))
+                            await _maybe_await(
+                                request.model_request_fail(
+                                    round_index=logical_round_index,
+                                    provider_request_id=physical["provider_request_id"],
+                                    continuation_index=physical["continuation_index"],
+                                    error_class="repeated_empty_search",
+                                    delivery_state="response_received",
+                                    retry_safe=True,
+                                )
+                            )
                     accumulated_tokens += self._deps.extract_usage_tokens(response.usage) or 0
                     round_charge_key["key"] = provider_request_id
                     from app.services.runtime_display_status import (
-                        EMPTY_SEARCH_FINAL_MESSAGE, EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE,
+                        EMPTY_SEARCH_FINAL_MESSAGE,
+                        EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE,
                     )
 
-                    message = (EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE if loop_guard.empty_search_material_found
-                        else EMPTY_SEARCH_FINAL_MESSAGE)
+                    message = (
+                        EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE
+                        if loop_guard.empty_search_material_found
+                        else EMPTY_SEARCH_FINAL_MESSAGE
+                    )
                     await _record_new_token_usage()
                     await self._persist_before_exit(request, runtime_config, message, api_messages)
                     result = _build_error_result(
-                        message, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
-                        terminal_reason=TerminalReason.LOOP_GUARD, failure_code="repeated_empty_search",
+                        message,
+                        tokens_used=accumulated_tokens,
+                        final_tools=tools_for_llm,
+                        terminal_reason=TerminalReason.LOOP_GUARD,
+                        failure_code="repeated_empty_search",
                     )
                     result.parts = collected_parts + result.parts
                     return result
@@ -3464,8 +3590,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if result_loop_decision:
                             if result_loop_decision.severity == "warn":
                                 await _inject_loop_guard_warning(result_loop_decision)
-                            elif (_loop_guard_terminal_decision is None
-                                or _loop_guard_terminal_decision.reason == "repeated_empty_search"):
+                            elif (
+                                _loop_guard_terminal_decision is None
+                                or _loop_guard_terminal_decision.reason == "repeated_empty_search"
+                            ):
                                 _loop_guard_terminal_decision = result_loop_decision
                         await _apply_tool_expansion(tool_name, effective_args, _executed)
                         _raw_result, _model_result = _tool_result_views(result, _side_effects)
@@ -3670,8 +3798,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if result_loop_decision:
                             if result_loop_decision.severity == "warn":
                                 await _inject_loop_guard_warning(result_loop_decision)
-                            elif (_loop_guard_terminal_decision is None
-                                or _loop_guard_terminal_decision.reason == "repeated_empty_search"):
+                            elif (
+                                _loop_guard_terminal_decision is None
+                                or _loop_guard_terminal_decision.reason == "repeated_empty_search"
+                            ):
                                 _loop_guard_terminal_decision = result_loop_decision
 
                         await _apply_tool_expansion(tool_name, args, executed)
@@ -3775,22 +3905,31 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 if _loop_guard_terminal_decision is not None:
                     if _loop_guard_terminal_decision.reason in {
                         "identical_terminal_task_read",
-                        "identical_running_task_read", "identical_refused_result_read",
-                    } or (_loop_guard_terminal_decision.reason == "repeated_empty_search" and _empty_search_summary_used):
+                        "identical_running_task_read",
+                        "identical_refused_result_read",
+                    } or (
+                        _loop_guard_terminal_decision.reason == "repeated_empty_search" and _empty_search_summary_used
+                    ):
                         # R18a round 2 (reviewer blocker 2): end through the same
                         # failure shape for read-loop stops so every lane settles.
                         message = _loop_guard_terminal_decision.message
                         if _loop_guard_terminal_decision.reason == "repeated_empty_search":
                             from app.services.runtime_display_status import (
-                                EMPTY_SEARCH_FINAL_MESSAGE, EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE,
+                                EMPTY_SEARCH_FINAL_MESSAGE,
+                                EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE,
                             )
 
-                            message = (EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE if loop_guard.empty_search_material_found
-                                else EMPTY_SEARCH_FINAL_MESSAGE)
+                            message = (
+                                EMPTY_SEARCH_MATERIAL_FOUND_MESSAGE
+                                if loop_guard.empty_search_material_found
+                                else EMPTY_SEARCH_FINAL_MESSAGE
+                            )
                         await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, message, api_messages)
                         result = _build_error_result(
-                            message, tokens_used=accumulated_tokens, final_tools=tools_for_llm,
+                            message,
+                            tokens_used=accumulated_tokens,
+                            final_tools=tools_for_llm,
                             terminal_reason=TerminalReason.LOOP_GUARD,
                             failure_code=_loop_guard_terminal_decision.reason,
                         )
@@ -3802,8 +3941,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         # empty-search abort uses the failure exit above.
                         _empty_search_summary_used = _empty_search_summary_pending = True
                     await _project_loop_guard_terminal_evidence(
-                        _loop_guard_terminal_decision, api_messages=api_messages,
-                        _context_message=_context_message, _emit_event=_emit_event,
+                        _loop_guard_terminal_decision,
+                        api_messages=api_messages,
+                        _context_message=_context_message,
+                        _emit_event=_emit_event,
                         empty_search_material_found=loop_guard.empty_search_material_found,
                     )
                     _loop_guard_terminal_decision = None
@@ -3893,32 +4034,36 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     # already reserves space for the prompt via compute_history_limit.
                     conv_dicts = _llm_messages_to_dicts(api_messages[1:], include_source_refs=True)
 
-                    compressed = await _compress_messages_with_lifecycle_hooks(
-                        self._deps.maybe_compress_messages,
-                        conv_dicts,
-                        trace_context=compaction_trace_context,
-                        tools=tools_for_llm,
-                        instructions="mid_loop_context_compaction",
-                        agent_id=request.agent_id,
-                        session_id=request.memory_session_id,
-                        trigger="auto",
-                        metadata={
-                            "phase": "mid_loop_context_compaction",
-                            "round": logical_round_index,
-                            "agent_name": request.agent_name,
-                            "important_files": list(getattr(request.session_context, "recent_files", []) or []),
-                            "pending_work": list(getattr(request.session_context, "pending_items", []) or []),
-                            "last_successful_step": "".join(streamed_chunks),
-                        },
-                        post_hook_async=True,
-                        model_provider=active_model.provider,
-                        model_name=active_model.model,
-                        max_input_tokens_override=getattr(active_model, "max_input_tokens", None),
-                        tenant_id=runtime_config.tenant_id,
-                        compress_threshold=_MIDLOOP_COMPACT_THRESHOLD,
-                        on_compaction=_emit_compaction_event,
-                        usage_anchor_tokens=context_usage_anchor_tokens,
-                        user_id=request.user_id,
+                    compressed = await _await_with_cancel(
+                        lambda: _compress_messages_with_lifecycle_hooks(
+                            self._deps.maybe_compress_messages,
+                            conv_dicts,
+                            trace_context=compaction_trace_context,
+                            tools=tools_for_llm,
+                            instructions="mid_loop_context_compaction",
+                            agent_id=request.agent_id,
+                            session_id=request.memory_session_id,
+                            trigger="auto",
+                            metadata={
+                                "phase": "mid_loop_context_compaction",
+                                "round": logical_round_index,
+                                "agent_name": request.agent_name,
+                                "important_files": list(getattr(request.session_context, "recent_files", []) or []),
+                                "pending_work": list(getattr(request.session_context, "pending_items", []) or []),
+                                "last_successful_step": "".join(streamed_chunks),
+                            },
+                            post_hook_async=True,
+                            model_provider=active_model.provider,
+                            model_name=active_model.model,
+                            max_input_tokens_override=getattr(active_model, "max_input_tokens", None),
+                            tenant_id=runtime_config.tenant_id,
+                            compress_threshold=_MIDLOOP_COMPACT_THRESHOLD,
+                            on_compaction=_emit_compaction_event,
+                            usage_anchor_tokens=context_usage_anchor_tokens,
+                            user_id=request.user_id,
+                        ),
+                        cancel_event=request.cancel_event,
+                        provider_request_sent=False,
                     )
                     if len(compressed) < len(conv_dicts):
                         # Post-compaction restoration: re-inject identity + work ledger
@@ -3975,6 +4120,27 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 final_tools=tools_for_llm,
                 terminal_reason=TerminalReason.TOOL_BUDGET,
                 failure_code="tool_round_limit",
+            )
+        except _KernelCancelledError:
+            if request.model_request_fail is not None:
+                await _maybe_await(
+                    request.model_request_fail(
+                        round_index=logical_round_index,
+                        provider_request_id=None,
+                        error_class="cancelled",
+                        delivery_state="rejected",
+                        retry_safe=False,
+                        provider_request_sent=False,
+                    )
+                )
+            await _record_new_token_usage()
+            await self._persist_before_exit(request, runtime_config, "*[Generation stopped]*", api_messages)
+            return _build_cancelled_result(
+                streamed_chunks,
+                streamed_thinking,
+                tokens_used=accumulated_tokens,
+                final_tools=tools_for_llm,
+                collected_parts=collected_parts,
             )
         finally:
             await client.close()

@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { agentNameForDisplay } from '../../utils/agentNameForDisplay';
 
 import {
   extensionsApi,
@@ -139,8 +140,7 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
               {server.agents.length > 0 ? (
                 <div className="ws-tools-agent-wrap">
                   {server.agents.map((agent) => (
-                    <span key={agent.id} className={`ws-tools-agent-chip ${agent.enabled ? 'enabled' : 'disabled'}`}>{agent.name === '__system_hr__'
-                      ? t('handover.hrAgentName', 'HR assistant') : agent.name}</span>
+                    <span key={agent.id} className={`ws-tools-agent-chip ${agent.enabled ? 'enabled' : 'disabled'}`}>{agentNameForDisplay(agent.name, t)}</span>
                   ))}
                 </div>
               ) : null}

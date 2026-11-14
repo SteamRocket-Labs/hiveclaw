@@ -2132,9 +2132,12 @@ function isFiniteTimelineTime(value: unknown): value is string {
 }
 
 function runAwaitsApproval(messages: AgentChatMessage[], runId?: string | null): boolean {
-  return Boolean(runId && messages.some(message => message.sessionItem?.kind === 'run'
-    && isSameSessionRunId(messageRunId(message), runId)
-    && terminalRuntimePhaseForSessionEvent('run', message.sessionItem.lifecycle, message.sessionItem.payload) === 'awaiting_approval'));
+  if (messages.some(message => isSameSessionRunId(messageRunId(message), runId)
+    && isCanonicalRunTerminal(message))) return false;
+  return Boolean(runId && messages.some(message => isSameSessionRunId(messageRunId(message), runId)
+    && ((message.eventStatus === 'session_permission_required' && message.sessionPermissionRequest)
+      || (message.sessionItem?.kind === 'run'
+        && terminalRuntimePhaseForSessionEvent('run', message.sessionItem.lifecycle, message.sessionItem.payload) === 'awaiting_approval'))));
 }
 
 

@@ -616,6 +616,9 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
   const terminalSessions = new Map<string, Map<string, number>>();
   const startsBySession = new Map<string, Array<{ index: number; sequence: number }>>();
   const key = (value: unknown) => typeof value === 'string' ? value.replaceAll('-', '').toLowerCase() : '';
+  const runningReadStops = new Set(messages.filter(message => message.sessionItem?.kind === 'runtime_failure'
+    && message.sessionItem.payload?.failure_code === 'identical_running_task_read')
+    .map(message => key(agentChatMessageRunId(message))));
   // A delegated run may be recorded before its authorized task message. Its
   // sticky first sequence must not split the task into a preceding terminal
   // block and a new running placeholder (run20 step6). Keep storage untouched.
@@ -712,6 +715,12 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
     if (!statuses.length || statuses.some(status => !status)) return message;
     const status = statuses.find(status => ['failed', 'error'].includes(status!))
       || statuses.find(status => status !== 'completed') || 'completed';
+    if (waitingRead && runningReadStops.has(key(agentChatMessageRunId(message)))
+      && ['check_async_task', 'task_output', 'list_async_tasks'].includes(message.toolName || '')) {
+      // R26a: this check observed running. Keep that observation; the later
+      // receipt only clears the current handoff indicator for its run.
+      return { ...message, toolTaskTerminalStatus: status };
+    }
     return { ...message, toolMemberSummary: { ...message.toolMemberSummary, kind: 'delegation',
       // The terminal colleague row owns the stop sentence across blocks,
       // including the frame before its linked child_session row arrives.

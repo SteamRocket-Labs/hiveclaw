@@ -1471,6 +1471,11 @@ function compactTokenCount(value: number | null): string | null {
   return String(value);
 }
 
+function isRunningTaskReadStop(message: AgentChatMessage): boolean {
+  return message.sessionItem?.kind === 'runtime_failure'
+    && message.sessionItem.payload?.failure_code === 'identical_running_task_read';
+}
+
 function getHeaderStatus(
   cells: ThreadTimelineCell[],
   isWaiting: boolean,
@@ -1496,7 +1501,7 @@ function getHeaderStatus(
     if (
       cell.kind === 'boundary'
       && cell.message.sessionItem?.scope?.level === 'run'
-      && (cell.message.sessionItem.kind === 'runtime_failure'
+      && ((cell.message.sessionItem.kind === 'runtime_failure' && !isRunningTaskReadStop(cell.message))
         || (cell.message.sessionItem.kind === 'run'
           && (cell.message.sessionItem.lifecycle === 'failed'
             || cell.message.sessionItem.lifecycle === 'needs_reconciliation')))
@@ -1532,7 +1537,7 @@ function currentHeaderRun(
         return { runId: workbenchRunId, lifecycle: workbenchRunStatus };
       }
       return { runId: item.scope.run_id, lifecycle: terminalRuntimePhaseForSessionEvent(item.kind, item.lifecycle, item.payload) === 'awaiting_approval'
-        ? 'waiting' : item.kind === 'runtime_failure' ? 'failed'
+        ? 'waiting' : item.kind === 'runtime_failure' ? isRunningTaskReadStop(cell.message) ? 'completed' : 'failed'
         : CANONICAL_RUN_TERMINAL_LIFECYCLES.has(item.lifecycle) || item.lifecycle === 'waiting'
           ? item.lifecycle : activeRunStatus || item.lifecycle };
     }
@@ -2164,7 +2169,10 @@ function applyCanonicalRunTerminalEvidence(
   const terminalByRunId = new Map<string, { sequence: number; startedAt: string; runtimeStartedAt?: string; clockUnknown?: boolean; completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
   messages.forEach((message) => {
     const item = message.sessionItem;
-    const lifecycle = item?.kind === 'runtime_failure' ? 'failed' : item?.kind === 'run' ? item.lifecycle : null;
+    // R26a: retain the backend failure event, but reuse completed handoff
+    // presentation. X2/X5a keep it running only until the colleague settles.
+    const lifecycle = item?.kind === 'runtime_failure' ? isRunningTaskReadStop(message) ? 'completed' : 'failed'
+      : item?.kind === 'run' ? item.lifecycle : null;
     if (!lifecycle || !isCanonicalRunTerminal(message)) return;
     const runId = messageRunId(message);
     const completedAtMs = Date.parse(item?.terminalAt || message.timestamp || item?.occurredAt || '');

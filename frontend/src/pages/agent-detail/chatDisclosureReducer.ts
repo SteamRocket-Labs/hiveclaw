@@ -247,15 +247,16 @@ const DEDICATED_TOOL_CARD_META_KINDS = new Set([
 ]);
 
 /** X2 r2 E: this step still reports a delegated task as in progress for this
- * reader — the colleague may be working. The typed terminal rewrite
- * (`projectMemberDelegationStates`) clears both signals once the child's
- * terminal receipt reaches this session, so the label never outlives real
- * evidence the reader can see. */
+ * reader — the colleague may be working. The terminal projection clears the
+ * current handoff signal; R26a keeps a check's earlier observation separate
+ * from that later receipt. */
 export function stepDelegationStillInProgress(step: RunStepSnapshot): boolean {
   // X2 r3: the label may only mark a delegation the projection can also CLEAR
   // — `projectMemberDelegationStates` keys rows by task id, so an untyped
   // started row or an in_progress summary without a task id must not set it.
-  const summary = (step.details as { memberSummary?: { kind?: string; state?: string; taskId?: string } } | null)?.memberSummary;
+  const details = step.details as { memberSummary?: { kind?: string; state?: string; taskId?: string }; taskTerminalStatus?: string } | null;
+  const summary = details?.memberSummary;
+  if (summary?.kind === 'colleague_result' && details?.taskTerminalStatus) return false;
   if (summary && ['delegation', 'colleague_result'].includes(summary.kind || '') && summary.state === 'in_progress'
     && typeof summary.taskId === 'string' && summary.taskId) return true;
   const event = step.systemEvent;
@@ -802,6 +803,7 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
         result: message.toolResult,
         rawResult: message.toolRawResult,
         memberSummary: message.toolMemberSummary,
+        taskTerminalStatus: message.toolTaskTerminalStatus,
         executionResult: message.sessionItem?.payload?.code_execution_result,
         meta: message.toolMeta,
       },

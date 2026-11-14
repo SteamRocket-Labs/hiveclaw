@@ -71,6 +71,8 @@ export interface AgentChatMessage {
   toolRawResult?: string;
   /** X3 typed member summary: replaces the raw result text for summarized tools. */
   toolMemberSummary?: MemberToolSummary;
+  /** Current colleague terminal receipt, separate from a check's recorded observation. */
+  toolTaskTerminalStatus?: string;
   toolMeta?: ToolCallMeta | null;
 	  timestamp?: string;
 	  participant_id?: string | null;

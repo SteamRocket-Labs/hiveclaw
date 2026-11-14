@@ -1239,21 +1239,52 @@ async def _bind_session_round_inputs(state: _WebChatRunState, round_index: int) 
         )
         from app.services.artifact_continuation import saved_file_context
 
-        selected, notices = await saved_file_context(db, tenant_id=state.agent.tenant_id,
-            agent_id=state.agent.id, session_id=uuid.UUID(str(state.session_id)), run_id=state.run_uuid,
-            user_id=state.actor_user_id, messages=messages, round_index=round_index, turn_id=_session_turn_id(state),
-            rolled_over_input_id=state.metadata.get("session_v2_rolled_over_input_id") if round_index == 1 else None)
+        selected, notices = await saved_file_context(
+            db,
+            tenant_id=state.agent.tenant_id,
+            agent_id=state.agent.id,
+            session_id=uuid.UUID(str(state.session_id)),
+            run_id=state.run_uuid,
+            user_id=state.actor_user_id,
+            messages=messages,
+            round_index=round_index,
+            turn_id=_session_turn_id(state),
+            rolled_over_input_id=state.metadata.get("session_v2_rolled_over_input_id") if round_index == 1 else None,
+        )
         await db.commit()
         for event in notices:
             from app.models.session_v2 import SessionEventOutbox
 
-            envelope = await db.scalar(select(SessionEventOutbox.envelope_json).where(
-                SessionEventOutbox.event_id == event.id))
+            envelope = await db.scalar(
+                select(SessionEventOutbox.envelope_json).where(SessionEventOutbox.event_id == event.id)
+            )
             await state.ports.events.broadcast(state.agent.id, state.session_id, envelope)
         return [*messages, *selected]
 
 
 async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any) -> str | dict[str, Any]:
+    state.active_provider_request_id = None
+    try:
+        return await _prepare_session_model_request_transaction(state, **payload)
+    except asyncio.CancelledError:
+        # The transaction's context has closed/rolled back before this runs.
+        # Its explicit commit may already have finished, so retain and settle
+        # that exact request identity. This callback never sends provider bytes.
+        if state.cancel_event.is_set() and state.active_provider_request_id is not None:
+            await _fail_session_model_request(
+                state,
+                round_index=int(payload["round_index"]),
+                continuation_index=int(payload.get("continuation_index") or 0),
+                provider_request_id=state.active_provider_request_id,
+                error_class="cancelled",
+                delivery_state="rejected",
+                retry_safe=False,
+                provider_request_sent=False,
+            )
+        raise
+
+
+async def _prepare_session_model_request_transaction(state: _WebChatRunState, **payload: Any) -> str | dict[str, Any]:
     from app.services.session_model_round import (
         ModelRoundNeedsReconciliation,
         prepare_model_request,
@@ -1365,8 +1396,8 @@ async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any
         except ModelRoundNeedsReconciliation:
             await db.commit()
             raise
-        await db.commit()
         state.active_provider_request_id = provider_request_id
+        await db.commit()
         if resume_receipt is not None:
             return resume_receipt
         return provider_request_id
@@ -1462,16 +1493,24 @@ async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -
             run_id=state.run_uuid,
             turn_id=_session_turn_id(state),
             round_index=int(payload["round_index"]),
-            provider_request_id=str(payload["provider_request_id"]),
+            provider_request_id=str(payload["provider_request_id"])
+            if payload["provider_request_id"] is not None
+            else None,
             error_class=str(payload.get("error_class") or "provider_error"),
             delivery_state=str(payload.get("delivery_state") or "unknown"),
             retry_safe=bool(payload.get("retry_safe")),
+            provider_request_sent=bool(payload.get("provider_request_sent", True)),
             continuation_index=int(payload.get("continuation_index") or 0),
         )
         # fail_model_request holds the run lock even when no round can seal.
-        metadata = await db.scalar(select(RuntimeTask.metadata_json).where(
-            RuntimeTask.id == state.run_uuid, RuntimeTask.tenant_id == state.agent.tenant_id,
-        ).with_for_update())
+        metadata = await db.scalar(
+            select(RuntimeTask.metadata_json)
+            .where(
+                RuntimeTask.id == state.run_uuid,
+                RuntimeTask.tenant_id == state.agent.tenant_id,
+            )
+            .with_for_update()
+        )
         await db.commit()
     if (metadata or {}).get("cancel_state") in {"cancelling", "cancelled"}:
         state.cancel_event.set()
@@ -1547,11 +1586,24 @@ async def _finalize_invocation_result(state: _WebChatRunState, result: Any) -> N
 def _interactive_pause_suspends_run(state: _WebChatRunState, summary: str) -> bool:
     session = state.session
     return summary == "awaiting_session_permission" or (
-        summary == "awaiting_company_approval" and session is not None
-        and session.source_channel == "web" and session.user_id is not None and session.audience_kind != "group"
-        and str(state.metadata.get("source") or getattr(state.runtime_session_context, "source", None) or "web").strip().lower()
-            in {"", "web", "web_chat", "websocket", "websocket_message", "session_input_api",
-                "legacy_rest_create_session_run", "legacy_rest_start_session_run"}
+        summary == "awaiting_company_approval"
+        and session is not None
+        and session.source_channel == "web"
+        and session.user_id is not None
+        and session.audience_kind != "group"
+        and str(state.metadata.get("source") or getattr(state.runtime_session_context, "source", None) or "web")
+        .strip()
+        .lower()
+        in {
+            "",
+            "web",
+            "web_chat",
+            "websocket",
+            "websocket_message",
+            "session_input_api",
+            "legacy_rest_create_session_run",
+            "legacy_rest_start_session_run",
+        }
     )
 
 
@@ -1681,8 +1733,11 @@ async def _finalize_assistant_response(
         if failure is not None and failure["failure_code"]:
             # Existing task metadata is also the child's completion result
             # read by its parent. Preserve the same typed failure there.
-            metadata = {**metadata, "error_code": failure["failure_code"],
-                **{key: failure[key] for key in ("retryable", "delivery_state", "requires_user_decision")}}
+            metadata = {
+                **metadata,
+                "error_code": failure["failure_code"],
+                **{key: failure[key] for key in ("retryable", "delivery_state", "requires_user_decision")},
+            }
         finalized = await state.ports.terminal.finalize_without_assistant(
             run_uuid=state.run_uuid,
             agent_id=state.agent.id,
@@ -1891,17 +1946,26 @@ async def _record_canonical_terminal_artifact_selection(
         for row in rows:
             newest_by_path.setdefault(row.path, row)
         selected = [newest_by_path[path] for path in selected_paths if path in newest_by_path]
-        missing_paths = [path for path in [*declared_paths, *selected_paths]
-            if _is_user_visible_terminal_artifact_path(path) and path not in newest_by_path]
+        missing_paths = [
+            path
+            for path in [*declared_paths, *selected_paths]
+            if _is_user_visible_terminal_artifact_path(path) and path not in newest_by_path
+        ]
         artifact_parts = [artifact_part_from_model(row) for row in selected]
-        task = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == state.run_uuid).with_for_update()
-            .execution_options(populate_existing=True))
+        task = await db.scalar(
+            select(RuntimeTask)
+            .where(RuntimeTask.id == state.run_uuid)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if task is None:
             raise TerminalOutcomeNeedsReconciliation("canonical terminal artifact selection has no RuntimeTask")
         assert_runtime_task_fence(task)
         metadata = dict(task.metadata_json or {})
         if "artifact_read_publication_errors" in (selection_task.metadata_json or {}):
-            metadata["artifact_read_publication_errors"] = selection_task.metadata_json["artifact_read_publication_errors"]
+            metadata["artifact_read_publication_errors"] = selection_task.metadata_json[
+                "artifact_read_publication_errors"
+            ]
         metadata.update(
             {
                 "declared_artifact_paths": declared_paths,

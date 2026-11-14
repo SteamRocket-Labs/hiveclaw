@@ -249,7 +249,10 @@ async def _maybe_await(value: Any) -> Any:
 
 
 def _is_terminal_tool_card_signal(exc: BaseException) -> bool:
-    return isinstance(exc, (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError, ExecutionAuthorityUnavailable)) or exc.__class__.__name__ == "_TerminalToolCardSignal"
+    return (
+        isinstance(exc, (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError, ExecutionAuthorityUnavailable))
+        or exc.__class__.__name__ == "_TerminalToolCardSignal"
+    )
 
 
 def _hook_event_label(event: Any) -> str:
@@ -320,11 +323,18 @@ def _split_system_prompt_for_api(prompt: str) -> tuple[str, str]:
     return frozen.rstrip(), dynamic.strip()
 
 
-def _context_message(*, role: str, content: str, kind: str, sections=(), sources=(), unbound=("context_sources_unbound",)) -> LLMMessage:
+def _context_message(
+    *, role: str, content: str, kind: str, sections=(), sources=(), unbound=("context_sources_unbound",)
+) -> LLMMessage:
     from app.runtime.context_candidates import ContextMessageOrigin
 
-    return LLMMessage(role=role, content=content, context_origin=ContextMessageOrigin.capture(
-        kind=kind, role=role, content=content, sections=sections, sources=sources, unbound=unbound))
+    return LLMMessage(
+        role=role,
+        content=content,
+        context_origin=ContextMessageOrigin.capture(
+            kind=kind, role=role, content=content, sections=sections, sources=sources, unbound=unbound
+        ),
+    )
 
 
 def _runtime_reminder_message(request, item) -> LLMMessage:
@@ -339,7 +349,9 @@ def _runtime_reminder_message(request, item) -> LLMMessage:
     return _context_message(role="system", content=item.text, kind="runtime_reminder", sources=sources, unbound=unbound)
 
 
-def _dynamic_suffix_notice(dynamic_suffix: str, *, sections=(), sources=(), unbound=("context_sources_unbound",)) -> LLMMessage | None:
+def _dynamic_suffix_notice(
+    dynamic_suffix: str, *, sections=(), sources=(), unbound=("context_sources_unbound",)
+) -> LLMMessage | None:
     if not dynamic_suffix.strip():
         return None
     return _context_message(
@@ -507,7 +519,8 @@ def _build_runtime_attachment_sections(
     agent_id: Any,
     session_context: Any | None,
     recovery_result: Any | None = None,
-    *, tools_for_llm: list[dict[str, Any]] | None = None,
+    *,
+    tools_for_llm: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     if session_context is None:
         return []
@@ -519,12 +532,19 @@ def _build_runtime_attachment_sections(
             budget_profile = metadata.get("context_budget") if isinstance(metadata, dict) else None
             restore_budget = getattr(budget_profile, "restore_budget_chars", 20000)
             manifest = recovery_result.manifest
-            duplicate_profile = (metadata.get("session_v2_durable_tool_lifecycle") is True
+            duplicate_profile = (
+                metadata.get("session_v2_durable_tool_lifecycle") is True
                 and manifest.permission_profile == metadata.get("permission_profile")
-                and not any(getattr(manifest, field.name) for field in fields(manifest)
-                    if field.name not in {"session_id", "permission_profile"}))
+                and not any(
+                    getattr(manifest, field.name)
+                    for field in fields(manifest)
+                    if field.name not in {"session_id", "permission_profile"}
+                )
+            )
             # Native recovery already restores the current permission frame; retain every other manifest fact.
-            manifest_text = "" if duplicate_profile else recovery_result.render_restoration_text(budget_chars=restore_budget)
+            manifest_text = (
+                "" if duplicate_profile else recovery_result.render_restoration_text(budget_chars=restore_budget)
+            )
             if manifest_text:
                 section = f"### Recovery Manifest\n{manifest_text}"
                 sections.append(section)
@@ -568,7 +588,8 @@ def _build_runtime_attachment_sections(
             # This repeats only names in the current authorized schema frame;
             # cached names and summaries cannot create a callable capability.
             ensure_runtime_assembly_state(session_context).record_context_sources(
-                agent_id=agent_id, content=section, sources=(), unbound=())
+                agent_id=agent_id, content=section, sources=(), unbound=()
+            )
 
     snapshots = getattr(session_context, "file_snapshots", {}) or {}
     if snapshots:
@@ -588,11 +609,13 @@ def _build_runtime_attachment_sections(
             current = _snapshot_session_file(agent_id, path, content_hash=isinstance(before.get("sha256"), str))
             if _file_snapshot_changed(before, current):
                 readable = current.get("path") or before.get("path") or path
-                condition = ("could not be verified" if current.get("error") or current.get("unresolved")
-                    else "changed since it was last tracked")
+                condition = (
+                    "could not be verified"
+                    if current.get("error") or current.get("unresolved")
+                    else "changed since it was last tracked"
+                )
                 changed.append(
-                    f'- {readable} {condition}; re-read with read_file("{readable}") '
-                    "before relying on cached contents."
+                    f'- {readable} {condition}; re-read with read_file("{readable}") before relying on cached contents.'
                 )
                 changed_paths.append(path)
         if changed:
@@ -602,17 +625,24 @@ def _build_runtime_attachment_sections(
             if all(path in tracked_sources for path in changed_paths):
                 from app.runtime.context import ensure_runtime_assembly_state
 
-                ensure_runtime_assembly_state(session_context).record_context_sources(agent_id=agent_id, content=section,
-                    sources=[tracked_sources[path] for path in changed_paths], unbound=())
+                ensure_runtime_assembly_state(session_context).record_context_sources(
+                    agent_id=agent_id,
+                    content=section,
+                    sources=[tracked_sources[path] for path in changed_paths],
+                    unbound=(),
+                )
             else:
                 from app.services.delegation_context_sources import NativeRecoveryContextSource
 
                 source = (getattr(session_context, "metadata", {}) or {}).get("_native_recovery_context_source")
-                if isinstance(source, NativeRecoveryContextSource) and source.matches_file_snapshots(session_context, changed_paths):
+                if isinstance(source, NativeRecoveryContextSource) and source.matches_file_snapshots(
+                    session_context, changed_paths
+                ):
                     from app.runtime.context import ensure_runtime_assembly_state
 
-                    ensure_runtime_assembly_state(session_context).record_context_sources(agent_id=agent_id, content=section,
-                        sources=source.sources, unbound=source.unbound)
+                    ensure_runtime_assembly_state(session_context).record_context_sources(
+                        agent_id=agent_id, content=section, sources=source.sources, unbound=source.unbound
+                    )
                 else:
                     _bind_recovery_attachment_source(agent_id, session_context, recovery_result, section)
 
@@ -625,8 +655,9 @@ def _bind_recovery_attachment_source(agent_id, session, result, content):
 
     source = (getattr(session, "metadata", {}) or {}).get("_native_recovery_context_source")
     if isinstance(source, NativeRecoveryContextSource) and source.matches(result, session):
-        ensure_runtime_assembly_state(session).record_context_sources(agent_id=agent_id, content=content,
-            sources=source.sources, unbound=source.unbound)
+        ensure_runtime_assembly_state(session).record_context_sources(
+            agent_id=agent_id, content=content, sources=source.sources, unbound=source.unbound
+        )
 
 
 def _latest_user_query(messages: list[dict[str, Any]] | None) -> str:
@@ -1031,6 +1062,10 @@ _PARALLEL_SEMAPHORE_LIMIT = 10
 class _KernelCancelledError(Exception):
     """Internal sentinel used when a runtime cancel event stops generation."""
 
+    def __init__(self, *, provider_request_sent: bool = True):
+        super().__init__()
+        self.provider_request_sent = provider_request_sent
+
 
 _EMPTY_TOOL_RESULT_MESSAGE = (
     "[Tool returned empty result] The tool completed successfully but returned no content. "
@@ -1177,8 +1212,9 @@ def _tool_message_content(text_content: str, raw_result: Any) -> "str | list[dic
     model's declared image-input capability and its transport protocol.
     """
     if isinstance(raw_result, ToolContentEnvelope):
-        raw_result = [{"type": b.type, "media_type": b.media_type, "data": b.data}
-            for b in raw_result.blocks if b.type != "text"]
+        raw_result = [
+            {"type": b.type, "media_type": b.media_type, "data": b.data} for b in raw_result.blocks if b.type != "text"
+        ]
     if not isinstance(raw_result, list):
         return text_content
     media_blocks = [b for b in raw_result if isinstance(b, dict) and b.get("type") != "text"]
@@ -1401,7 +1437,8 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
                 or metadata.get("request_permission_tool_enabled")
                 or "request_permission" in set(allowed_tools)
             ),
-        ), sections=permission_sections,
+        ),
+        sections=permission_sections,
     )
     handoff_context = _render_pending_skill_handoffs(metadata)
     if handoff_context:
@@ -1411,22 +1448,37 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
 
     contributor_keys = PERMISSION_INPUT_KEYS
     sources = ()
-    if (any(metadata.get(key) for key in contributor_keys) or request.allowed_tool_names
-        or getattr(runtime_config, "tenant_resolution_error", None)):
+    if (
+        any(metadata.get(key) for key in contributor_keys)
+        or request.allowed_tool_names
+        or getattr(runtime_config, "tenant_resolution_error", None)
+    ):
         source = metadata.get("_session_permission_context_source") or metadata.get("_delegation_context_source")
-        if (isinstance(source, PermissionContextSource) and source.matches(metadata, request.allowed_tool_names)
-            and not getattr(runtime_config, "tenant_resolution_error", None)):
+        if (
+            isinstance(source, PermissionContextSource)
+            and source.matches(metadata, request.allowed_tool_names)
+            and not getattr(runtime_config, "tenant_resolution_error", None)
+        ):
             sources = (source.reference,)
         else:
             platform_lane = (
-                request.session_context is not None and request.session_context.source == "trigger"
-                or request.execution_identity is not None and request.execution_identity.identity_type == "agent_bot"
+                request.session_context is not None
+                and request.session_context.source == "trigger"
+                or request.execution_identity is not None
+                and request.execution_identity.identity_type == "agent_bot"
             )
             computed = {"approval_policy", "network_access", "allowed_tools", "request_permission_tool_enabled"}
             for section in permission_sections:
                 name = section["name"]
-                constant = (name == "guidance" or platform_lane and name in computed
-                    and not (metadata.get("skill_execution_plans") and name in {"allowed_tools", "request_permission_tool_enabled"}))
+                constant = (
+                    name == "guidance"
+                    or platform_lane
+                    and name in computed
+                    and not (
+                        metadata.get("skill_execution_plans")
+                        and name in {"allowed_tools", "request_permission_tool_enabled"}
+                    )
+                )
                 if platform_lane and name in {"writable_roots", "denied_reads", "denied_actions"}:
                     constant = section["content"] == f"{name}: none\n"
                 section["unbound"] = () if constant else ("permission_configuration_sources_unbound",)
@@ -1441,8 +1493,12 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
     from app.runtime.context import ensure_runtime_assembly_state
 
     ensure_runtime_assembly_state(request.session_context).record_context_sources(
-        agent_id=request.agent_id, content=permissions_prompt, sources=sources, unbound=source_unbound,
-        sections=permission_sections)
+        agent_id=request.agent_id,
+        content=permissions_prompt,
+        sources=sources,
+        unbound=source_unbound,
+        sections=permission_sections,
+    )
     return permissions_prompt
 
 
@@ -1494,8 +1550,10 @@ async def _compress_messages_with_trace(
     if compressed == messages:
         return compressed
 
-    trace_input = [{key: value for key, value in message.items()
-        if key not in {"context_origin", "stop_notice_active"}} for message in messages]
+    trace_input = [
+        {key: value for key, value in message.items() if key not in {"context_origin", "stop_notice_active"}}
+        for message in messages
+    ]
     request = CompactionRequest(
         model=str(kwargs.get("model_name") or getattr(trace_context, "model", "") or ""),
         input=trace_input,
@@ -1511,13 +1569,20 @@ async def _compress_messages_with_trace(
 
         source_id = uuid4()
         summary = {**compressed[0], "source_ref": f"session-compaction:{source_id}"}
-        source = {"schema": "hive.compaction_source.v1", "source_id": str(source_id),
-            "message": message_snapshot(summary), "inputs": [
+        source = {
+            "schema": "hive.compaction_source.v1",
+            "source_id": str(source_id),
+            "message": message_snapshot(summary),
+            "inputs": [
                 {key: value for key, value in message.items() if key not in {"context_origin", "stop_notice_active"}}
-                for message in compressed.source_messages]}
+                for message in compressed.source_messages
+            ],
+        }
         compressed = [summary, *compressed[1:]]
-    trace_output = [{key: value for key, value in message.items()
-        if key not in {"context_origin", "stop_notice_active"}} for message in compressed]
+    trace_output = [
+        {key: value for key, value in message.items() if key not in {"context_origin", "stop_notice_active"}}
+        for message in compressed
+    ]
     await attempt.record_completed(output_items=trace_output, status="completed")
     if source is not None:
         await trace_context.record_installed(input_history=trace_input, replacement_history=trace_output, source=source)
@@ -1766,8 +1831,11 @@ def _persist_recovery_manifest_checkpoint(
             snapshot = request.recovery_manifest_result
             metadata.pop("_native_recovery_checkpoint", None)
             if snapshot.loaded and snapshot.authority is not None:
-                metadata["_native_recovery_checkpoint"] = {"authority_hash": snapshot.authority.digest,
-                    "manifest_hash": snapshot.envelope_sha256, "session_id": str(request.session_context.session_id)}
+                metadata["_native_recovery_checkpoint"] = {
+                    "authority_hash": snapshot.authority.digest,
+                    "manifest_hash": snapshot.envelope_sha256,
+                    "session_id": str(request.session_context.session_id),
+                }
             metadata["recovery_manifest_persist"] = {
                 "schema": "hive.recovery_manifest_persist_status.v1",
                 "status": result.status,
@@ -1858,23 +1926,32 @@ def _tool_execution_evidence(
         "effect_idempotency_key": trace.get("idempotency_key"),
         "pre_effect_fence_ref": pre_effect_fence_ref,
         "workspace_input_evidence": dict(trace["workspace_input_evidence"])
-        if isinstance(trace.get("workspace_input_evidence"), dict) else None,
+        if isinstance(trace.get("workspace_input_evidence"), dict)
+        else None,
         "skill_input_evidence": dict(trace["skill_input_evidence"])
-        if isinstance(trace.get("skill_input_evidence"), dict) else None,
+        if isinstance(trace.get("skill_input_evidence"), dict)
+        else None,
         "native_empty_read_evidence": dict(trace["native_empty_read_evidence"])
-        if isinstance(trace.get("native_empty_read_evidence"), dict) else None,
+        if isinstance(trace.get("native_empty_read_evidence"), dict)
+        else None,
         "native_clock_read_evidence": dict(trace["native_clock_read_evidence"])
-        if isinstance(trace.get("native_clock_read_evidence"), dict) else None,
+        if isinstance(trace.get("native_clock_read_evidence"), dict)
+        else None,
         "native_tool_timeout_evidence": dict(trace["native_tool_timeout_evidence"])
-        if isinstance(trace.get("native_tool_timeout_evidence"), dict) else None,
+        if isinstance(trace.get("native_tool_timeout_evidence"), dict)
+        else None,
         "native_directory_read_evidence": dict(trace["native_directory_read_evidence"])
-        if isinstance(trace.get("native_directory_read_evidence"), dict) else None,
+        if isinstance(trace.get("native_directory_read_evidence"), dict)
+        else None,
         "native_read_denial_evidence": dict(trace["native_read_denial_evidence"])
-        if isinstance(trace.get("native_read_denial_evidence"), dict) else None,
+        if isinstance(trace.get("native_read_denial_evidence"), dict)
+        else None,
         "code_execution_result": dict(trace["code_execution_result"])
-        if isinstance(trace.get("code_execution_result"), dict) else None,
+        if isinstance(trace.get("code_execution_result"), dict)
+        else None,
         "agent_directory_sources": list(trace["agent_directory_sources"])
-        if isinstance(trace.get("agent_directory_sources"), list) else None,
+        if isinstance(trace.get("agent_directory_sources"), list)
+        else None,
     }
 
 
@@ -2426,13 +2503,17 @@ async def _execute_tool_with_hooks(
             current_connector_source_items = extract_connector_source_items(result, origin=f"tool:{tool_name}")
             # A captured native refusal has no source body. Preserve its exact
             # receipt instead of replacing it with an argument-source refusal.
-            native_read_denied = (
-                ((trace_metadata_sink or {}).get("native_read_denial_evidence") or {}).get("status") == "captured"
-            )
-            argument_source_items = [] if native_read_denied else source_items_from_tool_call(
-                tool_name,
-                effective_args,
-                origin=f"tool_args:{tool_name}",
+            native_read_denied = ((trace_metadata_sink or {}).get("native_read_denial_evidence") or {}).get(
+                "status"
+            ) == "captured"
+            argument_source_items = (
+                []
+                if native_read_denied
+                else source_items_from_tool_call(
+                    tool_name,
+                    effective_args,
+                    origin=f"tool_args:{tool_name}",
+                )
             )
             registered_connector_source_count = register_connector_source_payload(
                 request.session_context,
@@ -2476,7 +2557,7 @@ async def _execute_tool_with_hooks(
                 tenant_id=getattr(runtime_config, "tenant_id", None),
                 current_user_id=getattr(request, "user_id", None),
                 agent_id=getattr(request, "agent_id", None),
-                external_principal_id=getattr(request, 'external_principal_id', None),
+                external_principal_id=getattr(request, "external_principal_id", None),
             )
             result_str = _normalize_tool_result_for_llm(prompt_filter.payload)
         except Exception as exc:  # noqa: BLE001 - fail closed for governed result ingress
@@ -2539,7 +2620,7 @@ async def _execute_tool_with_hooks(
                     tenant_id=getattr(runtime_config, "tenant_id", None),
                     current_user_id=getattr(request, "user_id", None),
                     agent_id=getattr(request, "agent_id", None),
-                    external_principal_id=getattr(request, 'external_principal_id', None),
+                    external_principal_id=getattr(request, "external_principal_id", None),
                 ).payload
             )
     tool_result_side_effects = _extract_tool_side_effects(result) or {}
@@ -2610,8 +2691,11 @@ async def _execute_tool_with_hooks(
             _path = _args_dict.get("path", "")
             if _path:
                 _snapshot = _snapshot_session_file(request.agent_id, _path) if request.agent_id else None
-                _session.track_file_read(_path, snapshot=_snapshot,
-                    tracking_source=(trace_metadata_sink.get("workspace_input_evidence") or {}).get("tracking_source"))
+                _session.track_file_read(
+                    _path,
+                    snapshot=_snapshot,
+                    tracking_source=(trace_metadata_sink.get("workspace_input_evidence") or {}).get("tracking_source"),
+                )
                 _activate_conditional_skills_for_paths(request, [_path])
         elif tool_name == "fs_list":
             _path = _args_dict.get("path", "")
@@ -2644,8 +2728,14 @@ async def _execute_tool_with_hooks(
                     ),
                     None,
                 )
-                _session.track_file_write(_path, snapshot=_snapshot, lineage=lineage_record,
-                    tracking_source=(trace_metadata_sink.get("workspace_execution_evidence") or {}).get("tracking_source"))
+                _session.track_file_write(
+                    _path,
+                    snapshot=_snapshot,
+                    lineage=lineage_record,
+                    tracking_source=(trace_metadata_sink.get("workspace_execution_evidence") or {}).get(
+                        "tracking_source"
+                    ),
+                )
                 _activate_conditional_skills_for_paths(request, [_path])
                 _session.track_tool_outcome(tool_name, "Wrote " + _path)
                 if _is_frozen_prompt_workspace_path(_path):
@@ -3348,7 +3438,9 @@ def _dicts_to_llm_messages(dicts: list[dict]) -> list[LLMMessage]:
             reasoning_content=d.get("reasoning_content"),
             reasoning_signature=d.get("reasoning_signature"),
             source_ref=d.get("source_ref"),
-            context_origin=d.get("context_origin") if isinstance(d.get("context_origin"), ContextMessageOrigin) else None,
+            context_origin=d.get("context_origin")
+            if isinstance(d.get("context_origin"), ContextMessageOrigin)
+            else None,
         )
         for d in dicts
     ]
@@ -3636,6 +3728,7 @@ def _build_restoration_context(
                 _fp, _label = _resolved_recent
                 if _resolved_ws and _fp.parent == (_resolved_ws / "memory/explicit/entries").resolve():
                     from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
+
                     _entries = load_explicit_overlay_entries_by_ids(_resolved_ws.parent, agent_id, [_fp.stem])
                     if not _entries or _entries[0].status != "active":
                         continue
@@ -3886,39 +3979,47 @@ def _build_cancelled_result(
     )
 
 
+async def _await_with_cancel(
+    operation: Callable[[], Awaitable[Any]],
+    *,
+    cancel_event: asyncio.Event | None,
+) -> Any:
+    if cancel_event is None:
+        return await operation()
+
+    if cancel_event.is_set():
+        raise _KernelCancelledError(provider_request_sent=False)
+
+    work_task = asyncio.ensure_future(operation())
+    cancel_task = asyncio.create_task(cancel_event.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {work_task, cancel_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cancel_task in done and cancel_event.is_set():
+            work_task.cancel()
+            try:
+                await work_task
+            except asyncio.CancelledError:
+                pass
+            raise _KernelCancelledError
+        return await work_task
+    finally:
+        cancel_task.cancel()
+        if not work_task.done():
+            work_task.cancel()
+        # Join the operation's rollback/close before its caller can settle.
+        await asyncio.gather(work_task, cancel_task, return_exceptions=True)
+
+
 async def _stream_with_cancel(
     client: Any,
     *,
     cancel_event: asyncio.Event | None,
     **kwargs: Any,
 ) -> Any:
-    if cancel_event is None:
-        return await client.stream(**kwargs)
-
-    if cancel_event.is_set():
-        raise _KernelCancelledError
-
-    stream_task = asyncio.create_task(client.stream(**kwargs))
-    cancel_task = asyncio.create_task(cancel_event.wait())
-    try:
-        done, pending = await asyncio.wait(
-            {stream_task, cancel_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-
-        if cancel_task in done and cancel_event.is_set():
-            stream_task.cancel()
-            try:
-                await stream_task
-            except (asyncio.CancelledError, Exception) as _cancel_exc:
-                logger.debug("Stream task cancelled during shutdown: %s", _cancel_exc)
-            raise _KernelCancelledError
-
-        return await stream_task
-    finally:
-        cancel_task.cancel()
+    return await _await_with_cancel(lambda: client.stream(**kwargs), cancel_event=cancel_event)
 
 
 def _resolve_continuation_max_tokens(active_model: Any) -> int:

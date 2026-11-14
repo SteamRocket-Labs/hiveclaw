@@ -14,8 +14,9 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string, fallback?: string | Record<string, unknown>) =>
     translateFromCatalog(zh, key, fallback) }),
 }));
+const viewer = vi.hoisted(() => ({ tenantId: 'company' as string | null }));
 vi.mock('../stores', () => ({
-  useAuthStore: () => ({ user: { id: 'member', tenant_id: 'company', role: 'member', display_name: 'Member' } }),
+  useAuthStore: () => ({ user: { id: 'member', tenant_id: viewer.tenantId, role: 'member', display_name: 'Member' } }),
 }));
 vi.mock('../api/domains/assistant', () => ({ assistantApi: { get: vi.fn() } }));
 const ownBinding = { agent: { id: 'own-assistant' } };
@@ -40,6 +41,7 @@ vi.mock('../api/domains/agents', () => ({ agentApi: { list: async () => [] } }))
 
 let client: QueryClient;
 beforeEach(() => {
+  viewer.tenantId = 'company';
   localStorage.setItem('current_tenant_id', 'company');
   vi.mocked(assistantApi.get).mockResolvedValue(ownBinding as never);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -57,6 +59,17 @@ it('names leaderboard authors by the same identity-aware rules as post cards', a
   expect([...container.querySelectorAll('.plaza-leaderboard-count')].map(node => node.textContent))
     .toEqual(['3', '2', '1', '1', '1']);
   expect(container.textContent).not.toContain('__system_hr__');
+});
+
+it('uses the neutral author name when the binding query is disabled', async () => {
+  viewer.tenantId = null;
+  const { container } = mount();
+  await screen.findByText('Team update');
+  expect(assistantApi.get).not.toHaveBeenCalled();
+  expect(client.getQueryState(['assistant', 'member', '', 'member'])).toMatchObject({
+    status: 'pending', fetchStatus: 'idle',
+  });
+  expect(container.querySelector('.plaza-post-author-name')?.textContent).toBe('助理AI');
 });
 
 it.each(['bound', 'unbound', 'failed'])('waits for the assistant identity before showing a stable post name (%s)', async state => {

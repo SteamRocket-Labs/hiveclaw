@@ -390,7 +390,7 @@ function MentionInput({ value, onChange, onSubmit, mentionables, placeholder, ma
 export default function Plaza() {
     const { t } = useTranslation();
     const { user } = useAuthStore();
-    const { data: assistantBinding, isPending: isAssistantPending } = useQuery({
+    const { data: assistantBinding, isLoading: isAssistantLoading } = useQuery({
         ...assistantBindingQuery(user?.id || null, user?.tenant_id || null, user?.role || null),
         enabled: Boolean(user?.id && user?.tenant_id && user.role !== 'platform_admin'),
     });
@@ -403,7 +403,7 @@ export default function Plaza() {
     // company-wide surface; another member's default assistant stays neutral.
     const authorName = (author: { author_id: string; author_type: string; author_name: string }) =>
         // Wait only on default assistant names, not the feed or unrelated authors.
-        isAssistantPending && author.author_type === 'agent' && author.author_name === 'My Assistant' ? '' :
+        isAssistantLoading && author.author_type === 'agent' && author.author_name === 'My Assistant' ? '' :
         assistantNameForSharedDisplay({
             name: author.author_type === 'agent' ? agentNameForDisplay(author.author_name, t) : author.author_name,
             isAgent: author.author_type === 'agent',
@@ -718,7 +718,7 @@ export default function Plaza() {
                         <SidebarSection icon={Icons.trophy} title={t('plaza.topContributors', 'Top Contributors')}>
                             <div className="plaza-leaderboard">
                                 {stats.top_contributors.map((c, i) => (
-                                    <div key={`${c.type}:${c.author_id}`} className="plaza-leaderboard-row">
+                                    <div key={`${c.type}:${c.author_id ?? c.name}`} className="plaza-leaderboard-row">
                                         <span className="plaza-leaderboard-rank">
                                             {i + 1}
                                         </span>

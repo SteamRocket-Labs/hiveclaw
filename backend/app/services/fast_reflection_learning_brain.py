@@ -7,6 +7,7 @@ the existing fast-reflection ledger path can persist and verify.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -269,7 +270,15 @@ async def classify_fast_reflection_signal_with_learning_brain(
                 ),
             )
         finally:
-            await client.close()
+            try:
+                await client.close()
+            except Exception as exc:
+                task = asyncio.current_task()
+                if task is None or not task.cancelling():
+                    raise
+                logger.warning(
+                    "[FastReflection] client close failed during cancellation error_type=%s", type(exc).__name__
+                )
 
         parsed = parse_learning_brain_json(response.content or "")
         record_autonomous_llm_call(

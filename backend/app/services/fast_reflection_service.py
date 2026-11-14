@@ -296,6 +296,7 @@ def create_fast_reflection_candidate(
     session_id: str,
     messages: list[dict[str, Any]],
     metadata: dict[str, Any] | None = None,
+    skip_reason: str | None = None,
 ) -> dict[str, Any]:
     """Create a ledger-only candidate from strong session feedback.
 
@@ -342,7 +343,7 @@ def create_fast_reflection_candidate(
             session_id=normalized_session_id,
             response_idempotency_key=response_idempotency_key,
             evidence_refs=source_attempt_ids,
-            reason="low_signal",
+            reason=skip_reason or "low_signal",
         )
 
     signal_type = str(signal["signal_type"])

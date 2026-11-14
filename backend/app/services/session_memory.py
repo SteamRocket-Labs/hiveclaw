@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -395,7 +396,13 @@ async def _run_session_memory_llm(
             raise ValueError("session memory writer returned empty content")
         return content
     finally:
-        await client.close()
+        try:
+            await client.close()
+        except Exception as exc:
+            task = asyncio.current_task()
+            if task is None or not task.cancelling():
+                raise
+            logger.warning("Session memory client close failed during cancellation error_type=%s", type(exc).__name__)
 
 
 def _session_memory_message_payload(message: dict[str, Any]) -> dict[str, str]:

@@ -388,7 +388,7 @@ export function ThreadItemRenderer({
     </p>;
   }
 
-  if (runtimeFailure?.kind === 'running_task_read' && item.audience !== 'operator') {
+  if (runtimeFailure?.kind === 'running_task_read') {
     return <p role="status" className="thread-item-content">{visibleContent}</p>;
   }
 

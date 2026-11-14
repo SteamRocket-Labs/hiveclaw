@@ -11,11 +11,22 @@ from app.runtime import hooks_setup
 
 def _context():
     outcome_id = uuid.uuid4()
-    return HookContext(event=HookEvent.RESPONSE_COMPLETE, agent_id=str(uuid.uuid4()),
-        session_id=str(uuid.uuid4()), source="web", messages=[{"role": "assistant", "content": "Done."}],
-        metadata={"response_commit": {"schema": "hive.response_commit.v1", "committed": True,
-            "commit_kind": "session_v2_terminal_outcome", "idempotency_key": str(outcome_id),
-            "source_refs": [f"session-run-outcome://{outcome_id}"]}})
+    return HookContext(
+        event=HookEvent.RESPONSE_COMPLETE,
+        agent_id=str(uuid.uuid4()),
+        session_id=str(uuid.uuid4()),
+        source="web",
+        messages=[{"role": "assistant", "content": "Done."}],
+        metadata={
+            "response_commit": {
+                "schema": "hive.response_commit.v1",
+                "committed": True,
+                "commit_kind": "session_v2_terminal_outcome",
+                "idempotency_key": str(outcome_id),
+                "source_refs": [f"session-run-outcome://{outcome_id}"],
+            }
+        },
+    )
 
 
 @pytest.mark.parametrize("failure", [None, "session", "reflection"])

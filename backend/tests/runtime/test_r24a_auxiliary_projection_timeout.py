@@ -3,12 +3,14 @@
 import asyncio
 import copy
 import json
+from collections import defaultdict
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
 
+from app.memory import metrics
 from app.runtime import hooks_setup
 from app.runtime.hooks import HookContext, HookEvent
 from app.services import session_learning, session_memory
@@ -44,6 +46,8 @@ def projections(monkeypatch, tmp_path):
         ctx=ctx,
         root=tmp_path / "data",
         clients=[],
+        close_errors=set(),
+        low_signal=False,
         delays={"session_memory_writer": 0, "fast_reflection_learning_brain": 0},
     )
     now = datetime(2026, 11, 13, tzinfo=UTC)
@@ -56,6 +60,7 @@ def projections(monkeypatch, tmp_path):
     monkeypatch.setattr(session_memory, "datetime", FixedDatetime)
     monkeypatch.setattr(session_learning, "_now", lambda: now)
     monkeypatch.setattr(hooks_setup, "_agent_data_root", lambda: state.root)
+    monkeypatch.setattr(metrics, "_hook_failure_total", defaultdict(int))
 
     async def model_config(*_args):
         return {"provider": "openai", "model": "scripted", "max_output_tokens": 1000}
@@ -89,6 +94,8 @@ def projections(monkeypatch, tmp_path):
                             "not_direct_memory_write": True,
                         },
                     }
+                    if state.low_signal:
+                        payload.update(signal_type="low_signal", lesson="")
                 return SimpleNamespace(content=json.dumps(payload))
             except asyncio.CancelledError:
                 self.cancelled = True
@@ -102,6 +109,8 @@ def projections(monkeypatch, tmp_path):
             # Cancellation must finish provider cleanup before a fallback commits.
             await asyncio.sleep(0)
             self.closed = True
+            if self.phase in state.close_errors:
+                raise ConnectionError("PRIVATE_CLOSE_ERROR")
 
     monkeypatch.setattr(session_memory, "_get_session_memory_model_config", model_config)
     monkeypatch.setattr("app.services.memory_service._get_summary_model_config", model_config)
@@ -181,7 +190,8 @@ async def test_timeout_skips_reflection_without_candidate_or_learning_write(proj
         session_id=state.ctx.session_id,
         response_idempotency_key=state.ctx.metadata["response_commit"]["idempotency_key"],
     )
-    assert disposition == {"status": "skipped", "reason": "low_signal", "idempotent_replay": True}
+    # R24a round 2: a timed-out pass is not a model verdict of low signal.
+    assert disposition == {"status": "skipped", "reason": "aux_projection_timeout", "idempotent_replay": True}
     assert (
         session_memory.load_session_memory(
             UUID(state.ctx.agent_id), session_id=state.ctx.session_id, data_root=state.root
@@ -275,4 +285,110 @@ async def test_auxiliary_deadline_never_detaches_a_durable_write_thread(projecti
         assert all(client.closed and not client.cancelled for client in state.clients)
     finally:
         release.set()
+        await asyncio.gather(boundary, return_exceptions=True)
+
+
+def _disposition(state):
+    return load_fast_reflection_disposition(
+        data_root=state.root,
+        agent_id=UUID(state.ctx.agent_id),
+        session_id=state.ctx.session_id,
+        response_idempotency_key=state.ctx.metadata["response_commit"]["idempotency_key"],
+    )
+
+
+def _assert_timeout_observation(state, caplog):
+    assert dict(metrics._hook_failure_total) == {
+        ("response_complete", "session_memory", "aux_projection_timeout"): 1,
+        ("response_complete", "fast_reflection", "aux_projection_timeout"): 1,
+    }
+    warnings = [
+        record.getMessage() for record in caplog.records if "aux_projection_timeout projection=" in record.getMessage()
+    ]
+    assert len(warnings) == 2
+    assert all(
+        f"agent={state.ctx.agent_id}" in message and f"session={state.ctx.session_id}" in message
+        for message in warnings
+    )
+
+
+async def test_timeout_counts_each_projection_once_including_replay(projections, monkeypatch, caplog):
+    state = projections
+    state.delays = dict.fromkeys(state.delays, 30)
+    receipt = await _bounded(state, monkeypatch)
+    _assert_timeout_observation(state, caplog)
+    assert await _bounded(state, monkeypatch) == receipt
+    assert len(state.clients) == 2
+    _assert_timeout_observation(state, caplog)
+
+
+async def test_real_low_signal_reason_and_committed_replay_are_unchanged(projections, monkeypatch):
+    state = projections
+    state.low_signal = True
+    receipt = await _bounded(state, monkeypatch)
+    expected = {"status": "skipped", "reason": "low_signal", "idempotent_replay": True}
+    assert _disposition(state) == expected
+    assert not _learning_path(state).exists()
+    # Even a later timeout budget cannot reinterpret an already committed verdict.
+    state.delays = dict.fromkeys(state.delays, 30)
+    state.low_signal = False
+    assert await _bounded(state, monkeypatch) == receipt
+    assert _disposition(state) == expected
+    assert len(state.clients) == 2
+    assert not metrics._hook_failure_total
+
+
+async def test_close_errors_preserve_timeout_marker_metrics_and_cancellation(projections, monkeypatch, caplog):
+    state = projections
+    state.delays = dict.fromkeys(state.delays, 30)
+    state.close_errors = set(state.delays)
+    before = asyncio.all_tasks()
+    await _bounded(state, monkeypatch)
+    payload = session_memory.load_session_memory(
+        UUID(state.ctx.agent_id), session_id=state.ctx.session_id, data_root=state.root
+    )
+    assert payload.source == "deterministic_fallback:model_failure:TimeoutError;source=web"
+    assert _disposition(state)["reason"] == "aux_projection_timeout"
+    _assert_timeout_observation(state, caplog)
+    assert "ConnectionError" in caplog.text and "PRIVATE_CLOSE_ERROR" not in caplog.text
+    assert len(state.clients) == 2
+    assert all(client.closed and client.cancelled and client.task.done() for client in state.clients)
+    assert not (asyncio.all_tasks() - before)
+
+
+async def test_close_errors_without_cancellation_keep_existing_failure_behavior(projections, monkeypatch, caplog):
+    state = projections
+    state.close_errors = set(state.delays)
+    await _bounded(state, monkeypatch)
+    payload = session_memory.load_session_memory(
+        UUID(state.ctx.agent_id), session_id=state.ctx.session_id, data_root=state.root
+    )
+    assert payload.source == "deterministic_fallback:model_failure:ConnectionError;source=web"
+    assert _disposition(state)["reason"] == "low_signal"
+    assert not _learning_path(state).exists()
+    assert all(client.closed and not client.cancelled for client in state.clients)
+    assert not metrics._hook_failure_total
+    assert "aux_projection_timeout" not in caplog.text
+
+
+async def test_outer_cancellation_survives_close_errors_without_fallback_write(projections):
+    state = projections
+    state.delays = dict.fromkeys(state.delays, 30)
+    state.close_errors = set(state.delays)
+    before = asyncio.all_tasks()
+    boundary = asyncio.create_task(hooks_setup.project_committed_response_complete(copy.deepcopy(state.ctx)))
+    try:
+        async with asyncio.timeout(1):
+            while len(state.clients) < 2 or not all(client.request for client in state.clients):
+                await asyncio.sleep(0)
+        boundary.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await boundary
+        assert all(client.closed and client.cancelled and client.task.done() for client in state.clients)
+        assert not _memory_path(state).exists()
+        assert _disposition(state) is None
+        assert not metrics._hook_failure_total
+        assert not (asyncio.all_tasks() - before)
+    finally:
+        boundary.cancel()
         await asyncio.gather(boundary, return_exceptions=True)

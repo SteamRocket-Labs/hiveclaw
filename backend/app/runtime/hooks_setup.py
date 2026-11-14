@@ -20,6 +20,7 @@ import uuid
 from contextvars import Context
 from pathlib import Path
 
+from app.memory.metrics import record_hook_failure
 from app.runtime.hooks import (
     HookContext,
     HookEvent,
@@ -117,7 +118,9 @@ def _has_committed_response_receipt(ctx: HookContext) -> bool:
 
 
 async def _project_on_response(
-    ctx: HookContext, *, auxiliary_deadline: float | None = None,
+    ctx: HookContext,
+    *,
+    auxiliary_deadline: float | None = None,
 ) -> dict[str, object] | None:
     """RESPONSE_COMPLETE → update volatile session projection only.
 
@@ -138,7 +141,10 @@ async def _project_on_response(
         "[Hooks] RESPONSE_COMPLETE: agent=%s source=%s turn=%s projection_only=true", ctx.agent_id, ctx.source, turn
     )
     return await _project_committed_response_session_memory(
-        ctx, agent_id, ctx.messages or [], auxiliary_deadline=auxiliary_deadline,
+        ctx,
+        agent_id,
+        ctx.messages or [],
+        auxiliary_deadline=auxiliary_deadline,
     )
 
 
@@ -239,7 +245,12 @@ async def _project_committed_response_session_memory(
                     tenant_id=ctx.metadata.get("tenant_id"),
                 )
         except TimeoutError:
-            logger.warning("[Hooks] aux_projection_timeout projection=session_memory")
+            record_hook_failure(event="response_complete", source="session_memory", reason="aux_projection_timeout")
+            logger.warning(
+                "[Hooks] aux_projection_timeout projection=session_memory agent=%s session=%s",
+                agent_id,
+                ctx.session_id,
+            )
             payload = _mark_deterministic_fallback(
                 build_session_memory_payload_from_messages(messages, metadata=_session_memory_metadata(ctx)),
                 reason="model_failure:TimeoutError",
@@ -336,6 +347,7 @@ async def _create_fast_reflection_candidate(
     session_id: str,
     messages: list[dict],
     metadata: dict,
+    skip_reason: str | None = None,
 ) -> dict[str, object]:
     """Commit one idempotent fast-reflection candidate before returning."""
 
@@ -348,6 +360,7 @@ async def _create_fast_reflection_candidate(
         session_id=session_id,
         messages=messages,
         metadata=metadata,
+        skip_reason=skip_reason,
     )
 
 
@@ -379,7 +392,9 @@ def _fast_reflection_source_ref(ctx: HookContext) -> str:
 
 
 async def _fast_reflection_on_response(
-    ctx: HookContext, *, auxiliary_deadline: float | None = None,
+    ctx: HookContext,
+    *,
+    auxiliary_deadline: float | None = None,
 ) -> dict[str, object] | None:
     """RESPONSE_COMPLETE → durable candidate creation for strong correction signals."""
     if ctx.metadata.get(_REQUIRED_RESPONSE_COMPLETE_MARKER):
@@ -407,6 +422,7 @@ async def _fast_reflection_on_response(
     if replay is not None:
         return {**replay, "source_ref": _fast_reflection_source_ref(ctx)}
     tenant_id = metadata.get("tenant_id")
+    skip_reason = None
     try:
         async with asyncio.timeout_at(auxiliary_deadline):
             classification = await _run_fast_reflection_learning_brain(
@@ -417,8 +433,14 @@ async def _fast_reflection_on_response(
                 metadata=metadata,
             )
     except TimeoutError:
-        logger.warning("[Hooks] aux_projection_timeout projection=fast_reflection")
+        record_hook_failure(event="response_complete", source="fast_reflection", reason="aux_projection_timeout")
+        logger.warning(
+            "[Hooks] aux_projection_timeout projection=fast_reflection agent=%s session=%s",
+            agent_id,
+            ctx.session_id,
+        )
         classification = None
+        skip_reason = "aux_projection_timeout"
     if classification is not None:
         metadata["fast_reflection_classification"] = classification
     result = await _create_fast_reflection_candidate(
@@ -427,6 +449,7 @@ async def _fast_reflection_on_response(
         session_id=str(ctx.session_id or ""),
         messages=messages,
         metadata=metadata,
+        skip_reason=skip_reason,
     )
     source_ref = _fast_reflection_source_ref(ctx)
     logger.info(

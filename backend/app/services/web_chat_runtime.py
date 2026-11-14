@@ -3769,6 +3769,7 @@ async def cancel_web_chat_run(
 async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
     """Bound best-effort child cancellation independently of the parent's receipt."""
     from app.agents.orchestrator import cancel_async_delegation
+    from app.services.session_control_input import cancellable_delegation_descendants_statement
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
     tasks = {}
@@ -3785,35 +3786,11 @@ async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
         try:
             tenant_id = await resolve_tenant_for_agent(_run_id(agent_id))
             async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
-                children = (
-                    select(RuntimeTask.id)
-                    .where(
-                        RuntimeTask.root_runtime_task_id == run_uuid,
-                        RuntimeTask.tenant_id == tenant_id,
-                        RuntimeTask.task_type == "delegation",
-                    )
-                    .cte("cancel_delegation_children", recursive=True)
-                )
-                children = children.union(
-                    select(RuntimeTask.id)
-                    .join(
-                        children,
-                        RuntimeTask.root_runtime_task_id == children.c.id,
-                    )
-                    .where(RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == "delegation")
-                )
                 delegated = list(
-                    (
-                        await db.execute(
-                            select(RuntimeTask.id, RuntimeTask.parent_agent_id).where(
-                                RuntimeTask.id.in_(select(children.c.id)),
-                                RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
-                            )
-                        )
-                    ).all()
+                    await db.scalars(cancellable_delegation_descendants_statement(run_id=run_uuid, tenant_id=tenant_id))
                 )
-            for child_id, parent_id in delegated:
-                tasks[asyncio.create_task(cancel_child(child_id, parent_id))] = child_id
+            for child in delegated:
+                tasks[asyncio.create_task(cancel_child(child.id, child.parent_agent_id))] = child.id
             if tasks:
                 await asyncio.wait(tasks)
         except Exception as exc:  # noqa: BLE001 - child lookup is best-effort too.

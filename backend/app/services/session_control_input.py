@@ -33,6 +33,37 @@ _TOOL_PERMISSION_RESPONSE_SCHEMA = "hive.tool_permission_response.v1"
 CANCEL_CONTROL_STALE_AFTER = timedelta(seconds=5)
 
 
+def cancellable_delegation_descendants_statement(*, run_id: uuid.UUID, tenant_id: uuid.UUID):
+    children = (
+        select(RuntimeTask.id)
+        .where(
+            RuntimeTask.root_runtime_task_id == run_id,
+            RuntimeTask.tenant_id == tenant_id,
+            RuntimeTask.task_type == "delegation",
+        )
+        .cte("cancel_delegation_children", recursive=True)
+    )
+    children = children.union(
+        select(RuntimeTask.id)
+        .join(children, RuntimeTask.root_runtime_task_id == children.c.id)
+        .where(RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == "delegation")
+    )
+    return select(RuntimeTask).where(
+        RuntimeTask.id.in_(select(children.c.id)),
+        RuntimeTask.status.in_(_ACTIVE_RUN_STATUSES),
+    )
+
+
+async def _mark_run_and_delegations_cancelling(
+    db: AsyncSession, *, task: RuntimeTask, metadata: dict[str, str]
+) -> None:
+    descendants = await db.scalars(
+        cancellable_delegation_descendants_statement(run_id=task.id, tenant_id=task.tenant_id).with_for_update()
+    )
+    for target in (task, *descendants):
+        target.metadata_json = {**(target.metadata_json or {}), **metadata}
+
+
 @dataclass(frozen=True, slots=True)
 class ControlInputReceipt:
     command_id: uuid.UUID
@@ -891,17 +922,17 @@ async def begin_cancel_control_input(
             accepted_sequence=await _accepted_sequence(db, command.id),
             reason_code="run_not_active_before_cancel_start",
         )
-    metadata = dict(task.metadata_json or {})
-    metadata.update(
-        {
+    await _mark_run_and_delegations_cancelling(
+        db,
+        task=task,
+        metadata={
             "cancel_control_id": str(control.id),
             "cancel_command_id": str(command.id),
             "cancel_state": "cancelling",
             "cancel_requested_by": str(authority.principal_id),
             "cancel_worker_id": str(worker_id),
-        }
+        },
     )
-    task.metadata_json = metadata
     control.status = "applying"
     control.recovery_owner = str(worker_id)
     control.version = int(control.version) + 1
@@ -1259,17 +1290,17 @@ async def recover_stale_cancel_control_inputs_once(
                 counts["unavailable"] += 1
                 continue
         if control.status == "accepted":
-            metadata = dict(task.metadata_json or {})
-            metadata.update(
-                {
+            await _mark_run_and_delegations_cancelling(
+                db,
+                task=task,
+                metadata={
                     "cancel_control_id": str(control.id),
                     "cancel_command_id": str(command.id),
                     "cancel_state": "cancelling",
                     "cancel_requested_by": str(command.principal_id),
                     "cancel_worker_id": str(worker_id),
-                }
+                },
             )
-            task.metadata_json = metadata
             control.status = "applying"
             counts["started"] += 1
             await append_session_events(

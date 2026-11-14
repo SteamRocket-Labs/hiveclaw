@@ -2,7 +2,9 @@
 
 import json
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from uuid import uuid4
 
 import pytest
@@ -267,6 +269,9 @@ async def test_committed_plaza_post_is_in_the_completed_empty_search_answer(
     async def no_skill(_seed):
         return {}
 
+    # The invoker inspects named parameters: preserve the real port's session/run
+    # contract so repeated fixtures do not derive one shared permission id.
+    @wraps(agent_tools.execute_tool)
     async def execute(tool_name, args, *rest, agent_id=None, authority_frame=None,
                       tool_call_id=None, trace_metadata_sink=None,
                       pre_effect_callback=None, **kwargs):
@@ -513,6 +518,18 @@ async def _run_delegated_empty_search_summary(
     else:
         await _assert_discarded_summary(owner_sessionmaker, seed["run_id"], failure_code=failure_code)
     notices = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
+
+    @asynccontextmanager
+    async def own_notice_session(_operation):
+        from app.database import tenant_scoped_session
+
+        # Scope before claim's ten-row limit, not after foreign mail fills it.
+        async with tenant_scoped_session(
+            seed["tenant_id"], session_factory=app_user_sessionmaker, require_tenant=True
+        ) as db:
+            yield db
+
+    monkeypatch.setattr(notices, "_worker_session", own_notice_session)
     claimed = await notices.claim_batch(worker_id="r20b-parent", limit=10)
     pages = await notices.prepare_integration_pages(worker_id="r20b-parent",
         claimed=[item for item in claimed if item.tenant_id == seed["tenant_id"]])

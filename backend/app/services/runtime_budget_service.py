@@ -1025,7 +1025,7 @@ class RuntimeBudgetService:
             reaped = 0
             for run in runs:
                 budget_run_id = run.id
-                loaded_before = {key for key in db.identity_map}
+                loaded_before = set(db.identity_map.keys())
                 try:
                     async with db.begin_nested():
                         run.status = "expired"
@@ -1057,18 +1057,19 @@ class RuntimeBudgetService:
                             result_summary="Runtime budget expired before this work was claimed.",
                             completed_at=current,
                         )
-                except RuntimeBudgetSettlementConflict as exc:
-                    # Permanent conflicts filling the oldest-first limit delay newer rows until fixed.
+                except Exception as exc:
+                    # Permanent failures filling the oldest-first limit (daemon: 32) delay newer rows until fixed.
                     # No quarantine marker is allowed here; use an operator fix or an owner-approved marker.
                     logger.error(
-                        "Expired budget run settlement conflict: budget_run_id=%s runtime_task_id=%s",
+                        "Expired budget run failed: budget_run_id=%s error_type=%s runtime_task_id=%s",
                         budget_run_id,
-                        exc.runtime_task_id,
+                        type(exc).__name__,
+                        getattr(exc, "runtime_task_id", None),
                     )
                     # Rollback expires writes, not read-only tasks/reservations.
                     # Leave the other preselected runs usable without async lazy loads.
                     for key, instance in list(db.identity_map.items()):
-                        if instance is run or key not in loaded_before:
+                        if key not in loaded_before:
                             db.expire(instance)
                     continue
                 reaped += 1
@@ -1164,6 +1165,8 @@ class RuntimeBudgetService:
             )
             reservation_events = result.scalars().all()
             for event in reservation_events:
+                run = None
+                task = None
                 try:
                     async with db.begin_nested():
                         run = await self._lock_run(db, event.budget_run_id)
@@ -1281,18 +1284,21 @@ class RuntimeBudgetService:
                         if is_task_reservation and task is not None and task.budget_admission_status != "settled":
                             task.budget_admission_status = "settled"
                             repaired = True
-                except RuntimeBudgetSettlementConflict:
-                    # Permanent conflicts filling the oldest-first limit delay newer rows until fixed.
+                except Exception as exc:
+                    # Permanent failures filling the oldest-first limit (daemon: 32) delay newer rows until fixed.
                     # No quarantine marker is allowed here; use an operator fix or an owner-approved marker.
                     logger.error(
-                        "Orphaned reservation settlement conflict: "
-                        "budget_run_id=%s reservation_key=%s source_event_id=%s",
+                        "Orphaned reservation failed: budget_run_id=%s runtime_task_id=%s source_event_id=%s "
+                        "error_type=%s exception_runtime_task_id=%s",
                         event.budget_run_id,
-                        event.reservation_key,
+                        event.runtime_task_id,
                         event.id,
+                        type(exc).__name__,
+                        getattr(exc, "runtime_task_id", None),
                     )
                     # Rollback releases new row locks, but leaves unmodified ORM reads cached.
-                    db.expire(run)
+                    if run is not None:
+                        db.expire(run)
                     if task is not None:
                         db.expire(task)
                     continue

@@ -289,12 +289,21 @@ async def test_orphan_conflict_expires_task_before_shared_nested_reservation(
 
 
 @pytest.mark.parametrize("lane", ["reconcile_orphaned_reservations", "reap_expired_runs"])
-async def test_budget_savepoint_subxact_measurement(app_user_sessionmaker, owner_sessionmaker, monkeypatch, lane):
+@pytest.mark.parametrize("workload", ["empty_65", "callee_50", "callee_33", "callee_32"])
+async def test_budget_savepoint_subxact_measurement(
+    app_user_sessionmaker,
+    owner_sessionmaker,
+    monkeypatch,
+    lane,
+    workload,
+):
     from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
     from app.models.tenant import Tenant
     from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
 
-    count = 65
+    count = int(workload.split("_")[1])
+    with_callees = workload.startswith("callee_")
     tenant_id = await _seed_tenant(owner_sessionmaker)
     service = RuntimeBudgetService(session_factory=app_user_sessionmaker)
     run_ids = []
@@ -325,7 +334,7 @@ async def test_budget_savepoint_subxact_measurement(app_user_sessionmaker, owner
                         .mappings()
                         .one()
                     )
-                    measurements.append({"lane": lane, "candidates": count, **measurement})
+                    measurements.append({"lane": lane, "workload": workload, "candidates": count, **measurement})
                     await commit()
 
                 monkeypatch.setattr(db, "commit", measured_commit)
@@ -333,9 +342,48 @@ async def test_budget_savepoint_subxact_measurement(app_user_sessionmaker, owner
 
     monkeypatch.setattr(service, "_budget_session", measure_before_commit)
     try:
+        if with_callees:
+            for index in range(count):
+                run = await _create_run(service, tenant_id, max_background_tasks=1)
+                run_ids.append(run.id)
+                candidate_id = uuid.uuid4()
+                if lane == "reconcile_orphaned_reservations":
+                    await service.reserve(
+                        RuntimeBudgetReservation(
+                            budget_run_id=run.id,
+                            reservation_key=f"measurement-{index}",
+                            runtime_task_id=candidate_id,
+                            tokens=1,
+                        )
+                    )
+                async with owner_sessionmaker() as db:
+                    if lane == "reconcile_orphaned_reservations":
+                        db.add(
+                            RuntimeTask(
+                                id=candidate_id,
+                                tenant_id=tenant_id,
+                                task_type="subagent",
+                                status="completed",
+                                completed_at=datetime.now(UTC),
+                                budget_run_id=run.id,
+                                budget_reservation_key=f"measurement-{index}",
+                                budget_admission_status="reserved",
+                                metadata_json={"runtime_budget_actuals": {"background_tasks": 1}},
+                            )
+                        )
+                    db.add(
+                        RuntimeTask(
+                            tenant_id=tenant_id,
+                            task_type="subagent",
+                            status="pending",
+                            budget_run_id=run.id,
+                        )
+                    )
+                    await db.commit()
         if lane == "reap_expired_runs":
-            for _ in range(count):
-                run_ids.append((await _create_run(service, tenant_id)).id)
+            if not with_callees:
+                for _ in range(count):
+                    run_ids.append((await _create_run(service, tenant_id)).id)
             async with owner_sessionmaker() as db:
                 oldest = await db.scalar(select(func.min(RuntimeBudgetRun.expires_at)))
                 expiry = min(datetime.now(UTC), oldest or datetime.now(UTC)) - timedelta(minutes=1)
@@ -343,21 +391,22 @@ async def test_budget_savepoint_subxact_measurement(app_user_sessionmaker, owner
                     run.expires_at = expiry
                 await db.commit()
         else:
-            run = await _create_run(service, tenant_id)
-            run_ids.append(run.id)
-            for index in range(count):
-                await service.reserve(
-                    RuntimeBudgetReservation(
-                        budget_run_id=run.id,
-                        reservation_key=f"measurement-{index}",
-                        tokens=1,
+            if not with_callees:
+                run = await _create_run(service, tenant_id)
+                run_ids.append(run.id)
+                for index in range(count):
+                    await service.reserve(
+                        RuntimeBudgetReservation(
+                            budget_run_id=run.id,
+                            reservation_key=f"measurement-{index}",
+                            tokens=1,
+                        )
                     )
-                )
             async with owner_sessionmaker() as db:
                 oldest = await db.scalar(select(func.min(RuntimeBudgetEvent.created_at)))
                 created_at = min(datetime.now(UTC), oldest or datetime.now(UTC)) - timedelta(days=2)
                 for event in await db.scalars(
-                    select(RuntimeBudgetEvent).where(RuntimeBudgetEvent.budget_run_id == run.id)
+                    select(RuntimeBudgetEvent).where(RuntimeBudgetEvent.budget_run_id.in_(run_ids))
                 ):
                     event.created_at = created_at
                 await db.commit()
@@ -366,9 +415,27 @@ async def test_budget_savepoint_subxact_measurement(app_user_sessionmaker, owner
         assert measurements[0]["assigned_xid"] is True
         assert isinstance(measurements[0]["subxact_count"], int)
         assert isinstance(measurements[0]["subxact_overflow"], bool)
+        # BF2 round 2: retain the 65-row overflow reproduction, and pin the
+        # largest measured full callee batch that fits the 64-entry cache.
+        assert measurements[0]["subxact_count"] == min(count * (2 if with_callees else 1), 64)
+        assert measurements[0]["subxact_overflow"] is (workload != "callee_32")
+        if with_callees:
+            async with owner_sessionmaker() as db:
+                assert (
+                    await db.scalar(
+                        select(func.count())
+                        .select_from(RuntimeTask)
+                        .where(
+                            RuntimeTask.budget_run_id.in_(run_ids),
+                            RuntimeTask.status == "killed",
+                        )
+                    )
+                    == count
+                )
         print("BF1_R2_SUBXACT " + json.dumps(measurements[0], sort_keys=True))
     finally:
         async with owner_sessionmaker() as db:
+            await db.execute(delete(RuntimeTask).where(RuntimeTask.budget_run_id.in_(run_ids)))
             await db.execute(delete(RuntimeBudgetRun).where(RuntimeBudgetRun.id.in_(run_ids)))
             await db.execute(delete(Tenant).where(Tenant.id == tenant_id))
             await db.commit()

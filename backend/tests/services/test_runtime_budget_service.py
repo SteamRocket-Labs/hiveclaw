@@ -1196,8 +1196,12 @@ async def test_reconcile_orphaned_reservations_isolates_conflicts_across_tenants
         assert [(record.levelno, record.getMessage()) for record in conflict_logs] == [
             (
                 logging.ERROR,
-                "Orphaned reservation settlement conflict: "
-                f"budget_run_id={run_ids[0]} reservation_key=orphan-conflict source_event_id={bad_event_id}",
+                # BF2 round 2: exact ids/type replace the private reservation key;
+                # preserve the count, ERROR level and no-traceback assertions.
+                "Orphaned reservation failed: "
+                f"budget_run_id={run_ids[0]} runtime_task_id={task_ids[0]} source_event_id={bad_event_id} "
+                f"error_type=RuntimeBudgetSettlementConflict exception_runtime_task_id="
+                f"{task_ids[2] if conflict_kind == 'breaker' else None}",
             )
         ] * 2
         assert all(record.exc_info is None for record in conflict_logs)

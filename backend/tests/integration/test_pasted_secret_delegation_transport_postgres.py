@@ -1,5 +1,6 @@
 """S0d: pasted Web secrets stay masked through real colleague delegation."""
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -17,7 +18,6 @@ from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation, SessionTurnInput
 from app.models.user import User
-from tests.integration import test_web_chat_worker_restart_kernel_recovery as kernel_cases
 from tests.integration.test_failed_delegation_continuation import _call, _execute
 from tests.integration.test_r19a_consumed_result import auxiliary_models  # noqa: F401
 from tests.integration.test_r19b_delegation_result_postgres import _tool_results
@@ -48,23 +48,26 @@ def _protected(value, *, placeholder=True):
 async def test_pasted_secret_stays_masked_in_colleague_transport_and_storage(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, repetition,
 ):
-    import app.database as database
     import app.runtime.invoker as invoker
-    import app.services.tenant_resolver as tenant_resolver
     from app.agents import orchestrator
     from app.config import get_settings
     from app.database import pin_rls_tenant_context
     from app.services import agent_context, agent_manager, agent_tools
+    from app.services.agent_context import _strip_primary_heading, agent_identity_content
     from app.services.agent_manager import AgentManager
+    from app.services.config_versioning import save_revision
     from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
     from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
     from app.services.secrets_provider import get_secrets_provider
     from app.services.session_live_input import submit_live_human_input
+    from app.services.skill_source_receipts import original_platform_skill_hashes
     from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
 
     tenant_id, user_id, parent_id, session_id, _ = await _seed_session(owner_sessionmaker)
     child_agent_id = uuid4()
     seed = {"tenant_id": tenant_id, "agent_id": parent_id, "data_root": tmp_path / "agents"}
+    resident_markers = {"s0d-parent": "S0D_PARENT_RESIDENT_MEMORY",
+        "s0d-colleague": "S0D_COLLEAGUE_RESIDENT_MEMORY"}
     settings = get_settings()
     monkeypatch.setattr(settings, "AGENT_DATA_DIR", str(seed["data_root"]))
     monkeypatch.setattr(agent_manager, "settings", settings)
@@ -87,25 +90,35 @@ async def test_pasted_secret_stays_masked_in_colleague_transport_and_storage(
             owner_user_id=user_id, primary_model_id=models[1].id, max_tool_rounds=8)
         db.add(child)
         await db.flush()
-        for agent in (parent, child):
-            await AgentManager().initialize_agent_files(db, agent, original_author_id=user_id)
+        for agent, model in zip((parent, child), models, strict=True):
+            await AgentManager().initialize_agent_files(db, agent)
+            # Seed nonempty, original-owner memory with the same bootstrap
+            # witness helpers used by the real-context integration fixtures.
+            root = seed["data_root"] / str(agent.id)
+            self_content = f"# Self\n\n{resident_markers[model.model]}: review deployment notes.\n"
+            (root / "memory/self/self.md").write_text(self_content)
+            soul = (root / "soul.md").read_text()
+            await save_revision(db, tenant_id=tenant_id, entity_type="agent_bootstrap", entity_id=agent.id,
+                content={"schema": "hive.agent_bootstrap.v1",
+                    "identity": agent_identity_content(agent.name, agent.role_description),
+                    "soul": {"content_sha256": hashlib.sha256(soul.encode()).hexdigest(),
+                        "resource_sha256": hashlib.sha256(_strip_primary_heading(soul.strip()).strip().encode()).hexdigest()},
+                    "resident_sources": {"memory/self/self.md": hashlib.sha256(self_content.encode()).hexdigest()},
+                    "platform_skill_sources": original_platform_skill_hashes(root)},
+                change_source="user", changed_by_user_id=user_id)
         db.add(CapabilityPolicy(tenant_id=tenant_id, capability="agent.message.send",
             allowed=True, requires_approval=False))
         await db.commit()
 
-    # Reuse the delegation fixtures' isolated persistence/context seams, while
-    # retaining real model selection, provider serialization, tools and policy.
-    native_config, native_tools = invoker._resolve_runtime_config, invoker.get_agent_tools_for_llm
-    native_client, native_tenant = invoker.create_llm_client, tenant_resolver.resolve_tenant_for_agent
+    # Keep the real identity, runtime and memory contexts and memory writes.
+    # Only route persistence to the fixture and isolate quota/usage accounting.
     _bind_database(monkeypatch, app_user_sessionmaker)
-    kernel_cases._patch_runtime_seams(monkeypatch, seed, app_user_sessionmaker)
-    kernel_cases._patch_invoker_seams(monkeypatch, None, seed, app_user_sessionmaker)
-    monkeypatch.setattr(invoker, "_resolve_runtime_config", native_config)
-    monkeypatch.setattr(invoker, "get_agent_tools_for_llm", native_tools)
-    monkeypatch.setattr(invoker, "create_llm_client", native_client)
-    monkeypatch.setattr(invoker, "tenant_scoped_session", database.tenant_scoped_session)
-    monkeypatch.setattr(invoker, "execute_tool", agent_tools.execute_tool)
-    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", native_tenant)
+
+    async def quota_allowed(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(invoker, "check_user_token_quota", quota_allowed)
+    monkeypatch.setattr(invoker, "record_token_usage", lambda *_args, **_kwargs: None)
 
     async def no_wakeup(**_kwargs):
         return None
@@ -124,6 +137,11 @@ async def test_pasted_secret_stays_masked_in_colleague_transport_and_storage(
         lane = body["model"]
         requests[lane].append(body)
         _protected(body)
+        system = "\n".join(message["content"] for message in body["messages"] if message["role"] == "system")
+        assert "## Identity & Mission" in system
+        context = json.dumps(body["messages"], ensure_ascii=False)
+        assert "## Current Time" in context
+        assert resident_markers[lane] in context
         if lane == "s0d-parent" and len(requests[lane]) == 2:
             # Copy only what actually reached the parent provider, rather than
             # constructing an already-masked delegation instruction in the test.
@@ -237,4 +255,4 @@ async def test_pasted_secret_stays_masked_in_colleague_transport_and_storage(
         _protected(_values(invocation))
     print(f"S0D repetition={repetition} delegation=completed parent_requests=3 colleague_requests=1 "
         "parent_wire=masked colleague_wire=masked transcript=masked task=masked receipts=no_secret "
-        "model_receipts=4")
+        "model_receipts=4 real_identity=present real_runtime=present real_memory=present")

@@ -57,3 +57,42 @@ def test_quoted_value_keeps_its_delimiters_and_following_prose(quote):
 
     assert result.value == f"password={quote}[REDACTED_SECRET]{quote} ordinary words stay."
     assert result.redacted_count == 1
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'I set "password=K8m2Qv9X3p7a".',
+        'CMD ["mysqld","--password=K8m2Qv9X3p7a","--port=3306"]',
+        'environment: ["DB_PASSWORD=K8m2Qv9X3p7a","DB_USER=app","DB_HOST=db1"]',
+    ],
+    ids=["sentence", "command_array", "environment_array"],
+)
+def test_closing_quote_preserves_punctuation_and_config_fields(content):
+    payload = {"content": content}
+    result = PrivacyLayer.redact_pasted_credentials(payload)
+
+    assert result.value == {"content": content.replace("K8m2Qv9X3p7a", "[REDACTED_SECRET]")}
+    assert result.redacted_count == 1
+    assert payload == {"content": content}
+
+
+def test_internal_quote_tail_scan_stops_after_256_characters():
+    tail = "a" * 300
+    suffix = " ordinary words stay."
+    result = PrivacyLayer.redact_pasted_credentials('password=K8m2Qv9X3p7a"' + tail + suffix)
+
+    # The 256-character scan includes the quote, so only 255 tail letters are hidden.
+    assert result.value == "password=[REDACTED_SECRET]" + tail[255:] + suffix
+    assert result.redacted_count == 1
+
+
+def test_repeated_labels_on_a_320_kb_line_are_redacted_without_a_clock_assertion():
+    unit = 'password=K8m2Qv9X3p7a"'
+    content = unit * (320_000 // len(unit)) + "a" * (320_000 % len(unit))
+    assert len(content) == 320_000
+
+    result = PrivacyLayer.redact_pasted_credentials(content)
+
+    assert result.value == "password=[REDACTED_SECRET]"
+    assert result.redacted_count == 1

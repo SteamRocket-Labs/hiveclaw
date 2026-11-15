@@ -642,6 +642,7 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
   }
   const terminal = (value: unknown) => ['completed', 'failed', 'error', 'killed', 'cancelled', 'canceled', 'blocked', 'skipped'].includes(String(value));
   const metadataOf = (message: AgentChatMessage) => message.threadItem?.metadata || message.sessionItem?.payload || {};
+  const sequenceOf = (message: AgentChatMessage, index: number) => message.sessionItem?.last_sequence ?? message.threadItem?.sequence ?? index;
   const recordSessionTerminal = (session: string, task: string, sequence: number) => {
     if (!session || !task) return;
     const tasks = terminalSessions.get(session) || new Map<string, number>();
@@ -651,7 +652,7 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
   messages.forEach((message, index) => {
     const metadata = metadataOf(message);
     const status = metadata.status || message.eventStatus;
-    const sequence = message.sessionItem?.last_sequence ?? message.threadItem?.sequence ?? index;
+    const sequence = sequenceOf(message, index);
     const childSession = key(metadata.child_session_id);
     if (message.eventType === 'runtime_action_started' && metadata.action_kind === 'a2a_delegation' && childSession) {
       const starts = startsBySession.get(childSession) || [];
@@ -675,12 +676,43 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
     }
   });
   const foldedStarts = new Set<number>();
+  const terminalAtStart = new Map<number, AgentChatMessage>();
+  const movedTerminals = new Set<number>();
   for (const [session, starts] of startsBySession) {
-    const ends = [...(terminalSessions.get(session)?.values() || [])].sort((a, b) => a - b);
+    const sessionTerminals = terminalSessions.get(session) || new Map<string, number>();
+    const pairedStarts = new Set<number>();
+    const pairedTasks = new Set<string>();
+    const foldStart = (index: number, terminalSequence: number, task?: string) => {
+      foldedStarts.add(index);
+      const terminalIndex = messages.findIndex((message, messageIndex) => key(metadataOf(message).child_session_id) === session
+        && sequenceOf(message, messageIndex) === terminalSequence
+        && (!task || key(metadataOf(message).runtime_task_id || metadataOf(message).task_id) === task)
+        && ['runtime_action_completed', 'runtime_action_failed', 'child_session'].includes(message.eventType || ''));
+      if (terminalIndex < 0 || movedTerminals.has(terminalIndex)) return;
+      // Keep the folded row at its start without changing terminal evidence.
+      terminalAtStart.set(index, messages[terminalIndex]);
+      movedTerminals.add(terminalIndex);
+    };
+    const orderedStarts = starts.sort((a, b) => a.sequence - b.sequence);
+    for (const start of orderedStarts) {
+      const metadata = metadataOf(messages[start.index]);
+      const task = key(metadata.runtime_task_id || metadata.task_id);
+      const sequence = sessionTerminals.get(task);
+      if (sequence == null || sequence <= start.sequence || pairedTasks.has(task)) continue;
+      foldStart(start.index, sequence, task);
+      if (!terminalAtStart.has(start.index)) {
+        foldedStarts.delete(start.index);
+        continue;
+      }
+      pairedStarts.add(start.index);
+      pairedTasks.add(task);
+    }
+    const ends = [...sessionTerminals].filter(([task]) => !pairedTasks.has(task)).map(([, sequence]) => sequence)
+      .sort((a, b) => a - b);
     const covered: Array<{ index: number; terminalSequence: number }> = [];
     let nextTerminal = 0;
-    // Session-only FIFO cannot identify tasks that finish out of start order.
-    for (const start of starts.sort((a, b) => a.sequence - b.sequence)) {
+    // Preserve the landed parent-id/session FIFO fold for the unpaired rest.
+    for (const start of orderedStarts.filter(start => !pairedStarts.has(start.index))) {
       while (nextTerminal < ends.length && ends[nextTerminal] <= start.sequence) nextTerminal++;
       // Reopen only pairs whose terminal could cover this later start.
       if (nextTerminal === ends.length) {
@@ -690,10 +722,12 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
       covered.push({ index: start.index, terminalSequence: ends[nextTerminal] });
       nextTerminal++;
     }
-    covered.forEach(({ index }) => foldedStarts.add(index));
+    covered.forEach(({ index, terminalSequence }) => foldStart(index, terminalSequence));
   }
-  return messages.map((message, index) => {
-    if (foldedStarts.has(index)) return null;
+  return messages.map((source, index) => {
+    if (movedTerminals.has(index)) return null;
+    const message = terminalAtStart.get(index) || source;
+    if (foldedStarts.has(index) && !terminalAtStart.has(index)) return null;
     const metadata = metadataOf(message);
     if (message.role === 'event' && (metadata.action_kind === 'a2a_delegation' || message.eventType === 'child_session')) {
       const status = terminals.get(key(metadata.runtime_task_id || metadata.task_id));

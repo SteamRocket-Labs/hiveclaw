@@ -146,6 +146,8 @@ class PrivacyLayer:
         re.compile(r"https://oapi\.dingtalk\.com/robot/send\?access_token=(?P<value>[A-Za-z0-9_-]{16,})"),
         re.compile(r"https://hooks\.slack\.com/services/(?P<value>[A-Za-z0-9_/-]{20,})"),
         # Consume rejected runs too, so finditer cannot retry their inner prefixes.
+        # Same matches only while each token class and prefix stay inside the
+        # right guard [A-Za-z0-9_./+=-] and the stop set is that guard minus the class.
         *(re.compile(r"(?<![A-Za-z0-9_])" + pattern) for pattern in (
             r"sk-(?:(?P<ok>[A-Za-z0-9_\-]{20,}+)(?![./+=])|[A-Za-z0-9_\-]*+)",
             r"gh[pousr]_[A-Za-z0-9_]{20,}" + _ASCII_RIGHT,

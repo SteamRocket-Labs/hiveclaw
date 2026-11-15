@@ -2145,6 +2145,50 @@ function runAwaitsApproval(messages: AgentChatMessage[], runId?: string | null):
         && terminalRuntimePhaseForSessionEvent('run', message.sessionItem.lifecycle, message.sessionItem.payload) === 'awaiting_approval'))));
 }
 
+function excludeMemberApprovalWait(cell: ThreadTimelineCell, messages: AgentChatMessage[]): ThreadTimelineCell {
+  if (cell.kind !== 'active_run' || !cell.runId || cell.timeline.statusUnknown) return cell;
+  const runMessages = messages.filter(message => isSameSessionRunId(messageRunId(message), cell.runId));
+  const permissions = runMessages.filter(message => message.sessionItem?.kind === 'tool_permission'
+    && message.sessionPermissionRequest && !message.sessionItem.payload.enterprise_approval_id);
+  if (!permissions.length) return cell;
+  const startedAtMs = Date.parse(cell.timeline.startedAt || '');
+  const completedAtMs = cell.timeline.durationIsFinal ? Date.parse(cell.timeline.completedAt || '')
+    : Math.max(...runMessages.map(message => Date.parse(message.sessionItem?.terminalAt || message.timestamp || '')));
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs)
+    || (cell.timeline.durationIsFinal && cell.timeline.durationMs == null)) return cell;
+  // Item reduction preserves the first occurrence, including control.accepted
+  // after control.applied. Pair by permission identity, never by nearby prose.
+  const acceptedByPermission = new Map<string, number>();
+  for (const message of runMessages) {
+    const item = message.sessionItem;
+    if (item?.kind !== 'control_input' || item.payload.kind !== 'permission_response') continue;
+    const id = readString(item.payload, ['permission_item_id'], '');
+    const acceptedAt = Date.parse(item.occurredAt);
+    if (id && Number.isFinite(acceptedAt)) acceptedByPermission.set(id,
+      Math.min(acceptedByPermission.get(id) ?? Infinity, acceptedAt));
+  }
+  const spans = permissions.map(message => {
+    const item = message.sessionItem!;
+    const end = acceptedByPermission.get(item.id)
+      ?? (['completed', 'denied'].includes(item.lifecycle) ? Date.parse(item.terminalAt || '') : completedAtMs);
+    return [Math.max(startedAtMs, Date.parse(item.occurredAt)), Math.min(completedAtMs, end)];
+  }).sort((left, right) => left[0] - right[0]);
+  let previousEnd = startedAtMs;
+  let waitingMs = 0;
+  for (const [start, end] of spans) {
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) continue;
+    waitingMs += Math.max(0, end - Math.max(start, previousEnd));
+    previousEnd = Math.max(previousEnd, end);
+  }
+  // Preserve the existing start. For live work the existing duration/end pair
+  // is a transcript clock sample; the renderer advances it with its own clock.
+  // An unanswered permission extends to the sample, or to the terminal stop.
+  return { ...cell, timeline: { ...cell.timeline,
+    completedAt: new Date(completedAtMs).toISOString(),
+    durationMs: Math.max(0, (cell.timeline.durationIsFinal ? cell.timeline.durationMs! : completedAtMs - startedAtMs) - waitingMs),
+  } };
+}
+
 
 function applyCanonicalRunTerminalEvidence(
   cells: ThreadTimelineCell[],
@@ -2509,7 +2553,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       && !cell.timeline.statusUnknown && cell.timeline.steps.some(stepDelegationStillInProgress));
 
   return {
-    cells: settledCells
+    cells: settledCells.map(cell => excludeMemberApprovalWait(cell, input.messages))
       .filter(cell => cell.kind !== 'active_run' || cell.timeline.status !== 'done'
         || cell.totalsUnknown
         || cell.timeline.steps.length > 0

@@ -116,14 +116,17 @@ function persistObservedRunDuration(presentationKey: string | null, durationMs: 
 function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string | null): string {
   const running = timeline.status === 'running';
   const parsed = timeline.startedAt ? Date.parse(timeline.startedAt) : NaN;
+  const sampleEnd = Date.parse(timeline.completedAt || '');
+  const waitingMs = timeline.durationMs != null && Number.isFinite(sampleEnd)
+    ? Math.max(0, sampleEnd - parsed - timeline.durationMs) : 0;
   const computeLiveDuration = React.useCallback(() => {
     if (!running || Number.isNaN(parsed)) return 0;
     // A live clock can observe the terminal frame slightly after the durable
     // completion timestamp. Preserve only fully elapsed seconds so that
     // sub-second transport latency cannot add a second which disappears on
     // reload when the authoritative duration is rendered.
-    return Math.floor(Math.max(0, Date.now() - parsed) / 1000) * 1000;
-  }, [parsed, running]);
+    return Math.floor(Math.max(0, Date.now() - parsed - waitingMs) / 1000) * 1000;
+  }, [parsed, running, waitingMs]);
   const observationKey = presentationKey || timeline.id;
   const [observed, setObserved] = React.useState(() => ({
     observationKey,
@@ -159,6 +162,11 @@ function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string |
     if (running && !timeline.durationIsFinal) persistObservedRunDuration(presentationKey, observedDurationMs);
   }, [observedDurationMs, presentationKey, running, timeline.durationIsFinal]);
   if (timeline.durationIsFinal) return formatDuration(timeline.durationMs);
+  // A net working-time sample supersedes wall time observed before approval,
+  // including an older browser cache. Keep the existing timer and start point.
+  if (waitingMs > 0 && (running || timeline.status === 'blocked')) {
+    return formatDuration(running ? computeLiveDuration() : timeline.durationMs);
+  }
   // X2 B: once a block reached a terminal status its duration is typed server
   // evidence computed the same way live and after reload. The observed client
   // clock may only serve live work (run 18: 44 s at the failed status settled

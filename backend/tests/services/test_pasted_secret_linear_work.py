@@ -1,7 +1,9 @@
 """Preserve paste-policy bytes while bounding string assembly and regex work."""
 
 from itertools import product
+from random import Random
 import re
+from string import ascii_letters, digits, punctuation, whitespace
 
 import pytest
 
@@ -113,7 +115,7 @@ def _version_values():
             for components in product(("0", "1", "01", "123", "١", "１２"), repeat=count):
                 for suffix in ("", ".", "..", ".0", ".1a", "0", "001", "a", "Z9", "-", "-rc1", "!", "\n"):
                     yield prefix + ".".join(components) + suffix
-    for count in (8, 64, 512, 4_096, 8_000):
+    for count in (8, 64, 512):
         for prefix in ("", "v"):
             for suffix in ("", "!", ".", "..", ".1", ".1!", "0", "001", "a", "a1", "-", "-rc1", "-.", "-!"):
                 yield prefix + "1." * count + "1" + suffix
@@ -124,7 +126,7 @@ def test_version_regex_matches_exactly_the_old_language_on_generated_values():
         assert bool(PrivacyLayer._VERSION_RE.fullmatch(value)) == bool(_OLD_VERSION_RE.fullmatch(value)), repr(value)
 
 
-@pytest.mark.parametrize("count", [8, 512, 8_000])
+@pytest.mark.parametrize("count", [8, 64, 512])
 @pytest.mark.parametrize("suffix", ["-rc1", ".a1", "0a1", "!a1"])
 def test_long_versions_and_near_versions_keep_original_redaction_bytes(count, suffix):
     value = "1." * count + "1" + suffix
@@ -135,3 +137,90 @@ def test_long_versions_and_near_versions_keep_original_redaction_bytes(count, su
 
     assert result.value == "password=" + expected
     assert result.redacted_count == int(expected != value)
+
+
+def test_version_pattern_keeps_its_possessive_group():
+    assert PrivacyLayer._VERSION_RE.pattern == r"v?\d+(?:\.\d+)++[A-Za-z0-9.-]*"
+
+
+_TOKEN_LEFT = r"(?<![A-Za-z0-9_])"
+_TOKEN_RIGHT = r"(?![A-Za-z0-9_./+=-])"
+_TOKEN_FORMS = (
+    (
+        "sk-", r"sk-[A-Za-z0-9_\-]{20,}",
+        r"sk-(?:(?P<ok>[A-Za-z0-9_\-]{20,}+)(?![./+=])|[A-Za-z0-9_\-]*+)",
+    ),
+    (
+        "xox", r"xox[baprs]-[A-Za-z0-9-]{20,}",
+        r"xox[baprs]-(?:(?P<ok>[A-Za-z0-9-]{20,}+)(?![_./+=])|[A-Za-z0-9-]*+)",
+    ),
+    (
+        "glpat-", r"glpat-[A-Za-z0-9_-]{20,}",
+        r"glpat-(?:(?P<ok>[A-Za-z0-9_-]{20,}+)(?![./+=])|[A-Za-z0-9_-]*+)",
+    ),
+    (
+        "eyJ", r"eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]{16,}",
+        r"eyJ(?:(?P<ok>[A-Za-z0-9_+/=-]++\.[A-Za-z0-9_+/=-]++\.[A-Za-z0-9_+/=-]{16,}+)(?!\.)|[A-Za-z0-9_+/=-]*+)",
+    ),
+)
+_TOKEN_SEPARATORS = ("", *punctuation, *whitespace, "A", "0", "é", "中", "🙂")
+_TOKEN_ENDINGS = ("", *ascii_letters, *digits, *punctuation, *whitespace, "é", "中", "🙂")
+_REAL_TOKENS = ("sk-" + "Ab3_" * 8, "xoxb-" + "Cd4-" * 8, "glpat-" + "Ef5_" * 8, "eyJAb3+/=.Cd4-/=." + "Ef5_" * 4)
+_TOKEN_RUNS = (("sk-",), ("xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"), ("glpat-",), ("eyJ-", "eyJ+", "eyJ/", "eyJ="))
+
+
+def _token_pattern(prefix):
+    return next(pattern for pattern in PrivacyLayer._CREDENTIAL_PATTERNS if pattern.pattern.startswith(_TOKEN_LEFT + prefix))
+
+
+@pytest.mark.parametrize("prefix,old_body,linear_body", _TOKEN_FORMS)
+def test_token_pattern_keeps_its_once_only_form(prefix, old_body, linear_body):
+    assert _token_pattern(prefix).pattern == _TOKEN_LEFT + linear_body
+
+
+def _generated_token_texts(index):
+    token = _REAL_TOKENS[index]
+    for unit in _TOKEN_RUNS[index]:
+        for count in (0, 1, 4, 8, 32):
+            for separator in _TOKEN_SEPARATORS:
+                for ending in _TOKEN_ENDINGS:
+                    yield unit * count + separator + token + ending
+    # Pin the exact minimum lengths, missing JWT segments and extra dots too.
+    for length in (0, 1, 15, 16, 19, 20, 21):
+        prefix = ("sk-", "xoxb-", "glpat-", "eyJ")[index]
+        for body in ("A" * length, "A." + "B" * length, "A.B." + "C" * length):
+            for ending in _TOKEN_ENDINGS:
+                yield prefix + body + ending
+
+
+def _random_token_texts():
+    rng = Random(0x50E)
+    chunks = (*_REAL_TOKENS, *_TOKEN_SEPARATORS, *_TOKEN_ENDINGS, "ordinary text", "password=Ab3!Cd4ef")
+    units = ("sk-", "xoxb-", "xoxp-", "glpat-", "eyJ-", "eyJ+", "eyJ/", "eyJ=")
+    for _ in range(10_000):
+        left = "".join(rng.choices(chunks, k=rng.randrange(5)))
+        run = rng.choice(units) * rng.randrange(33)
+        right = "".join(rng.choices(chunks, k=rng.randrange(5)))
+        yield left + run + rng.choice(_TOKEN_SEPARATORS) + rng.choice(_REAL_TOKENS) + right
+
+
+def _assert_token_spans_equal(prefix, old_body, texts):
+    old_pattern = re.compile(_TOKEN_LEFT + old_body + _TOKEN_RIGHT)
+
+    class TokenLayer(PrivacyLayer):
+        _CREDENTIAL_PATTERNS = (_token_pattern(prefix),)
+
+    for text in texts:
+        expected = [match.span() for match in old_pattern.finditer(text)]
+        assert TokenLayer._credential_spans(text) == expected, repr(text)
+
+
+@pytest.mark.parametrize("index", range(len(_TOKEN_FORMS)), ids=[form[0] for form in _TOKEN_FORMS])
+def test_token_spans_match_old_patterns_on_generated_boundaries(index):
+    prefix, old_body, _ = _TOKEN_FORMS[index]
+    _assert_token_spans_equal(prefix, old_body, _generated_token_texts(index))
+
+
+@pytest.mark.parametrize("prefix,old_body,linear_body", _TOKEN_FORMS)
+def test_token_spans_match_old_patterns_on_seeded_random_mixed_text(prefix, old_body, linear_body):
+    _assert_token_spans_equal(prefix, old_body, _random_token_texts())

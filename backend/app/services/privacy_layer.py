@@ -145,13 +145,18 @@ class PrivacyLayer:
         re.compile(r"https://(?:open\.feishu\.cn|open\.larksuite\.com)/open-apis/bot/v2/hook/(?P<value>[A-Za-z0-9_-]{16,})"),
         re.compile(r"https://oapi\.dingtalk\.com/robot/send\?access_token=(?P<value>[A-Za-z0-9_-]{16,})"),
         re.compile(r"https://hooks\.slack\.com/services/(?P<value>[A-Za-z0-9_/-]{20,})"),
-        *(re.compile(r"(?<![A-Za-z0-9_])" + pattern + r"(?![A-Za-z0-9_./+=-])") for pattern in (
-            r"sk-[A-Za-z0-9_\-]{20,}", r"gh[pousr]_[A-Za-z0-9_]{20,}",
-            r"github_pat_[A-Za-z0-9_]{22,}", r"xox[baprs]-[A-Za-z0-9-]{20,}",
-            r"AKIA[0-9A-Z]{16}", r"LTAI[A-Za-z0-9]{16,}", r"AKID[A-Za-z0-9]{16,}",
-            r"glpat-[A-Za-z0-9_-]{20,}", r"hf_[A-Za-z0-9]{20,}",
-            r"sk_(?:live|test)_[A-Za-z0-9]{20,}", r"AIza[A-Za-z0-9_-]{35}",
-            r"eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]{16,}",
+        # Consume rejected runs too, so finditer cannot retry their inner prefixes.
+        *(re.compile(r"(?<![A-Za-z0-9_])" + pattern) for pattern in (
+            r"sk-(?:(?P<ok>[A-Za-z0-9_\-]{20,}+)(?![./+=])|[A-Za-z0-9_\-]*+)",
+            r"gh[pousr]_[A-Za-z0-9_]{20,}" + _ASCII_RIGHT,
+            r"github_pat_[A-Za-z0-9_]{22,}" + _ASCII_RIGHT,
+            r"xox[baprs]-(?:(?P<ok>[A-Za-z0-9-]{20,}+)(?![_./+=])|[A-Za-z0-9-]*+)",
+            r"AKIA[0-9A-Z]{16}" + _ASCII_RIGHT, r"LTAI[A-Za-z0-9]{16,}" + _ASCII_RIGHT,
+            r"AKID[A-Za-z0-9]{16,}" + _ASCII_RIGHT,
+            r"glpat-(?:(?P<ok>[A-Za-z0-9_-]{20,}+)(?![./+=])|[A-Za-z0-9_-]*+)",
+            r"hf_[A-Za-z0-9]{20,}" + _ASCII_RIGHT,
+            r"sk_(?:live|test)_[A-Za-z0-9]{20,}" + _ASCII_RIGHT, r"AIza[A-Za-z0-9_-]{35}" + _ASCII_RIGHT,
+            r"eyJ(?:(?P<ok>[A-Za-z0-9_+/=-]++\.[A-Za-z0-9_+/=-]++\.[A-Za-z0-9_+/=-]{16,}+)(?!\.)|[A-Za-z0-9_+/=-]*+)",
         )),
         re.compile(r"-----BEGIN (?P<key_type>(?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----"
                    r"[\s\S]+?(?:-----END (?P=key_type)-----|\Z)"),
@@ -212,6 +217,8 @@ class PrivacyLayer:
         for pattern in cls._CREDENTIAL_PATTERNS:
             for match in pattern.finditer(text):
                 groups = match.groupdict()
+                if "ok" in groups and groups["ok"] is None:
+                    continue
                 value = groups.get("value") or match.group()
                 start, end = match.span("value") if groups.get("value") else match.span()
                 if groups.get("label"):

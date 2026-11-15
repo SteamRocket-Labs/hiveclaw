@@ -25,6 +25,52 @@ from app.services.session_event_contract import (
     serialize_session_event,
 )
 
+@pytest.mark.parametrize("tool_name", ["plaza_create_post", "other_tool"])
+def test_unmapped_native_denial_projects_all_member_result_copies(tool_name):
+    import copy
+
+    from app.services.session_event_contract import _apply_member_tool_summary
+
+    row = _native_row(tool_name, "model-facing denial teaching", outcome="denied")
+    payload = row.metadata_json["v2_payload"]
+    payload.update(result="model-facing denial teaching",
+                   parts=[{"type": "text", "text": "model-facing denial teaching"}],
+                   content_replacement={"inline_content": "model-facing denial teaching", "reason": "replay"})
+    before = copy.deepcopy(payload)
+    operator = _operator_payload(row)
+    member = _user_payload(row)
+    assert member["content"] == member["result"] == member["model_visible_content"] == "当前没有权限完成这次操作。"
+    assert "member_summary" not in member
+    assert "model-facing" not in json.dumps(member)
+    assert member["outcome"] == "denied"
+    assert _apply_member_tool_summary(member, item_kind="tool_result") == member
+    assert payload == before
+    assert _operator_payload(row) == operator
+
+
+def test_mapped_native_denial_keeps_its_existing_summary_and_empty_result_copies():
+    row = _native_row("write_file", "model-only teaching", outcome="denied", args={"path": "workspace/report.md"})
+    payload = _user_payload(row)
+    assert payload["member_summary"] == {"kind": "file_write", "state": "not_done", "filename": "report.md"}
+    assert payload["content"] == payload["result"] == payload["model_visible_content"] == ""
+
+
+@pytest.mark.parametrize("name, body, status", [
+    ("search_personal_kb", '{"status":"empty","results":[]}', "done"),
+    ("read_file", '<tool_error>{"ok":false,"error_class":"auth_or_permission"}</tool_error>', "failed"),
+])
+def test_permission_projection_keeps_already_summarized_legacy_canonical_rows(name, body, status):
+    from app.services.session_event_contract import member_permission_payload
+
+    row = _legacy_row(name, {"path": "workspace/report.md"}, body, status=status)
+    row.round_id = str(uuid4())
+    member = serialize_session_event(row, audience="user")
+    assert member["schema"] == "hive.session_event"
+    # X6c must not reclassify mapped results whose raw body is already gone:
+    # that would lose the existing search found flag or typed read refusal.
+    assert member_permission_payload(member) == member
+
+
 MARKER = "不要向用户展示"
 MEMORY_ID = "explicit_284ff1e71ca75b9f92800d2c6fc40ab9"
 INVOCATION_UUID = "4f10ca36-8bed-5bc0-88f2-ff509041ab08"

@@ -1363,6 +1363,8 @@ _LEGACY_TOOL_ENVELOPE_FIELDS = (
 # member-view serialization time: the operator envelope and the durable row
 # (the model's input) stay byte-identical. Compatibility rows' outbox envelope
 # stores this user projection at write time (chat_transcript).
+MEMBER_PERMISSION_DENIED_MESSAGE = "当前没有权限完成这次操作。"
+
 MEMBER_TOOL_SUMMARY_KINDS: dict[str, str] = {
     "search_personal_kb": "personal_kb_search",
     "search_company_kb": "company_kb_search",
@@ -1804,16 +1806,18 @@ def _apply_member_tool_summary(payload: dict[str, Any], *, item_kind: str) -> di
             return {key: value for key, value in payload.items() if key != "member_target"}
         return payload
     projection = _member_summary_projection(payload, item_kind=item_kind)
-    if projection is None:
+    denied = projection is None and item_kind == "tool_result" and payload.get("outcome") == "denied"
+    if projection is None and not denied:
         if "member_target" in payload:
             return {key: value for key, value in payload.items() if key != "member_target"}
         return payload
-    summary, native, envelope = projection
+    summary, native, envelope = projection or ({}, True, {})
     clean = {key: value for key, value in payload.items() if key != "member_target"}
-    clean["member_summary"] = summary
-    clean["result"] = ""
+    if summary:
+        clean["member_summary"] = summary
+    clean["result"] = MEMBER_PERMISSION_DENIED_MESSAGE if denied else ""
     if native or not envelope:
-        clean["content"] = ""
+        clean["content"] = clean["result"]
     else:
         # Legacy rows keep their envelope mechanics: the envelope with its raw
         # result emptied (and any replayed inline content removed) serializes
@@ -1829,7 +1833,7 @@ def _apply_member_tool_summary(payload: dict[str, Any], *, item_kind: str) -> di
         clean["content"] = json.dumps(projected_envelope, ensure_ascii=False, sort_keys=True)
     # Native V2 rows carry a second bounded copy for model-context replay.
     if "model_visible_content" in clean:
-        clean["model_visible_content"] = ""
+        clean["model_visible_content"] = clean["result"]
     replacement = clean.get("content_replacement")
     if isinstance(replacement, Mapping):
         clean["content_replacement"] = {key: value for key, value in replacement.items() if key != "inline_content"}
@@ -2249,35 +2253,53 @@ def member_permission_request(request: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in request.items() if key in _MEMBER_PERMISSION_REQUEST_KEYS}
 
 
-def _member_permission_json(value: str) -> str:
-    # Every broadcast passes here; skip parsing large tool results that cannot hold a request.
-    if "permission_request" not in value:
+def _member_permission_json(value: str, typed: bool = False) -> str:
+    # Ordinary results only carry the established request receipt contract.
+    if ("permission" if typed else "permission_request") not in value:
         return value
     try:
         decoded = json.loads(value)
     except ValueError:
         return value
-    if isinstance(decoded, dict) and isinstance(decoded.get("permission_request"), Mapping):
-        return json.dumps(member_permission_payload(decoded), ensure_ascii=False)
+    if isinstance(decoded, dict) and (typed or isinstance(decoded.get("permission_request"), Mapping)):
+        projected = member_permission_payload(decoded)
+        if projected != decoded:
+            return json.dumps(projected, ensure_ascii=False)
     return value
 
 
 def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Project permission copies in event carriers without traversing tool arguments."""
     request = payload.get("permission_request")
+    permission = ("permission" in (payload.get("type"), payload.get("event_type"))
+                  or payload.get("status") == "permission_denied")
+    metadata = payload.get("metadata")
+    typed = (isinstance(request, Mapping) or permission
+             or isinstance(metadata, Mapping) and (isinstance(metadata.get("permission_request"), Mapping)
+                 or metadata.get("type") == "permission" or metadata.get("status") == "permission_denied"))
     clean = dict(payload)
-    if isinstance(request, Mapping):
+    if (payload.get("item_kind") == "tool_result" and isinstance(clean.get("payload"), dict)
+        and clean["payload"].get("outcome") == "denied"):
+        clean["payload"] = _apply_member_tool_summary(clean["payload"], item_kind="tool_result")
+    if isinstance(request, Mapping) or permission:
         from app.services.thread_items import _user_summary
 
         # Internal governance siblings are private regardless of their values;
-        # all other event fields keep their own meaning beside the request.
-        for key in ("capability", "permission_mode", "decision_reason", "pending_tool_frame",
-                    "round_state", "permission_profile"):
+        # unrelated event fields and tool arguments keep their own meaning.
+        internal = ("capability", "permission_mode", "decision_reason", "pending_tool_frame",
+                    "round_state", "permission_profile", "authorization_decision_entry")
+        if not isinstance(request, Mapping):
+            internal += ("reason", "hook_key", "credential_family", "security_zone")
+        for key in internal:
             clean.pop(key, None)
-        clean["permission_request"] = member_permission_request(request)
-        pending = payload.get("status", "session_permission_required") == "session_permission_required"
-        summary = _user_summary(item_type="approval_request" if pending else "approval_decision", event_type="permission",
-                                item_status="waiting_user" if pending else "succeeded", data=clean["permission_request"], content="")
+        if isinstance(request, Mapping):
+            clean["permission_request"] = member_permission_request(request)
+        status = payload.get("status", "session_permission_required")
+        pending = status == ("session_permission_required" if isinstance(request, Mapping) else "approval_required")
+        summary = MEMBER_PERMISSION_DENIED_MESSAGE
+        if isinstance(request, Mapping) or status in ("approval_required", "permission_resolved"):
+            summary = _user_summary(item_type="approval_request" if pending else "approval_decision", event_type="permission",
+                                    item_status="waiting_user" if pending else "succeeded", data=clean.get("permission_request", clean), content="")
         for key in ("message", "text"):
             if key in payload:
                 clean[key] = summary
@@ -2287,12 +2309,15 @@ def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(clean.get("parts"), list):
         clean["parts"] = [member_permission_payload(part) if isinstance(part, Mapping) else part
                           for part in clean["parts"]]
+        for part, projected in zip(payload["parts"], clean["parts"]):
+            if (isinstance(part, Mapping) and part.get("event_type") == "permission"
+                and "text" in part and payload.get("content") == part["text"]):
+                clean["content"] = projected["text"]
     for key in ("toolResult", "result"):
         if isinstance(clean.get(key), str):
             clean[key] = _member_permission_json(clean[key])
     content = clean.get("content")
-    metadata = payload.get("metadata")
-    if isinstance(content, str) and "permission_request" in content:
+    if isinstance(content, str) and ("permission_request" in content or typed and "permission" in content):
         try:
             decoded = json.loads(content)
         except ValueError:
@@ -2302,9 +2327,8 @@ def member_permission_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             if result != decoded["result"]:
                 decoded["result"] = result
                 content = json.dumps(decoded, ensure_ascii=False)
-        if (isinstance(request, Mapping)
-            or isinstance(metadata, Mapping) and isinstance(metadata.get("permission_request"), Mapping)):
-            content = _member_permission_json(content)
+        if typed:
+            content = _member_permission_json(content, typed=True)
         clean["content"] = content
     return clean
 

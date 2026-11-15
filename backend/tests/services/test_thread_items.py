@@ -62,6 +62,25 @@ def _event(**overrides):
     return SimpleNamespace(**values)
 
 
+@pytest.mark.parametrize("status, expected", [
+    ("permission_denied", "当前没有权限完成这次操作。"),
+    ("blocked", "当前没有权限完成这次操作。"),
+    ("capability_denied", "当前没有权限完成这次操作。"),
+    ("approval_required", "需要你的确认：Plaza create post"),
+    ("permission_resolved", "已记录你的决定。"),
+])
+def test_requestless_permission_thread_summary_matches_member_payload(status, expected):
+    from app.services.session_event_contract import member_permission_payload
+    from app.services.thread_items import build_live_thread_item, build_thread_item
+
+    event = {"type": "permission", "tool_name": "plaza_create_post", "status": status, "message": "model-only teaching"}
+    projected = member_permission_payload(event)
+    live = build_live_thread_item(event, agent_id="agent", session_id="session")
+    persisted = build_thread_item(_event(event_type="permission", metadata_json=event), audience="user")
+    assert live["content"] == live["user_summary"] == persisted["content"] == persisted["user_summary"] == expected
+    assert projected["message"] == expected
+
+
 def test_thread_item_union_exposes_discriminator_and_all_renderer_variants() -> None:
     from app.services.thread_items import THREAD_ITEM_ADAPTER, THREAD_ITEM_TYPES
 

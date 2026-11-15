@@ -959,6 +959,11 @@ def _project_for_audience(
             },
         }
         return raw
+    if raw["event_type"] == "permission" and not isinstance(merged.get("permission_request"), dict):
+        from app.services.session_event_contract import member_permission_payload
+
+        summary = member_permission_payload({**merged, "type": "permission", "message": summary})["message"]
+        raw["user_summary"] = summary
     raw["operator_details"] = None
     preservable_content_types = {"user_message", "agent_message", "tool_call", "tool_result", "plan", "artifact"}
     raw["content"] = (

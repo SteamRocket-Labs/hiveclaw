@@ -3059,6 +3059,8 @@ async def get_session_messages(
                     and "text" in part and original.get("content") == part["text"]):
                     entry["content"] = clean_part["text"]
             entry.pop("eventCapability", None)
+            entry.pop("eventReason", None)
+            entry.pop("eventSecurityZone", None)
             projected.append(entry)
         out = projected
     return out

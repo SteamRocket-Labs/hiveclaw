@@ -346,7 +346,9 @@ export function ThreadItemRenderer({
       : t('approvalExecution.needs_reconciliation', 'Needs admin attention')
     : item.metadata?.runtime_action_from_result_integration === true && item.event_type === 'runtime_action_failed'
     ? t('approvalExecution.failed', 'Failed')
+    // A request-less member permission keeps the backend's projected sentence.
     : item.item_type === 'approval_request'
+      && (item.audience === 'operator' || item.item_data.permission_request_id !== 'unknown')
     ? approvalSentence(item, t)
     : item.user_summary || item.content;
   // The fold is the card's only complete view of the arguments; every tool

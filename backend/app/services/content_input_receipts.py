@@ -549,6 +549,8 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
     # A private recursive transit row expands each immutable model's bindings
     # once, even when many invocations share its request. It is neither stored
     # nor returned as a source; ordered validation still walks the original refs.
+    # Parameterized PK probes avoid a tenant hash/seq scan on every recursive step.
+    # Model branches are disjoint by kind; non-PK span matches retain every row.
     closure_sql = """
         WITH RECURSIVE sources(kind, id) AS (
             SELECT value->>'source_kind', value->>'source_id'
@@ -556,33 +558,52 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
             UNION
             SELECT child->>'source_kind', child->>'source_id'
             FROM sources s
-            LEFT JOIN content_input_receipts r ON s.kind IN ('workspace_artifact', 'explicit_memory')
-                AND r.id = CASE WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
-                    THEN s.id::uuid END AND r.tenant_id = :tenant_id
-            LEFT JOIN session_tool_invocations t ON s.kind = 'session_tool_invocation'
-                AND t.id = CASE WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
-                    THEN s.id::uuid END AND t.tenant_id = :tenant_id
-            LEFT JOIN runtime_result_objects o ON s.kind = 'runtime_result' AND o.tenant_id=:tenant_id
-                AND o.id=CASE WHEN split_part(s.id,chr(10),3) ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
-                    THEN split_part(s.id,chr(10),3)::uuid END
-            LEFT JOIN runtime_result_integration_pages g ON s.kind='runtime_result_page' AND g.tenant_id=:tenant_id
-                AND g.id=CASE WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END
-            LEFT JOIN invocation_spans q ON s.kind='runtime_team_context' AND q.tenant_id=:tenant_id
-                AND q.id=CASE WHEN split_part(s.id,chr(10),3) ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
-                    THEN split_part(s.id,chr(10),3)::uuid END
-            LEFT JOIN session_model_results m ON m.tenant_id = :tenant_id AND (
-                (s.kind IN ('session_model_result', '__model_request_inputs') AND m.id = CASE
-                    WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END)
-                OR (m.session_id = t.session_id AND m.run_id = t.run_id
-                    AND m.provider_request_id = t.provider_request_id)
-                OR (s.kind='runtime_result' AND m.run_id=CASE
-                    WHEN o.source_run_id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
-                    THEN o.source_run_id::uuid END))
-            LEFT JOIN invocation_spans p ON p.tenant_id = :tenant_id AND p.runtime_task_id = t.run_id
-                AND p.span_type IN ('workspace_output', 'workspace_input', 'memory_result')
-                AND COALESCE(p.metadata_json #>> '{workspace_execution_evidence,invocation_id}',
-                    p.metadata_json #>> '{workspace_input_evidence,invocation_id}',
-                    p.metadata_json #>> '{memory_result,invocation_id}') = t.id::text
+            LEFT JOIN LATERAL (
+                SELECT r.dependencies_json FROM content_input_receipts r WHERE s.kind IN ('workspace_artifact','explicit_memory')
+                    AND r.id=CASE WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
+                        THEN s.id::uuid END AND r.tenant_id=:tenant_id LIMIT 1
+            ) r ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT t.id,t.session_id,t.run_id,t.provider_request_id FROM session_tool_invocations t
+                    WHERE s.kind='session_tool_invocation' AND t.tenant_id=:tenant_id AND t.id=CASE
+                        WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END LIMIT 1
+            ) t ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT o.source_run_id FROM runtime_result_objects o WHERE s.kind='runtime_result' AND o.tenant_id=:tenant_id
+                    AND o.id=CASE WHEN split_part(s.id,chr(10),3) ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
+                        THEN split_part(s.id,chr(10),3)::uuid END LIMIT 1
+            ) o ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT g.parent_agent_id,g.parent_session_id,g.manifest_json FROM runtime_result_integration_pages g
+                    WHERE s.kind='runtime_result_page' AND g.tenant_id=:tenant_id AND g.id=CASE
+                        WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END LIMIT 1
+            ) g ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT q.metadata_json FROM invocation_spans q WHERE s.kind='runtime_team_context' AND q.tenant_id=:tenant_id
+                    AND q.id=CASE WHEN split_part(s.id,chr(10),3) ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
+                        THEN split_part(s.id,chr(10),3)::uuid END LIMIT 1
+            ) q ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT m.id,m.model_request_snapshot_json FROM session_model_results m WHERE m.tenant_id=:tenant_id
+                    AND s.kind IN ('session_model_result','__model_request_inputs') AND m.id=CASE
+                        WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END
+                UNION ALL
+                SELECT m.id,m.model_request_snapshot_json FROM session_model_results m WHERE m.tenant_id=:tenant_id
+                    AND s.kind='session_tool_invocation' AND (m.session_id,m.run_id,m.provider_request_id)
+                        =(t.session_id,t.run_id,t.provider_request_id)
+                UNION ALL
+                SELECT m.id,m.model_request_snapshot_json FROM session_model_results m WHERE m.tenant_id=:tenant_id
+                    AND s.kind='runtime_result' AND m.run_id=CASE
+                        WHEN o.source_run_id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
+                        THEN o.source_run_id::uuid END
+            ) m ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT p.metadata_json FROM invocation_spans p WHERE p.tenant_id=:tenant_id AND p.runtime_task_id=t.run_id
+                    AND p.span_type IN ('workspace_output','workspace_input','memory_result') AND COALESCE(
+                        p.metadata_json #>> '{workspace_execution_evidence,invocation_id}',
+                        p.metadata_json #>> '{workspace_input_evidence,invocation_id}',
+                        p.metadata_json #>> '{memory_result,invocation_id}')=t.id::text OFFSET 0
+            ) p ON TRUE
             CROSS JOIN LATERAL jsonb_array_elements(
                 CASE WHEN jsonb_typeof(r.dependencies_json) = 'array' THEN r.dependencies_json ELSE '[]'::jsonb END
                 || CASE WHEN s.kind IN ('session_tool_invocation', 'session_model_result', 'runtime_result') AND m.id IS NOT NULL

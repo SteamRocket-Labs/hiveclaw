@@ -244,51 +244,77 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
     # Full request bytes remain necessary for the existing integrity comparison.
     # They are fetched once/model, never by the live-state query below. Keeping
     # that comparison is distinct from trusting the stored hash as its own proof.
+    # UUID output is canonical lowercase text. A permissive UUID cast alone
+    # would add rows for uppercase/compact IDs that the old text joins missed.
+    uuid_text = r"^[0123456789abcdef]{8}(-[0123456789abcdef]{4}){3}-[0123456789abcdef]{12}$"
     statement = f"""
-        WITH selected_sources AS ({closure_sql}),
-        results AS (
-            SELECT {columns(RuntimeResultObject,'o')} FROM runtime_result_objects o JOIN selected_sources s
-                ON s.kind='runtime_result' AND split_part(s.id,chr(10),3)=o.id::text WHERE o.tenant_id=:tenant_id
+        WITH source_closure AS ({closure_sql}), selected_sources AS MATERIALIZED (
+            SELECT kind,id,CASE WHEN id ~ '{uuid_text}' THEN id::uuid END AS uuid_id,
+                CASE WHEN split_part(id,chr(10),3) ~ '{uuid_text}'
+                    THEN split_part(id,chr(10),3)::uuid END AS third_uuid FROM source_closure
+        ), results AS (
+            SELECT {columns(RuntimeResultObject,'o')},CASE WHEN o.source_run_id ~ '{uuid_text}'
+                THEN o.source_run_id::uuid END AS run_uuid FROM selected_sources s CROSS JOIN LATERAL (
+                SELECT {columns(RuntimeResultObject,'o')} FROM runtime_result_objects o
+                    WHERE s.kind='runtime_result' AND o.id=s.third_uuid AND o.tenant_id=:tenant_id LIMIT 1
+            ) o
         ), tools AS (
-            SELECT {columns(SessionToolInvocation,'t')} FROM session_tool_invocations t JOIN selected_sources s
-                ON s.kind='session_tool_invocation' AND s.id=t.id::text
-            WHERE t.tenant_id=:tenant_id AND t.result_event_id IS NOT NULL AND t.permission_state IS DISTINCT FROM 'waiting'
+            SELECT {columns(SessionToolInvocation,'t')} FROM selected_sources s CROSS JOIN LATERAL (
+                SELECT {columns(SessionToolInvocation,'t')} FROM session_tool_invocations t
+                    WHERE s.kind='session_tool_invocation' AND t.id=s.uuid_id AND t.tenant_id=:tenant_id
+                        AND t.result_event_id IS NOT NULL AND t.permission_state IS DISTINCT FROM 'waiting' LIMIT 1
+            ) t
+        ), model_ids AS (
+            SELECT uuid_id AS id FROM selected_sources WHERE kind='session_model_result'
+            UNION SELECT m.id FROM (SELECT DISTINCT run_uuid FROM results) o CROSS JOIN LATERAL (
+                SELECT m.id FROM session_model_results m WHERE m.tenant_id=:tenant_id AND m.run_id=o.run_uuid OFFSET 0
+            ) m
+            UNION SELECT m.id FROM (SELECT DISTINCT session_id,run_id,provider_request_id FROM tools) t
+                CROSS JOIN LATERAL (SELECT m.id FROM session_model_results m WHERE m.tenant_id=:tenant_id
+                    AND (m.session_id,m.run_id,m.provider_request_id)=(t.session_id,t.run_id,t.provider_request_id) LIMIT 1) m
         ), models AS (
-            SELECT {columns(SessionModelResult,'m')} FROM session_model_results m WHERE m.tenant_id=:tenant_id
-                AND m.state IN ('sealed','round_committed') AND (
-                EXISTS(SELECT 1 FROM selected_sources s WHERE s.kind='session_model_result' AND s.id=m.id::text)
-                OR EXISTS(SELECT 1 FROM results o WHERE o.source_run_id=m.run_id::text)
-                OR EXISTS(SELECT 1 FROM tools t WHERE (t.session_id,t.run_id,t.provider_request_id)
-                    =(m.session_id,m.run_id,m.provider_request_id)))
+            SELECT {columns(SessionModelResult,'m')} FROM model_ids i CROSS JOIN LATERAL (
+                SELECT {columns(SessionModelResult,'m')} FROM session_model_results m WHERE m.id=i.id
+                    AND m.tenant_id=:tenant_id AND m.state IN ('sealed','round_committed') LIMIT 1
+            ) m
         ), events AS (
-            SELECT {columns(ChatTranscriptEvent,'e','metadata_json event_type content')}
-                FROM chat_transcript_events e JOIN tools t ON t.result_event_id=e.id
-                WHERE e.tenant_id=:tenant_id
+            SELECT {columns(ChatTranscriptEvent,'e','metadata_json event_type content')} FROM tools t CROSS JOIN LATERAL (
+                SELECT {columns(ChatTranscriptEvent,'e','metadata_json event_type content')}
+                    FROM chat_transcript_events e WHERE e.id=t.result_event_id AND e.tenant_id=:tenant_id LIMIT 1
+            ) e
+        ), tool_runs AS (
+            SELECT run_id,array_agg(id::text) AS invocation_ids FROM tools GROUP BY run_id
+        ), event_span_ids AS (
+            SELECT split_part(pointer.value->>'evidence_ref',':',2) AS id FROM events e CROSS JOIN LATERAL
+                jsonb_each(CASE WHEN jsonb_typeof(e.metadata_json #> '{{v2_payload,metadata}}')='object'
+                    THEN e.metadata_json #> '{{v2_payload,metadata}}' ELSE '{{}}'::jsonb END) pointer
+        ), span_ids AS (
+            SELECT uuid_id AS id FROM selected_sources
+            UNION SELECT third_uuid FROM selected_sources WHERE kind='runtime_team_context'
+            UNION SELECT p.id FROM tool_runs t CROSS JOIN LATERAL (
+                SELECT p.id FROM invocation_spans p WHERE p.tenant_id=:tenant_id AND p.runtime_task_id=t.run_id
+                    AND p.span_type NOT IN ('workspace_output','remote_action') AND COALESCE(
+                        p.metadata_json #>> '{{workspace_input_evidence,invocation_id}}',
+                        p.metadata_json #>> '{{memory_result,invocation_id}}')=ANY(t.invocation_ids) OFFSET 0
+            ) p
+            UNION SELECT CASE WHEN id ~ '{uuid_text}' THEN id::uuid END FROM event_span_ids
         ), spans AS (
-            SELECT {columns(InvocationSpan,'p')} FROM invocation_spans p WHERE p.tenant_id=:tenant_id
-                AND p.span_type NOT IN ('workspace_output','remote_action') AND (
-                EXISTS(SELECT 1 FROM selected_sources s WHERE s.id=p.id::text)
-                OR EXISTS(SELECT 1 FROM selected_sources s WHERE s.kind='runtime_team_context'
-                    AND split_part(s.id,chr(10),3)=p.id::text)
-                OR EXISTS(SELECT 1 FROM tools t WHERE p.runtime_task_id=t.run_id AND COALESCE(
-                    p.metadata_json #>> '{{workspace_input_evidence,invocation_id}}',
-                    p.metadata_json #>> '{{memory_result,invocation_id}}')=t.id::text)
-                OR EXISTS(SELECT 1 FROM events e CROSS JOIN LATERAL
-                    jsonb_each(CASE WHEN jsonb_typeof(e.metadata_json #> '{{v2_payload,metadata}}')='object'
-                        THEN e.metadata_json #> '{{v2_payload,metadata}}' ELSE '{{}}'::jsonb END) pointer
-                    WHERE split_part(pointer.value->>'evidence_ref',':',2)=p.id::text))
+            SELECT {columns(InvocationSpan,'p')} FROM span_ids i CROSS JOIN LATERAL (
+                SELECT {columns(InvocationSpan,'p')} FROM invocation_spans p WHERE p.id=i.id
+                    AND p.tenant_id=:tenant_id AND p.span_type NOT IN ('workspace_output','remote_action') LIMIT 1
+            ) p
         )
         SELECT s.kind,s.id,NULL::jsonb AS fields FROM selected_sources s
         UNION ALL SELECT 'workspace_artifact',r.id::text,{packed(ContentInputReceipt,'r')}
-            FROM content_input_receipts r JOIN selected_sources s ON s.id=r.id::text
-            AND s.kind='workspace_artifact' WHERE r.tenant_id=:tenant_id
+            FROM selected_sources s CROSS JOIN LATERAL (SELECT {columns(ContentInputReceipt,'r')}
+                FROM content_input_receipts r WHERE s.kind='workspace_artifact' AND r.id=s.uuid_id AND r.tenant_id=:tenant_id LIMIT 1) r
         UNION ALL SELECT 'memory_receipt_binding',r.id::text,jsonb_build_object('id',r.id,'carrier_ref',r.carrier_ref)
-            FROM content_input_receipts r JOIN selected_sources s ON s.id=r.id::text
-            AND s.kind='explicit_memory' WHERE r.tenant_id=:tenant_id
+            FROM selected_sources s CROSS JOIN LATERAL (SELECT r.id,r.carrier_ref FROM content_input_receipts r
+                WHERE s.kind='explicit_memory' AND r.id=s.uuid_id AND r.tenant_id=:tenant_id LIMIT 1) r
         UNION ALL SELECT 'session_tool_invocation',t.id::text,{packed(SessionToolInvocation,'t')} FROM tools t
         UNION ALL SELECT 'session_command',c.id::text,{packed(SessionCommand,'c')}
-            FROM session_commands c JOIN selected_sources s ON s.id=c.id::text
-            AND s.kind='session_command' WHERE c.tenant_id=:tenant_id
+            FROM selected_sources s CROSS JOIN LATERAL (SELECT {columns(SessionCommand,'c')} FROM session_commands c
+                WHERE s.kind='session_command' AND c.id=s.uuid_id AND c.tenant_id=:tenant_id LIMIT 1) c
         UNION ALL SELECT 'session_model_result',m.id::text,{packed(SessionModelResult,'m')} FROM models m
         UNION ALL SELECT 'event',e.id::text,{packed(ChatTranscriptEvent,'e')} ||
             jsonb_build_object('metadata_json',jsonb_build_object('v2_payload',e.metadata_json->'v2_payload')) FROM events e
@@ -298,8 +324,8 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
         UNION ALL SELECT 'span',p.id::text,{packed(InvocationSpan,'p')} FROM spans p
         UNION ALL SELECT 'runtime_result',o.id::text,{packed(RuntimeResultObject,'o')} FROM results o
         UNION ALL SELECT 'runtime_result_page',g.id::text,{packed(RuntimeResultIntegrationPage,'g')}
-            FROM runtime_result_integration_pages g JOIN selected_sources s
-                ON s.kind='runtime_result_page' AND s.id=g.id::text WHERE g.tenant_id=:tenant_id
+            FROM selected_sources s CROSS JOIN LATERAL (SELECT {columns(RuntimeResultIntegrationPage,'g')}
+                FROM runtime_result_integration_pages g WHERE s.kind='runtime_result_page' AND g.id=s.uuid_id AND g.tenant_id=:tenant_id LIMIT 1) g
     """
     models = {"workspace_artifact": ContentInputReceipt, "session_tool_invocation": SessionToolInvocation,
         "session_command": SessionCommand, "session_model_result": SessionModelResult,

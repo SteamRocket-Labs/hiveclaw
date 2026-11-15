@@ -469,14 +469,17 @@ def scaling_counts():
     return {}
 
 
-@pytest.mark.parametrize("scale", [1, 2])
+@pytest.mark.parametrize(("scale", "volume"), [pytest.param(1, 0, id="1"), pytest.param(2, 0, id="2"),
+    pytest.param(1, 1, id="1-lab"), pytest.param(2, 1, id="2-lab"),
+    pytest.param(1, 5, id="1-lab5"), pytest.param(2, 5, id="2-lab5")])
 async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
-    scaling_counts, scale, tmp_path):
+    scaling_counts, scale, volume, tmp_path):
     from app.services import content_input_receipts as receipts
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.tools.handlers.context_resources import read_runtime_result
     from app.tools.handlers.memory import search_memory
 
+    print("A2W_CASE", json.dumps({"scale": scale, "volume": volume}), flush=True)
     n = source_graph
     monkeypatch.setattr("app.tools.handlers.context_resources.async_session", app_user_sessionmaker)
     roots, closure = await _run20_shape(n, owner_sessionmaker, app_user_sessionmaker, scale=scale)
@@ -506,6 +509,12 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
     assert len(paths) == 57
     memory_closure = await _closure(n, owner_sessionmaker, n.search_memory_sources)
     model_closure = await _closure(n, owner_sessionmaker, [n.model_memory])
+    if volume:
+        from tests.integration._a2w_volume import add_unrelated_history
+
+        await add_unrelated_history(n, owner_sessionmaker, volume)
+        assert set(await _closure(n, owner_sessionmaker, n.search_memory_sources)) == set(memory_closure)
+        assert set(await _closure(n, owner_sessionmaker, roots)) == set(closure)
     # Count semantic live checkpoints from the fixture graph, independently
     # of the measured query implementation. C=40 allows ten immutable kind
     # loaders, fifteen endpoint/tenant ingress reads and fifteen fixed
@@ -595,21 +604,30 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
     constants = {"download": 48, "content": 48, "preview": 51, "read_file_member": 44,
         "read_file_runtime": 44, "execution_57_files": 48, "search_memory_8_entries": 160,
         "read_runtime_result_524": 60, "prepare_model_request_sources": 80}
-    scaling_counts[scale] = {row["path"]: row["statements"] for row in measurements
+    counts = scaling_counts.setdefault(volume, {})
+    counts[scale] = {row["path"]: row["statements"] for row in measurements
         if not row.get("rtt", row.get("injected_rtt"))}
     if scale == 2:
-        assert 1 in scaling_counts, "Run both graph scales to verify constant statement work."
-        print("A2W_SCALING", json.dumps(scaling_counts), flush=True)
+        assert 1 in counts, "Run both graph scales to verify constant statement work."
+        print("A2W_SCALING", json.dumps({"volume": volume, "counts": counts}), flush=True)
     for row in measurements:
         bound = 5 if row["path"] in {"execution_57_files", "read_runtime_result_524"} else 3
         value = {key: row[key] for key in ("path", "statements", "seconds")}
-        value.update(scale=scale, live_checkpoints=budgets[row["path"]], C=40, time_bound=bound,
+        value.update(scale=scale, volume=volume, live_checkpoints=budgets[row["path"]], C=40, time_bound=bound,
             constant=constants[row["path"]])
         print("A2W_BOUND", json.dumps(value), flush=True)
         if row["statements"] > min(budgets[row["path"]] + 40, constants[row["path"]]) or (
             row.get("rtt", row.get("injected_rtt")) and row["seconds"] > bound):
             violations.append(value)
-    if scale == 2 and any(value["path"] == "search_memory_8_entries" for value in violations):
+    from pathlib import Path
+    import os
+    import sys
+    from tests.integration._a2w_volume import measure_catalogue
+
+    directory = Path(os.environ["FULL_RUN"]) / "evidence" / f"{sys.argv[1]}-g0" if os.environ.get(
+        "FULL_RUN") else tmp_path / "g0"
+    await measure_catalogue(n, app_user_sessionmaker, monkeypatch, directory, scale=scale, volume=volume)
+    if scale == 2 and volume == 0 and any(value["path"] == "search_memory_8_entries" for value in violations):
         # Diagnose a failed CPU bound separately; profiling never contributes
         # overhead to the measured local/6 ms samples or their assertions.
         import cProfile
@@ -631,5 +649,5 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
         print("A2W_CPU_PROFILE", json.dumps({"path": str(output), "functions": rows}), flush=True)
     if scale == 2:
         # Report all path/CPU measurements before the unchanged strict gate.
-        assert scaling_counts[2] == scaling_counts[1], scaling_counts
+        assert counts[2] == counts[1], counts
     assert not violations, violations

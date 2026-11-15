@@ -1010,7 +1010,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # session_v2_persistence source; R23d's session_model_round source; R23c, X5a and X6b's
 # web_chat_runtime source (stop-intent ancestry read, delegation signals, member
 # permission projection at broadcast).
-RLS_BYPASS_SCOPES_SHA256 = "470867c3d934995c614e9e9719ecf4e3fc78f791047239fb58c2b122f302bc38"
+# Land32 versus land31: still 797 entries and 123 callsites, no new bypass scope. Only
+# tenants.py changed: G1b's delete_tenant blocking filter excludes system HR
+# (agent_class internal_system) and its comment; no new bypass write.
+RLS_BYPASS_SCOPES_SHA256 = "530b95ac7791311d791884214a145bca85bd688574b465d1f86e80bf00c605f3"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

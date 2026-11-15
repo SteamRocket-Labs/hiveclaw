@@ -700,6 +700,10 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
       const sequence = sessionTerminals.get(task);
       if (sequence == null || sequence <= start.sequence || pairedTasks.has(task)) continue;
       foldStart(start.index, sequence, task);
+      if (!terminalAtStart.has(start.index)) {
+        foldedStarts.delete(start.index);
+        continue;
+      }
       pairedStarts.add(start.index);
       pairedTasks.add(task);
     }

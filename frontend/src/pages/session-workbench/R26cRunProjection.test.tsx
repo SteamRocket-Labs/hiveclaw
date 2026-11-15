@@ -272,3 +272,28 @@ it('uses the same index fallback to record and locate an unsequenced terminal', 
     timeline: createCompatibilityMessageTimeline() });
   expect(projected.map(message => message.transcriptEventId)).toEqual(['action-3', 'action-2']);
 });
+
+it('leaves a manifest-only exact match for the existing FIFO fold when no terminal moved', () => {
+  const completed = action(3, 'child-task', 'completed', 'child') as ChatTranscriptEventPayload
+    & { payload: { metadata: Record<string, unknown> } };
+  completed.payload.metadata.result_manifest = { items: [{ task_type: 'a2a_delegation',
+    source_run_id: 'parent', terminal_status: 'completed', child_session_id: 'child' }] };
+  const events = [action(1, 'parent', 'running', 'child', 'runtime_action_started'),
+    action(2, 'marker', 'degraded', undefined, 'memory_context_degraded'), completed];
+  for (const messages of projectBoth(events)) {
+    expect(messages.map(message => message.transcriptEventId)).toEqual(['action-3', 'action-2']);
+    expect(messages.filter(message => message.eventType === 'runtime_action_started')).toHaveLength(0);
+  }
+});
+
+it('ranks a zero action sequence after a positive sequence for the same run', () => {
+  for (const messages of projectBoth([fixture()[0], action(2, 'hr'), action(3, 'hr')])) {
+    const actions = messages.filter(message => message.eventType === 'runtime_action_completed');
+    const zero = { ...actions[0], threadItem: { ...actions[0].threadItem!, sequence: 0 } };
+    const real = { ...actions[1], timestamp: at('03:15:30.000') };
+    expect(zero.timestamp).toBe(at('03:15:14.924'));
+    expect(real.threadItem?.sequence).toBe(3);
+    const hr = runs(withStaleTask([messages[0], zero, real])).find(cell => cell.runId === 'hr')!;
+    expect(hr.timeline).toMatchObject({ completedAt: at('03:15:30.000'), durationMs: 40_982, durationIsFinal: true });
+  }
+});

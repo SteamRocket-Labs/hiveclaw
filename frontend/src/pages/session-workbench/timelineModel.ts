@@ -2187,7 +2187,8 @@ function applyCanonicalRunTerminalEvidence(
     if (completedAction && canonicalTerminalRunIds.has(runId)) return;
     const completedAtMs = Date.parse(item?.terminalAt || message.timestamp || item?.occurredAt || '');
     if (!runId || !Number.isFinite(completedAtMs)) return;
-    const sequence = item?.terminalSequence ?? item?.last_sequence ?? message.threadItem?.sequence ?? Infinity;
+    const rawSequence = item?.terminalSequence ?? item?.last_sequence ?? message.threadItem?.sequence;
+    const sequence = typeof rawSequence === 'number' && Number.isFinite(rawSequence) && rawSequence > 0 ? rawSequence : Infinity;
     const previous = terminalByRunId.get(runId);
     if (previous && previous.sequence <= sequence) return;
     const status: RunTimelineSnapshot['status'] = lifecycle === 'failed' || lifecycle === 'needs_reconciliation'

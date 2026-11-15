@@ -5,7 +5,7 @@ import logging
 import uuid
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 
 from app.database import tenant_scoped_session
 from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -65,6 +65,7 @@ async def _assistant_qualifiers_for_tool(db, caller_id: uuid.UUID, authors) -> d
     """Explain default names using current owners in one tenant-scoped lookup."""
     from app.models.agent import Agent
     from app.models.user import User
+    from app.models.user_assistant_binding import UserAssistantBinding
     from app.services.assistant_binding import ASSISTANT_EMPLOYEE_NAME
 
     author_ids = {a.author_id for a in authors
@@ -72,19 +73,25 @@ async def _assistant_qualifiers_for_tool(db, caller_id: uuid.UUID, authors) -> d
     if not author_ids:
         return {}
     owner_id = func.coalesce(Agent.owner_user_id, Agent.creator_id)
-    rows = await db.execute(select(Agent.id, owner_id, User.display_name).outerjoin(
-        User, User.id == owner_id).where(Agent.id.in_(author_ids | {caller_id})))
-    owners = {agent_id: (owner, name) for agent_id, owner, name in rows}
-    caller_owner = owners.get(caller_id, (None, None))[0]
+    rows = await db.execute(select(Agent.id, User.display_name,
+        UserAssistantBinding.id, UserAssistantBinding.agent_id).select_from(Agent).outerjoin(
+        User, and_(User.id == owner_id, User.is_active.is_(True))).outerjoin(
+        UserAssistantBinding, and_(Agent.id == caller_id,
+            UserAssistantBinding.user_id == owner_id, UserAssistantBinding.tenant_id == Agent.tenant_id,
+            UserAssistantBinding.status == "active")).where(Agent.id.in_(author_ids | {caller_id})))
+    owners = {agent_id: (name, binding_id, bound_id) for agent_id, name, binding_id, bound_id in rows}
+    caller = owners.get(caller_id, (None, None, None))
+    member_assistant_id = caller[2] if caller[1] is not None else caller_id
     qualifiers = {}
     for author_id in author_ids:
-        owner, name = owners.get(author_id, (None, None))
-        if owner is not None and owner == caller_owner:
+        name = owners.get(author_id, (None, None, None))[0]
+        name = " ".join("".join(c for c in (name or "") if c.isprintable() or c.isspace()).split())
+        if author_id == member_assistant_id:
             qualifier = "your member's assistant"
         elif name:
             qualifier = f"{name}'s assistant"
         else:
-            qualifier = "another member's assistant" if owner is not None else "assistant"
+            qualifier = "assistant"
         qualifiers[author_id] = f" ({qualifier})"
     return qualifiers
 
@@ -130,15 +137,26 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
 
             output = []
             hr_names: dict[uuid.UUID, str] = {}
-            qualifiers = await _assistant_qualifiers_for_tool(db, agent_id, posts)
-            local_zone = ZoneInfo(await get_agent_timezone(agent_id)) if any(p.created_at for p in posts) else None
-            naming_needed = False
+            authors = list(posts)
+            posts_with_comments = []
             for p in posts:
                 # Load comments
                 cr = await db.execute(
                     select(PlazaComment).where(PlazaComment.post_id == p.id).order_by(PlazaComment.created_at)
                 )
                 comments = cr.scalars().all()
+                authors.extend(comments)
+                posts_with_comments.append((p, comments))
+            qualifiers = await _assistant_qualifiers_for_tool(db, agent_id, authors)
+            local_zone = None
+            if any(p.created_at for p in posts):
+                timezone_name = await get_agent_timezone(agent_id)
+                try:
+                    local_zone = ZoneInfo(timezone_name)
+                except Exception:
+                    local_zone = ZoneInfo("UTC")
+            naming_needed = False
+            for p, comments in posts_with_comments:
                 naming_needed |= any(a.author_type == "agent" and a.author_name in {
                     ASSISTANT_EMPLOYEE_NAME, "__system_hr__"} for a in [p, *comments])
                 icon = "🤖" if p.author_type == "agent" else "👤"
@@ -150,13 +168,14 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
                     for c in comments:
                         c_icon = "🤖" if c.author_type == "agent" else "👤"
                         name = await _author_name_for_tool(db, c, hr_names)
-                        post_text += f"\n  └─ {c_icon} {name}: {c.content}"
+                        qualifier = qualifiers[c.author_id] if c.author_type == "agent" and c.author_name == ASSISTANT_EMPLOYEE_NAME else ""
+                        post_text += f"\n  └─ {c_icon} {name}{qualifier}: {c.content}"
                 output.append(post_text)
 
             naming_line = (
-                "In member replies, use Chinese 人事助理 for HR assistant, 我的助理 for your member's default assistant, "
-                "<owner>的助理 (助理 if unknown) for another member's; in English use HR assistant, My Assistant, "
-                "<owner>'s assistant (assistant if unknown); never expose internal names or use bare My Assistant for another member's assistant.\n"
+                "In member replies, Chinese: HR assistant→人事助理, your member's assistant→我的助理, "
+                "<owner>'s assistant→<owner>的助理, assistant→助理; English: same labels, own=My Assistant; "
+                "no bare My Assistant for others; other names stay as written, including a human named My Assistant\n"
             ) if naming_needed else ""
             return "🏛️ Agent Plaza — Recent Posts:\n" + naming_line + "\n" + "\n\n---\n\n".join(output)
 

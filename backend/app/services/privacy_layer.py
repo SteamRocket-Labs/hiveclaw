@@ -127,6 +127,7 @@ class PrivacyLayer:
     _ASCII_LEFT = r"(?<![A-Za-z0-9_])"
     _ASCII_RIGHT = r"(?![A-Za-z0-9_./+=-])"
     _VALUE = r"(?P<quote>[\"'])?(?P<value>(?(quote)[^\r\n]*?|[^\s\"'<>\u0080-\U0010ffff]+))(?(quote)(?P=quote))"
+    _UNQUOTED_VALUE_TAIL = re.compile(r"(?:[\"']+(?=[^\s\"'<>\u0080-\U0010ffff]*[A-Za-z0-9])[^\s\"'<>\u0080-\U0010ffff]+)+")
     _CREDENTIAL_PATTERNS = (
         re.compile(
             _ASCII_LEFT + r"(?P<label>(?i:api[ _-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"
@@ -220,6 +221,13 @@ class PrivacyLayer:
                     classes = sum(bool(re.search(pattern, value)) for pattern in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[^A-Za-z0-9]"))
                     if not (re.search(r"[A-Za-z]", value) and (classes >= 3 or len(value) >= 16 or (groups["label"] == "密码" and re.search(r"[0-9]", value)))):
                         continue
+                    # Extend only accepted values, at most 256 characters including inner quotes.
+                    # Longer tails are only partly hidden to avoid unbounded rescans per label.
+                    if "quote" in groups and not groups["quote"]:
+                        if tail := cls._UNQUOTED_VALUE_TAIL.match(text, match.end("value"), match.end("value") + 256):
+                            end = tail.end()
+                            if text[end - 1] in ".,;:)":
+                                end -= 1
                 spans.append((start, end))
         merged = []
         for start, end in sorted(spans):

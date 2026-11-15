@@ -127,7 +127,7 @@ class PrivacyLayer:
     _ASCII_LEFT = r"(?<![A-Za-z0-9_])"
     _ASCII_RIGHT = r"(?![A-Za-z0-9_./+=-])"
     _VALUE = r"(?P<quote>[\"'])?(?P<value>(?(quote)[^\r\n]*?|[^\s\"'<>\u0080-\U0010ffff]+))(?(quote)(?P=quote))"
-    _UNQUOTED_VALUE_TAIL = re.compile(r"(?:[\"']+(?=[A-Za-z0-9])[^\s\"'<>\u0080-\U0010ffff]+)+")
+    _UNQUOTED_VALUE_TAIL = re.compile(r"(?:[\"']+(?=[^\s\"'<>\u0080-\U0010ffff]*[A-Za-z0-9])[^\s\"'<>\u0080-\U0010ffff]+)+")
     _CREDENTIAL_PATTERNS = (
         re.compile(
             _ASCII_LEFT + r"(?P<label>(?i:api[ _-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"

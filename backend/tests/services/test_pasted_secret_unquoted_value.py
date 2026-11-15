@@ -14,8 +14,13 @@ from app.services.privacy_layer import PrivacyLayer
         ('DB_PASSWORD=', 'V9n2Kb4Q"8x7r'),
         ('password=', 'R4m8Qv2X\'"9k6a"2p7t'),
         ('password=', 'H5m9Qv2X)"8k4a'),
+        # A symbol right after the inner quote (reviewer round 2, S1).
+        ('password: ', 'K8m2Qv9X"!3p7a'),
+        ('DB_PASSWORD=', 'V9n2Kb4Q"-8x7r'),
+        ('password: ', 'K8m2Qv9X"3p"!7a'),
     ],
-    ids=["password", "api_key", "app_secret", "environment", "mixed_quotes", "punctuation_before_quote"],
+    ids=["password", "api_key", "app_secret", "environment", "mixed_quotes", "punctuation_before_quote",
+         "symbol_after_quote", "dash_after_quote", "symbol_after_second_quote"],
 )
 @pytest.mark.parametrize(
     "suffix",

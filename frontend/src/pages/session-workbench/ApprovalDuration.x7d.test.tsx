@@ -159,12 +159,85 @@ it.each(['live', 'reload'] as const)('X7d: %s subtracts both approvals and freez
 it.each(['live', 'reload'] as const)('X7d: %s excludes an unanswered approval through the terminal stop', mode => {
   const events = [...start(),
     event(3, 'tool_permission', 'waiting', at(10), request('permission'), 'permission'),
-    event(4, 'tool_permission', 'cancelled', at(99), {}, 'permission'),
-    event(5, 'run', 'cancelled', at(100), {}, runId),
+    event(4, 'run', 'cancelled', at(100), {}, runId),
   ];
   expect(timeline(events, mode)).toMatchObject({ status: 'cancelled', durationMs: 10_000, durationIsFinal: true });
   const view = render(block(events, mode));
   expect(duration(view.container)).toBe('10 秒');
+});
+
+it.each(['live', 'reload'] as const)('X7d: %s counts work after an unanswered permission expires', mode => {
+  const events = [...start(),
+    event(3, 'tool_permission', 'waiting', at(10), request('permission'), 'permission'),
+    event(4, 'tool_permission', 'cancelled', at(40), { reason_code: 'tool_permission_request_expired' }, 'permission'),
+    event(5, 'run', 'queued', at(40), {}, runId),
+    event(6, 'tool_call', 'completed', at(70), { tool_name: 'read_file' }, 'call'),
+    event(7, 'tool_result', 'completed', at(70), { content: 'Read after expiry.' }, 'result'),
+    event(8, 'run', 'completed', at(100), {}, runId),
+  ];
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(at(20)));
+  const view = render(block(events.slice(0, 3), mode, 'suspended'));
+  expect(duration(view.container)).toBe('10 秒');
+  act(() => { vi.advanceTimersByTime(20_000); });
+  expect(duration(view.container)).toBe('10 秒');
+  view.rerender(block(events.slice(0, 5), mode, 'running'));
+  expect(duration(view.container)).toBe('10 秒');
+  act(() => { vi.advanceTimersByTime(1000); });
+  expect(duration(view.container)).toBe('11 秒');
+  act(() => { vi.setSystemTime(new Date(at(80))); });
+  view.rerender(block(events.slice(0, 7), mode, 'running'));
+  expect.soft(duration(view.container)).toBe('50 秒');
+  act(() => { vi.advanceTimersByTime(1000); });
+  expect.soft(duration(view.container)).toBe('51 秒');
+  view.rerender(block(events, mode));
+  expect.soft(timeline(events, mode)).toMatchObject({ startedAt: at(0), durationMs: 70_000, durationIsFinal: true });
+  expect.soft(duration(view.container)).toBe('1 分 10 秒');
+  view.unmount();
+  const reloaded = render(block(events, 'reload'));
+  expect.soft(duration(reloaded.container)).toBe('1 分 10 秒');
+});
+
+it.each((['live', 'reload'] as const).flatMap(mode => [false, true].map(control => ({ mode, control }))))(
+  'X7d: $mode ends a denied decision at its accepted control or permission end (control: $control)', ({ mode, control }) => {
+    const events = [...start(), event(3, 'tool_permission', 'waiting', at(10), request('permission'), 'permission')];
+    if (control) events.push(event(4, 'control_input', 'accepted', at(40),
+      { kind: 'permission_response', permission_item_id: 'permission', decision: 'deny' }));
+    events.push(event(events.length + 1, 'tool_permission', 'denied', at(41), { decision: 'deny' }, 'permission'),
+      event(events.length + 2, 'tool_call', 'completed', at(70), { tool_name: 'read_file' }, 'call'),
+      event(events.length + 3, 'run', 'completed', at(100), {}, runId));
+    expect(timeline(events, mode)).toMatchObject({ durationMs: control ? 70_000 : 69_000, durationIsFinal: true });
+  },
+);
+
+it.each(['live', 'reload'] as const)('X7d: %s pairs a control arriving before its permission item', mode => {
+  const events = [...start(),
+    event(3, 'control_input', 'accepted', at(40),
+      { kind: 'permission_response', permission_item_id: 'permission', decision: 'allow_once' }),
+    event(4, 'tool_permission', 'waiting', at(10), request('permission'), 'permission'),
+    event(5, 'control_input', 'applied', at(41), { kind: 'permission_response', permission_item_id: 'permission' }),
+    event(6, 'tool_permission', 'completed', at(42), { decision: 'allow_once' }, 'permission'),
+    event(7, 'tool_call', 'completed', at(70), { tool_name: 'plaza_create_post' }, 'call'),
+    event(8, 'run', 'completed', at(100), {}, runId),
+  ];
+  expect(timeline(events, mode)).toMatchObject({ durationMs: 70_000, durationIsFinal: true });
+});
+
+it.each(['live', 'reload'] as const)('X7d: %s never shows a larger cached wall duration after approval or completion', mode => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-11-15T03:07:41.021Z'));
+  const storageKey = `hive.session.observed-run-duration.v1:${session.id}:${runId}`;
+  window.sessionStorage.setItem(storageKey, '300000');
+  const view = render(block(run22.slice(0, 13), mode, 'running'));
+  expect(duration(view.container)).toBe('51 秒');
+  act(() => { vi.advanceTimersByTime(1000); });
+  expect(duration(view.container)).toBe('52 秒');
+  view.rerender(block(run22, mode));
+  expect(duration(view.container)).toBe('1 分 2 秒');
+  view.unmount();
+  expect(Number(window.sessionStorage.getItem(storageKey))).toBeGreaterThan(61_625);
+  const reloaded = render(block(run22, 'reload'));
+  expect(duration(reloaded.container)).toBe('1 分 2 秒');
 });
 
 it.each(['none', 'colleague', 'company'] as const)('X7d: a run with %s waiting retains its existing duration', kind => {

@@ -2169,8 +2169,9 @@ function excludeMemberApprovalWait(cell: ThreadTimelineCell, messages: AgentChat
   }
   const spans = permissions.map(message => {
     const item = message.sessionItem!;
+    const terminalAt = Date.parse(item.terminalAt || '');
     const end = acceptedByPermission.get(item.id)
-      ?? (['completed', 'denied'].includes(item.lifecycle) ? Date.parse(item.terminalAt || '') : completedAtMs);
+      ?? (Number.isFinite(terminalAt) ? terminalAt : completedAtMs);
     return [Math.max(startedAtMs, Date.parse(item.occurredAt)), Math.min(completedAtMs, end)];
   }).sort((left, right) => left[0] - right[0]);
   let previousEnd = startedAtMs;

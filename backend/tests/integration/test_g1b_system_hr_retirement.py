@@ -148,8 +148,11 @@ async def test_retirement_with_system_hr_blocks_new_work_until_company_restored(
     await trigger_daemon._tick()
     assert seed["trigger"] not in evaluated
     assert retained.read_text() == "Retain employee files"
-    profile = await seed["api"].get(f"/agents/{seed['hr']}")
-    assert profile.status_code == 404, profile.text
+    # The retired company itself is refused at sign-in (reviewer round 2):
+    # a 404 under the fallback company would not prove the company gate.
+    profile = await seed["api"].get(f"/agents/{seed['hr']}", headers={"X-Tenant-Id": str(seed["tenant"])})
+    assert profile.status_code == 403, profile.text
+    assert profile.json()["detail"] == "Target tenant is disabled"
     replay = await seed["api"].request("DELETE", f"/tenants/{seed['tenant']}", json=retirement(seed))
     assert replay.status_code == 200 and replay.json()["retirement_status"] == "already_retired", replay.text
     restored = await seed["api"].put(f"/admin/companies/{seed['tenant']}/toggle")

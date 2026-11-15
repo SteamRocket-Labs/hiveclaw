@@ -607,13 +607,16 @@ async def delete_tenant(
                 select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.id).with_for_update(key_share=True)
             )
             tenant_agents = list(tenant_agents_result.scalars().all())
-            # Other active Agents block: a rehomed platform-admin owner would
-            # otherwise retain management authority. System HR does not block
-            # because this transaction sets tenant.is_active=False.
-            # agent_lifecycle_active_clause excludes inactive-company Agents
-            # from display, heartbeats and trigger_daemon._tick; the worker's
-            # RuntimeTaskClaimService.claim_available also excludes them.
-            # Digital employees are never deleted.
+            # Other active Agents block so their owner first runs the normal
+            # deactivation, which recalls outward work and stops native tasks.
+            # System HR cannot be deactivated, so it does not block. This
+            # transaction sets tenant.is_active=False; an inactive company is
+            # refused at sign-in and X-Tenant-Id (core/security.py), at turn
+            # start (runtime/invoker.py), in heartbeat and trigger selection
+            # (agent_lifecycle_active_clause) and in
+            # RuntimeTaskClaimService.claim_available. HR work already running
+            # is not interrupted, and re-enabling the company does not restore
+            # HR's responsible owner. Digital employees are never deleted.
             blocking_agent_ids = sorted(str(agent.id) for agent in tenant_agents
                 if agent.deactivated_at is None and getattr(agent, "agent_class", None) != "internal_system")
             if blocking_agent_ids:

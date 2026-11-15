@@ -5,7 +5,7 @@ import zh from '../../i18n/zh.json';
 import { translateFromCatalog } from '../../test/i18nMock';
 import RunDisclosureBlock from '../agent-detail/RunDisclosureBlock';
 import type { AgentChatMessage, ChatTranscriptEventPayload } from '../agent-detail/chatRuntime';
-import { hydrateSessionTranscriptEvents } from '../agent-detail/sessionEventConsumer';
+import { composeMixedPlaneSessionMessages, createCompatibilityMessageTimeline, hydrateSessionTranscriptEvents } from '../agent-detail/sessionEventConsumer';
 import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } from '../agent-detail/sessionTranscriptApplier';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
 import { buildThreadTimeline, type ThreadTimelineModel } from './timelineModel';
@@ -174,12 +174,101 @@ it('freezes the HR action on its own completion despite a stale running task rea
   }
 });
 
-it('keeps an inactive unfinished run interrupted when a different run is active', () => {
+it('chooses the active run before a trailing unfinished sibling and leaves that sibling interrupted', () => {
   for (const messages of projectBoth(fixture().filter(event => sourceSequence(event) <= 127))) {
-    const model = buildThreadTimeline({ messages, activeSession: { id: 'session' }, isWaiting: true,
-      isStreaming: false, activeRunId: 'other-run', activeRunStatus: 'running', runtimePhase: 'tool_running' });
+    const model = buildThreadTimeline({ messages: [...messages, { id: 'other-call', role: 'tool_call', content: '',
+      toolName: 'read_runtime_result', toolStatus: 'running', eventRuntimeTaskId: 'other-run', timestamp: at('03:15:36.000') }],
+    activeSession: { id: 'session' }, isWaiting: true, isStreaming: false,
+    activeRunId: 'continuation', activeRunStatus: 'running', runtimePhase: 'tool_running' });
     const run = runs(model).find(cell => cell.runId === 'continuation')!;
     expect(run.timeline.steps.filter(step => ['read-1', 'check-1'].includes(step.id)).map(step => step.status))
-      .toEqual(['interrupted', 'interrupted']);
+      .toEqual(['running', 'running']);
+    const sibling = runs(model).find(cell => cell.runId === 'other-run')!;
+    expect(sibling.timeline.steps.map(step => step.status)).toEqual(['interrupted']);
   }
+});
+
+function action(sequence: number, taskId: string, status = 'completed', childSession?: string,
+  type = 'runtime_action_completed'): ChatTranscriptEventPayload {
+  const metadata = { status, runtime_task_id: taskId, task_id: taskId,
+    action_kind: childSession ? 'a2a_delegation' : 'hr_provisioning',
+    ...(childSession ? { child_session_id: childSession } : {}) };
+  return { schema: 'hive.session_event_compatibility', schema_version: 1,
+    compatibility_status: 'needs_reconciliation', reason: 'unmapped_legacy_kind', legacy_event_type: type,
+    event_id: `action-${sequence}`, sequence, session_id: 'session', tenant_id: 'tenant',
+    occurred_at: at('03:15:14.924'), payload: { content: taskId,
+      parts: [{ type: 'event', event_type: type, ...metadata }], metadata: { role: 'system', ...metadata } },
+  } as unknown as ChatTranscriptEventPayload;
+}
+
+const withoutSequence = (message: AgentChatMessage): AgentChatMessage => ({ ...message,
+  ...(message.threadItem ? { threadItem: { ...message.threadItem, sequence: undefined as unknown as number } } : {}),
+});
+const withStaleTask = (messages: AgentChatMessage[]) => buildThreadTimeline({ messages,
+  activeSession: { id: 'session' }, isWaiting: false, isStreaming: false,
+  sessionWorkbench: { runtime_tasks: [{ id: 'hr', status: 'running', started_at: at('03:14:49.018') }] } as unknown as SessionWorkbench,
+});
+
+it.each([false, true])('prefers the run terminal over an earlier action completion (missing sequence: %s)', missing => {
+  const user = fixture()[0];
+  const runEnd = { ...fixture().find(event => sourceSequence(event) === 226), sequence: 3,
+    scope: { level: 'run', session_id: 'session', thread_id: 'session', turn_id: 'turn-hr', run_id: 'hr' },
+    item_id: 'hr', payload: { started_at: at('03:14:49.018') } } as unknown as ChatTranscriptEventPayload;
+  for (const messages of projectBoth([user, action(2, 'hr'), runEnd])) {
+    const projected = missing ? messages.map(message => message.eventType === 'runtime_action_completed' ? withoutSequence(message) : message) : messages;
+    const hr = runs(withStaleTask(projected)).find(cell => cell.runId === 'hr')!;
+    expect(hr.timeline).toMatchObject({ status: 'done', completedAt: at('03:16:25.185'),
+      durationIsFinal: true, durationMs: 96_167 });
+  }
+});
+
+it.each([false, true])('lets a real action sequence beat a missing sequence (missing first: %s)', missingFirst => {
+  const messages = projectBoth([fixture()[0], action(2, 'hr'), action(3, 'hr')])[1];
+  const actions = messages.filter(message => message.eventType === 'runtime_action_completed');
+  const missing = withoutSequence(actions[0]);
+  const real = { ...actions[1], timestamp: at('03:15:30.000') };
+  const hr = runs(withStaleTask([messages[0], ...(missingFirst ? [missing, real] : [real, missing])]))
+    .find(cell => cell.runId === 'hr')!;
+  expect(hr.timeline).toMatchObject({ completedAt: at('03:15:30.000'), durationMs: 40_982, durationIsFinal: true });
+});
+
+it.each([false, true])('ends a done action despite a stale running read (missing sequence: %s)', missing => {
+  for (const messages of projectBoth([fixture()[0], action(2, 'hr', 'done')])) {
+    const projected = missing ? messages.map(message => message.eventType === 'runtime_action_completed' ? withoutSequence(message) : message) : messages;
+    const hr = runs(withStaleTask(projected)).find(cell => cell.runId === 'hr')!;
+    expect(hr.timeline).toMatchObject({ status: 'done', completedAt: at('03:15:14.924'),
+      durationIsFinal: true, durationMs: 25_906 });
+  }
+});
+
+it('pairs two tasks finishing in reverse order with their own start positions', () => {
+  const events = [action(1, 'a', 'running', 'child', 'runtime_action_started'),
+    action(2, 'marker', 'degraded', undefined, 'memory_context_degraded'),
+    action(3, 'b', 'running', 'child', 'runtime_action_started'),
+    action(4, 'b', 'completed', 'child'), action(5, 'a', 'completed', 'child')];
+  for (const messages of projectBoth(events)) {
+    expect(messages.map(message => message.transcriptEventId)).toEqual(['action-5', 'action-2', 'action-4']);
+    expect(messages[0].threadItem?.metadata?.runtime_task_id).toBe('a');
+    expect(messages[2].threadItem?.metadata?.runtime_task_id).toBe('b');
+  }
+});
+
+it('reserves exact task pairs before applying the landed parent-id FIFO fold', () => {
+  const events = [action(1, 'parent-a', 'running', 'child', 'runtime_action_started'),
+    action(2, 'b', 'running', 'child', 'runtime_action_started'),
+    action(3, 'b', 'completed', 'child'), action(4, 'child-a', 'completed', 'child')];
+  for (const messages of projectBoth(events)) {
+    expect(messages.map(message => message.transcriptEventId)).toEqual(['action-4', 'action-3']);
+    expect(messages.filter(message => message.eventType === 'runtime_action_started')).toHaveLength(0);
+  }
+});
+
+it('uses the same index fallback to record and locate an unsequenced terminal', () => {
+  const events = [action(1, 'a', 'running', 'child', 'runtime_action_started'),
+    action(2, 'marker', 'degraded', undefined, 'memory_context_degraded'), action(3, 'a', 'completed', 'child')];
+  const messages = events.flatMap(event => hydrateSessionTranscriptEvents([event], Number(event.sequence) - 1).messages)
+    .map(withoutSequence);
+  const projected = composeMixedPlaneSessionMessages({ store: undefined, compatibilityMessages: messages,
+    timeline: createCompatibilityMessageTimeline() });
+  expect(projected.map(message => message.transcriptEventId)).toEqual(['action-3', 'action-2']);
 });

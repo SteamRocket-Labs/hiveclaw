@@ -2166,6 +2166,7 @@ function applyCanonicalRunTerminalEvidence(
   // as started_at. A continuation first seen as cancelling has no such start;
   // its terminal must use the runtime task span, never the control timestamp.
   const runStartByRunId = new Map<string, string>();
+  const canonicalTerminalRunIds = new Set(messages.filter(isCanonicalRunTerminal).map(messageRunId));
   for (const message of messages) {
     const item = message.sessionItem;
     const startedAt = item?.payload?.started_at;
@@ -2178,15 +2179,17 @@ function applyCanonicalRunTerminalEvidence(
     const item = message.sessionItem;
     // R26a: retain the backend failure event, but reuse completed handoff
     // presentation. X2/X5a keep it running only until the colleague settles.
-    const completedAction = message.eventType === 'runtime_action_completed' && message.eventStatus === 'completed';
+    const completedAction = message.eventType === 'runtime_action_completed' && ['completed', 'done'].includes(message.eventStatus || '');
     const lifecycle = completedAction ? 'completed' : item?.kind === 'runtime_failure' ? isRunningTaskReadStop(message) ? 'completed' : 'failed'
       : item?.kind === 'run' ? item.lifecycle : null;
     if (!lifecycle || (!completedAction && !isCanonicalRunTerminal(message))) return;
     const runId = messageRunId(message);
+    if (completedAction && canonicalTerminalRunIds.has(runId)) return;
     const completedAtMs = Date.parse(item?.terminalAt || message.timestamp || item?.occurredAt || '');
     if (!runId || !Number.isFinite(completedAtMs)) return;
-    const sequence = item?.terminalSequence ?? item?.last_sequence ?? message.threadItem?.sequence ?? 0;
-    if ((terminalByRunId.get(runId)?.sequence ?? Infinity) <= sequence) return;
+    const sequence = item?.terminalSequence ?? item?.last_sequence ?? message.threadItem?.sequence ?? Infinity;
+    const previous = terminalByRunId.get(runId);
+    if (previous && previous.sequence <= sequence) return;
     const status: RunTimelineSnapshot['status'] = lifecycle === 'failed' || lifecycle === 'needs_reconciliation'
       ? 'failed'
       : lifecycle === 'cancelled' || lifecycle === 'killed'
@@ -2451,7 +2454,6 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     for (let index = cells.length - 1; index >= 0; index -= 1) {
       const cell = cells[index];
       if (cell.kind !== 'active_run') continue;
-      if (activeRunId && !isSameSessionRunId(cell.runId, activeRunId)) continue;
       if (cell.timeline.status === 'running' || cell.timeline.status === 'blocked') {
         const waiting = WAITING_HEADER_PHASES.has(livePhase);
         cells[index] = { ...cell, phase: livePhase, timeline: waiting ? { ...cell.timeline,

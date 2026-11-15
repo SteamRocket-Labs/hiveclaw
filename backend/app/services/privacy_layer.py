@@ -128,6 +128,7 @@ class PrivacyLayer:
     _ASCII_RIGHT = r"(?![A-Za-z0-9_./+=-])"
     _VALUE = r"(?P<quote>[\"'])?(?P<value>(?(quote)[^\r\n]*?|[^\s\"'<>\u0080-\U0010ffff]+))(?(quote)(?P=quote))"
     _UNQUOTED_VALUE_TAIL = re.compile(r"(?:[\"']+(?=[^\s\"'<>\u0080-\U0010ffff]*[A-Za-z0-9])[^\s\"'<>\u0080-\U0010ffff]+)+")
+    _VERSION_RE = re.compile(r"v?\d+(?:\.\d+)++[A-Za-z0-9.-]*")
     _CREDENTIAL_PATTERNS = (
         re.compile(
             _ASCII_LEFT + r"(?P<label>(?i:api[ _-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"
@@ -144,13 +145,20 @@ class PrivacyLayer:
         re.compile(r"https://(?:open\.feishu\.cn|open\.larksuite\.com)/open-apis/bot/v2/hook/(?P<value>[A-Za-z0-9_-]{16,})"),
         re.compile(r"https://oapi\.dingtalk\.com/robot/send\?access_token=(?P<value>[A-Za-z0-9_-]{16,})"),
         re.compile(r"https://hooks\.slack\.com/services/(?P<value>[A-Za-z0-9_/-]{20,})"),
-        *(re.compile(r"(?<![A-Za-z0-9_])" + pattern + r"(?![A-Za-z0-9_./+=-])") for pattern in (
-            r"sk-[A-Za-z0-9_\-]{20,}", r"gh[pousr]_[A-Za-z0-9_]{20,}",
-            r"github_pat_[A-Za-z0-9_]{22,}", r"xox[baprs]-[A-Za-z0-9-]{20,}",
-            r"AKIA[0-9A-Z]{16}", r"LTAI[A-Za-z0-9]{16,}", r"AKID[A-Za-z0-9]{16,}",
-            r"glpat-[A-Za-z0-9_-]{20,}", r"hf_[A-Za-z0-9]{20,}",
-            r"sk_(?:live|test)_[A-Za-z0-9]{20,}", r"AIza[A-Za-z0-9_-]{35}",
-            r"eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]{16,}",
+        # Consume rejected runs too, so finditer cannot retry their inner prefixes.
+        # Same matches only while each token class and prefix stay inside the
+        # right guard [A-Za-z0-9_./+=-] and the stop set is that guard minus the class.
+        *(re.compile(r"(?<![A-Za-z0-9_])" + pattern) for pattern in (
+            r"sk-(?:(?P<ok>[A-Za-z0-9_\-]{20,}+)(?![./+=])|[A-Za-z0-9_\-]*+)",
+            r"gh[pousr]_[A-Za-z0-9_]{20,}" + _ASCII_RIGHT,
+            r"github_pat_[A-Za-z0-9_]{22,}" + _ASCII_RIGHT,
+            r"xox[baprs]-(?:(?P<ok>[A-Za-z0-9-]{20,}+)(?![_./+=])|[A-Za-z0-9-]*+)",
+            r"AKIA[0-9A-Z]{16}" + _ASCII_RIGHT, r"LTAI[A-Za-z0-9]{16,}" + _ASCII_RIGHT,
+            r"AKID[A-Za-z0-9]{16,}" + _ASCII_RIGHT,
+            r"glpat-(?:(?P<ok>[A-Za-z0-9_-]{20,}+)(?![./+=])|[A-Za-z0-9_-]*+)",
+            r"hf_[A-Za-z0-9]{20,}" + _ASCII_RIGHT,
+            r"sk_(?:live|test)_[A-Za-z0-9]{20,}" + _ASCII_RIGHT, r"AIza[A-Za-z0-9_-]{35}" + _ASCII_RIGHT,
+            r"eyJ(?:(?P<ok>[A-Za-z0-9_+/=-]++\.[A-Za-z0-9_+/=-]++\.[A-Za-z0-9_+/=-]{16,}+)(?!\.)|[A-Za-z0-9_+/=-]*+)",
         )),
         re.compile(r"-----BEGIN (?P<key_type>(?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----"
                    r"[\s\S]+?(?:-----END (?P=key_type)-----|\Z)"),
@@ -188,9 +196,15 @@ class PrivacyLayer:
             if isinstance(value, str) and not cls._structural_field(field):
                 spans = cls._credential_spans(value)
                 count += len(spans)
-                for start, end in reversed(spans):
-                    value = value[:start] + "[REDACTED_SECRET]" + value[end:]
-                return value
+                if not spans:
+                    return value
+                pieces = []
+                cursor = 0
+                for start, end in spans:
+                    pieces.extend((value[cursor:start], "[REDACTED_SECRET]"))
+                    cursor = end
+                pieces.append(value[cursor:])
+                return "".join(pieces)
             if isinstance(value, dict):
                 return {key: walk(item, key) for key, item in value.items()}
             if isinstance(value, (list, tuple)):
@@ -205,6 +219,8 @@ class PrivacyLayer:
         for pattern in cls._CREDENTIAL_PATTERNS:
             for match in pattern.finditer(text):
                 groups = match.groupdict()
+                if "ok" in groups and groups["ok"] is None:
+                    continue
                 value = groups.get("value") or match.group()
                 start, end = match.span("value") if groups.get("value") else match.span()
                 if groups.get("label"):
@@ -216,7 +232,7 @@ class PrivacyLayer:
                         or "${" in value or value == "[REDACTED_SECRET]"
                         or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", value)
                         or re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)+", value)
-                        or re.fullmatch(r"v?\d+(?:\.\d+)+[A-Za-z0-9.-]*", value)):
+                        or cls._VERSION_RE.fullmatch(value)):
                         continue
                     classes = sum(bool(re.search(pattern, value)) for pattern in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[^A-Za-z0-9]"))
                     if not (re.search(r"[A-Za-z]", value) and (classes >= 3 or len(value) >= 16 or (groups["label"] == "密码" and re.search(r"[0-9]", value)))):

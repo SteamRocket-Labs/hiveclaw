@@ -3,8 +3,9 @@
 import json
 import logging
 import uuid
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 
 from app.database import tenant_scoped_session
 from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -60,10 +61,47 @@ async def _author_name_for_tool(db, author, hr_names: dict[uuid.UUID, str]) -> s
     return hr_names[author.author_id]
 
 
+async def _assistant_qualifiers_for_tool(db, caller_id: uuid.UUID, authors) -> dict[uuid.UUID, str]:
+    """Explain default names using current owners in one tenant-scoped lookup."""
+    from app.models.agent import Agent
+    from app.models.user import User
+    from app.models.user_assistant_binding import UserAssistantBinding
+    from app.services.assistant_binding import ASSISTANT_EMPLOYEE_NAME
+
+    author_ids = {a.author_id for a in authors
+                  if a.author_type == "agent" and a.author_name == ASSISTANT_EMPLOYEE_NAME}
+    if not author_ids:
+        return {}
+    owner_id = func.coalesce(Agent.owner_user_id, Agent.creator_id)
+    rows = await db.execute(select(Agent.id, User.display_name,
+        UserAssistantBinding.id, UserAssistantBinding.agent_id).select_from(Agent).outerjoin(
+        User, and_(User.id == owner_id, User.is_active.is_(True))).outerjoin(
+        UserAssistantBinding, and_(Agent.id == caller_id,
+            UserAssistantBinding.user_id == owner_id, UserAssistantBinding.tenant_id == Agent.tenant_id,
+            UserAssistantBinding.status == "active")).where(Agent.id.in_(author_ids | {caller_id})))
+    owners = {agent_id: (name, binding_id, bound_id) for agent_id, name, binding_id, bound_id in rows}
+    caller = owners.get(caller_id, (None, None, None))
+    member_assistant_id = caller[2] if caller[1] is not None else caller_id
+    qualifiers = {}
+    for author_id in author_ids:
+        name = owners.get(author_id, (None, None, None))[0]
+        name = " ".join("".join(c for c in (name or "") if c.isprintable() or c.isspace()).split())
+        if author_id == member_assistant_id:
+            qualifier = "your member's assistant"
+        elif name:
+            qualifier = f"{name}'s assistant"
+        else:
+            qualifier = "assistant"
+        qualifiers[author_id] = f" ({qualifier})"
+    return qualifiers
+
+
 async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
     """Get recent posts from the Agent Plaza, scoped to agent's tenant."""
     from app.models.plaza import PlazaPost, PlazaComment
     from app.models.agent import Agent as AgentModel
+    from app.services.assistant_binding import ASSISTANT_EMPLOYEE_NAME
+    from app.services.timezone_utils import get_agent_timezone
     from sqlalchemy import desc
 
     limit_value = arguments.get("limit")
@@ -99,24 +137,47 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
 
             output = []
             hr_names: dict[uuid.UUID, str] = {}
+            authors = list(posts)
+            posts_with_comments = []
             for p in posts:
                 # Load comments
                 cr = await db.execute(
                     select(PlazaComment).where(PlazaComment.post_id == p.id).order_by(PlazaComment.created_at)
                 )
                 comments = cr.scalars().all()
+                authors.extend(comments)
+                posts_with_comments.append((p, comments))
+            qualifiers = await _assistant_qualifiers_for_tool(db, agent_id, authors)
+            local_zone = None
+            if any(p.created_at for p in posts):
+                timezone_name = await get_agent_timezone(agent_id)
+                try:
+                    local_zone = ZoneInfo(timezone_name)
+                except Exception:
+                    local_zone = ZoneInfo("UTC")
+            naming_needed = False
+            for p, comments in posts_with_comments:
+                naming_needed |= any(a.author_type == "agent" and a.author_name in {
+                    ASSISTANT_EMPLOYEE_NAME, "__system_hr__"} for a in [p, *comments])
                 icon = "🤖" if p.author_type == "agent" else "👤"
-                time_str = p.created_at.strftime("%m-%d %H:%M") if p.created_at else ""
+                time_str = f"{p.created_at.astimezone(local_zone):%m-%d %H:%M} ({local_zone.key})" if p.created_at else ""
                 name = await _author_name_for_tool(db, p, hr_names)
-                post_text = f"{icon} **{name}** ({time_str}) [post_id: {p.id}]\n{p.content}\n❤️ {p.likes_count}  💬 {p.comments_count}"
+                qualifier = qualifiers[p.author_id] if p.author_type == "agent" and p.author_name == ASSISTANT_EMPLOYEE_NAME else ""
+                post_text = f"{icon} **{name}**{qualifier} ({time_str}) [post_id: {p.id}]\n{p.content}\n❤️ {p.likes_count}  💬 {p.comments_count}"
                 if comments:
                     for c in comments:
                         c_icon = "🤖" if c.author_type == "agent" else "👤"
                         name = await _author_name_for_tool(db, c, hr_names)
-                        post_text += f"\n  └─ {c_icon} {name}: {c.content}"
+                        qualifier = qualifiers[c.author_id] if c.author_type == "agent" and c.author_name == ASSISTANT_EMPLOYEE_NAME else ""
+                        post_text += f"\n  └─ {c_icon} {name}{qualifier}: {c.content}"
                 output.append(post_text)
 
-            return "🏛️ Agent Plaza — Recent Posts:\n\n" + "\n\n---\n\n".join(output)
+            naming_line = (
+                "In member replies, Chinese: HR assistant→人事助理, your member's assistant→我的助理, "
+                "<owner>'s assistant→<owner>的助理, assistant→助理; English: same labels, own=My Assistant; "
+                "no bare My Assistant for others; other names stay as written, including a human named My Assistant\n"
+            ) if naming_needed else ""
+            return "🏛️ Agent Plaza — Recent Posts:\n" + naming_line + "\n" + "\n\n---\n\n".join(output)
 
     except Exception as e:
         return _plaza_error(
@@ -225,6 +286,8 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
                 return _plaza_error("plaza_add_comment", "not_found", "Post not found.")
 
             post_author_name = await _author_name_for_tool(db, post, {})
+            qualifiers = await _assistant_qualifiers_for_tool(db, agent_id, [post])
+            post_author_name += qualifiers.get(post.author_id, "")
             comment = PlazaComment(
                 post_id=pid,
                 author_id=agent_id,

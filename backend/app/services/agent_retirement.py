@@ -156,19 +156,6 @@ async def require_settled(db, agent):
         raise pending_error(remote, local, agent)
 
 
-async def stage_deactivation(db, *, agent, actor):
-    """Apply the shared deactivation writes; the authorized caller owns commit."""
-    if agent.deactivated_at is None:
-        agent.deactivated_at = datetime.now(timezone.utc)
-        agent.deactivation_reason = PENDING_REASON
-        # Close status gates in the same transaction as the lifecycle marker.
-        agent.status = "stopped"
-        for model in (AgentTrigger, AgentSchedule):
-            await db.execute(update(model).where(model.agent_id == agent.id, model.is_enabled.is_(True)).values(is_enabled=False))
-        db.add(AuditLog(tenant_id=agent.tenant_id, agent_id=agent.id, user_id=actor.id,
-            action="agent:retirement_requested", details={"new_execution": "disabled", "external_execution": "unconfirmed"}))
-
-
 async def prepare(db, *, agent, actor):
     """Deactivate an employee and withdraw its outward work ("停用").
 
@@ -226,7 +213,18 @@ async def prepare(db, *, agent, actor):
     bridges = list(await db.scalars(select(LocalAgentBridgeConnection).where(
         LocalAgentBridgeConnection.tenant_id == agent.tenant_id, LocalAgentBridgeConnection.agent_id == agent.id,
         LocalAgentBridgeConnection.status == "active")))
-    await stage_deactivation(db, agent=agent, actor=actor)
+    if agent.deactivated_at is None:
+        agent.deactivated_at = datetime.now(timezone.utc)
+        agent.deactivation_reason = PENDING_REASON
+        # ``stopped`` rides in the same commit as ``deactivated_at``: the
+        # status gates (triggers, bot-to-bot messaging, delegation) must not
+        # stay open when the deactivation has committed — including when the
+        # withdrawal below later reports unsettled outward work (409).
+        agent.status = "stopped"
+        for model in (AgentTrigger, AgentSchedule):
+            await db.execute(update(model).where(model.agent_id == agent.id, model.is_enabled.is_(True)).values(is_enabled=False))
+        db.add(AuditLog(tenant_id=agent.tenant_id, agent_id=agent.id, user_id=actor.id,
+            action="agent:retirement_requested", details={"new_execution": "disabled", "external_execution": "unconfirmed"}))
     # Release the preparation row lock before taking protocol/message control
     # locks; a clean employee still commits its deactivation here.
     await db.commit()

@@ -447,9 +447,9 @@ async def delete_tenant(
     tenant-linked records without uniform cascade rules, so hard deletion would
     be unsafe. Without a retirement payload, users remain active accounts and
     are detached from the company. A platform administrator may instead supply
-    the exact complete non-platform User set; after every other target-tenant
-    Agent is deactivated (regardless of owner), the protected system HR and
-    those Users are deactivated in the same transaction.
+    the exact complete non-platform User set; after every non-system Agent is
+    deactivated (regardless of owner), those Users are revoked and deactivated
+    in the same transaction. System HR follows the company's active state.
     Platform administrators are only moved or detached, never deactivated.
     """
     if current_user.role not in ("platform_admin", "org_admin"):
@@ -607,13 +607,13 @@ async def delete_tenant(
                 select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.id).with_for_update(key_share=True)
             )
             tenant_agents = list(tenant_agents_result.scalars().all())
-            # Any still-active non-system Agent blocks retirement, not
-            # only ones owned by a retiring non-platform user: a platform-
-            # admin owner is rehomed and stays active, and would otherwise
-            # keep manage authority over a retired company's Agent. G1:
-            # digital employees are never deleted, so the settled state
-            # retirement requires is that every bot be deactivated. The
-            # protected system HR is deactivated below in this transaction.
+            # Other active Agents block: a rehomed platform-admin owner would
+            # otherwise retain management authority. System HR does not block
+            # because this transaction sets tenant.is_active=False.
+            # agent_lifecycle_active_clause excludes inactive-company Agents
+            # from display, heartbeats and trigger_daemon._tick; the worker's
+            # RuntimeTaskClaimService.claim_available also excludes them.
+            # Digital employees are never deleted.
             blocking_agent_ids = sorted(str(agent.id) for agent in tenant_agents
                 if agent.deactivated_at is None and getattr(agent, "agent_class", None) != "internal_system")
             if blocking_agent_ids:
@@ -624,19 +624,6 @@ async def delete_tenant(
                         "agent_ids": blocking_agent_ids,
                     },
                 )
-
-            from app.services.agent_identity_lifecycle import terminate_agent_runtime_tasks
-            from app.services.agent_retirement import guard_remote_admission, require_settled, stage_deactivation
-
-            for agent in tenant_agents:
-                if agent.deactivated_at is None:
-                    # Only system HR remains. Do not commit prepare's outward
-                    # recall phase inside the tenant's atomic retirement.
-                    await guard_remote_admission(scoped_db, agent_ids=[agent.id], retiring=True)
-                    await require_settled(scoped_db, agent)
-                    await stage_deactivation(scoped_db, agent=agent, actor=current_user)
-                    await terminate_agent_runtime_tasks(scoped_db, agent, actor_id=current_user.id,
-                        reason="agent_deactivated", terminal_source="api.tenants:delete_tenant")
 
             now = datetime.now(timezone.utc)
             for user in retirable_users:

@@ -1769,7 +1769,7 @@ function buildPendingRunCell(
   };
 }
 
-function keepLatestProcessRunActive(
+function keepProcessRunActive(
   cells: ThreadTimelineCell[],
   input: BuildThreadTimelineInput,
   activeRunStatus: string | null,
@@ -1778,17 +1778,21 @@ function keepLatestProcessRunActive(
 ): boolean {
   const phase = liveRunPhase(input);
   if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase && !terminalDeliveryPending) return false;
+  const activeRunId = normalizeSessionRunId(input.activeRunId);
   let index = cells.length - 1;
   while (index >= 0 && cells[index]?.kind === 'boundary') index -= 1;
+  if (activeRunId) {
+    const runIndex = cells.findIndex(cell => cell.kind === 'active_run' && isSameSessionRunId(cell.runId, activeRunId));
+    if (runIndex >= 0) index = runIndex;
+  }
   const cell = cells[index];
   if (!cell || cell.kind !== 'active_run' || cell.timeline.answerMessageId || cell.timeline.durationIsFinal) return false;
   const latestUserIndex = latestUserMessageIndex(input.messages);
-  if (latestUserIndex < 0 || hasAssistantAnswerAfterLatestUser(input.messages)) return false;
+  if (latestUserIndex < 0 || (!isSameSessionRunId(cell.runId, activeRunId) && hasAssistantAnswerAfterLatestUser(input.messages))) return false;
   if (!cell.sourceMessages.some((entry) => entry.index > latestUserIndex)) return false;
-  const activeRunId = normalizeSessionRunId(input.activeRunId);
   if (activeRunId && cell.runId && !isSameSessionRunId(cell.runId, activeRunId)) return false;
 
-  // Rebuild the trailing run with live-run authority so genuinely non-terminal
+  // Rebuild the identified run with live-run authority so genuinely non-terminal
   // steps stay running; without that authority the honest interrupted state
   // (frozen duration, no live stopwatch) is preserved.
   const rebuilt = buildRunTimelineFromMessages(
@@ -2174,13 +2178,14 @@ function applyCanonicalRunTerminalEvidence(
     const item = message.sessionItem;
     // R26a: retain the backend failure event, but reuse completed handoff
     // presentation. X2/X5a keep it running only until the colleague settles.
-    const lifecycle = item?.kind === 'runtime_failure' ? isRunningTaskReadStop(message) ? 'completed' : 'failed'
+    const completedAction = message.eventType === 'runtime_action_completed' && message.eventStatus === 'completed';
+    const lifecycle = completedAction ? 'completed' : item?.kind === 'runtime_failure' ? isRunningTaskReadStop(message) ? 'completed' : 'failed'
       : item?.kind === 'run' ? item.lifecycle : null;
-    if (!lifecycle || !isCanonicalRunTerminal(message)) return;
+    if (!lifecycle || (!completedAction && !isCanonicalRunTerminal(message))) return;
     const runId = messageRunId(message);
     const completedAtMs = Date.parse(item?.terminalAt || message.timestamp || item?.occurredAt || '');
     if (!runId || !Number.isFinite(completedAtMs)) return;
-    const sequence = item!.terminalSequence ?? item!.last_sequence;
+    const sequence = item?.terminalSequence ?? item?.last_sequence ?? message.threadItem?.sequence ?? 0;
     if ((terminalByRunId.get(runId)?.sequence ?? Infinity) <= sequence) return;
     const status: RunTimelineSnapshot['status'] = lifecycle === 'failed' || lifecycle === 'needs_reconciliation'
       ? 'failed'
@@ -2417,7 +2422,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     || runtimeStatusKey(currentRun?.lifecycle || activeRunStatus || '') === 'done')
     && latestUserMessageIndex(input.messages) >= 0
     && !latestTurnAnswered;
-  const retainedProcessRun = !pendingSendState && keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending, delegationReceiptExpected);
+  const retainedProcessRun = !pendingSendState && keepProcessRunActive(cells, { ...input, activeRunId }, activeRunStatus, terminalDeliveryPending, delegationReceiptExpected);
   const trailingUserTurn = Boolean(pendingSendState) || cells.at(-1)?.kind === 'user_turn';
   const acceptedUserTurnPending = trailingUserTurn && (latestUser?.sendState === 'sending'
     || latestUser?.sendState === 'queued'
@@ -2446,6 +2451,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     for (let index = cells.length - 1; index >= 0; index -= 1) {
       const cell = cells[index];
       if (cell.kind !== 'active_run') continue;
+      if (activeRunId && !isSameSessionRunId(cell.runId, activeRunId)) continue;
       if (cell.timeline.status === 'running' || cell.timeline.status === 'blocked') {
         const waiting = WAITING_HEADER_PHASES.has(livePhase);
         cells[index] = { ...cell, phase: livePhase, timeline: waiting ? { ...cell.timeline,

@@ -675,6 +675,8 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
     }
   });
   const foldedStarts = new Set<number>();
+  const terminalAtStart = new Map<number, AgentChatMessage>();
+  const movedTerminals = new Set<number>();
   for (const [session, starts] of startsBySession) {
     const ends = [...(terminalSessions.get(session)?.values() || [])].sort((a, b) => a - b);
     const covered: Array<{ index: number; terminalSequence: number }> = [];
@@ -690,10 +692,22 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
       covered.push({ index: start.index, terminalSequence: ends[nextTerminal] });
       nextTerminal++;
     }
-    covered.forEach(({ index }) => foldedStarts.add(index));
+    covered.forEach(({ index, terminalSequence }) => {
+      foldedStarts.add(index);
+      const terminalIndex = messages.findIndex(message => key(metadataOf(message).child_session_id) === session
+        && (message.sessionItem?.last_sequence ?? message.threadItem?.sequence) === terminalSequence
+        && ['runtime_action_completed', 'runtime_action_failed', 'child_session'].includes(message.eventType || ''));
+      if (terminalIndex < 0 || movedTerminals.has(terminalIndex)) return;
+      // Folding a started notice replaces its row in place. Dropping its
+      // position would move the colleague block past the running continuation.
+      terminalAtStart.set(index, messages[terminalIndex]);
+      movedTerminals.add(terminalIndex);
+    });
   }
-  return messages.map((message, index) => {
-    if (foldedStarts.has(index)) return null;
+  return messages.map((source, index) => {
+    if (movedTerminals.has(index)) return null;
+    const message = terminalAtStart.get(index) || source;
+    if (foldedStarts.has(index) && !terminalAtStart.has(index)) return null;
     const metadata = metadataOf(message);
     if (message.role === 'event' && (metadata.action_kind === 'a2a_delegation' || message.eventType === 'child_session')) {
       const status = terminals.get(key(metadata.runtime_task_id || metadata.task_id));

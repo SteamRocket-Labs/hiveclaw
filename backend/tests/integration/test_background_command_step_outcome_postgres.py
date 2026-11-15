@@ -45,7 +45,7 @@ async def background_command_runtime(
     from app.database import tenant_scoped_session
     from app.models.agent import Agent
     from app.models.capability_policy import CapabilityPolicy
-    from app.services import agent_context, agent_manager, agent_tools, runtime_task_worker, tenant_resolver
+    from app.services import agent_context, agent_manager, agent_tools, runtime_task_worker, tenant_resolver, web_chat_runtime
     from app.services import conversation_summarizer, fast_reflection_learning_brain, llm_client, session_memory
     from app.services.code_execution import local_provider, service
     from app.services.runtime_task_claim_service import RuntimeTaskClaimService
@@ -163,17 +163,33 @@ async def background_command_runtime(
             worker_id="command-outcome-boundary", session_factory=app_user_sessionmaker)
         assert result["target_delivered"] == 1, result
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://command-outcome.test") as client:
-        yield SimpleNamespace(seed=seed, scoped=scoped, llm=llm, client=client,
-            endpoint=f"/api/agents/{seed['agent_id']}", claim=claim, boundary=boundary,
-            command_results=command_results)
-    from app.runtime import hooks_setup
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://command-outcome.test") as client:
+            yield SimpleNamespace(seed=seed, scoped=scoped, llm=llm, client=client,
+                endpoint=f"/api/agents/{seed['agent_id']}", claim=claim, boundary=boundary,
+                command_results=command_results)
+    finally:
+        async with scoped() as db:
+            seed_status = await db.scalar(select(RuntimeTask.status).where(RuntimeTask.id == seed["run_id"]))
+        if seed_status in {"pending", "running"}:
+            settlement_llm = ScriptedLLMClient([
+                {"content": "This work is ready for its scheduled follow-up.", "finish_reason": "stop"},
+            ])
+            with monkeypatch.context() as settlement_patch:
+                settlement_patch.setattr(invoker, "create_llm_client", lambda **_kwargs: settlement_llm)
+                await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(seed["run_id"]), 30)
+            await boundary(seed["run_id"])
+        from app.runtime import hooks_setup
 
-    own = [task for key, task in list(hooks_setup._T2_BACKGROUND_TASKS.items())
-        if key.startswith(str(seed["agent_id"]) + ":")]
-    if own:
-        await asyncio.wait_for(asyncio.gather(*own), 10)
-    assert outbound == []
+        own = [task for key, task in list(hooks_setup._T2_BACKGROUND_TASKS.items())
+            if key.startswith(str(seed["agent_id"]) + ":")]
+        if own:
+            await asyncio.wait_for(asyncio.gather(*own), 10)
+        assert outbound == []
+        async with scoped() as db:
+            remaining = list(await db.execute(select(RuntimeTask.id, RuntimeTask.task_type, RuntimeTask.status).where(
+                RuntimeTask.tenant_id == seed["tenant_id"], RuntimeTask.status.in_(["pending", "running"]))))
+        assert remaining == [], remaining
 
 
 def _script_command(state, *, timed_out=False):
@@ -186,7 +202,7 @@ def _script_command(state, *, timed_out=False):
     ])
 
 
-async def _assert_command_replay(state, owner_sessionmaker, tmp_path, *, run_id, session_id, timed_out):
+async def _assert_command_replay(state, owner_sessionmaker, *, run_id, session_id, timed_out):
     from app.models.session_v2 import SessionEventOutbox, SessionToolInvocation
 
     assert len(state.command_results) == 1
@@ -222,7 +238,7 @@ async def _assert_command_replay(state, owner_sessionmaker, tmp_path, *, run_id,
 
 @pytest.mark.parametrize("timed_out", [False, True], ids=["nonzero", "timeout"])
 async def test_business_worker_keeps_command_outcome_in_transcript_and_member_row(
-    background_command_runtime, owner_sessionmaker, tmp_path, timed_out,
+    background_command_runtime, owner_sessionmaker, timed_out,
 ):
     from app.models.plan_request import AgentPlanRequest
     from app.models.task import Task
@@ -270,12 +286,12 @@ async def test_business_worker_keeps_command_outcome_in_transcript_and_member_ro
         assert run.status == "completed", run.metadata_json
         assert task.status == "done" and task.active_runtime_task_id == run_id
         session_id = run.child_session_id
-    await _assert_command_replay(state, owner_sessionmaker, tmp_path,
+    await _assert_command_replay(state, owner_sessionmaker,
         run_id=run_id, session_id=session_id, timed_out=timed_out)
 
 
 async def test_native_trigger_keeps_nonzero_command_in_transcript_and_member_row(
-    background_command_runtime, owner_sessionmaker, tmp_path,
+    background_command_runtime, owner_sessionmaker,
 ):
     from app.models.chat_session import ChatSession
     from app.services import runtime_task_worker, trigger_daemon, web_chat_runtime
@@ -332,5 +348,5 @@ async def test_native_trigger_keeps_nonzero_command_in_transcript_and_member_row
         assert session_id != seed["session_id"]
         assert reflection.session_kind == "trigger_run" and reflection.source_channel == "trigger"
         assert reflection.runtime_task_id == wrapper_id and reflection.user_id == seed["user_id"]
-    await _assert_command_replay(state, owner_sessionmaker, tmp_path,
+    await _assert_command_replay(state, owner_sessionmaker,
         run_id=run_id, session_id=session_id, timed_out=False)

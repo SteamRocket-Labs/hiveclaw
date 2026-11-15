@@ -986,6 +986,13 @@ def _memory_availability(content, issues):
 
 
 async def _load_scoped_memory(agent_id, arguments, execution_context):
+    from app.services.content_input_receipts import memory_read_call
+
+    async with memory_read_call(execution_context):
+        return await _read_scoped_memory(agent_id, arguments, execution_context)
+
+
+async def _read_scoped_memory(agent_id, arguments, execution_context):
     raw_ids = arguments.get("ids") or []
     ids = (
         [part.strip() for part in raw_ids.split(",") if part.strip()]
@@ -1000,15 +1007,6 @@ async def _load_scoped_memory(agent_id, arguments, execution_context):
         local_ids = [value for value in ids if value not in team_ids]
         issues = []
         entries = await _scoped_explicit_entries(agent_id, execution_context, ids=local_ids, issue_observer=issues)
-        content = (
-            load_memory(
-                agent_id,
-                {**arguments, "ids": local_ids},
-                _authorized_explicit_entries=[entry for entry, _receipt in entries],
-            )
-            if local_ids
-            else ""
-        )
         teams = (
             await read_entries(
                 tenant_id=uuid.UUID(str(execution_context.tenant_id)),
@@ -1019,6 +1017,15 @@ async def _load_scoped_memory(agent_id, arguments, execution_context):
             if team_ids
             else []
         )
+        from app.services.content_input_receipts import finish_memory_read
+        from app.services.explicit_memory_authority import authorized_explicit_entries
+
+        finish_memory_read()
+        entries = await authorized_explicit_entries(tenant_id=uuid.UUID(str(execution_context.tenant_id)),
+            agent_id=agent_id, request=ToolExecutionRequest("load_memory", arguments, execution_context),
+            entries=[entry for entry, _receipt in entries], issue_observer=issues)
+        content = load_memory(agent_id, {**arguments, "ids": local_ids},
+            _authorized_explicit_entries=[entry for entry, _receipt in entries]) if local_ids else ""
         if teams:
             content += "\n\n## 团队记忆\n" + "\n".join(render_entry(entry) for entry, _receipt in teams)
         content = _memory_availability(
@@ -1106,11 +1113,9 @@ async def _load_scoped_memory(agent_id, arguments, execution_context):
 async def search_memory(
     agent_id: uuid.UUID, arguments: dict, tenant_id: str | None = None, *, execution_context=None
 ) -> str:
-    from app.services.content_input_receipts import group_source_read
+    from app.services.content_input_receipts import memory_read_call
 
-    # Share retained evidence across this tool's independent authorizations.
-    # The outer frame holds no live checkpoint or successful-source decisions.
-    with group_source_read(source_catalog=True):
+    async with memory_read_call(execution_context):
         return await _search_memory(agent_id, arguments, tenant_id, execution_context=execution_context)
 
 
@@ -1305,20 +1310,23 @@ async def _search_memory(
                 )
             )
 
-    if execution_context is not None and overlay_facts:
-        from app.services.explicit_memory_authority import authorized_explicit_entries
-        from app.tools.runtime import ToolExecutionRequest
+    async def filter_selected():
+        nonlocal overlay_pairs, overlay_facts
+        if execution_context is not None and overlay_facts:
+            from app.services.explicit_memory_authority import authorized_explicit_entries
+            from app.tools.runtime import ToolExecutionRequest
 
-        ids = {fact["id"] for fact in overlay_facts}
-        overlay_pairs = await authorized_explicit_entries(
-            tenant_id=uuid.UUID(str(execution_context.tenant_id)),
-            agent_id=agent_id,
-            request=ToolExecutionRequest("search_memory", arguments, execution_context),
-            entries=[entry for entry, _receipt in overlay_pairs if entry.entry_id in ids],
-            issue_observer=issues,
-        )
-        allowed_ids = {entry.entry_id for entry, _receipt in overlay_pairs}
-        overlay_facts = [fact for fact in overlay_facts if fact["id"] in allowed_ids]
+            ids = {fact["id"] for fact in overlay_facts}
+            overlay_pairs = await authorized_explicit_entries(
+                tenant_id=uuid.UUID(str(execution_context.tenant_id)),
+                agent_id=agent_id,
+                request=ToolExecutionRequest("search_memory", arguments, execution_context),
+                entries=[entry for entry, _receipt in overlay_pairs if entry.entry_id in ids],
+                issue_observer=issues,
+            )
+            allowed_ids = {entry.entry_id for entry, _receipt in overlay_pairs}
+            overlay_facts = [fact for fact in overlay_facts if fact["id"] in allowed_ids]
+    await filter_selected()
     if execution_context is not None and scope in {"facts", "all"}:
         from app.services.team_memory_runtime import read_entries, render_entry
         from app.tools.runtime import ToolExecutionRequest
@@ -1337,6 +1345,11 @@ async def _search_memory(
                 results.extend(render_entry(entry) for entry, _receipt in team_pairs)
         except Exception:
             issues.append({"status": "unavailable", "code": "team_memory_source_unavailable"})
+    if execution_context is not None:
+        from app.services.content_input_receipts import finish_memory_read
+
+        finish_memory_read()
+        await filter_selected()
     overlay_lines = ToolOutputBuffer()
     if overlay_facts:
         overlay_lines.append("## 你要求记住的内容")

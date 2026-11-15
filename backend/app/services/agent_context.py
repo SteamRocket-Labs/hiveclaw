@@ -413,7 +413,7 @@ async def _load_configured_channel_types(
     if tenant_id is None:
         return None
     try:
-        from app.database import tenant_scoped_session
+        from app.services.content_input_receipts import memory_read_session as tenant_scoped_session
         from app.models.channel_config import ChannelConfig
         from app.models.tenant_channel_config import TenantChannelConfig
         from app.services.company_channel_identity import company_channel_ready
@@ -424,6 +424,11 @@ async def _load_configured_channel_types(
             require_tenant=True,
             source="agent_context_resource_channels",
         ) as db:
+            from app.services.content_input_receipts import memory_read_values
+
+            cache, key = memory_read_values(db, ("channel_types", agent_id))
+            if cache is not None and key in cache:
+                return cache[key]
             result = await db.execute(
                 sa_select(ChannelConfig.channel_type)
                 .where(
@@ -439,11 +444,14 @@ async def _load_configured_channel_types(
             ))).scalars().all()
             values.extend(config.channel_type for config in company_channels if config.is_configured and (
                 config.channel_type not in {"dingtalk", "wecom"} or company_channel_ready(config)))
-            return tuple(sorted({
+            channel_types = tuple(sorted({
                 str(getattr(value, "channel_type", value))
                 for value in values
                 if str(getattr(value, "channel_type", value)).strip()
             }))
+            if cache is not None:
+                cache[key] = channel_types
+            return channel_types
     except Exception as exc:
         logger.debug("Failed to query channel configs for agent {}: {}", agent_id, exc)
         return None

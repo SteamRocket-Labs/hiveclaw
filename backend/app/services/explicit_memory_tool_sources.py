@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 import uuid
 
-from app.database import tenant_scoped_session
+from app.services.content_input_receipts import memory_read_session as tenant_scoped_session
 from app.models.invocation_span import InvocationSpan
 from app.services.content_input_receipts import ContentInputReceiptError, _input_row, group_source_read
 from app.services.explicit_memory_authority import (

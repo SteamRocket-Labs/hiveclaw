@@ -526,7 +526,20 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
         search_memory_8_entries=2 * live_points(memory_closure), read_runtime_result_524=live_points(large_closure),
         prepare_model_request_sources=live_points(model_closure))
     measurements = []
-    search_output = None
+    # Compare exact rendered bytes with independent phase-scoped reads, including
+    # the visible legacy recall count; denying every entry must not look faster.
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def independent_phases(context):
+        with receipts.group_source_read(source_catalog=True):
+            yield
+
+    search = _request(n, "search_memory", {"query": "sales", "scope": "all"})
+    with monkeypatch.context() as patch:
+        patch.setattr(receipts, "memory_read_call", independent_phases)
+        search_output = str(await search_memory(n.agent, search.arguments, str(n.tenant),
+            execution_context=search.context))
     for delay in (0, .006):
         for endpoint in ("download", "content", "preview"):
             response, row = await _read(n, endpoint, monkeypatch, delay=delay)
@@ -567,8 +580,6 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
         result, row = await _measure("search_memory_8_entries", lambda: search_memory(n.agent,
             search.arguments, str(n.tenant), execution_context=search.context), monkeypatch, delay)
         measurements.append(row)
-        if search_output is None:
-            search_output = str(result)
         assert str(result) == search_output
         assert "Sales reporting convention" in str(result), result
         read = _request(n, "read_runtime_result", {"result_ref": large.ref})
@@ -578,9 +589,9 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
         assert payload["status"] == "ok" and payload["content"] == large.content, payload
         measurements.append(await _model_prepare(n, app_user_sessionmaker, monkeypatch, delay))
     violations = []
-    # These constants include ingress and each independent live phase. Recall
-    # performs admission, selection and emitted-result authorization; each
-    # gets fresh live rows. Retained evidence is loaded once for the tool.
+    # These constants include ingress and each independent live checkpoint.
+    # Recall keeps the admission, selection and emitted-result judges, using
+    # a fresh vector before and after the call. Retained evidence loads once.
     constants = {"download": 48, "content": 48, "preview": 51, "read_file_member": 44,
         "read_file_runtime": 44, "execution_57_files": 48, "search_memory_8_entries": 160,
         "read_runtime_result_524": 60, "prepare_model_request_sources": 80}

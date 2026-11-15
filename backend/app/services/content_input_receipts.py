@@ -124,6 +124,7 @@ class _DisclosureSourceValidations:
         self.retained = {}
         self.checkpoint = (None, None)
         self.workspace_read = None
+        self.memory_read = None
 
 
 @contextmanager
@@ -131,6 +132,8 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
     """Reuse successful exact source checks only inside one reader disclosure."""
     parent = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     scope = _DisclosureSourceValidations(batch_inputs=batch_inputs, cache_authority=cache_authority, source_catalog=source_catalog)
+    if parent is not None and parent.active and parent.memory_read is not None:
+        scope.memory_read = parent.memory_read
     if source_catalog and parent is not None and parent.active and parent.source_catalog:
         # Only retained evidence crosses a disclosure boundary. In particular,
         # neither reader/Agent rows nor checkpoint vectors are inherited.
@@ -145,6 +148,9 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
         for rows in scope.inputs.values():
             index_source_catalogue(rows)
         scope.model_digests = dict(parent.model_digests)
+    if scope.memory_read is not None:
+        scope.inputs = parent.inputs
+    shared_inputs = scope.memory_read is not None
     token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
         yield scope
@@ -166,7 +172,8 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
         scope.visiting.clear()
         scope.revisiting.clear()
         scope.actors.clear()
-        scope.inputs.clear()
+        if not shared_inputs:
+            scope.inputs.clear()
         scope.browser_reader = None
         scope.model_digests.clear()
         scope.model_inputs.clear()
@@ -175,6 +182,7 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
         scope.retained.clear()
         scope.checkpoint = (None, None)
         scope.workspace_read = None
+        scope.memory_read = None
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
 
 
@@ -205,11 +213,65 @@ def source_read_checkpoint(*, kind=None, phase=None):
         yield
         return
     previous = scope.checkpoint
+    if scope.memory_read is not None:
+        phase = scope.memory_read.phase
     scope.checkpoint = (kind or previous[0], phase if phase is not None else previous[1])
     try:
         yield
     finally:
         scope.checkpoint = previous
+
+
+@asynccontextmanager
+async def memory_read_call(context):
+    if context is None:
+        yield
+        return
+    from app.database import tenant_scoped_session
+
+    async with tenant_scoped_session(context.tenant_id) as db:
+        with group_source_read(batch_inputs=True, source_catalog=True) as scope:
+            scope.memory_read = SimpleNamespace(db=db, tenant=str(context.tenant_id), phase="before", bytes=set())
+            yield
+
+
+@asynccontextmanager
+async def memory_read_session(tenant_id=None, *, session_factory=None, **kwargs):
+    from app.database import tenant_scoped_session
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    call = scope.memory_read if scope is not None and scope.active else None
+    if call is not None and str(tenant_id) == call.tenant and session_factory is None:
+        yield call.db
+    else:
+        async with tenant_scoped_session(tenant_id, session_factory=session_factory, **kwargs) as db:
+            yield db
+
+
+def finish_memory_read():
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if scope is None or scope.memory_read is None:
+        return
+    scope.memory_read.phase = "after"
+    scope.memory_read.bytes.clear()
+    for rows in scope.inputs.values():
+        for key, row in list(rows.items()):
+            if not _catalogue_key(key, row):
+                del rows[key]
+        from app.services.source_read_queries import index_source_catalogue
+
+        index_source_catalogue(rows)
+
+
+def memory_read_values(db, point):
+    from app.core.source_read_purpose import current_source_recipient
+    from app.services.project_context import _SOURCE_READER
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if scope is None or scope.memory_read is None:
+        return None, None
+    return _preflight_inputs(db), ("memory_read", scope.memory_read.phase, point,
+        getattr(scope.browser_reader, "id", None), current_source_recipient(), _SOURCE_READER.get())
 
 
 def checkpoint_source_ids(kind):
@@ -2558,10 +2620,15 @@ async def machine_source_tasks(db, current_id):
     ).select_from(refs).outerjoin(RuntimeTask, RuntimeTask.id == refs.c.id), lambda row: row[0], entities={1: RuntimeTask})
 
 
-def _validate_source_bytes(path, version: str) -> None:
+def _validate_source_bytes(path, version: str, *, workspace_version=None) -> None:
     from app.config import get_settings
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    call = scope.memory_read if scope is not None and scope.active else None
+    key = (str(path), version, workspace_version)
+    if call is not None and workspace_version is not None and key in call.bytes:
+        return
     try:
         root = Path(get_settings().AGENT_DATA_DIR).resolve()
         path = Path(path)
@@ -2577,6 +2644,8 @@ def _validate_source_bytes(path, version: str) -> None:
         raise ContentInputReceiptError(
             "content_source_changed", "The canonical source bytes no longer match the receipt.", 403
         )
+    if call is not None and workspace_version is not None:
+        call.bytes.add(key)
 
 
 async def _validate_company_publication_dependency(db, tenant_id, dependency, *, user, runtime_request):
@@ -3015,7 +3084,11 @@ async def _validate_workspace_live(db, tenant_id, dependency, *, user, runtime_r
         raise ContentInputReceiptError(
             "content_source_changed", "The current workspace bytes have no matching receipt.", 403
         )
-    _validate_source_bytes(Path(str(agent_id)) / path, latest.content_sha256)
+    from app.core.source_read_purpose import current_source_recipient
+    from app.services.project_context import _SOURCE_READER
+
+    _validate_source_bytes(Path(str(agent_id)) / path, latest.content_sha256,
+        workspace_version=(db.get_transaction(), user.id, principal, current_source_recipient(), _SOURCE_READER.get(), latest.id))
     return user
 
 

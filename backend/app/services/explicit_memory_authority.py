@@ -6,7 +6,7 @@ from pathlib import Path
 
 from sqlalchemy import select, text
 
-from app.database import tenant_scoped_session
+from app.services.content_input_receipts import memory_read_session as tenant_scoped_session
 from app.memory.explicit_overlay import (
     ExplicitMemoryOverlayEntry,
     ExplicitMemoryOverlayResult,
@@ -159,6 +159,12 @@ async def latest_memory_receipt(db, tenant_id, agent_id, entry_id):
     from app.services.source_read_queries import fact_columns
 
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    from app.services.content_input_receipts import memory_read_values
+
+    values, snapshot = memory_read_values(db, ("latest", agent_id))
+    ref = memory_ref(agent_id, entry_id)
+    if values is not None and snapshot in values and ref in values[snapshot]:
+        return values[snapshot][ref]
     if scope is not None and scope.source_catalog and scope.checkpoint[0] == "explicit_memory":
         refs = {row.carrier_ref for key, row in scope.retained.items()
             if isinstance(key, tuple) and key[0] == "memory_receipt_binding"}
@@ -223,12 +229,20 @@ async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, 
 
 
 async def _latest_entry_receipts(db, tenant_id, agent_id, entries):
+    from app.services.content_input_receipts import memory_read_values
+
     refs = [memory_ref(agent_id, entry.entry_id) for entry in entries]
-    return {row.carrier_ref: row for row in await db.scalars(select(ContentInputReceipt).where(
+    rows, key = memory_read_values(db, ("latest", agent_id))
+    if rows is not None and key in rows:
+        return {ref: row for ref, row in rows[key].items() if ref in refs}
+    result = {row.carrier_ref: row for row in await db.scalars(select(ContentInputReceipt).where(
         ContentInputReceipt.tenant_id == tenant_id, ContentInputReceipt.carrier_kind == "explicit_memory",
         ContentInputReceipt.carrier_ref.in_(refs)).distinct(ContentInputReceipt.carrier_ref)
         .order_by(ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())
         .execution_options(populate_existing=True))} if refs else {}
+    if rows is not None:
+        rows[key] = result
+    return result
 
 
 async def preload_memory_receipts(db, tenant_id, dependencies):

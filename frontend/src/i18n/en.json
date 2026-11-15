@@ -2676,6 +2676,9 @@
         "stepInterrupted": "Interrupted; no result was returned.",
         "toolHistory": "Tool call history",
         "system": {
+          "delegationStarted": "Delegated to {{name}}; running in the background.",
+          "approvalResultKept": "The approval result is kept; this conversation did not continue.",
+          "approvalResultReturned": "The approval result has returned.",
           "resultsReceived": "Received {{count}} task results",
           "resultsReceived_one": "Received {{count}} task result",
           "resultsReceived_other": "Received {{count}} task results",

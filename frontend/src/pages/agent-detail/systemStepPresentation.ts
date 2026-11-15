@@ -2,6 +2,7 @@ import type { TFunction } from 'i18next';
 import { runtimeStatusLabel } from './runtimeStatus';
 import type { RunStepSnapshot } from './chatDisclosureReducer';
 import { memberToolSummarySentence } from './memberToolSummary';
+import { approvalContinuationPresentation } from '../../utils/approvalExecution';
 
 export function isKeptResultStep(step: RunStepSnapshot): boolean {
   const event = step.systemEvent;
@@ -18,8 +19,8 @@ function hasKeptResult(metadata: Record<string, unknown>): boolean {
     || (item.terminal_status === 'completed' && (item.result_size_bytes || 0) > 0));
 }
 
-// Match only known producer templates. Unmatched sentences and model prose
-// stay as stored, including specific approval and delegation outcomes.
+// Typed producer facts localize platform copy without reading model prose.
+// Legacy templates below keep unmatched sentences and result bodies as stored.
 export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepSnapshot {
   const event = step.systemEvent;
   if (!event) return step;
@@ -34,6 +35,37 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
       state: status === 'completed' ? 'done' : 'not_done' }, t)!;
     return event.type === 'child_session' ? { ...step, summary: sentence, details: sentence }
       : display(t('agent.chat.disclosure.toolTitle.delegateWork', 'Delegate work'), sentence);
+  }
+  if (event.type === 'runtime_action_started' && metadata.action_kind === 'a2a_delegation'
+    && metadata.status === 'running' && typeof metadata.target_agent_name === 'string') {
+    const sentence = t('agent.chat.disclosure.system.delegationStarted', 'Delegated to {{name}}; running in the background.',
+      { name: metadata.target_agent_name });
+    return { ...step, summary: sentence, details: sentence };
+  }
+  if (event.type.startsWith('runtime_action_') && metadata.runtime_action_from_result_integration === true) {
+    const status = String(metadata.status);
+    const sentence = ['completed', 'done'].includes(status) ? t('agent.chat.toolResults.stepCompleted', 'Completed')
+      : ['failed', 'error'].includes(status) ? t('approvalExecution.failed', 'Failed')
+      : ['killed', 'cancelled'].includes(status) ? t('agent.chat.disclosure.stoppedMarker', 'Stopped')
+      : status === 'needs_reconciliation' ? t('agent.businessTasks.status.needs_reconciliation', 'Review required')
+      : t('agent.status.needsAttention', 'Needs attention');
+    return { ...step, summary: sentence, details: sentence };
+  }
+  const approvalItems = (metadata.result_manifest as { items?: Array<{ source_kind?: string }> } | undefined)?.items || [];
+  if (event.type === 'agent_task_notification' && metadata.runtime_result_integration_page === true
+    && approvalItems.length > 0 && approvalItems.every(item => item.source_kind === 'approval')
+    && ['delivered', 'needs_reconciliation'].includes(String(metadata.continuation_status))) {
+    const reason = typeof metadata.continuation_reason === 'string' ? metadata.continuation_reason : '';
+    const known = ['requester_inactive', 'agent_execute_denied', 'user_prompt_submit_blocked', 'user_prompt_submit_prevented',
+      'admission_refused', 'approval_return_admission_refused', 'origin_run_not_suspended', 'approval_origin_unavailable',
+      'approval_return_unavailable', 'origin_session_authority_unresolved'].includes(reason);
+    const continuation = approvalContinuationPresentation({ execution_receipt: {
+      continuation_status: String(metadata.continuation_status), continuation_reason: reason,
+    } });
+    const sentence = known && continuation?.reasonKey ? t(`approvalContinuation.${continuation.reasonKey}`, continuation.label)
+      : reason ? t('agent.chat.disclosure.system.approvalResultKept', 'The approval result is kept; this conversation did not continue.')
+      : t('agent.chat.disclosure.system.approvalResultReturned', 'The approval result has returned.');
+    return { ...step, summary: sentence, details: sentence };
   }
   if (step.status === 'failed') {
     const actor = metadata.target_agent_name;

@@ -447,9 +447,9 @@ async def delete_tenant(
     tenant-linked records without uniform cascade rules, so hard deletion would
     be unsafe. Without a retirement payload, users remain active accounts and
     are detached from the company. A platform administrator may instead supply
-    the exact complete non-platform User set; after every target-tenant Agent is
-    already soft-deleted (regardless of owner), those Users are revoked and
-    deactivated in the same transaction.
+    the exact complete non-platform User set; after every non-system Agent is
+    deactivated (regardless of owner), those Users are revoked and deactivated
+    in the same transaction. System HR follows the company's active state.
     Platform administrators are only moved or detached, never deactivated.
     """
     if current_user.role not in ("platform_admin", "org_admin"):
@@ -607,13 +607,18 @@ async def delete_tenant(
                 select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.id).with_for_update(key_share=True)
             )
             tenant_agents = list(tenant_agents_result.scalars().all())
-            # Any still-active target-tenant Agent blocks retirement, not
-            # only ones owned by a retiring non-platform user: a platform-
-            # admin owner is rehomed and stays active, and would otherwise
-            # keep manage authority over a retired company's Agent. G1:
-            # digital employees are never deleted, so the settled state
-            # retirement requires is that every bot be deactivated.
-            blocking_agent_ids = sorted(str(agent.id) for agent in tenant_agents if agent.deactivated_at is None)
+            # Other active Agents block so their owner first runs the normal
+            # deactivation, which recalls outward work and stops native tasks.
+            # System HR cannot be deactivated, so it does not block. This
+            # transaction sets tenant.is_active=False; an inactive company is
+            # refused at sign-in and X-Tenant-Id (core/security.py), at turn
+            # start (runtime/invoker.py), in heartbeat and trigger selection
+            # (agent_lifecycle_active_clause) and in
+            # RuntimeTaskClaimService.claim_available. HR work already running
+            # is not interrupted, and re-enabling the company does not restore
+            # HR's responsible owner. Digital employees are never deleted.
+            blocking_agent_ids = sorted(str(agent.id) for agent in tenant_agents
+                if agent.deactivated_at is None and getattr(agent, "agent_class", None) != "internal_system")
             if blocking_agent_ids:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,

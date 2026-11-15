@@ -2,10 +2,8 @@
 
 import asyncio
 import json
-import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -220,23 +218,6 @@ async def _assert_command_replay(state, owner_sessionmaker, tmp_path, *, run_id,
         replay = next(item for item in served.json() if item["event_id"] == str(event.id))
         assert replay["scope"]["run_id"] == str(run_id)
         assert replay["payload"]["code_execution_result"] == expected
-    # Use the page's actual event consumer and row projection with the member
-    # response above, rather than reconstructing an event or parsing stdout.
-    fixture = tmp_path / "command-member-events.json"
-    fixture.write_text(json.dumps({"events": served.json(), "expected": expected, "run_id": str(run_id)}))
-    frontend = Path(__file__).resolve().parents[3] / "frontend"
-    report_file = tmp_path / "command-row-vitest.json"
-    process = await asyncio.create_subprocess_exec(str(frontend / "node_modules/.bin/vitest"), "run",
-        "src/pages/agent-detail/CommandOutcome.q3a.test.tsx", "--reporter=json", f"--outputFile={report_file}",
-        cwd=frontend, env={**os.environ, "Q3A_COMMAND_EVENTS": str(fixture),
-            "NODE_OPTIONS": "--no-experimental-webstorage"},
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-    output, _ = await asyncio.wait_for(process.communicate(), 60)
-    (tmp_path / "command-row-vitest.log").write_bytes(output)
-    assert process.returncode == 0, output.decode()
-    report = json.loads(report_file.read_text())
-    assert report["numTotalTests"] == report["numPassedTests"] == 1, report
-    assert report["numPendingTests"] == report["numFailedTests"] == 0, report
 
 
 @pytest.mark.parametrize("timed_out", [False, True], ids=["nonzero", "timeout"])

@@ -2676,6 +2676,9 @@
         "stepInterrupted": "已中断，没有返回结果。",
         "toolHistory": "工具调用历史",
         "system": {
+          "delegationStarted": "已委派给 {{name}}，后台执行中。",
+          "approvalResultKept": "审批结果已保留，本次对话未继续。",
+          "approvalResultReturned": "审批结果已返回。",
           "resultsReceived": "收到 {{count}} 项任务结果",
           "resultsReceived_one": "收到 {{count}} 项任务结果",
           "resultsReceived_other": "收到 {{count}} 项任务结果",

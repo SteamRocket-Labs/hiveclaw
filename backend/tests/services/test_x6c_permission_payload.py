@@ -19,6 +19,9 @@ from app.services.session_event_contract import member_permission_payload
     {"type": "permission", "status": ["denied"], "text": "permission configuration"},
     {"data": [], "metadata": {"status": "permission_denied", "message": "API data"}},
     {"item_kind": "tool_result", "payload": {"outcome": "denied", "content": "permission documentation"}},
+    # Mention the receipt key without holding a receipt Mapping (reviewer round 2, S1).
+    {"status": "permission_denied", "message": "Repo says no", "permission_request": None},
+    {"type": "permission", "text": "Docs: the permission_request field is optional", "capability": "x"},
 ])
 def test_untyped_result_strings_are_byte_identical(carrier, document):
     body = " \n" + json.dumps(document, ensure_ascii=False, indent=2) + "\n "

@@ -95,6 +95,14 @@ function statusIcon(status: ThreadItemStatus, itemType: ThreadItemType): React.R
 
 function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => string, language: string, approvalArguments: unknown): Detail[] {
   const userAction = item.user_action;
+  const expiry = (value: string) => {
+    const date = new Date(value);
+    const plain = date.toLocaleString(language);
+    if (Number.isNaN(date.getTime())) return plain;
+    const zone = new Intl.DateTimeFormat(language, { timeZoneName: 'long' }).formatToParts(date)
+      .find(part => part.type === 'timeZoneName')?.value;
+    return zone ? `${plain}${language.startsWith('zh') ? `（${zone}）` : ` (${zone})`}` : plain;
+  };
   if (item.item_type === 'approval_request') {
     const data = item.item_data;
     const expires = userAction?.expires_at || data.expires_at;
@@ -136,7 +144,7 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
     // The action already leads the member sentence; a repeated 工具 row adds
     // internal vocabulary without new information (X1 run 14/15).
     return [
-      { label: 'expires', value: expires ? new Date(expires).toLocaleString(language) : null },
+      { label: 'expires', value: expires ? expiry(expires) : null },
       { label: 'impact', value: data.tool_name === 'create_employee_from_request'
         ? `${caution} · ${t('sessionWorkbench.threadItem.value.employeePermanent', 'The employee can be deactivated, but cannot be deleted.')}`
         : caution },
@@ -150,7 +158,7 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
     return [
       { label: 'impact', value: userAction.impact },
       { label: 'expires', value: userAction.expires_at
-        ? new Date(userAction.expires_at).toLocaleString(language) : null },
+        ? expiry(userAction.expires_at) : null },
       ...memberDetails(userAction.details || []),
     ];
   }

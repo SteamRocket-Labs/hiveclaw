@@ -3409,7 +3409,10 @@ async def validate_published_workspace_receipt(db, tenant_id: uuid.UUID, user, r
         for row in dependencies
     ):
         raise ContentInputReceiptError("workspace_content_unverified", "The file's input receipt is invalid.")
-    await validate_browser_input_dependencies(db, tenant_id, user, dependencies)
+    with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as scope:
+        scope.browser_reader = user
+        await _preload_execution_sources(db, tenant_id, dependencies)
+        await validate_browser_input_dependencies(db, tenant_id, user, dependencies)
 
 
 async def validate_runtime_workspace_receipt(db, tenant_id, principal, receipt, content_sha256):

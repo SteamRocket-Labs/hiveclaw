@@ -10,6 +10,7 @@ import stoppedRows from '../../test/fixtures/x5eRun22StoppedRows.json';
 import { translateFromCatalog } from '../../test/i18nMock';
 import RunDisclosureBlock from '../agent-detail/RunDisclosureBlock';
 import type { AgentChatMessage, ChatTranscriptEventPayload } from '../agent-detail/chatRuntime';
+import { isSameSessionRunId } from '../agent-detail/chatRuntime';
 import { hydrateSessionTranscriptEvents } from '../agent-detail/sessionEventConsumer';
 import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } from '../agent-detail/sessionTranscriptApplier';
 import { buildThreadTimeline } from './timelineModel';
@@ -237,4 +238,65 @@ it.each(['zh', 'en'] as const)('X5e-r2-5 keeps every late stop row inside the or
   }
   expect(counts).toEqual([2, 2, 2, 2, 2, 2, 3, 3]);
   expect(new Set(durations).size).toBe(1);
+});
+
+it('X5e-r3 keeps reversed terminals on their own stopped parents sharing one child session', () => {
+  const events: Event[] = [];
+  const at = (second: number) => new Date(Date.UTC(2026, 10, 16, 0, 0, second)).toISOString();
+  const native = (kind: string, lifecycle: string, id: string, parent: string, payload: Record<string, unknown>, second: number) => {
+    events.push({ schema: 'hive.session_event', schema_version: 2, event_id: `event-${events.length + 1}`,
+      sequence: events.length + 1, tenant_id: 'tenant', item_id: id, item_kind: kind, kind: `${kind}.${lifecycle}`, lifecycle,
+      payload_schema: `hive.session.payload.${kind}.${lifecycle}.v2`, actor: { type: 'runtime' }, visibility: { audience: 'direct_user' },
+      scope: kind === 'human_input' ? { level: 'session', session_id: 'session', thread_id: 'session' }
+        : { level: kind === 'run' ? 'run' : 'round', session_id: 'session', thread_id: 'session',
+          turn_id: `turn-${parent}`, run_id: parent, ...(kind === 'run' ? {} : { round_id: `round-${parent}` }) },
+      ...(kind.startsWith('tool_') ? { invocation_id: `invocation-${parent}` } : {}),
+      payload, occurred_at: at(second), persisted_at: at(second) });
+  };
+  const action = (type: string, parent: string, task: string, second: number) => {
+    const started = type === 'runtime_action_started';
+    const metadata = { status: started ? 'running' : 'cancelled', action_kind: 'a2a_delegation',
+      runtime_task_id: started ? parent : task, ...(started ? {} : { task_id: task, reason: 'delegation_terminal' }),
+      child_session_id: 'shared-child' };
+    events.push({ schema: 'hive.session_event_compatibility', schema_version: 1, compatibility_status: 'needs_reconciliation',
+      reason: 'unmapped_legacy_kind', legacy_kind: 'legacy_unknown', legacy_lifecycle: 'legacy_unknown',
+      legacy_event_type: type, legacy_item_type: 'event', legacy_item_status: 'succeeded',
+      event_id: `event-${events.length + 1}`, sequence: events.length + 1, tenant_id: 'tenant', session_id: 'session',
+      run_id: started ? parent : task, occurred_at: at(second), payload: { content: '',
+        parts: [{ type: 'event', event_type: type, ...metadata }], metadata: { role: 'system', ...metadata } } });
+  };
+  native('human_input', 'accepted', 'input', '', { content: '安排两项工作' }, 0);
+  for (const [parent, task, start] of [['parent-a', 'task-a', 0], ['parent-b', 'task-b', 3]] as const) {
+    native('run', 'queued', parent, parent, {}, start);
+    native('tool_call', 'started', `call-${parent}`, parent, { tool_name: 'delegate_to_agent', args_hash: 'omitted' }, start + 1);
+    native('tool_result', 'completed', `result-${parent}`, parent, { tool_name: 'delegate_to_agent', outcome: 'success',
+      member_summary: { kind: 'delegation', state: 'in_progress', status: 'queued', task_id: task } }, start + 2);
+    action('runtime_action_started', parent, task, start + 2);
+  }
+  native('run', 'cancelled', 'parent-a', 'parent-a', { started_at: at(0) }, 8);
+  native('run', 'cancelled', 'parent-b', 'parent-b', { started_at: at(3) }, 8);
+  for (const [parent, task, end] of [['parent-b', 'task-b', 9], ['parent-a', 'task-a', 10]] as const) {
+    action('runtime_action_failed', parent, task, end);
+    action('child_session', parent, task, end);
+  }
+  for (const messages of both(events)) {
+    const model = buildThreadTimeline({ messages, activeSession: { id: 'session' }, isWaiting: false, isStreaming: false });
+    const runs = model.cells.filter(cell => cell.kind === 'active_run');
+    expect(runs).toHaveLength(2);
+    for (const [parent, task, durationMs] of [['parent-a', 'task-a', 8000], ['parent-b', 'task-b', 5000]] as const) {
+      const run = runs.find(cell => isSameSessionRunId(cell.runId, parent))!;
+      expect(run.timeline).toMatchObject({ status: 'cancelled', durationMs });
+      const terminalRows = run.timeline.steps.filter(step => ['runtime_action_failed', 'child_session'].includes(step.systemEvent?.type || ''));
+      expect(terminalRows).toHaveLength(2);
+      expect(terminalRows.map(step => step.systemEvent?.metadata.runtime_task_id)).toEqual([task, task]);
+      expect(terminalRows.every(step => step.status === 'cancelled')).toBe(true);
+      const { container, unmount } = render(<RunDisclosureBlock timeline={run.timeline} />);
+      for (let pass = 0; pass < 2; pass++) {
+        for (const button of container.querySelectorAll('button[aria-expanded="false"]')) fireEvent.click(button);
+      }
+      expect([...container.querySelectorAll('.run-step, .run-tool-history-item')]
+        .filter(row => row.textContent?.includes('已停止，同事没有完成这项工作。'))).toHaveLength(1);
+      unmount();
+    }
+  }
 });

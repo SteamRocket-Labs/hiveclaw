@@ -701,9 +701,6 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
       if (terminalIndex < 0 || movedTerminals.has(terminalIndex)) return;
       // Keep the folded row at its start without changing terminal evidence.
       terminalAtStart.set(index, messages[terminalIndex]);
-      const parent = stoppedRuns.get(key(agentChatMessageRunId(messages[index])));
-      const metadata = metadataOf(messages[terminalIndex]);
-      if (parent) stoppedParentByTask.set(key(metadata.runtime_task_id || metadata.task_id), parent);
       movedTerminals.add(terminalIndex);
     };
     const orderedStarts = starts.sort((a, b) => a.sequence - b.sequence);

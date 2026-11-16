@@ -68,6 +68,7 @@ def _task_body(reader, body, task_id):
 @pytest.mark.parametrize("reader", ["check_async_task", "task_output", "list_async_tasks", "cancel_async_task"])
 async def test_parent_task_read_respects_the_same_member_source_as_runtime_result(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, revoked, reader, hex_task_id=False,
+    task_id_format=None,
 ):
     import app.runtime.invoker as invoker
     from app.tools.runtime import ToolExecutionRegistry
@@ -77,7 +78,7 @@ async def test_parent_task_read_respects_the_same_member_source_as_runtime_resul
     execute = ToolExecutionRegistry.try_execute
 
     async def measured_execute(registry, request):
-        if request.tool_name != reader:
+        if request.tool_name not in {reader, "read_runtime_result"}:
             return await execute(registry, request)
         count = []
         token = active_read.set(count)
@@ -85,7 +86,7 @@ async def test_parent_task_read_respects_the_same_member_source_as_runtime_resul
             return await execute(registry, request)
         finally:
             active_read.reset(token)
-            statements.append(len(count))
+            statements.append({"tool": request.tool_name, "count": len(count)})
 
     def count_statement(_connection, _cursor, statement, _parameters, _context, _many):
         count = active_read.get()
@@ -107,6 +108,12 @@ async def test_parent_task_read_respects_the_same_member_source_as_runtime_resul
     )
     return_id = await _deliver_continuation(owner_sessionmaker, app_user_sessionmaker, seed)
     arguments = _reader_arguments(reader, seed["child_id"].hex if hex_task_id else seed["child_id"])
+    if task_id_format:
+        arguments["task_id"] = {
+            "upper": str(seed["child_id"]).upper(),
+            "braces": "{" + str(seed["child_id"]) + "}",
+            "urn": seed["child_id"].urn,
+        }[task_id_format]
     if hex_task_id:
         from app.agents import orchestrator
 
@@ -179,6 +186,7 @@ async def test_parent_task_read_respects_the_same_member_source_as_runtime_resul
     observation = {
         "revoked": revoked,
         "reader": reader,
+        "task_id_format": task_id_format,
         "task_read_sql_statements": statements,
         "automatic_model_has_answer": RESULT in wires[0],
         "pinned_read_status": pinned["status"],
@@ -228,18 +236,24 @@ async def test_task_reader_keeps_status_and_unpublished_projection(
         results = await _tool_results(owner_sessionmaker, run_id)
         checked = _task_body(reader, json.loads(results["r27b-status-read"]["content"]), task_id)
         assert checked["status"] == ("running" if state == "running" else "completed")
-        assert checked["result"] is None
-        if state == "unpublished":
+        legacy_cancel = reader == "cancel_async_task"
+        assert checked["result"] == (RESULT if legacy_cancel else None)
+        if state == "unpublished" and not legacy_cancel:
             assert checked["result_publication"]["status"] == "pending"
             assert checked["result_publication"]["reason_code"] == "runtime_result_publication_pending"
         else:
             assert "result_publication" not in checked
         wire = json.dumps(client.requests[1]["messages"], ensure_ascii=False)
-        assert RESULT not in wire and CSV not in wire
+        assert (RESULT in wire) is legacy_cancel
+        assert CSV not in wire
         async with owner_sessionmaker() as db:
             model = (await db.scalars(select(SessionModelResult).where(
                 SessionModelResult.run_id == run_id).order_by(SessionModelResult.round_id.desc()))).first()
-            assert RESULT not in json.dumps(model.model_request_snapshot_json["wire_request"])
+            assert (RESULT in json.dumps(model.model_request_snapshot_json["wire_request"])) is legacy_cancel
+            if legacy_cancel:
+                call = (await db.scalars(select(SessionToolInvocation).where(
+                    SessionToolInvocation.run_id == run_id))).one()
+                assert await db.get(InvocationSpan, uuid5(call.id, "runtime-task-read")) is None
         observations.append(checked["status"])
 
     await _member_file_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
@@ -298,7 +312,7 @@ async def test_result_without_published_sources_keeps_its_body(
         assert (RESULT in json.dumps(model.model_request_snapshot_json["wire_request"])) == (RESULT in wire)
 
 
-async def test_terminal_cancel_keeps_the_unpublished_projection(
+async def test_terminal_cancel_keeps_base_unpublished_feedback(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
 ):
     await test_task_reader_keeps_status_and_unpublished_projection(owner_sessionmaker,
@@ -327,6 +341,16 @@ async def test_unbound_legacy_feedback_stays_out_of_the_model(
         # provider request as well: unbound feedback was never admitted.
         await original_read(owner, patch, seed, tool)
         assert len(clients) == 1 and len(clients[0].requests) == 2
+        if has_artifact:
+            from tests.integration.test_r22a_owned_delegation_result_postgres import _read
+
+            pinned = await _read(seed)
+            assert pinned["status"] == "source_unavailable"
+            assert pinned["reason_code"] == "runtime_result_artifact_unverified"
+            assert pinned["retryable"] is True
+            print("R27C_CANONICAL_STOP", json.dumps({"reader": reader,
+                "direct_status": pinned["status"], "reason_code": pinned["reason_code"],
+                "landed_raw_summary_assertion": "test_r19a_consumed_result.py:63"}))
         wire = json.dumps(clients[0].requests[1]["messages"])
         assert "Three sales points: quality, service, value." not in wire
         async with owner() as db:
@@ -351,3 +375,45 @@ async def test_hex_task_id_reads_the_completed_native_cache(
 ):
     await test_parent_task_read_respects_the_same_member_source_as_runtime_result(owner_sessionmaker,
         app_user_sessionmaker, monkeypatch, tmp_path, revoked=revoked, reader=reader, hex_task_id=True)
+
+
+@pytest.mark.parametrize("reader", ["check_async_task", "cancel_async_task"])
+@pytest.mark.parametrize("task_id_format", ["upper", "braces", "urn"])
+async def test_noncanonical_task_id_cannot_bypass_a_source_refusal(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, reader, task_id_format,
+):
+    await test_parent_task_read_respects_the_same_member_source_as_runtime_result(owner_sessionmaker,
+        app_user_sessionmaker, monkeypatch, tmp_path, revoked=True, reader=reader, task_id_format=task_id_format)
+
+
+@pytest.mark.parametrize("revoked", [False, True], ids=["granted", "revoked"])
+async def test_real_runtime_context_keeps_completed_colleague_content_behind_its_reference(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, revoked,
+):
+    import app.runtime.invoker as invoker
+    from app.services.agent_context import build_agent_runtime_context
+
+    seed = await _member_file_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        source_grant=True)
+    if revoked:
+        await _revoke_source(owner_sessionmaker, seed)
+    # Restore the actual volatile context builder after the fixture's kernel
+    # seams. Keep the real team-context queries and native input compiler.
+    monkeypatch.setattr(invoker, "build_agent_runtime_context", build_agent_runtime_context)
+    run_id, client = await _parent_turn(owner_sessionmaker, seed, monkeypatch, [
+        {"content": "The colleague task has ended; its result can be read when needed."},
+    ])
+    assert len(client.requests) == 1
+    wire = json.dumps(client.requests[0], ensure_ascii=False)
+    async with owner_sessionmaker() as db:
+        model = (await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id))).one()
+        snapshot = model.model_request_snapshot_json
+    persisted = json.dumps(snapshot["wire_request"], ensure_ascii=False)
+    print("R27C_TEAM_CONTEXT", json.dumps({"revoked": revoked, "provider_has_answer": RESULT in wire,
+        "snapshot_has_answer": RESULT in persisted, "provider_has_reference": seed["result_ref"] in wire,
+        "snapshot_has_reference": seed["result_ref"] in persisted}))
+    assert RESULT not in wire and CSV not in wire
+    assert RESULT not in persisted and CSV not in persisted
+    assert seed["result_ref"] in wire and seed["result_ref"] in persisted
+    assert any(row["source_kind"] == "runtime_team_context"
+        for row in snapshot["input_bindings"]["dependencies"])

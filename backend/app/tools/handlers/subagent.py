@@ -1001,7 +1001,6 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
 async def check_subagent(request: ToolExecutionRequest) -> str:
     from app.services.subagent_run_service import get_subagent_run, list_subagent_runs
     from app.services.runtime_task_authority import execution_principal_from_tool_context
-    from app.services.runtime_task_read_sources import filter_task_result_content
 
     agent_id = request.context.agent_id
     principal = execution_principal_from_tool_context(request.context)
@@ -1073,7 +1072,7 @@ async def check_subagent(request: ToolExecutionRequest) -> str:
         )
     else:
         content = _json({"ok": True, "runs": await list_subagent_runs(agent_id, principal=principal)})
-    return (await filter_task_result_content(request, content))[0]
+    return content
 
 
 @tool(

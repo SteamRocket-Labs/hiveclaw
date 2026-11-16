@@ -30,7 +30,7 @@ def _result_records(body):
     return []
 
 
-def _project_refused_results(body, refusals):
+def _project_refused_results(body, refusals, *, unbound=None):
     # Keep only task status and navigation, including no metadata-derived
     # digest that could repeat the refused result under a different key.
     navigation = {
@@ -38,38 +38,67 @@ def _project_refused_results(body, refusals):
         "session_id", "child_session_id", "parent_session_id", "root_session_id",
         "created_at", "started_at", "completed_at", "transcript_refs", "continuation", "session_state",
     }
-    for record in _result_records(body):
-        identity = str(record.get("task_id") or record.get("run_id") or "").replace("-", "")
-        page = refusals.get(identity)
-        if page is None:
-            continue
+    remaining = set(refusals)
+
+    def project(record, page):
         projection = {key: value for key, value in record.items() if key in navigation}
         projection.update({key: None for key in ("result", "result_summary") if key in record})
         record.clear()
         record.update(projection, result_publication=page)
+
+    records = _result_records(body)
+    for record in records:
+        try:
+            identity = uuid.UUID(str(record.get("task_id") or record.get("run_id"))).hex
+        except (ValueError, TypeError, AttributeError):
+            continue
+        page = refusals.get(identity)
+        if page is None:
+            continue
+        project(record, page)
+        remaining.discard(identity)
+    if remaining:
+        if unbound is not None:
+            unbound.append("task_read_sources_unbound")
+        elif len(records) == 1 and isinstance(records[0], dict):
+            project(records[0], refusals[next(iter(remaining))])
+            return records[0]
     return body
 
 
-async def _task_result_refusals(db, request, records, *, result_ids=None):
-    """Check result sources at the task reader's content-admission checkpoint."""
+def _published_result_statement(tenant_id, agent_id, session_id, task_ids):
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
     from app.models.runtime_result import RuntimeResultObject
-    from app.services.content_input_receipts import log_source_refusal
-    from app.services.runtime_result_sources import validate_runtime_result_sources
+
+    return select(RuntimeResultObject).join(
+        RuntimeNotificationOutbox, RuntimeNotificationOutbox.result_object_id == RuntimeResultObject.id,
+    ).where(
+        RuntimeResultObject.tenant_id == tenant_id,
+        RuntimeNotificationOutbox.tenant_id == tenant_id,
+        RuntimeNotificationOutbox.source_run_id.in_([str(identity) for identity in task_ids]),
+        RuntimeNotificationOutbox.parent_agent_id == agent_id,
+        RuntimeNotificationOutbox.parent_session_id == uuid.UUID(str(session_id)),
+    )
+
+
+def _result_refusal(exc, result=None):
     from app.services.runtime_result_store import runtime_result_ref
 
-    identities = {str(uuid.UUID(str(row.get("task_id") or row.get("run_id"))))
-        for row in records if isinstance(row, dict) and row.get("status") == "completed"
-        and (row.get("result") or row.get("result_summary"))}
-    if not identities:
-        return {}
+    return {
+        "schema": "hive.runtime_result_page.v1",
+        "status": "source_access_denied" if exc.status_code == 403 else "source_unavailable",
+        "reason_code": exc.code,
+        "result_ref": runtime_result_ref(result_id=result.id, sha256=result.sha256) if result is not None else "",
+        "retryable": exc.status_code == 503,
+        "recovery_action": "reconcile_result_sources",
+    }
+
+
+async def _task_result_refusals(db, request, results):
+    """Check result sources at the task reader's content-admission checkpoint."""
+    from app.services.content_input_receipts import log_source_refusal
+    from app.services.runtime_result_sources import validate_runtime_result_sources
     refusals = {}
-    statement = select(RuntimeResultObject).where(
-        RuntimeResultObject.tenant_id == uuid.UUID(str(request.context.tenant_id)),
-        RuntimeResultObject.source_run_id.in_(identities),
-    )
-    if result_ids is not None:
-        statement = statement.where(RuntimeResultObject.id.in_(result_ids))
-    results = list(await db.scalars(statement))
     for result in results:
         try:
             # This is the A2w batched entry point also used by
@@ -77,38 +106,37 @@ async def _task_result_refusals(db, request, records, *, result_ids=None):
             await validate_runtime_result_sources(db, request, result)
         except ContentInputReceiptError as exc:
             log_source_refusal(exc, operation=request.tool_name)
-            refusals[uuid.UUID(result.source_run_id).hex] = {
-                "schema": "hive.runtime_result_page.v1",
-                "status": "source_access_denied" if exc.status_code == 403 else "source_unavailable",
-                "reason_code": exc.code,
-                "result_ref": runtime_result_ref(result_id=result.id, sha256=result.sha256),
-                "retryable": exc.status_code == 503,
-                "recovery_action": "reconcile_result_sources",
-            }
+            refusals[uuid.UUID(result.source_run_id).hex] = _result_refusal(exc, result)
     return refusals
 
 
 async def filter_task_result_content(request, content):
-    """Keep legacy subagent coverage while sharing the result reader's source check."""
+    """Check a cancel response against its current published result before disclosure."""
     context = request.context
-    if not all(getattr(context, key, None) for key in ("tenant_id", "session_id", "runtime_task_id")):
-        return content, {}
     try:
         body = json.loads(content)
     except (ValueError, TypeError):
         return content, {}
-    records = _result_records(body)
-    if not any(isinstance(row, dict) and row.get("status") == "completed"
-        and (row.get("result") or row.get("result_summary")) for row in records):
+    records = [row for row in _result_records(body) if isinstance(row, dict) and row.get("status") == "completed"
+        and (row.get("result") or row.get("result_summary"))]
+    if not records:
         return content, {}
+    if not all(getattr(context, key, None) for key in ("tenant_id", "session_id", "runtime_task_id")):
+        refusals = {"unbound": _result_refusal(ContentInputReceiptError(
+            "runtime_result_sources_unbound", "The result reader context is unavailable.", 503))}
+        return json.dumps(_project_refused_results(body, refusals), ensure_ascii=False, default=str), refusals
     async with tenant_scoped_session(uuid.UUID(str(context.tenant_id))) as db:
-        refusals = await _task_result_refusals(db, request, records)
+        results = list(await db.scalars(_published_result_statement(
+            uuid.UUID(str(context.tenant_id)), context.agent_id, context.session_id,
+            [uuid.UUID(str(row.get("task_id") or row.get("run_id"))) for row in records],
+        )))
+        refusals = await _task_result_refusals(db, request, results)
     if refusals:
         content = json.dumps(_project_refused_results(body, refusals), ensure_ascii=False, default=str)
     return content, refusals
 
 
-async def _task_sources(db, task, session_id):
+async def _task_sources(db, task, session_id, *, published_results=None):
     if task.task_type == "hr_provisioning":
         from app.models.hr_creation import HrCreationDraft
         from app.services.delegation_input_origin import load_employee_creation_dependencies
@@ -123,7 +151,6 @@ async def _task_sources(db, task, session_id):
         return await load_employee_creation_dependencies(db, draft=draft) if draft else None
     if task.task_type == "delegation":
         from app.agents.orchestrator import _delegation_projection_request_from_record
-        from app.models.runtime_result import RuntimeResultObject
         from app.services.delegation_input_origin import load_delegation_instruction_origin
         from app.services.runtime_result_sources import load_canonical_result_sources, runtime_result_publication_bound
 
@@ -150,13 +177,8 @@ async def _task_sources(db, task, session_id):
             return None
         sources = list(origin.sources)
         if task.status == "completed":
-            result = await db.scalar(
-                select(RuntimeResultObject).where(
-                    RuntimeResultObject.tenant_id == task.tenant_id,
-                    RuntimeResultObject.source_kind == "a2a_delegation",
-                    RuntimeResultObject.source_run_id == str(task.id),
-                )
-            )
+            result = (published_results.get(task.id) if published_results is not None else await db.scalar(
+                _published_result_statement(task.tenant_id, task.parent_agent_id, session_id, [task.id])))
             if result is None:
                 from app.services.direct_invocation_terminal_boundary_processor import _build_direct_terminal_spec
                 from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanonicalMismatch
@@ -253,7 +275,7 @@ def _pending_result_record(record):
     }
 
 
-def _matches_status_body(body, task_id, record, *, tool_name="check_async_task"):
+def _matches_status_body(body, task_id, record):
     expected = {
         "task_id": task_id,
         "task_type": record["task_type"],
@@ -267,13 +289,10 @@ def _matches_status_body(body, task_id, record, *, tool_name="check_async_task")
     }
     running = {k: v for k, v in expected.items() if k != "timed_out"}
     running.update(status="running", result=None, parent_session_id=None)
-    if tool_name == "cancel_async_task":
-        cancelled = {key: value for key, value in expected.items() if key not in {"task_type", "timed_out"}}
-        return body == expected or body == cancelled
     return body == expected or record["status"] in {"pending", "running"} and body == running
 
 
-async def record_task_read(request, content, *, capture=None, result_sources_checked=False):
+async def record_task_read(request, content, *, capture=None):
     """Capture only the exact authorized records emitted by a native read, at read time."""
     from app.services.explicit_memory_authority import _writer_input, audience_for_session
     from app.services.runtime_task_authority import authorize_runtime_task_record, execution_principal_from_tool_context
@@ -301,14 +320,13 @@ async def record_task_read(request, content, *, capture=None, result_sources_che
             body = json.loads(content)
             if call.tool_name == "task_output":
                 records = [body["task"]] if body.get("ok") is True else None
-            elif call.tool_name in {"check_async_task", "cancel_async_task"}:
+            elif call.tool_name == "check_async_task":
                 task_id = request.arguments.get("task_id")
                 task = await db.get(RuntimeTask, uuid.UUID(task_id), populate_existing=True)
                 if task is None:
                     return content
                 candidates = [*(capture.records_for(task_id) if capture else []), _task_to_dict(task)]
-                record = next((row for row in candidates if _matches_status_body(body, task_id, row,
-                    tool_name=call.tool_name)), None)
+                record = next((row for row in candidates if _matches_status_body(body, task_id, row)), None)
                 if record is None:
                     return content
                 records = [record]
@@ -316,93 +334,107 @@ async def record_task_read(request, content, *, capture=None, result_sources_che
                 records = body if isinstance(body, list) else None
             if records is None:
                 return content
-            sources, unbound, identities, pending, observations = [], [], [], [], []
-            failure_projected = False
-            principal = execution_principal_from_tool_context(context)
-            for index, record in enumerate(records):
-                task = await db.get(RuntimeTask, uuid.UUID(record["task_id"]), populate_existing=True)
-                observed = capture.matching(record) if capture else None
-                if (
-                    task is None
-                    or task.tenant_id != tenant_id
-                    or task.parent_agent_id != context.agent_id
-                    or task.root_user_id != actor.id
-                    or task.parent_session_id != str(session.id)
-                    or observed is None
-                    and _task_to_dict(task) != record
-                    or not authorize_runtime_task_record(
-                        _task_to_dict(task),
-                        principal=principal,
-                        action="read_output" if call.tool_name == "task_output" else "list",
-                    ).allowed
-                    or not authorize_runtime_task_record(
-                        record, principal=principal, action="read_output" if call.tool_name == "task_output" else "list"
-                    ).allowed
-                ):
-                    unbound.append("task_read_scope_or_snapshot_unbound")
-                    continue
-                identities.append(str(task.id))
-                if observed is not None:
-                    observations.append(
-                        {"task_id": str(task.id), "record_hash": _hash(record), "observed_at": observed[1]}
-                    )
-                from app.services.runtime_display_status import delegation_failure_result_page
+            from app.services.content_input_receipts import (
+                group_source_read, source_read_checkpoint, _preload_execution_sources,
+            )
+            from app.services.source_read_queries import transcript_event_columns
 
-                page = delegation_failure_result_page(
-                    task_id=str(uuid.UUID(str(record["task_id"]))),
-                    status=record["status"],
-                    metadata=record["metadata"],
-                    result_summary=record["result"],
-                )
-                if page:
-                    # This is a scoped SQL status observation, not a grant to
-                    # consume a failed child's prompt, partial output or metadata.
-                    # Every reader hands the parent the same plain page
-                    # read_runtime_result uses — no codes left to quote.
-                    if call.tool_name == "task_output":
-                        body["task"] = page
-                    elif call.tool_name in {"check_async_task", "cancel_async_task"}:
-                        body = page
-                    else:
-                        body[index] = page
-                    failure_projected = True
-                    continue
-                if call.tool_name in {"check_async_task", "cancel_async_task"} and body.get("result") is None and body.get("receipt") is None:
-                    # This exact authorized SQL observation contains only task
-                    # status/coordinates, not the instruction or result body.
-                    continue
-                current = await _task_sources(db, observed[0] if observed else task, session.id)
-                if current is None:
-                    unbound.append("task_read_sources_unbound")
-                elif current[1]:
-                    # Unbound legacy bodies remain withheld by the existing
-                    # input compiler. Check a bound result before certifying
-                    # its content as a model input, never on a later round.
-                    if not result_sources_checked:
-                        result_ids = {uuid.UUID(source["source_id"].rsplit("\n", 1)[-1])
-                            for source in current[0] if source["source_kind"] == "runtime_result"}
-                        refusals.update(await _task_result_refusals(db, request, [record],
-                            result_ids=result_ids if task.task_type == "delegation" else None))
-                    if task.id.hex in refusals:
+            with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as frame, source_read_checkpoint(kind="runtime_result"):
+                transcript_event_columns(frame)
+                completed_ids = [uuid.UUID(str(record["task_id"])) for record in records
+                    if record.get("status") == "completed"]
+                results = list(await db.scalars(_published_result_statement(
+                    tenant_id, context.agent_id, session.id, completed_ids))) if completed_ids else []
+                published_results = {uuid.UUID(result.source_run_id): result for result in results}
+                if results:
+                    await _preload_execution_sources(db, tenant_id, [{"source_kind": "runtime_result",
+                        "source_id": f"{context.agent_id}\n{session.id}\n{result.id}"} for result in results])
+                sources, unbound, identities, pending, observations = [], [], [], [], []
+                failure_projected = False
+                principal = execution_principal_from_tool_context(context)
+                for index, record in enumerate(records):
+                    task = await db.get(RuntimeTask, uuid.UUID(record["task_id"]), populate_existing=True)
+                    observed = capture.matching(record) if capture else None
+                    if (
+                        task is None
+                        or task.tenant_id != tenant_id
+                        or task.parent_agent_id != context.agent_id
+                        or task.root_user_id != actor.id
+                        or task.parent_session_id != str(session.id)
+                        or observed is None
+                        and _task_to_dict(task) != record
+                        or not authorize_runtime_task_record(
+                            _task_to_dict(task),
+                            principal=principal,
+                            action="read_output" if call.tool_name == "task_output" else "list",
+                        ).allowed
+                        or not authorize_runtime_task_record(
+                            record, principal=principal, action="read_output" if call.tool_name == "task_output" else "list"
+                        ).allowed
+                    ):
+                        unbound.append("task_read_scope_or_snapshot_unbound")
                         continue
-                    sources.extend(current[0])
-                elif task.task_type == "delegation" and task.status == "completed":
-                    sources.extend(current[0])
-                    pending.append(str(task.id))
-                    projection = _pending_result_record(record)
-                    if call.tool_name == "task_output":
-                        body["task"] = projection
-                    elif call.tool_name in {"check_async_task", "cancel_async_task"}:
-                        body = {key: value for key, value in body.items() if key not in {"result", "receipt"}}
-                        body.update(result=None, receipt=None, result_publication=projection["result_publication"])
+                    identities.append(str(task.id))
+                    if observed is not None:
+                        observations.append(
+                            {"task_id": str(task.id), "record_hash": _hash(record), "observed_at": observed[1]}
+                        )
+                    from app.services.runtime_display_status import delegation_failure_result_page
+
+                    page = delegation_failure_result_page(
+                        task_id=str(uuid.UUID(str(record["task_id"]))),
+                        status=record["status"],
+                        metadata=record["metadata"],
+                        result_summary=record["result"],
+                    )
+                    if page:
+                        # This is a scoped SQL status observation, not a grant to
+                        # consume a failed child's prompt, partial output or metadata.
+                        # Every reader hands the parent the same plain page
+                        # read_runtime_result uses — no codes left to quote.
+                        if call.tool_name == "task_output":
+                            body["task"] = page
+                        elif call.tool_name == "check_async_task":
+                            body = page
+                        else:
+                            body[index] = page
+                        failure_projected = True
+                        continue
+                    if call.tool_name == "check_async_task" and body.get("result") is None and body.get("receipt") is None:
+                        # This exact authorized SQL observation contains only task
+                        # status/coordinates, not the instruction or result body.
+                        continue
+                    current = await _task_sources(db, observed[0] if observed else task, session.id,
+                        published_results=published_results)
+                    if current is None:
+                        unbound.append("task_read_sources_unbound")
+                    elif current[1]:
+                        # Unbound legacy bodies remain withheld by the existing
+                        # input compiler. Check a bound result before certifying
+                        # its content as a model input, never on a later round.
+                        result = published_results.get(task.id)
+                        if result is not None and (record.get("result") or record.get("result_summary")):
+                            refusals.update(await _task_result_refusals(db, request, [result]))
+                        if task.id.hex in refusals:
+                            continue
+                        sources.extend(current[0])
+                    elif task.task_type == "delegation" and task.status == "completed":
+                        sources.extend(current[0])
+                        pending.append(str(task.id))
+                        projection = _pending_result_record(record)
+                        if call.tool_name == "task_output":
+                            body["task"] = projection
+                        elif call.tool_name == "check_async_task":
+                            body = {key: value for key, value in body.items() if key not in {"result", "receipt"}}
+                            body.update(result=None, receipt=None, result_publication=projection["result_publication"])
+                        else:
+                            body[index] = projection
                     else:
-                        body[index] = projection
-                else:
-                    unbound.append("task_read_sources_unbound")
+                        unbound.append("task_read_sources_unbound")
         except (ValueError, TypeError, KeyError, AttributeError, ContentInputReceiptError):
             return content
         if pending or failure_projected or refusals:
-            content = json.dumps(_project_refused_results(body, refusals), ensure_ascii=False, default=str)
+            content = json.dumps(_project_refused_results(body, refusals, unbound=unbound), ensure_ascii=False, default=str)
         proof = {
             "schema": "hive.runtime_task_read.v1",
             "invocation_id": str(call.id),

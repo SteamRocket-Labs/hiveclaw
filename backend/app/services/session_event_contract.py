@@ -1631,7 +1631,10 @@ def _member_summary_state(
         task_type = _status_text(
             result_obj.get("task_type") or task_mapping.get("task_type") or ""
         )
-        publication = result_obj.get("result_publication") or task_mapping.get("result_publication")
+        publication = result_obj.get("result_publication")
+        nested_publication = task_mapping.get("result_publication")
+        if isinstance(nested_publication, Mapping) and nested_publication.get("status") in {"source_access_denied", "source_unavailable"}:
+            publication = publication or nested_publication
         if status in _MEMBER_SUMMARY_DONE_RESULT_STATUSES and isinstance(publication, Mapping):
             # A completed task whose result is not published yet: the page the
             # model received has no result, so the publication status decides.
@@ -1720,7 +1723,8 @@ def _member_summary_projection(
         except (TypeError, ValueError):
             parsed = None
         result_obj = parsed if isinstance(parsed, Mapping) else None
-        if tool_name == "cancel_async_task" and result_obj and isinstance(result_obj.get("result_publication"), Mapping):
+        if (tool_name == "cancel_async_task" and result_obj and isinstance(result_obj.get("result_publication"), Mapping)
+            and result_obj["result_publication"].get("status") in {"source_access_denied", "source_unavailable"}):
             kind = "colleague_result"
         if tool_name == "list_async_tasks" and isinstance(parsed, list):
             # Only a typed refused publication changes the inventory row into

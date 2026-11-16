@@ -56,6 +56,7 @@ def _task_line(task: dict[str, Any]) -> str:
     teammate = _clean(task.get("child_agent_name") or task.get("child_agent_id") or task.get("name")) or "teammate"
     publication = task.get("result_publication")
     summary = (
+        _render_text(f"ref={task['result_ref']}") if task.get("result_ref") else
         _render_text(f"{publication['reason_code']}: {publication['next_action']}")
         if publication
         else _render_text(task.get("result_summary") or task.get("prompt") or task.get("summary"))
@@ -374,6 +375,11 @@ async def build_prompt_facing_team_context(
                     db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_uuid, task_id=task["id"]
                 )
                 if ref is not None:
+                    from app.services.runtime_result_store import runtime_result_ref
+
+                    tasks[index] = {**task, "prompt": None, "result_summary": None,
+                        "result_ref": runtime_result_ref(result_id=ref["source_id"].rsplit("\n", 1)[-1],
+                            sha256=ref["source_version"])}
                     refs.append(ref)
                     continue
                 row = await db.get(RuntimeTask, task["id"])

@@ -1022,7 +1022,18 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # source_read_queries module; the statements of _directory_scope_facts, _runtime_request_facts
 # and machine_source_tasks filter by tenant themselves (A2w round 7b).
 # Every consumer compares tenant_id before use. No new bypass write.
-RLS_BYPASS_SCOPES_SHA256 = "5d409658fe759914627786019f311c70e355fac8368d97e3ae56e4e173c7d8f8"
+# Land36 (A2x, A2y, R27) versus land33: still 805 entries and 123 callsites, no new or
+# removed key, no new bypass scope, 11 changed hashes, all bodies edited without new
+# bypass writes. A2x: session_permission_runtime (module, _source_result reads only the
+# columns its checks use), session_tool_runtime (module, _result_for_invocation,
+# complete_tool_invocation reuses the source_result already loaded) and
+# session_control_input (module, accepted_sequence passed through instead of read
+# again). A2y: policy.check_permission classifies optional _permissions rows that the
+# caller read at the same checkpoint (no statement of its own), permissions.
+# _agent_access_for_loaded passes them and raises 403 when the canonical check fails, and
+# the content_input_receipts module batches the published-receipt source check in the
+# existing A2w frame. R27 changes no fingerprinted entry.
+RLS_BYPASS_SCOPES_SHA256 = "7c706af9c41653aff0c69ff844d593b0cf5d869788c69f982e18c41a77c3f6d5"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -221,13 +221,25 @@ def _request(n, name, arguments, paths=None):
 
 async def _measure(name, operation, monkeypatch, delay):
     started = time.perf_counter()
+    phase_totals = {}
     with _profile(monkeypatch, delay=delay) as totals:
-        result = await operation()
+        if name == "search_memory_8_entries":
+            from tests.integration._a2w_memory_phases import memory_phase_profile
+
+            with memory_phase_profile(monkeypatch) as phase_totals:
+                result = await operation()
+        else:
+            result = await operation()
     row = {"path": name, "statements": sum(value["statements"] for value in totals.values()),
         "injected_seconds": round(sum(value["injected_seconds"] for value in totals.values()), 6),
         "seconds": round(time.perf_counter() - started, 4), "rtt": delay,
         "by_function_kind": [{"function": function, "kind": kind, **value}
             for (function, kind), value in sorted(totals.items())]}
+    if phase_totals:
+        row["by_phase"] = [{"stage": stage, "kind": kind, "checkpoint": checkpoint,
+            "phase": json.loads(phase), **value} for (stage, kind, checkpoint, phase), value
+            in sorted(phase_totals.items(), key=lambda item: repr(item[0]))]
+        assert sum(value["statements"] for value in phase_totals.values()) == row["statements"]
     print("A2W_MEASURE", json.dumps(row), flush=True)
     return result, row
 
@@ -537,18 +549,11 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
     measurements = []
     # Compare exact rendered bytes with independent phase-scoped reads, including
     # the visible legacy recall count; denying every entry must not look faster.
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def independent_phases(context):
-        with receipts.group_source_read(source_catalog=True):
-            yield
-
     search = _request(n, "search_memory", {"query": "sales", "scope": "all"})
-    with monkeypatch.context() as patch:
-        patch.setattr(receipts, "memory_read_call", independent_phases)
-        search_output = str(await search_memory(n.agent, search.arguments, str(n.tenant),
-            execution_context=search.context))
+    from app.tools.handlers.memory import _search_memory
+
+    # The body without the outer G0 frame independently reloads each phase.
+    search_output = str(await _search_memory(n.agent, search.arguments, str(n.tenant), execution_context=search.context))
     for delay in (0, .006):
         for endpoint in ("download", "content", "preview"):
             response, row = await _read(n, endpoint, monkeypatch, delay=delay)
@@ -599,10 +604,10 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
         measurements.append(await _model_prepare(n, app_user_sessionmaker, monkeypatch, delay))
     violations = []
     # These constants include ingress and each independent live checkpoint.
-    # Recall keeps the admission, selection and emitted-result judges, using
-    # a fresh vector before and after the call. Retained evidence loads once.
+    # Recall keeps fresh live vectors in each admission, selection and
+    # emitted-result frame. Only immutable catalogue rows survive frames.
     constants = {"download": 48, "content": 48, "preview": 51, "read_file_member": 44,
-        "read_file_runtime": 44, "execution_57_files": 48, "search_memory_8_entries": 160,
+        "read_file_runtime": 44, "execution_57_files": 48,
         "read_runtime_result_524": 60, "prepare_model_request_sources": 80}
     counts = scaling_counts.setdefault(volume, {})
     counts[scale] = {row["path"]: row["statements"] for row in measurements
@@ -611,13 +616,15 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
         assert 1 in counts, "Run both graph scales to verify constant statement work."
         print("A2W_SCALING", json.dumps({"volume": volume, "counts": counts}), flush=True)
     for row in measurements:
-        bound = 5 if row["path"] in {"execution_57_files", "read_runtime_result_524"} else 3
+        bound = 5 if row["path"] == "read_runtime_result_524" else 3
+        constant = constants.get(row["path"])
         value = {key: row[key] for key in ("path", "statements", "seconds")}
         value.update(scale=scale, volume=volume, live_checkpoints=budgets[row["path"]], C=40, time_bound=bound,
-            constant=constants[row["path"]])
+            constant=constant)
         print("A2W_BOUND", json.dumps(value), flush=True)
-        if row["statements"] > min(budgets[row["path"]] + 40, constants[row["path"]]) or (
-            row.get("rtt", row.get("injected_rtt")) and row["seconds"] > bound):
+        # R6 ruling: R5's unlanded 5x time gates and the R4 memory-160 target do not apply.
+        if row["statements"] > min(budgets[row["path"]] + 40, constant if constant is not None else float("inf")) or (
+            volume != 5 and row.get("rtt", row.get("injected_rtt")) and row["seconds"] > bound):
             violations.append(value)
     from pathlib import Path
     import os
@@ -626,7 +633,13 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
 
     directory = Path(os.environ["FULL_RUN"]) / "evidence" / f"{sys.argv[1]}-g0" if os.environ.get(
         "FULL_RUN") else tmp_path / "g0"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"measurements-scale{scale}-volume{volume}.json").write_text(json.dumps(measurements, indent=2))
     await measure_catalogue(n, app_user_sessionmaker, monkeypatch, directory, scale=scale, volume=volume)
+    from tests.integration._a2w_runtime_live import measure_runtime_live
+
+    await measure_runtime_live(n, app_user_sessionmaker, roots, monkeypatch,
+        directory.parent / (directory.name + "-runtime"), scale=scale, volume=volume)
     if scale == 2 and volume == 0 and any(value["path"] == "search_memory_8_entries" for value in violations):
         # Diagnose a failed CPU bound separately; profiling never contributes
         # overhead to the measured local/6 ms samples or their assertions.
@@ -640,7 +653,7 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
         finally:
             profile.disable()
         assert str(profiled) == search_output
-        output = tmp_path / "a2w-doubled-search.prof"
+        output = directory / "a2w-doubled-search.prof"
         profile.dump_stats(output)
         stats = pstats.Stats(profile)
         rows = sorted(({"function": f"{file}:{line}:{name}", "calls": calls, "cpu_seconds": total,

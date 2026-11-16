@@ -40,6 +40,10 @@ from app.models.user import User
 from app.models.workspace_resource import WorkspaceResourceManifest
 
 
+from app.services.source_read_queries import (
+    SESSION_ROOT_FIELDS,
+)
+
 class WorkspaceAuthorityError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -880,14 +884,14 @@ async def _canonical_root_session(
     key = ("workspace_root", agent_id, user.id, resource_tenant_id, session_id)
     if rows is not None and key in rows:
         return rows[key]
-    from app.services.content_input_receipts import checkpoint_rows
+    from app.services.content_input_receipts import checkpoint_rows, workspace_root_session_ids
     from app.services.source_read_queries import fact_columns
 
+    session_ids = workspace_root_session_ids() | {session_id}
     vector = await checkpoint_rows(db, "workspace_root_session", select(ChatSession.id, fact_columns(ChatSession,
-        "id tenant_id agent_id user_id peer_agent_id audience_kind external_principal_id source_channel "
-        "group_installation_ref group_subject_id session_kind runtime_source runtime_task_id root_session_id")
-    ).where(ChatSession.id == session_id), lambda row: row[0],
-        binding=(session_id, user.id, resource_tenant_id), entities={1: ChatSession})
+        SESSION_ROOT_FIELDS)
+    ).where(ChatSession.id.in_(session_ids)), lambda row: row[0],
+        binding=(frozenset(session_ids), user.id, resource_tenant_id), entities={1: ChatSession})
     session = (
         vector.get(session_id, (None, None))[1] if vector is not None else rows[(ChatSession, session_id)]
         if rows is not None and (ChatSession, session_id) in rows

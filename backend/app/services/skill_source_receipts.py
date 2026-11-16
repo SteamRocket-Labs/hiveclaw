@@ -239,9 +239,8 @@ async def record_original_platform_skill_sources(db, *, agent, workspace):
 
 
 async def _platform_package_checkpoint(db, tenant_id, agent_id, source_path):
-    from app.services.content_input_receipts import checkpoint_values
+    from app.services.content_input_receipts import checkpoint_query
 
-    current = checkpoint_values(db, "platform_package", binding=(tenant_id,))
     from sqlalchemy import column, values, func
     from sqlalchemy.dialects.postgresql import UUID
     from sqlalchemy.orm import aliased
@@ -261,21 +260,22 @@ async def _platform_package_checkpoint(db, tenant_id, agent_id, source_path):
             pass
     if (agent_id, source_path) not in paths:
         return None
-    if current is not None:
-        return current
-    refs = values(column("agent", UUID), column("installation", UUID), name="skill_lineages").data(list(installations))
-    installed = aliased(ConfigRevision)
-    superseded = select(func.jsonb_agg(installed.entity_id)).select_from(installed).join(
-        refs, refs.c.installation == installed.entity_id).where(refs.c.agent == Agent.id,
-            installed.tenant_id == tenant_id, installed.entity_type == "agent_skill_install").correlate(Agent).scalar_subquery()
-    statement = select(fact_columns(ConfigRevision, "id tenant_id entity_type entity_id version is_active "
-        "content content_hash change_source changed_by_user_id changed_by_agent_id"),
-        fact_columns(Agent, "id tenant_id creator_id"), superseded, Agent.id).select_from(Agent).outerjoin(
-            ConfigRevision, (ConfigRevision.tenant_id == tenant_id) & (ConfigRevision.entity_type == "agent_bootstrap")
-            & (ConfigRevision.entity_id == Agent.id) & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True)
-        ).where(Agent.id.in_({identity for identity, _path in paths}))
-    return await checkpoint_rows(db, "platform_package", statement, lambda row: row[3], binding=(tenant_id,),
-        entities={0: ConfigRevision, 1: Agent})
+    async def read():
+        refs = values(column("agent", UUID), column("installation", UUID), name="skill_lineages").data(list(installations))
+        installed = aliased(ConfigRevision)
+        superseded = select(func.jsonb_agg(installed.entity_id)).select_from(installed).join(
+            refs, refs.c.installation == installed.entity_id).where(refs.c.agent == Agent.id,
+                installed.tenant_id == tenant_id, installed.entity_type == "agent_skill_install").correlate(Agent).scalar_subquery()
+        statement = select(fact_columns(ConfigRevision, "id tenant_id entity_type entity_id version is_active "
+            "content content_hash change_source changed_by_user_id changed_by_agent_id"),
+            fact_columns(Agent, "id tenant_id creator_id"), superseded, Agent.id).select_from(Agent).outerjoin(
+                ConfigRevision, (ConfigRevision.tenant_id == tenant_id) & (ConfigRevision.entity_type == "agent_bootstrap")
+                & (ConfigRevision.entity_id == Agent.id) & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True)
+            ).where(Agent.id.in_({identity for identity, _path in paths}))
+        return await checkpoint_rows(db, "platform_package", statement, lambda row: row[3], binding=(tenant_id,),
+            entities={0: ConfigRevision, 1: Agent})
+
+    return await checkpoint_query(db, "platform_package", read, binding=(tenant_id,))
 
 
 async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
@@ -306,7 +306,7 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
         from sqlalchemy.orm import aliased
 
         installation = aliased(ConfigRevision)
-        lineage = _installation_id(agent_id, Path(source_path).parts[1])
+        lineage = _installation_id(agent_id, _safe_folder_name(Path(source_path).parts[1]))
         statement = statement.add_columns(select(installation.id).where(installation.tenant_id == tenant_id,
             installation.entity_type == "agent_skill_install", installation.entity_id == lineage).exists())
     vector = await _platform_package_checkpoint(db, tenant_id, agent_id, source_path)

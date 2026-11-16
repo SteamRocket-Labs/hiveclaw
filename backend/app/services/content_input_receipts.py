@@ -17,6 +17,10 @@ from app.models.organization_identity import ContentInputReceipt
 from app.services.team_memory import _safe_component, _slugify
 from app.core.permissions import agent_access_from_facts
 
+from app.services.source_read_queries import (
+    RUNTIME_ACTOR_FIELDS, SESSION_ACTOR_FIELDS, SESSION_SOURCE_FIELDS, USER_READER_FIELDS,
+)
+
 _ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
 _DISCLOSURE_SOURCE_VALIDATIONS = ContextVar("disclosure_source_validations", default=None)
 _NATIVE_CLOCK_READ = ContextVar("native_clock_read", default=None)
@@ -124,7 +128,6 @@ class _DisclosureSourceValidations:
         self.retained = {}
         self.checkpoint = (None, None)
         self.workspace_read = None
-        self.memory_read = None
 
 
 @contextmanager
@@ -132,8 +135,6 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
     """Reuse successful exact source checks only inside one reader disclosure."""
     parent = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     scope = _DisclosureSourceValidations(batch_inputs=batch_inputs, cache_authority=cache_authority, source_catalog=source_catalog)
-    if parent is not None and parent.active and parent.memory_read is not None:
-        scope.memory_read = parent.memory_read
     if source_catalog and parent is not None and parent.active and parent.source_catalog:
         # Only retained evidence crosses a disclosure boundary. In particular,
         # neither reader/Agent rows nor checkpoint vectors are inherited.
@@ -148,9 +149,6 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
         for rows in scope.inputs.values():
             index_source_catalogue(rows)
         scope.model_digests = dict(parent.model_digests)
-    if scope.memory_read is not None:
-        scope.inputs = parent.inputs
-    shared_inputs = scope.memory_read is not None
     token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
         yield scope
@@ -172,8 +170,7 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
         scope.visiting.clear()
         scope.revisiting.clear()
         scope.actors.clear()
-        if not shared_inputs:
-            scope.inputs.clear()
+        scope.inputs.clear()
         scope.browser_reader = None
         scope.model_digests.clear()
         scope.model_inputs.clear()
@@ -182,7 +179,6 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
         scope.retained.clear()
         scope.checkpoint = (None, None)
         scope.workspace_read = None
-        scope.memory_read = None
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
 
 
@@ -213,65 +209,11 @@ def source_read_checkpoint(*, kind=None, phase=None):
         yield
         return
     previous = scope.checkpoint
-    if scope.memory_read is not None:
-        phase = scope.memory_read.phase
     scope.checkpoint = (kind or previous[0], phase if phase is not None else previous[1])
     try:
         yield
     finally:
         scope.checkpoint = previous
-
-
-@asynccontextmanager
-async def memory_read_call(context):
-    if context is None:
-        yield
-        return
-    from app.database import tenant_scoped_session
-
-    async with tenant_scoped_session(context.tenant_id) as db:
-        with group_source_read(batch_inputs=True, source_catalog=True) as scope:
-            scope.memory_read = SimpleNamespace(db=db, tenant=str(context.tenant_id), phase="before", bytes=set())
-            yield
-
-
-@asynccontextmanager
-async def memory_read_session(tenant_id=None, *, session_factory=None, **kwargs):
-    from app.database import tenant_scoped_session
-
-    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    call = scope.memory_read if scope is not None and scope.active else None
-    if call is not None and str(tenant_id) == call.tenant and session_factory is None:
-        yield call.db
-    else:
-        async with tenant_scoped_session(tenant_id, session_factory=session_factory, **kwargs) as db:
-            yield db
-
-
-def finish_memory_read():
-    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is None or scope.memory_read is None:
-        return
-    scope.memory_read.phase = "after"
-    scope.memory_read.bytes.clear()
-    for rows in scope.inputs.values():
-        for key, row in list(rows.items()):
-            if not _catalogue_key(key, row):
-                del rows[key]
-        from app.services.source_read_queries import index_source_catalogue
-
-        index_source_catalogue(rows)
-
-
-def memory_read_values(db, point):
-    from app.core.source_read_purpose import current_source_recipient
-    from app.services.project_context import _SOURCE_READER
-
-    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is None or scope.memory_read is None:
-        return None, None
-    return _preflight_inputs(db), ("memory_read", scope.memory_read.phase, point,
-        getattr(scope.browser_reader, "id", None), current_source_recipient(), _SOURCE_READER.get())
 
 
 def checkpoint_source_ids(kind):
@@ -316,20 +258,26 @@ def _checkpoint_key(scope, point, binding):
     return ("checkpoint", scope.checkpoint, point, binding, current_source_recipient(), _SOURCE_READER.get() is not None)
 
 
-def checkpoint_values(db, point, *, binding=()):
-    """Reuse this phase's rows before constructing an all-node statement again."""
+def _checkpoint_scope():
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     if (scope is None or not scope.active or not scope.batch_inputs or not scope.source_catalog
         or scope.checkpoint == (None, None) or (not scope.source_ids and scope.checkpoint[0] != "runtime_actor")):
+        return None
+    return scope
+
+
+def checkpoint_values(db, point, *, binding=()):
+    """Reuse this phase's rows before constructing an all-node statement again."""
+    scope = _checkpoint_scope()
+    if scope is None:
         return None
     return _preflight_inputs(db).get(_checkpoint_key(scope, point, binding))
 
 
 async def checkpoint_rows(db, point, statement, identity, *, binding=(), entities=None):
     """One set read at this live phase, followed by SQL-free node decisions."""
-    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if (scope is None or not scope.active or not scope.batch_inputs or not scope.source_catalog
-        or scope.checkpoint == (None, None) or (not scope.source_ids and scope.checkpoint[0] != "runtime_actor")):
+    scope = _checkpoint_scope()
+    if scope is None:
         return None
     rows = _preflight_inputs(db)
     key = _checkpoint_key(scope, point, binding)
@@ -346,6 +294,14 @@ async def checkpoint_rows(db, point, statement, identity, *, binding=(), entitie
         rows[key] = {identity(row): tuple(fact_object(entities[index], value, identities=identities) if index in (entities or {})
             else _freeze_source_fact(value) for index, value in enumerate(row)) for row in values}
     return rows[key]
+
+
+async def checkpoint_query(db, point, read, *, binding=(), accept=None):
+    """Build a set query only when this checkpoint has no suitable observation."""
+    current = checkpoint_values(db, point, binding=binding)
+    if current is not None and (accept is None or accept(current)):
+        return current
+    return await read()
 
 
 class ContentInputReceiptError(ValueError):
@@ -518,13 +474,14 @@ async def _input_agent_access(db, user, agent_id):
             binding=(user.id,), entities={0: Agent})
         if vector is not None and agent_id in vector:
             return await agent_access_from_facts(db, user, vector[agent_id])
-        # A direct source check without a closure is its own fresh checkpoint.
-        from app.services.source_read_queries import fact_object
+        if vector is None:
+            # Standalone checks retain A2r-2's single live ACL statement.
+            from app.services.source_read_queries import fact_object
 
-        facts = (await db.execute(source_reader_facts_statement(user, agent_id))).first()
-        if facts is not None:
-            facts = (fact_object(Agent, facts[0]), *facts[1:])
-        return await agent_access_from_facts(db, user, facts)
+            facts = (await db.execute(source_reader_facts_statement(user, agent_id))).first()
+            if facts is not None:
+                facts = (fact_object(Agent, facts[0]), *facts[1:])
+            return await agent_access_from_facts(db, user, facts)
 
     rows = _preflight_inputs(db, authority=True)
     key = ("agent_access", id(user), agent_id)
@@ -838,7 +795,6 @@ async def _validate_input_dependencies(
     active_workspace_receipts: frozenset[uuid.UUID] = frozenset(),
 ) -> None:
     from app.core.source_read_purpose import current_source_recipient
-    from app.services.project_context import _SOURCE_READER
 
     recipient = current_source_recipient()
     if recipient is not None and (runtime_request is not None or str(getattr(user, "id", None)) != recipient[1]):
@@ -862,6 +818,21 @@ async def _validate_input_dependencies(
         )
     ):
         return await _validate_input_dependency_batch(db, tenant_id, dependencies, **context)
+    if not scope.visiting:
+        previous = scope.workspace_read
+        async with workspace_read_checkpoint(db, tenant_id):
+            if previous is None and scope.workspace_read is not None and len(dependencies) == 1:
+                scope.workspace_read.node_boundary = dependencies[0]
+            return await _walk_input_dependencies(db, tenant_id, dependencies, scope=scope,
+                recipient=recipient, context=context)
+    return await _walk_input_dependencies(db, tenant_id, dependencies, scope=scope,
+        recipient=recipient, context=context)
+
+
+async def _walk_input_dependencies(db, tenant_id, dependencies, *, scope, recipient, context):
+    from app.services.project_context import _SOURCE_READER
+
+    user, runtime_request = context["user"], context["runtime_request"]
     for dependency in dependencies:
         try:
             source_key = (dependency["source_kind"], dependency["source_id"], dependency["source_version"])
@@ -875,6 +846,11 @@ async def _validate_input_dependencies(
                 recipient,
                 source_key,
             )
+            point = scope.workspace_read
+            if point is not None and point.paths is not None:
+                # Attribute shared descendants even when the round's existing
+                # successful-source decision skips a repeated subtree.
+                point.paths.setdefault(reader_key, set()).add(point.current_path)
             if reader_key in scope.visiting:
                 # Re-enter a gray source once so its own active-chain check can classify
                 # the cycle; a second re-entry means no kind check fires on this cycle.
@@ -1188,10 +1164,19 @@ async def _validate_input_dependency_batch(
             )
         _validate_source_bytes(document.canonical_md_path, dependency["source_version"])
 
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    point = scope.workspace_read if scope is not None and scope.active else None
+    if (point is not None and point.node_boundary is not None and dependencies == [point.node_boundary]
+        and len(scope.visiting) == 1 and not scope.revisiting):
+        # A one-root walk ends inside its original judge. Changes committed by
+        # its caller afterwards belong to the next independent checkpoint.
+        await _recheck_workspace_checkpoint(point)
+        point.observed.clear()
+
 
 async def _context_checkpoint_facts(db, tenant_id, reader, kind):
     if reader is not None:
-        current = checkpoint_values(db, "context_metadata", binding=(tenant_id, reader.id))
+        current = checkpoint_values(db, "context_metadata", binding=(tenant_id, reader.id, kind))
         if current is not None:
             return current
     from sqlalchemy import values, column
@@ -1224,7 +1209,7 @@ async def _context_checkpoint_facts(db, tenant_id, reader, kind):
         statement = statement.add_columns(null())
     statement = statement.add_columns(refs.c.agent, refs.c.revision).where(Agent.tenant_id == tenant_id)
     return await checkpoint_rows(db, "context_metadata", statement, lambda row: tuple(row[6:8]),
-        binding=(tenant_id, reader.id), entities={0: Agent, 5: ConfigRevision})
+        binding=(tenant_id, reader.id, kind), entities={0: Agent, 5: ConfigRevision})
 
 
 async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user, runtime_request):
@@ -1866,8 +1851,7 @@ async def _actor_checkpoint_facts(db, tenant_id, reader):
     if not sessions:
         return None
     statement = source_reader_facts_statement(reader, ChatSession.agent_id, source=ChatSession).add_columns(
-        fact_columns(ChatSession, "id tenant_id agent_id user_id audience_kind external_principal_id source_channel "
-            "group_installation_ref group_subject_id session_kind runtime_source runtime_task_id"), ChatSession.id
+        fact_columns(ChatSession, SESSION_SOURCE_FIELDS), ChatSession.id
         ).where(ChatSession.id.in_(sessions), ChatSession.tenant_id == tenant_id)
     return await checkpoint_rows(db, "actor_session", statement, lambda row: row[6], binding=(tenant_id, reader.id),
         entities={0: Agent, 5: ChatSession})
@@ -1884,8 +1868,7 @@ async def _session_checkpoint_facts(db, tenant_id, kind, model, reader):
 
     all_ids = checkpoint_source_uuids(kind)
     statement = source_reader_facts_statement(reader, ChatSession.agent_id, source=ChatSession).add_columns(
-        fact_columns(ChatSession, "id tenant_id agent_id user_id audience_kind external_principal_id source_channel "
-            "group_installation_ref group_subject_id session_kind runtime_source runtime_task_id"), model.id).join(
+        fact_columns(ChatSession, SESSION_SOURCE_FIELDS), model.id).join(
                 model, model.session_id == ChatSession.id).where(model.tenant_id == tenant_id,
                     ChatSession.tenant_id == tenant_id, model.id.in_(all_ids))
     entities = {0: Agent, 5: ChatSession}
@@ -1931,14 +1914,8 @@ async def _validate_session_dependencies(db, tenant_id, dependencies, **context)
             raise ContentInputReceiptError("content_source_unavailable", "The session source receipt is invalid.", 503) from exc
         cached = _preflight_inputs(db)
         scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-        reader = context.get("user")
         runtime = context.get("runtime_request")
-        if runtime is not None:
-            from app.services.personal_knowledge_access import AgentRuntimePrincipal
-
-            identity = runtime.requester_user_id if isinstance(runtime, AgentRuntimePrincipal) else getattr(
-                getattr(runtime, "context", None), "user_id", None)
-            reader = SimpleNamespace(id=identity) if identity is not None else None
+        reader = _source_reader_hint(context.get("user"), runtime)
         vector = await _session_checkpoint_facts(db, tenant_id, kind, model, reader) if (
             scope is not None and scope.source_catalog and reader is not None
             and (runtime is not None or getattr(reader, "role", None) != "platform_admin")) else None
@@ -1961,13 +1938,11 @@ async def _validate_session_dependencies(db, tenant_id, dependencies, **context)
                     reader_facts=facts,
                     model_state=tuple(current[7:]) if current is not None and model is SessionToolInvocation else None,
                     **context)
-                continue
             continue
         if _batch_browser_point(db, context.get("user")) and context.get("runtime_request") is None:
             from app.models.agent import Agent
             from app.models.session_v2 import SessionModelResult
             from app.services.source_read_queries import source_reader_statement, model_source_state_columns, reader_columns
-
 
             for dependency, source_id in zip(selected, ids):
                 retained = cached.get(("session_source", model, source_id))
@@ -2446,7 +2421,7 @@ async def _runtime_input_actor(db, tenant_id, request):
     return actor
 
 
-async def _resolve_runtime_input_actor(db, tenant_id, request, *, _workspace_facts=None, _workspace_manifest=None):
+async def _resolve_runtime_input_actor(db, tenant_id, request, *, _workspace_facts=None):
     from fastapi import HTTPException
     from app.core.permissions import load_runtime_user_agent_access
     from app.models.chat_session import ChatSession
@@ -2495,10 +2470,7 @@ async def _resolve_runtime_input_actor(db, tenant_id, request, *, _workspace_fac
         principal = request if isinstance(request, AgentRuntimePrincipal) else _personal_kb_runtime_principal(
             request, require_delegation_binding=False,
         )
-        facts = actor_facts
-        if facts is None or facts[5] is None or facts[5].role == "platform_admin" or (
-            facts[6] is not None and facts[6].audience_kind == "group"):
-            facts = None
+        facts = _human_runtime_facts(actor_facts)
         if facts is None:
             requester, agent = await load_runtime_user_agent_access(db, tenant_id=tenant_id,
                 user_id=principal.requester_user_id, agent_id=principal.agent_id)
@@ -2507,9 +2479,10 @@ async def _resolve_runtime_input_actor(db, tenant_id, request, *, _workspace_fac
 
             requester = facts[5]
             if is_scoped_runtime_user(requester, tenant_id=tenant_id):
-                # Keep the common ACL + source-session reader-facts shape.
-                evidence = _workspace_manifest if _workspace_manifest is not None else facts[6]
-                agent, _level = await agent_access_from_facts(db, requester, (*facts[:5], evidence))
+                # Preserve the session-reader facts shape at the actor boundary;
+                # workspace after-checks supply their separate ACL observation.
+                acl = facts[:5] if _workspace_facts is not None else (*facts[:5], facts[6])
+                agent, _level = await agent_access_from_facts(db, requester, acl)
             else:
                 requester, agent = None, None
         if requester is None:
@@ -2555,7 +2528,10 @@ async def _resolve_runtime_input_actor(db, tenant_id, request, *, _workspace_fac
 
 
 async def _runtime_principal_facts(db, tenant_id, principal):
-    facts = await _runtime_request_facts(db, tenant_id, principal)
+    return _human_runtime_facts(await _runtime_request_facts(db, tenant_id, principal))
+
+
+def _human_runtime_facts(facts):
     if facts is None or facts[5] is None or facts[5].role == "platform_admin" or (
         facts[6] is not None and facts[6].audience_kind == "group"):
         return None
@@ -2595,11 +2571,9 @@ async def _runtime_request_facts(db, tenant_id, request):
         name="runtime_source_actor").data([binding])
     statement = source_reader_facts_statement(SimpleNamespace(id=binding[1]), refs.c.agent, source=refs)
     statement = statement.add_columns(
-        fact_columns(User, "id tenant_id role department_id is_active username display_name"),
-        fact_columns(ChatSession, "id tenant_id agent_id user_id peer_agent_id audience_kind external_principal_id "
-            "source_channel group_installation_ref group_subject_id session_kind runtime_source runtime_task_id"),
-        fact_columns(RuntimeTask, "id tenant_id machine_credential_id root_external_principal_id root_user_id "
-            "parent_agent_id parent_session_id"))
+        fact_columns(User, USER_READER_FIELDS),
+        fact_columns(ChatSession, SESSION_ACTOR_FIELDS),
+        fact_columns(RuntimeTask, RUNTIME_ACTOR_FIELDS))
     statement = statement.outerjoin(User, (User.id == cast(refs.c.user, UUID)) & (User.tenant_id == tenant_id)).outerjoin(
         ChatSession, ChatSession.id == refs.c.session).outerjoin(RuntimeTask, RuntimeTask.id == cast(refs.c.task, UUID))
     vector = await checkpoint_rows(db, "runtime_actor", statement, lambda row: "actor",
@@ -2637,19 +2611,14 @@ async def machine_source_tasks(db, current_id):
                 ids.add(row.run_id)
     refs = values(column("id", UUID), name="machine_source_tasks").data([(identity,) for identity in ids])
     return await checkpoint_rows(db, "machine_source_task", select(refs.c.id, fact_columns(RuntimeTask,
-        "id tenant_id machine_credential_id root_external_principal_id root_user_id parent_agent_id parent_session_id")
+        RUNTIME_ACTOR_FIELDS)
     ).select_from(refs).outerjoin(RuntimeTask, RuntimeTask.id == refs.c.id), lambda row: row[0], entities={1: RuntimeTask})
 
 
-def _validate_source_bytes(path, version: str, *, workspace_version=None) -> None:
+def _validate_source_bytes(path, version: str) -> None:
     from app.config import get_settings
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
-    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    call = scope.memory_read if scope is not None and scope.active else None
-    key = (str(path), version, workspace_version)
-    if call is not None and workspace_version is not None and key in call.bytes:
-        return
     try:
         root = Path(get_settings().AGENT_DATA_DIR).resolve()
         path = Path(path)
@@ -2665,8 +2634,6 @@ def _validate_source_bytes(path, version: str, *, workspace_version=None) -> Non
         raise ContentInputReceiptError(
             "content_source_changed", "The canonical source bytes no longer match the receipt.", 403
         )
-    if call is not None and workspace_version is not None:
-        call.bytes.add(key)
 
 
 async def _validate_company_publication_dependency(db, tenant_id, dependency, *, user, runtime_request):
@@ -2751,7 +2718,7 @@ async def _validate_company_publication_dependency(db, tenant_id, dependency, *,
 
 @asynccontextmanager
 async def workspace_read_checkpoint(db, tenant_id):
-    """Observe W0 before its walk and again before that walk returns."""
+    """Recheck passed workspace and memory nodes before the outer walk returns."""
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     if scope is None or not scope.active or not scope.batch_inputs or not scope.source_catalog:
         yield
@@ -2761,7 +2728,7 @@ async def workspace_read_checkpoint(db, tenant_id):
         yield
         return
     point = SimpleNamespace(db=db, tenant_id=tenant_id, groups={}, observed=[], phase=object(),
-        verified=set(scope.verified))
+        verified=set(scope.verified), paths=None, current_path=None, omitted=None, node_boundary=None)
     scope.workspace_read = point
     try:
         yield
@@ -2777,6 +2744,22 @@ async def workspace_read_checkpoint(db, tenant_id):
             raise
     finally:
         scope.workspace_read = previous
+
+
+def defer_memory_after(db, tenant_id, dependency, recheck):
+    """Keep the node's after-judge in the enclosing walk's completion order."""
+    from app.core.source_read_purpose import current_source_recipient
+    from app.services.project_context import _SOURCE_READER
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    point = scope.workspace_read if scope is not None and scope.active else None
+    if point is None or point.db is not db or point.tenant_id != tenant_id:
+        return False
+    group = SimpleNamespace(recipient=current_source_recipient(), project=_SOURCE_READER.get(),
+        phase=scope.checkpoint[1])
+    point.observed.append(SimpleNamespace(kind="explicit_memory", group=group, passed=True,
+        dependency=dependency, recheck=recheck, ancestors=tuple(scope.visiting) if point.paths is not None else ()))
+    return True
 
 
 def _workspace_reader_group(db, tenant_id, user, runtime_request):
@@ -2808,7 +2791,15 @@ def _workspace_reader_group(db, tenant_id, user, runtime_request):
     return point.groups[key]
 
 
-async def _workspace_checkpoint_rows(db, tenant_id, reader, *, runtime_request=None):
+def workspace_root_session_ids():
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    point = scope.workspace_read if scope is not None else None
+    return {facts[5].root_session_id for group in point.groups.values()
+        for rows in (group.before, group.after) for facts in (rows or {}).values()
+        if facts[5] is not None and facts[5].root_session_id is not None} if point is not None else set()
+
+
+async def _workspace_checkpoint_rows(db, tenant_id, reader, *, runtime_request=None, receipts=None):
     from fastapi import HTTPException
     from sqlalchemy import column, values
     from sqlalchemy.dialects.postgresql import UUID
@@ -2820,9 +2811,9 @@ async def _workspace_checkpoint_rows(db, tenant_id, reader, *, runtime_request=N
     from app.core.resource_authority import workspace_resource_id
 
     bindings = []
-    for key, receipt in (_preflight_inputs(db) or {}).items():
-        if not isinstance(key, tuple) or key[0] is not ContentInputReceipt or receipt is None:
-            continue
+    selected = receipts if receipts is not None else [receipt for key, receipt in (_preflight_inputs(db) or {}).items()
+        if isinstance(key, tuple) and key[0] is ContentInputReceipt and receipt is not None]
+    for receipt in selected:
         if receipt.carrier_kind != "workspace_artifact" or receipt.tenant_id != tenant_id:
             continue
         try:
@@ -2841,7 +2832,8 @@ async def _workspace_checkpoint_rows(db, tenant_id, reader, *, runtime_request=N
         ).order_by(ContentInputReceipt.revision.desc()).limit(1).correlate(refs).scalar_subquery()
     root_owned = select(ChatSession.id).where(ChatSession.id == WorkspaceResourceManifest.root_session_id,
         ChatSession.agent_id == refs.c.agent, ChatSession.user_id == reader.id).correlate(refs, WorkspaceResourceManifest).exists()
-    statement = source_reader_facts_statement(reader, refs.c.agent, source=refs).add_columns(
+    statement = source_reader_facts_statement(reader, refs.c.agent, source=refs,
+        agent_fields="deactivation_reason name role_description status agent_class agent_type created_at" if receipts is not None else "").add_columns(
         fact_columns(WorkspaceResourceManifest, "id tenant_id agent_id path owner_user_id root_session_id "
             "authority_state audience_kind content_hash deleted_at"),
         fact_columns(current, "id revision content_sha256"), root_owned,
@@ -2861,11 +2853,9 @@ async def _workspace_checkpoint_rows(db, tenant_id, reader, *, runtime_request=N
         session_id = uuid.UUID(str(getattr(context, "session_id", None) or getattr(session_context, "session_id", None)))
         raw_task = getattr(context, "runtime_task_id", None) or metadata.get("runtime_task_id") or metadata.get("task_id")
         actor = source_reader_facts_statement(reader, uuid.UUID(str(context.agent_id))).add_columns(
-            fact_columns(User, "id tenant_id role department_id is_active username display_name"),
-            fact_columns(ChatSession, "id tenant_id agent_id user_id peer_agent_id audience_kind external_principal_id "
-                "source_channel group_installation_ref group_subject_id session_kind runtime_source runtime_task_id"),
-            fact_columns(RuntimeTask, "id tenant_id machine_credential_id root_external_principal_id root_user_id "
-                "parent_agent_id parent_session_id"))
+            fact_columns(User, USER_READER_FIELDS),
+            fact_columns(ChatSession, SESSION_ACTOR_FIELDS),
+            fact_columns(RuntimeTask, RUNTIME_ACTOR_FIELDS))
         actor = actor.outerjoin_from(Agent, User, (User.id == reader.id) & (User.tenant_id == tenant_id)).outerjoin_from(
             Agent, ChatSession, ChatSession.id == session_id).outerjoin_from(Agent, RuntimeTask,
                 RuntimeTask.id == (uuid.UUID(str(raw_task)) if raw_task else None))
@@ -2893,25 +2883,36 @@ async def _recheck_workspace_checkpoint(point):
     for observation in point.observed:
         if not observation.passed:
             continue
-        group, arguments = observation.group, observation.arguments
+        affected = set().union(*(point.paths.get(key, ()) for key in observation.ancestors)) if point.paths is not None else set()
+        if affected and affected <= point.omitted:
+            continue
+        group = observation.group
         recipient = _RECIPIENT_READ.set(group.recipient)
         project = _SOURCE_READER.set(group.project)
         try:
-            with source_read_checkpoint(kind="workspace_artifact", phase=(group.phase, "workspace_after", point.phase)):
-                if group.after is None:
-                    group.after = await _workspace_checkpoint_rows(point.db, point.tenant_id, group.reader,
-                        runtime_request=group.request)
-                facts = group.after.get(arguments["receipt"].id)
-                manifest, latest = (facts[5], facts[6]) if facts is not None else (None, None)
+            phase = "workspace_after" if observation.kind == "workspace_artifact" else "memory_after"
+            with source_read_checkpoint(kind=observation.kind, phase=(group.phase, phase, point.phase)):
                 try:
-                    await _validate_workspace_live(point.db, point.tenant_id, **{**arguments,
-                        "manifest": manifest, "latest": latest, "facts": facts,
-                        "source_facts": (manifest, facts[7], facts[8]) if facts is not None else None},
-                        after=True)
+                    if observation.kind == "explicit_memory":
+                        await observation.recheck()
+                    else:
+                        arguments = observation.arguments
+                        if group.after is None:
+                            group.after = await _workspace_checkpoint_rows(point.db, point.tenant_id, group.reader,
+                                runtime_request=group.request)
+                        facts = group.after.get(arguments["receipt"].id)
+                        manifest, latest = (facts[5], facts[6]) if facts is not None else (None, None)
+                        await _validate_workspace_live(point.db, point.tenant_id, **{**arguments,
+                            "manifest": manifest, "latest": latest, "facts": facts,
+                            "source_facts": (manifest, facts[7], facts[8]) if facts is not None else None}, after=True)
                 except ContentInputReceiptError as exc:
                     if exc.dependency is None:
-                        exc.dependency = arguments["dependency"]
-                    raise
+                        exc.dependency = observation.dependency
+                    if point.omitted is None or not affected:
+                        raise
+                    point.omitted.update(affected)
+                    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+                    scope.verified = {key: value for key, value in scope.verified.items() if key in point.verified}
         finally:
             _SOURCE_READER.reset(project)
             _RECIPIENT_READ.reset(recipient)
@@ -2966,11 +2967,6 @@ async def _validate_workspace_node(db, tenant_id, dependency, *, user, runtime_r
             manifest, latest = facts[5], facts[6]
             source_facts = (manifest, facts[7], facts[8])
     if group is None and _batch_browser_point(db, user) and runtime_request is None:
-        from sqlalchemy.orm import aliased
-        from app.models.chat_session import ChatSession
-        from app.services.source_read_queries import source_reader_statement, resource_permission_rows
-        from app.core.resource_authority import workspace_resource_id
-
         # A later version of the same path must observe a manifest or ACL
         # change made after its earlier version was checked (R12a).
         facts = await _workspace_single_point(db, tenant_id, agent_id, path, receipt, user)
@@ -2988,52 +2984,22 @@ async def _validate_workspace_node(db, tenant_id, dependency, *, user, runtime_r
         path=path, manifest=manifest, latest=latest, facts=facts, source_facts=source_facts)
     observation = None
     if group is not None:
-        observation = SimpleNamespace(group=group, arguments=arguments, passed=False)
-        _DISCLOSURE_SOURCE_VALIDATIONS.get().workspace_read.observed.append(observation)
-    result = await _validate_loaded_workspace_dependency(db, tenant_id, **arguments)
-    if observation is not None:
-        observation.passed = True
-    return result
-
-
-async def _workspace_single_point(db, tenant_id, agent_id, path, receipt, user):
-    from sqlalchemy.orm import aliased
-    from app.models.chat_session import ChatSession
-    from app.services.source_read_queries import source_reader_statement, resource_permission_rows
-    from app.core.resource_authority import workspace_resource_id
-    from app.models.workspace_resource import WorkspaceResourceManifest
-
-    statements = _DISCLOSURE_SOURCE_VALIDATIONS.get().statements
-    statement_key = ("live_workspace_source", user.id, tenant_id, agent_id)
-    statement = statements.get(statement_key)
-    if statement is None:
-        current = aliased(ContentInputReceipt)
-        latest_id = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
-            ContentInputReceipt.carrier_kind == "workspace_artifact",
-            ContentInputReceipt.carrier_ref == bindparam("source_workspace_ref")
-            ).order_by(ContentInputReceipt.revision.desc()).limit(1).scalar_subquery()
-        root_owned = select(ChatSession.id).where(ChatSession.id == WorkspaceResourceManifest.root_session_id,
-            ChatSession.agent_id == agent_id, ChatSession.user_id == user.id).exists()
-        statement = source_reader_statement(user, agent_id).add_columns(
-            WorkspaceResourceManifest, current, root_owned,
-            resource_permission_rows("workspace_file", bindparam("source_workspace_resource"), tenant_id))
-        statement = (statement.outerjoin(WorkspaceResourceManifest, (WorkspaceResourceManifest.tenant_id == tenant_id)
-            & (WorkspaceResourceManifest.agent_id == agent_id) & (WorkspaceResourceManifest.path == bindparam("source_workspace_path")))
-            .outerjoin(current, current.id == latest_id)
-            .options(load_only(current.id, current.revision, current.content_sha256)))
-        statements[statement_key] = statement
-    facts = (await db.execute(statement, {"source_workspace_ref": receipt.carrier_ref,
-        "source_workspace_path": path, "source_workspace_resource": workspace_resource_id(agent_id, path)})).first()
-    return facts
-
-async def _validate_loaded_workspace_dependency(db, tenant_id, dependency, *, user, runtime_request, active_receipts,
-    receipt, agent_id, path, manifest, latest, facts, source_facts):
-    user = await _validate_workspace_live(db, tenant_id, dependency, user=user, runtime_request=runtime_request,
-        active_receipts=active_receipts, receipt=receipt, agent_id=agent_id, path=path,
-        manifest=manifest, latest=latest, facts=facts, source_facts=source_facts)
+        point = _DISCLOSURE_SOURCE_VALIDATIONS.get().workspace_read
+        observation = SimpleNamespace(kind="workspace_artifact", group=group, arguments=arguments, passed=False,
+            dependency=dependency, ancestors=tuple(_DISCLOSURE_SOURCE_VALIDATIONS.get().visiting) if point.paths is not None else ())
+        point.observed.append(observation)
+    user = await _validate_workspace_live(db, tenant_id, **arguments)
     # A later write is not a source of the previously observed version.
     await _validate_workspace_receipt_inputs(db, receipt, user=user, runtime_request=runtime_request,
         active_receipts=active_receipts | {receipt.id})
+    if observation is not None:
+        observation.passed = True
+
+
+async def _workspace_single_point(db, tenant_id, agent_id, path, receipt, user):
+    rows = await _workspace_checkpoint_rows(db, tenant_id, user, receipts=[receipt])
+    facts = rows.get(receipt.id)
+    return facts[:9] if facts is not None and facts[0] is not None else None
 
 
 async def _validate_workspace_live(db, tenant_id, dependency, *, user, runtime_request, active_receipts,
@@ -3054,7 +3020,7 @@ async def _validate_workspace_live(db, tenant_id, dependency, *, user, runtime_r
     if runtime_request is not None:
         if after and facts is not None and facts[9] is not None:
             principal, user = await _resolve_runtime_input_actor(db, tenant_id, runtime_request,
-                _workspace_facts=facts[9], _workspace_manifest=manifest)
+                _workspace_facts=facts[9])
         else:
             principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
         from app.services.project_context import project_source_read_allowed
@@ -3105,11 +3071,7 @@ async def _validate_workspace_live(db, tenant_id, dependency, *, user, runtime_r
         raise ContentInputReceiptError(
             "content_source_changed", "The current workspace bytes have no matching receipt.", 403
         )
-    from app.core.source_read_purpose import current_source_recipient
-    from app.services.project_context import _SOURCE_READER
-
-    _validate_source_bytes(Path(str(agent_id)) / path, latest.content_sha256,
-        workspace_version=(db.get_transaction(), user.id, principal, current_source_recipient(), _SOURCE_READER.get(), latest.id))
+    _validate_source_bytes(Path(str(agent_id)) / path, latest.content_sha256)
     return user
 
 
@@ -3206,7 +3168,10 @@ async def authorize_workspace_execution_inputs(request):
                 else:
                     receipts = {}
                 async with workspace_read_checkpoint(db, tenant_id):
+                    point = frame.workspace_read
+                    point.paths, point.omitted = {}, omitted
                     for path in sorted(paths):
+                        point.current_path = path
                         ref = workspace_artifact_ref(context.agent_id, path)
                         receipt = receipts.get(ref)
                         if ref in receipt_ids and (receipt is None or receipt.carrier_kind != "workspace_artifact"
@@ -3224,7 +3189,7 @@ async def authorize_workspace_execution_inputs(request):
                         reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
                             revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
                             dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
-        context.workspace_authority_scope = replace(scope, input_reads=tuple(reads),
+        context.workspace_authority_scope = replace(scope, input_reads=tuple(read for read in reads if read.path not in omitted),
             allowed_paths=scope.allowed_paths - omitted)
     except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
         code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"

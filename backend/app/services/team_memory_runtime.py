@@ -9,7 +9,7 @@ from sqlalchemy import or_, select
 from app.config import get_settings
 from app.memory.rendering import quote_memory_text
 from app.core.source_read_purpose import source_recipient_read
-from app.services.content_input_receipts import memory_read_session as tenant_scoped_session
+from app.database import tenant_scoped_session
 from app.models.agent_team import AgentTeam
 from app.models.chat_session import ChatSession
 from app.models.organization_identity import BusinessTeam, BusinessTeamMembership, ContentInputReceipt

@@ -22,80 +22,90 @@ from app.services.content_input_receipts import (
     group_source_read,
 )
 from app.services.session_model_inputs import _model_dependencies, _stored_dependencies
+from app.services.source_read_queries import (
+    RUNTIME_RESULT_FIELDS, SESSION_AUDIENCE_FIELDS, SESSION_ID_FIELDS, SESSION_SOURCE_FIELDS,
+)
 
 
 async def _canonical_checkpoint(db, tenant_id):
-    from app.services.content_input_receipts import checkpoint_values
+    from app.services.content_input_receipts import checkpoint_query
 
-    current = checkpoint_values(db, "canonical_delegation", binding=(tenant_id,))
-    if current is not None:
-        return current
-    from sqlalchemy import case, func, or_
-    from sqlalchemy.orm import aliased
-    from app.models.chat_session import ChatSession
-    from app.models.chat_transcript_event import ChatTranscriptEvent
-    from app.models.runtime_result import RuntimeResultObject
-    from app.services.content_input_receipts import checkpoint_rows, _preflight_inputs
-    from app.services.source_read_queries import fact_columns, source_uuid
+    async def read():
+        from sqlalchemy import case, func, or_, true
+        from sqlalchemy.orm import aliased
+        from app.models.chat_session import ChatSession
+        from app.models.chat_transcript_event import ChatTranscriptEvent
+        from app.models.runtime_result import RuntimeResultObject
+        from app.services.content_input_receipts import checkpoint_rows, _preflight_inputs
+        from app.services.source_read_queries import fact_columns, source_uuid
 
-    retained = _preflight_inputs(db)
-    runs = set()
-    for key, row in (retained or {}).items():
-        if isinstance(key, tuple) and key[0] is RuntimeResultObject and row is not None and row.source_kind == "a2a_delegation":
-            try:
-                runs.add(uuid.UUID(row.source_run_id))
-            except ValueError:
-                pass
-    if not runs:
-        return None
-    event, commit = aliased(ChatTranscriptEvent), aliased(ChatTranscriptEvent)
-    candidate = aliased(SessionModelResult)
-    latest = select(ChatTranscriptEvent.id).where(ChatTranscriptEvent.tenant_id == tenant_id,
-        ChatTranscriptEvent.agent_id == RuntimeTask.child_agent_id, ChatTranscriptEvent.session_id == ChatSession.id,
-        ChatTranscriptEvent.run_id == RuntimeTask.id,
-        or_(ChatTranscriptEvent.item_kind.is_(None), ChatTranscriptEvent.item_kind != "run")
-    ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1).correlate(RuntimeTask, ChatSession).scalar_subquery()
-    native_id = event.metadata_json["native_final_model_result_id"].astext
-    chosen = select(candidate.id).where(candidate.tenant_id == tenant_id, candidate.run_id == RuntimeTask.id,
-        candidate.session_id == event.session_id,
-        or_((native_id.is_(None) & (candidate.round_committed_event_id == event.id)),
-            (native_id.is_not(None) & (candidate.id == source_uuid(native_id))))
-    ).limit(1).correlate(RuntimeTask, event).scalar_subquery()
-    native = select(SessionModelResult.id).where(SessionModelResult.tenant_id == tenant_id,
-        SessionModelResult.run_id == RuntimeTask.id).correlate(RuntimeTask).exists()
-    event_fields = "id sequence tenant_id agent_id session_id run_id parent_event_id root_session_id parent_session_id " \
-        "message_id schema_version item_id item_kind lifecycle payload_schema ordinal command_id input_id result_id " \
-        "invocation_id provider_tool_use_id content_hash parent_item_id item_type item_status turn_id causation_id " \
-        "correlation_id actor_type event_type visibility_scope listed_surface scope_json content parts_json metadata_json"
-    known_models = {key[1] for key in retained if isinstance(key, tuple) and key[0] is SessionModelResult}
-    model_fields = fact_columns(SessionModelResult, "id tenant_id session_id run_id round_id turn_id provider_request_id "
-        "model_request_hash state seal_json round_committed_event_id")
-    model_fields = model_fields.op("||")(func.jsonb_build_object("model_request_snapshot_json", case((
-        SessionModelResult.id.not_in(known_models) & SessionModelResult.state.in_(("sealed", "round_committed")),
-        SessionModelResult.model_request_snapshot_json))))
-    statement = select(fact_columns(RuntimeTask, "id tenant_id task_type status parent_agent_id child_agent_id "
-        "child_agent_name parent_session_id child_session_id root_user_id root_session_id root_runtime_task_id "
-        "root_external_principal_id machine_credential_id prompt result_summary metadata_json trace_id depth "
-        "writer_generation config_snapshot_hash policy_snapshot_hash"),
-        fact_columns(ChatSession, "id tenant_id agent_id"), fact_columns(event, event_fields),
-        model_fields, fact_columns(commit, event_fields),
-        native, RuntimeTask.id).select_from(RuntimeTask).outerjoin(ChatSession,
-            (ChatSession.id == source_uuid(RuntimeTask.child_session_id)) & (ChatSession.tenant_id == tenant_id)
-            & (ChatSession.agent_id == RuntimeTask.child_agent_id)).outerjoin(event, event.id == latest).outerjoin(
-                SessionModelResult, SessionModelResult.id == chosen).outerjoin(commit,
-                    commit.id == SessionModelResult.round_committed_event_id).where(
-                        RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == "delegation", RuntimeTask.id.in_(runs))
-    vector = await checkpoint_rows(db, "canonical_delegation", statement, lambda row: row[6],
-        binding=(tenant_id,), entities={0: RuntimeTask, 1: ChatSession, 2: ChatTranscriptEvent,
-            3: SessionModelResult, 4: ChatTranscriptEvent})
-    if vector is not None:
-        for row in vector.values():
-            model = row[3]
-            if model is not None:
-                original = retained.get((SessionModelResult, model.id))
-                if original is not None:
-                    model.model_request_snapshot_json = original.model_request_snapshot_json
-    return vector
+        retained = _preflight_inputs(db)
+        runs = set()
+        for key, row in (retained or {}).items():
+            if isinstance(key, tuple) and key[0] is RuntimeResultObject and row is not None and row.source_kind == "a2a_delegation":
+                try:
+                    runs.add(uuid.UUID(row.source_run_id))
+                except ValueError:
+                    pass
+        if not runs:
+            return None
+        candidate = aliased(SessionModelResult)
+        latest = select(ChatTranscriptEvent.id).where(ChatTranscriptEvent.tenant_id == tenant_id,
+            ChatTranscriptEvent.agent_id == RuntimeTask.child_agent_id, ChatTranscriptEvent.session_id == ChatSession.id,
+            ChatTranscriptEvent.run_id == RuntimeTask.id,
+            or_(ChatTranscriptEvent.item_kind.is_(None), ChatTranscriptEvent.item_kind != "run")
+        ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1).correlate(RuntimeTask, ChatSession).scalar_subquery()
+        event_fields = "id sequence tenant_id agent_id session_id run_id parent_event_id root_session_id parent_session_id " \
+            "message_id schema_version item_id item_kind lifecycle payload_schema ordinal command_id input_id result_id " \
+            "invocation_id provider_tool_use_id content_hash parent_item_id item_type item_status turn_id causation_id " \
+            "correlation_id actor_type event_type visibility_scope listed_surface scope_json content parts_json metadata_json"
+        # Correlated one-id reads keep the live observation driven by selected runs.
+        # OFFSET 0 prevents flattening these lookups into tenant-wide hash joins.
+        event = aliased(ChatTranscriptEvent, select(*(getattr(ChatTranscriptEvent, name) for name in event_fields.split())).where(
+            ChatTranscriptEvent.id == latest).correlate(RuntimeTask, ChatSession).offset(0).lateral("selected_event"))
+        native_id = event.metadata_json["native_final_model_result_id"].astext
+        chosen = select(candidate.id).where(candidate.tenant_id == tenant_id, candidate.run_id == RuntimeTask.id,
+            candidate.session_id == event.session_id,
+            or_((native_id.is_(None) & (candidate.round_committed_event_id == event.id)),
+                (native_id.is_not(None) & (candidate.id == source_uuid(native_id))))
+        ).limit(1).correlate(RuntimeTask, event).scalar_subquery()
+        native = select(SessionModelResult.id).where(SessionModelResult.tenant_id == tenant_id,
+            SessionModelResult.run_id == RuntimeTask.id).correlate(RuntimeTask).exists()
+        known_models = {key[1] for key in retained if isinstance(key, tuple) and key[0] is SessionModelResult}
+        fields = "id tenant_id session_id run_id round_id turn_id provider_request_id " \
+            "model_request_hash state seal_json round_committed_event_id"
+        model = aliased(SessionModelResult, select(*(getattr(SessionModelResult, name)
+            for name in (fields + " model_request_snapshot_json").split())).where(
+                SessionModelResult.id == chosen).correlate(RuntimeTask, event).offset(0).lateral("selected_model"))
+        model_fields = fact_columns(model, fields)
+        model_fields = model_fields.op("||")(func.jsonb_build_object("model_request_snapshot_json", case((
+            model.id.not_in(known_models) & model.state.in_(("sealed", "round_committed")),
+            model.model_request_snapshot_json))))
+        commit = aliased(ChatTranscriptEvent, select(*(getattr(ChatTranscriptEvent, name) for name in event_fields.split())).where(
+            ChatTranscriptEvent.id == model.round_committed_event_id
+        ).correlate(model).offset(0).lateral("selected_commit"))
+        statement = select(fact_columns(RuntimeTask, RUNTIME_RESULT_FIELDS),
+            fact_columns(ChatSession, SESSION_ID_FIELDS), fact_columns(event, event_fields),
+            model_fields, fact_columns(commit, event_fields),
+            native, RuntimeTask.id).select_from(RuntimeTask).outerjoin(ChatSession,
+                (ChatSession.id == source_uuid(RuntimeTask.child_session_id)) & (ChatSession.tenant_id == tenant_id)
+                & (ChatSession.agent_id == RuntimeTask.child_agent_id)).outerjoin(event, true()).outerjoin(
+                    model, true()).outerjoin(commit,
+                        true()).where(
+                            RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == "delegation", RuntimeTask.id.in_(runs))
+        vector = await checkpoint_rows(db, "canonical_delegation", statement, lambda row: row[6],
+            binding=(tenant_id,), entities={0: RuntimeTask, 1: ChatSession, 2: ChatTranscriptEvent,
+                3: SessionModelResult, 4: ChatTranscriptEvent})
+        if vector is not None:
+            for row in vector.values():
+                model = row[3]
+                if model is not None:
+                    original = retained.get((SessionModelResult, model.id))
+                    if original is not None:
+                        model.model_request_snapshot_json = original.model_request_snapshot_json
+        return vector
+
+    return await checkpoint_query(db, 'canonical_delegation', read, binding=(tenant_id,))
 
 
 def _return_routes(db, kind):
@@ -124,102 +134,102 @@ async def _return_session_checkpoint(db, tenant_id, kind, user, request):
     from app.services.source_read_queries import source_reader_facts_statement, fact_columns
 
     reader = _source_reader_hint(user, request)
-    from app.services.content_input_receipts import checkpoint_values
+    from app.services.content_input_receipts import checkpoint_query
 
-    if reader is not None:
-        current = checkpoint_values(db, "return_session", binding=(tenant_id, reader.id, kind))
-        if current is not None:
-            return current
-    routes = _return_routes(db, kind)
-    if reader is None or getattr(reader, "id", None) is None or getattr(reader, "role", None) == "platform_admin" or not routes:
+    if reader is None:
         return None
-    statement = source_reader_facts_statement(reader, ChatSession.agent_id, source=ChatSession).add_columns(
-        fact_columns(ChatSession, "id tenant_id agent_id user_id audience_kind external_principal_id source_channel "
-            "group_installation_ref group_subject_id session_kind runtime_source runtime_task_id"), ChatSession.id
-    ).where(ChatSession.tenant_id == tenant_id, ChatSession.id.in_({session for _agent, session in routes}))
-    return await checkpoint_rows(db, "return_session", statement, lambda row: row[6],
-        binding=(tenant_id, reader.id, kind), entities={0: Agent, 5: ChatSession})
+    async def read():
+        routes = _return_routes(db, kind)
+        if reader is None or getattr(reader, "id", None) is None or getattr(reader, "role", None) == "platform_admin" or not routes:
+            return None
+        statement = source_reader_facts_statement(reader, ChatSession.agent_id, source=ChatSession).add_columns(
+            fact_columns(ChatSession, SESSION_SOURCE_FIELDS), ChatSession.id
+        ).where(ChatSession.tenant_id == tenant_id, ChatSession.id.in_({session for _agent, session in routes}))
+        return await checkpoint_rows(db, "return_session", statement, lambda row: row[6],
+            binding=(tenant_id, reader.id, kind), entities={0: Agent, 5: ChatSession})
+
+    return await checkpoint_query(db, "return_session", read, binding=(tenant_id, reader.id, kind))
 
 
 async def _publication_checkpoint(db, result, agent_id, session_id, user_id):
-    from app.services.content_input_receipts import checkpoint_values
+    from app.services.content_input_receipts import checkpoint_query
 
-    current = checkpoint_values(db, "return_publication", binding=(result.tenant_id, user_id))
-    if current is not None and (result.id, agent_id, session_id) in current:
-        return current
-    from sqlalchemy import column, values, func, String, cast
-    from sqlalchemy.dialects.postgresql import UUID
-    from app.models.runtime_result import RuntimeResultIntegrationPage, RuntimeResultObject
-    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
-    from app.services.content_input_receipts import checkpoint_source_ids, checkpoint_rows, _preflight_inputs
+    async def read():
+        from sqlalchemy import column, values, func, String, cast
+        from sqlalchemy.dialects.postgresql import UUID
+        from app.models.runtime_result import RuntimeResultIntegrationPage, RuntimeResultObject
+        from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+        from app.services.content_input_receipts import checkpoint_source_ids, checkpoint_rows, _preflight_inputs
 
-    retained = _preflight_inputs(db) or {}
-    bindings = set()
-    for raw in checkpoint_source_ids("runtime_result"):
-        try:
-            agent, session, identity = (uuid.UUID(part) for part in raw.split("\n"))
-            original = retained.get((RuntimeResultObject, identity))
-            if original is not None:
-                bindings.add((identity, agent, session, original.sha256))
-        except (ValueError, TypeError):
-            pass
-    if (result.id, agent_id, session_id, result.sha256) not in bindings:
-        return None
-    refs = values(column("result", UUID), column("agent", UUID), column("session", UUID), column("sha256", String),
-        name="result_routes").data(list(bindings))
-    ref = "runtime-result://" + cast(refs.c.result, String) + "/" + refs.c.sha256
-    outbox = select(RuntimeNotificationOutbox.id).where(RuntimeNotificationOutbox.tenant_id == result.tenant_id,
-        RuntimeNotificationOutbox.result_object_id == refs.c.result, RuntimeNotificationOutbox.result_ref == ref,
-        RuntimeNotificationOutbox.parent_agent_id == refs.c.agent, RuntimeNotificationOutbox.parent_session_id == refs.c.session,
-        RuntimeNotificationOutbox.parent_user_id == user_id).correlate(refs).exists()
-    page = select(RuntimeResultIntegrationPage.id).where(RuntimeResultIntegrationPage.tenant_id == result.tenant_id,
-        RuntimeResultIntegrationPage.parent_agent_id == refs.c.agent, RuntimeResultIntegrationPage.parent_session_id == refs.c.session,
-        RuntimeResultIntegrationPage.parent_user_id == user_id,
-        RuntimeResultIntegrationPage.manifest_json["items"].contains(func.jsonb_build_array(
-            func.jsonb_build_object("result_ref", ref)))).correlate(refs).exists()
-    return await checkpoint_rows(db, "return_publication", select(refs.c.result, refs.c.agent, refs.c.session, outbox | page),
-        lambda row: tuple(row[:3]), binding=(result.tenant_id, user_id))
+        retained = _preflight_inputs(db) or {}
+        bindings = set()
+        for raw in checkpoint_source_ids("runtime_result"):
+            try:
+                agent, session, identity = (uuid.UUID(part) for part in raw.split("\n"))
+                original = retained.get((RuntimeResultObject, identity))
+                if original is not None:
+                    bindings.add((identity, agent, session, original.sha256))
+            except (ValueError, TypeError):
+                pass
+        if (result.id, agent_id, session_id, result.sha256) not in bindings:
+            return None
+        refs = values(column("result", UUID), column("agent", UUID), column("session", UUID), column("sha256", String),
+            name="result_routes").data(list(bindings))
+        ref = "runtime-result://" + cast(refs.c.result, String) + "/" + refs.c.sha256
+        outbox = select(RuntimeNotificationOutbox.id).where(RuntimeNotificationOutbox.tenant_id == result.tenant_id,
+            RuntimeNotificationOutbox.result_object_id == refs.c.result, RuntimeNotificationOutbox.result_ref == ref,
+            RuntimeNotificationOutbox.parent_agent_id == refs.c.agent, RuntimeNotificationOutbox.parent_session_id == refs.c.session,
+            RuntimeNotificationOutbox.parent_user_id == user_id).correlate(refs).exists()
+        page = select(RuntimeResultIntegrationPage.id).where(RuntimeResultIntegrationPage.tenant_id == result.tenant_id,
+            RuntimeResultIntegrationPage.parent_agent_id == refs.c.agent, RuntimeResultIntegrationPage.parent_session_id == refs.c.session,
+            RuntimeResultIntegrationPage.parent_user_id == user_id,
+            RuntimeResultIntegrationPage.manifest_json["items"].contains(func.jsonb_build_array(
+                func.jsonb_build_object("result_ref", ref)))).correlate(refs).exists()
+        return await checkpoint_rows(db, "return_publication", select(refs.c.result, refs.c.agent, refs.c.session, outbox | page),
+            lambda row: tuple(row[:3]), binding=(result.tenant_id, user_id))
+
+    return await checkpoint_query(db, "return_publication", read, binding=(result.tenant_id, user_id), accept=lambda rows: (result.id, agent_id, session_id) in rows)
 
 
 async def _result_work_checkpoint(db, task, requester):
-    from app.services.content_input_receipts import checkpoint_values
+    from app.services.content_input_receipts import checkpoint_query
 
-    current = checkpoint_values(db, "result_work", binding=(task.tenant_id, requester.id))
-    if current is not None:
-        return current
-    from sqlalchemy import cast, column, values
-    from sqlalchemy.dialects.postgresql import UUID
-    from app.models.chat_session import ChatSession
-    from app.services.content_input_receipts import checkpoint_rows
-    from app.services.source_read_queries import fact_columns
+    async def read():
+        from sqlalchemy import cast, column, values
+        from sqlalchemy.dialects.postgresql import UUID
+        from app.models.chat_session import ChatSession
+        from app.services.content_input_receipts import checkpoint_rows
+        from app.services.source_read_queries import fact_columns
 
-    canonical = await _canonical_checkpoint(db, task.tenant_id)
-    if canonical is None or task.id not in canonical:
-        return None
-    bindings = []
-    for row in canonical.values():
-        source = row[0]
-        try:
-            bindings.append((source.id, source.child_agent_id, source.parent_agent_id,
-                uuid.UUID(source.parent_session_id), source.root_user_id))
-        except (ValueError, TypeError):
-            pass
-    refs = values(column("task", UUID), column("child", UUID), column("parent", UUID),
-        column("session", UUID), column("user", UUID), name="delegation_returns").data(bindings)
-    draft_id = select(HrCreationDraft.id).where(HrCreationDraft.tenant_id == task.tenant_id,
-        HrCreationDraft.created_agent_id == refs.c.child, HrCreationDraft.hr_agent_id == refs.c.parent,
-        HrCreationDraft.session_id == refs.c.session, HrCreationDraft.requested_by_user_id == cast(refs.c.user, UUID)
-    ).limit(1).correlate(refs).scalar_subquery()
-    # Read exactly the creation plan and authorization fields used below.
-    statement = select(refs.c.task, fact_columns(HrCreationDraft,
-        "id tenant_id hr_agent_id session_id requested_by_user_id status blueprint_version blueprint_hash "
-        "blueprint_json preview_json confirmed_by_user_id confirmed_at provisioning_task_id created_agent_id"),
-        fact_columns(Agent, "id tenant_id owner_user_id deleted_at deactivated_at"),
-        fact_columns(ChatSession, "id tenant_id agent_id user_id audience_kind")).select_from(refs).outerjoin(
-            HrCreationDraft, HrCreationDraft.id == draft_id).outerjoin(Agent, Agent.id == refs.c.child).outerjoin(
-                ChatSession, ChatSession.id == refs.c.session)
-    return await checkpoint_rows(db, "result_work", statement, lambda row: row[0],
-        binding=(task.tenant_id, requester.id), entities={1: HrCreationDraft, 2: Agent, 3: ChatSession})
+        canonical = await _canonical_checkpoint(db, task.tenant_id)
+        if canonical is None or task.id not in canonical:
+            return None
+        bindings = []
+        for row in canonical.values():
+            source = row[0]
+            try:
+                bindings.append((source.id, source.child_agent_id, source.parent_agent_id,
+                    uuid.UUID(source.parent_session_id), source.root_user_id))
+            except (ValueError, TypeError):
+                pass
+        refs = values(column("task", UUID), column("child", UUID), column("parent", UUID),
+            column("session", UUID), column("user", UUID), name="delegation_returns").data(bindings)
+        draft_id = select(HrCreationDraft.id).where(HrCreationDraft.tenant_id == task.tenant_id,
+            HrCreationDraft.created_agent_id == refs.c.child, HrCreationDraft.hr_agent_id == refs.c.parent,
+            HrCreationDraft.session_id == refs.c.session, HrCreationDraft.requested_by_user_id == cast(refs.c.user, UUID)
+        ).limit(1).correlate(refs).scalar_subquery()
+        # Read exactly the creation plan and authorization fields used below.
+        statement = select(refs.c.task, fact_columns(HrCreationDraft,
+            "id tenant_id hr_agent_id session_id requested_by_user_id status blueprint_version blueprint_hash "
+            "blueprint_json preview_json confirmed_by_user_id confirmed_at provisioning_task_id created_agent_id"),
+            fact_columns(Agent, "id tenant_id owner_user_id deleted_at deactivated_at"),
+            fact_columns(ChatSession, SESSION_AUDIENCE_FIELDS)).select_from(refs).outerjoin(
+                HrCreationDraft, HrCreationDraft.id == draft_id).outerjoin(Agent, Agent.id == refs.c.child).outerjoin(
+                    ChatSession, ChatSession.id == refs.c.session)
+        return await checkpoint_rows(db, "result_work", statement, lambda row: row[0],
+            binding=(task.tenant_id, requester.id), entities={1: HrCreationDraft, 2: Agent, 3: ChatSession})
+
+    return await checkpoint_query(db, 'result_work', read, binding=(task.tenant_id, requester.id))
 
 
 async def _published_owned_delegation_input(

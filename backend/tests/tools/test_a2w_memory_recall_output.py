@@ -1,14 +1,23 @@
 """Discarded recall bodies still contribute typed availability output."""
 
 import uuid
+from contextlib import asynccontextmanager
 
 from app.tools.runtime import ToolExecutionContext
 
 
 async def test_formal_search_keeps_discarded_legacy_and_session_availability(monkeypatch, tmp_path):
+    from app import database
     from app.memory import plane_read
     from app.services import team_memory_runtime
     from app.tools.handlers import memory
+
+    @asynccontextmanager
+    async def no_database(*_args, **_kwargs):
+        raise AssertionError("This rendered-output unit test has no database dependency")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(database, "tenant_scoped_session", no_database)
 
     async def no_entries(*_args, **_kwargs):
         return []

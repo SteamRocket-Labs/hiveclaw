@@ -15,6 +15,23 @@ from app.models.tenant import Tenant
 from app.models.user import User
 
 
+# Wider projections extend the fields shared by the same source checks.
+SESSION_ID_FIELDS = "id tenant_id agent_id"
+SESSION_AUDIENCE_FIELDS = SESSION_ID_FIELDS + " user_id audience_kind"
+SESSION_SOURCE_FIELDS = SESSION_AUDIENCE_FIELDS + (
+    " external_principal_id source_channel group_installation_ref group_subject_id session_kind runtime_source runtime_task_id")
+SESSION_ACTOR_FIELDS = SESSION_SOURCE_FIELDS.replace("user_id ", "user_id peer_agent_id ", 1)
+SESSION_ROOT_FIELDS = SESSION_ACTOR_FIELDS + " root_session_id"
+USER_READER_FIELDS = "id tenant_id role department_id is_active username display_name"
+RUNTIME_ACTOR_FIELDS = ("id tenant_id machine_credential_id root_external_principal_id root_user_id "
+    "parent_agent_id parent_session_id")
+RUNTIME_DIRECTORY_FIELDS = ("id tenant_id root_user_id parent_agent_id child_agent_id parent_session_id child_session_id")
+RUNTIME_RESULT_FIELDS = ("id tenant_id task_type status parent_agent_id child_agent_id child_agent_name "
+    "parent_session_id child_session_id root_user_id root_session_id root_runtime_task_id root_external_principal_id "
+    "machine_credential_id prompt result_summary metadata_json trace_id depth writer_generation "
+    "config_snapshot_hash policy_snapshot_hash")
+
+
 def _json_rows(model, fields, *where):
     return select(func.jsonb_agg(func.jsonb_build_object(
         *[value for field in fields for value in (field, getattr(model, field))]

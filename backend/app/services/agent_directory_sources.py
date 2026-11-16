@@ -10,6 +10,10 @@ from sqlalchemy import select
 from app.models.invocation_span import InvocationSpan
 from app.services.config_versioning import canonical_content_hash as digest
 
+from app.services.source_read_queries import (
+    RUNTIME_DIRECTORY_FIELDS, SESSION_SOURCE_FIELDS, USER_READER_FIELDS,
+)
+
 KIND = "agent_directory_observation"
 SCHEMA = "hive.agent_directory_observation.v1"
 EXTERNAL_SCHEMA = "hive.agent_directory_observation.external.v1"
@@ -117,44 +121,43 @@ async def _scope(db, *, tenant_id, agent_id, session_id, user_id, run_id, extern
 
 
 async def _directory_scope_facts(db, tenant_id):
-    from app.services.content_input_receipts import checkpoint_values
+    from app.services.content_input_receipts import checkpoint_query
 
-    current = checkpoint_values(db, "directory_scope", binding=(tenant_id,))
-    if current is not None:
-        return current
-    from types import SimpleNamespace
-    from sqlalchemy import column, values
-    from sqlalchemy.dialects.postgresql import UUID
-    from app.models.agent import Agent
-    from app.models.chat_session import ChatSession
-    from app.models.runtime_task import RuntimeTask
-    from app.models.user import User
-    from app.services.content_input_receipts import checkpoint_source_uuids, checkpoint_rows, _preflight_inputs
-    from app.services.source_read_queries import source_reader_facts_statement, fact_columns
+    async def read():
+        from types import SimpleNamespace
+        from sqlalchemy import column, values
+        from sqlalchemy.dialects.postgresql import UUID
+        from app.models.agent import Agent
+        from app.models.chat_session import ChatSession
+        from app.models.runtime_task import RuntimeTask
+        from app.models.user import User
+        from app.services.content_input_receipts import checkpoint_source_uuids, checkpoint_rows, _preflight_inputs
+        from app.services.source_read_queries import source_reader_facts_statement, fact_columns
 
-    retained, bindings = _preflight_inputs(db), []
-    for identity in checkpoint_source_uuids(KIND):
-        row = retained.get((InvocationSpan, identity))
-        if row is not None and row.user_id is not None:
-            try:
-                bindings.append((row.agent_id, uuid.UUID(row.session_id), row.runtime_task_id, row.user_id))
-            except (ValueError, TypeError):
-                pass
-    if not bindings:
-        return None
-    refs = values(column("agent", UUID), column("session", UUID), column("run", UUID),
-        column("reader", UUID), name="directory_sources").data(list(set(bindings)))
-    statement = source_reader_facts_statement(SimpleNamespace(id=refs.c.reader), refs.c.agent, source=refs)
-    statement = statement.add_columns(
-        fact_columns(User, "id tenant_id role department_id is_active username display_name"),
-        fact_columns(ChatSession, "id tenant_id agent_id user_id audience_kind external_principal_id source_channel "
-            "group_installation_ref group_subject_id session_kind runtime_source runtime_task_id"),
-        fact_columns(RuntimeTask, "id tenant_id root_user_id parent_agent_id child_agent_id parent_session_id child_session_id"),
-        refs.c.agent, refs.c.session, refs.c.run, refs.c.reader).outerjoin(User, User.id == refs.c.reader).outerjoin(
-            ChatSession, ChatSession.id == refs.c.session).outerjoin(RuntimeTask,
-                (RuntimeTask.id == refs.c.run) & (RuntimeTask.tenant_id == tenant_id))
-    return await checkpoint_rows(db, "directory_scope", statement, lambda row: tuple(row[8:12]),
-        binding=(tenant_id,), entities={0: Agent, 5: User, 6: ChatSession, 7: RuntimeTask})
+        retained, bindings = _preflight_inputs(db), []
+        for identity in checkpoint_source_uuids(KIND):
+            row = retained.get((InvocationSpan, identity))
+            if row is not None and row.user_id is not None:
+                try:
+                    bindings.append((row.agent_id, uuid.UUID(row.session_id), row.runtime_task_id, row.user_id))
+                except (ValueError, TypeError):
+                    pass
+        if not bindings:
+            return None
+        refs = values(column("agent", UUID), column("session", UUID), column("run", UUID),
+            column("reader", UUID), name="directory_sources").data(list(set(bindings)))
+        statement = source_reader_facts_statement(SimpleNamespace(id=refs.c.reader), refs.c.agent, source=refs)
+        statement = statement.add_columns(
+            fact_columns(User, USER_READER_FIELDS),
+            fact_columns(ChatSession, SESSION_SOURCE_FIELDS),
+            fact_columns(RuntimeTask, RUNTIME_DIRECTORY_FIELDS),
+            refs.c.agent, refs.c.session, refs.c.run, refs.c.reader).outerjoin(User, User.id == refs.c.reader).outerjoin(
+                ChatSession, ChatSession.id == refs.c.session).outerjoin(RuntimeTask,
+                    (RuntimeTask.id == refs.c.run) & (RuntimeTask.tenant_id == tenant_id))
+        return await checkpoint_rows(db, "directory_scope", statement, lambda row: tuple(row[8:12]),
+            binding=(tenant_id,), entities={0: Agent, 5: User, 6: ChatSession, 7: RuntimeTask})
+
+    return await checkpoint_query(db, 'directory_scope', read, binding=(tenant_id,))
 
 
 def _inventory(directory):
@@ -301,12 +304,13 @@ async def _render_observed(db, row, proof):
         if retained is not None and (InvocationSpan, identity) in retained}
     from app.models.agent import Agent
 
-    from app.services.content_input_receipts import checkpoint_values
+    from app.services.content_input_receipts import checkpoint_query
 
-    vector = checkpoint_values(db, "directory_roster")
-    if vector is None and agent_ids:
-        vector = await checkpoint_rows(db, "directory_roster", collaboration_read_statement(agent_ids),
-            lambda value: uuid.UUID(value[0]["id"]), entities={0: Agent})
+    async def read_roster():
+        return await checkpoint_rows(db, "directory_roster", collaboration_read_statement(agent_ids),
+            lambda value: uuid.UUID(value[0]["id"]), entities={0: Agent}) if agent_ids else None
+
+    vector = await checkpoint_query(db, "directory_roster", read_roster)
     current = collaboration_read_model(vector[row.agent_id]) if vector is not None and row.agent_id in vector else await build_a2a_collaboration_read_model(db, row.agent_id)
     lookup = {section: {item[key]: item for item in current[section]} for section, key in SECTIONS.items()}
     observed = proof["directory"]

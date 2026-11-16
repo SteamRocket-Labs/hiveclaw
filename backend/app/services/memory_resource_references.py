@@ -16,6 +16,10 @@ from app.models.invocation_span import InvocationSpan
 from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor
 from app.services.session_model_inputs import _hash
 
+from app.services.source_read_queries import (
+    USER_READER_FIELDS,
+)
+
 SOURCE_KIND = "memory_resource_reference"
 _FILES = ("manifest.json", "summary.md", "labels.md", "synthesis.md", "review.md")
 _SCHEMA = "hive.memory_resource_reference.v1"
@@ -151,39 +155,40 @@ async def validate_reference(db, tenant_id, dependency, *, user=None, runtime_re
 
 
 async def _reference_checkpoint_facts(db, tenant_id, user, current_session):
-    from app.services.content_input_receipts import checkpoint_values
+    from app.services.content_input_receipts import checkpoint_query
 
-    if user is not None:
-        current = checkpoint_values(db, "memory_reference", binding=(tenant_id, user.id, current_session))
-        if current is not None:
-            return current
-    from sqlalchemy import column, values
-    from sqlalchemy.dialects.postgresql import UUID
-    from app.models.agent import Agent
-    from app.models.user import User
-    from app.services.content_input_receipts import checkpoint_source_uuids, checkpoint_rows, _preflight_inputs
-    from app.services.source_read_queries import source_reader_facts_statement, fact_columns, _json_rows
+    if user is None:
+        return None
+    async def read():
+        from sqlalchemy import column, values
+        from sqlalchemy.dialects.postgresql import UUID
+        from app.models.agent import Agent
+        from app.models.user import User
+        from app.services.content_input_receipts import checkpoint_source_uuids, checkpoint_rows, _preflight_inputs
+        from app.services.source_read_queries import source_reader_facts_statement, fact_columns, _json_rows
 
-    if user is None or getattr(user, "id", None) is None or getattr(user, "role", None) == "platform_admin":
-        return None
-    retained, bindings = _preflight_inputs(db), []
-    for identity in checkpoint_source_uuids(SOURCE_KIND):
-        row = retained.get((InvocationSpan, identity))
-        proof = (row.metadata_json or {}).get(SOURCE_KIND) if row is not None else None
-        try:
-            bindings.append((identity, uuid.UUID(proof["agent_id"]), uuid.UUID(proof["session_id"]),
-                uuid.UUID(proof["source_session_id"])))
-        except (TypeError, KeyError, ValueError):
-            pass
-    if not bindings:
-        return None
-    refs = values(column("id", UUID), column("agent", UUID), column("work", UUID), column("origin", UUID),
-        name="memory_references").data(bindings)
-    session_ids = [refs.c.work, refs.c.origin, *([current_session] if current_session is not None else [])]
-    statement = source_reader_facts_statement(user, refs.c.agent, source=refs).add_columns(
-        fact_columns(User, "id tenant_id role department_id is_active username display_name"),
-        _json_rows(ChatSession, ("id", "audience_kind"), ChatSession.id.in_(session_ids),
-            ChatSession.tenant_id == tenant_id, ChatSession.agent_id == refs.c.agent, ChatSession.user_id == user.id),
-        refs.c.id).outerjoin(User, User.id == user.id)
-    return await checkpoint_rows(db, "memory_reference", statement, lambda row: row[7],
-        binding=(tenant_id, user.id, current_session), entities={0: Agent, 5: User})
+        if user is None or getattr(user, "id", None) is None or getattr(user, "role", None) == "platform_admin":
+            return None
+        retained, bindings = _preflight_inputs(db), []
+        for identity in checkpoint_source_uuids(SOURCE_KIND):
+            row = retained.get((InvocationSpan, identity))
+            proof = (row.metadata_json or {}).get(SOURCE_KIND) if row is not None else None
+            try:
+                bindings.append((identity, uuid.UUID(proof["agent_id"]), uuid.UUID(proof["session_id"]),
+                    uuid.UUID(proof["source_session_id"])))
+            except (TypeError, KeyError, ValueError):
+                pass
+        if not bindings:
+            return None
+        refs = values(column("id", UUID), column("agent", UUID), column("work", UUID), column("origin", UUID),
+            name="memory_references").data(bindings)
+        session_ids = [refs.c.work, refs.c.origin, *([current_session] if current_session is not None else [])]
+        statement = source_reader_facts_statement(user, refs.c.agent, source=refs).add_columns(
+            fact_columns(User, USER_READER_FIELDS),
+            _json_rows(ChatSession, ("id", "audience_kind"), ChatSession.id.in_(session_ids),
+                ChatSession.tenant_id == tenant_id, ChatSession.agent_id == refs.c.agent, ChatSession.user_id == user.id),
+            refs.c.id).outerjoin(User, User.id == user.id)
+        return await checkpoint_rows(db, "memory_reference", statement, lambda row: row[7],
+            binding=(tenant_id, user.id, current_session), entities={0: Agent, 5: User})
+
+    return await checkpoint_query(db, 'memory_reference', read, binding=(tenant_id, user.id, current_session))

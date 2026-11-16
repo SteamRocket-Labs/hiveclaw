@@ -110,27 +110,27 @@ export function ArtifactPreviewPanel({
   const fileIdentity = `${workspaceAgentId}:${preview.artifact.path}:${workspaceAuthority?.operatorView ? workspaceAuthority.reason : 'owner'}`;
   const [openedFile, setOpenedFile] = useState<string | null>(null);
   const [showCurrent, setShowCurrent] = useState(false);
-  const [minimizedPreview, setMinimizedPreview] = useState<ArtifactPreviewState | null>(null);
-  const minimized = minimizedPreview === preview;
   const currentFileOpen = openedFile === fileIdentity && showCurrent;
   const canOpenCurrent = workspaceAgentId && preview.artifact.path.startsWith('workspace/') && ['markdown', 'text', 'office'].includes(previewKind);
   const [editor, setEditor] = useState<{ identity: string; version: string; state: FileEditorState } | null>(null);
   const keepDraft = editor?.identity === fileIdentity && (editor.state.dirty || editor.state.busy || editor.state.unavailable);
   const finishedRuns = new Set(messages.filter(message => message.sessionItem?.kind === 'run' && message.sessionItem.terminal)
     .map(agentChatMessageRunId));
-  const currentRevision = messages.filter(message => finishedRuns.has(agentChatMessageRunId(message))
+  const currentRevision = messages.filter(message => message.eventStatus === 'success' && finishedRuns.has(agentChatMessageRunId(message))
     && message.artifacts?.some(artifact => artifact.source === 'workspace_write' && artifact.path === preview.artifact.path
       && artifactWorkspaceAgentId(artifact, agentId) === workspaceAgentId)).at(-1)?.id;
-  const editorIdentity = keepDraft ? editor.version : `${fileIdentity}:${preview.artifact.id}:${preview.artifact.snapshotHash}:${currentRevision || ''}`;
-  const previousEditor = useRef({ preview, editorIdentity });
-  useEffect(() => {
-    if (previousEditor.current.preview === preview && previousEditor.current.editorIdentity !== editorIdentity && currentRevision) {
-      setMinimizedPreview(preview);
-    }
-    previousEditor.current = { preview, editorIdentity };
-  }, [preview, editorIdentity, currentRevision]);
+  const editorIdentity = keepDraft ? editor.version : `${fileIdentity}:${preview.artifact.id}:${preview.artifact.snapshotHash}`;
   const editorChanged = useCallback((state: FileEditorState) => setEditor({ identity: fileIdentity, version: editorIdentity, state }), [fileIdentity, editorIdentity]);
   const currentEditor = editor?.identity === fileIdentity && editor.version === editorIdentity ? editor.state : null;
+  const observedRevision = useRef({ preview, revision: currentRevision });
+  useEffect(() => {
+    if (observedRevision.current.preview !== preview) {
+      observedRevision.current = { preview, revision: currentRevision };
+    } else if (currentRevision && observedRevision.current.revision !== currentRevision && !currentEditor?.dirty && !currentEditor?.busy) {
+      observedRevision.current = { preview, revision: currentRevision };
+      onClose();
+    }
+  }, [preview, currentRevision, currentEditor?.dirty, currentEditor?.busy, onClose]);
   const continuationBlocked = Boolean(currentEditor && (currentEditor.dirty || currentEditor.busy || currentEditor.unavailable));
   const showPendingEmptyPreview = isPendingEmptyArtifactPreview(
     preview.artifact,
@@ -157,10 +157,6 @@ export function ArtifactPreviewPanel({
     </div>
   );
   return (
-    <>
-    {minimized && <button type="button" className="btn btn-secondary btn-sm" onClick={() => setMinimizedPreview(null)}>
-      {t('agent.chat.artifacts.viewCurrentFile', 'View current file')}
-    </button>}
     <div
       data-testid="session-artifact-preview-inspector"
       role="complementary"
@@ -172,7 +168,7 @@ export function ArtifactPreviewPanel({
         right: '16px',
         bottom: '112px',
         width: 'min(680px, calc(100vw - 32px))',
-        display: minimized ? 'none' : 'flex',
+        display: 'flex',
         pointerEvents: 'none',
       }}
     >
@@ -344,7 +340,6 @@ export function ArtifactPreviewPanel({
         )}
       </section>
     </div>
-    </>
   );
 }
 

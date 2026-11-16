@@ -2812,7 +2812,6 @@
         "openInNewTab": "新窗口打开",
         "previewFailed": "预览失败",
         "openCurrentFile": "打开当前文件",
-        "viewCurrentFile": "查看当前文件",
         "continueLabel": "围绕此文件继续",
         "continueSaved": "在原对话中使用已保存的文件，交付的版本保持不变。",
         "saveBeforeContinue": "请先保存或解决当前修改，再基于已保存文件继续。",

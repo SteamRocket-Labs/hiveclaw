@@ -2812,7 +2812,6 @@
         "openInNewTab": "Open in new tab",
         "previewFailed": "Preview failed",
         "openCurrentFile": "Open current file",
-        "viewCurrentFile": "View current file",
         "continueLabel": "Continue with this file",
         "continueSaved": "Uses the saved workspace file in this work. The delivery preview stays unchanged.",
         "saveBeforeContinue": "Save or resolve your current edits before continuing with the saved file.",

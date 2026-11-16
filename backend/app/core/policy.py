@@ -139,12 +139,19 @@ async def check_permission(
     action: str,
     context: dict | None = None,
     additional_principals: list[tuple[str, uuid.UUID]] | None = None,
+    _permissions=None,
 ) -> bool:
     """Check if a principal has permission to perform an action on a resource.
 
     Evaluates live matching allow/deny rows; any applicable deny wins.
     Returns True if allowed, False if denied or absent.
+    Internal _permissions rows must already be filtered to this tenant,
+    resource type and resource id, and read at the caller's current checkpoint.
     """
+    if _permissions is not None:
+        return classify_loaded_permissions(_permissions,
+            principals=[(principal_type, principal_id), *(additional_principals or [])],
+            action=action, context=context) == "allow"
     return await classify_permission(
         db,
         principal_type=principal_type,

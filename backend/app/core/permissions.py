@@ -462,10 +462,6 @@ async def _agent_access_for_loaded(db, user, agent, *, facts=None) -> Tuple[Agen
     context = {"tenant_id": str(agent.tenant_id)} if agent.tenant_id else None
 
     async def _allowed(principals: list[tuple[str, uuid.UUID]], action: str) -> bool:
-        if facts is not None:
-            from app.core.policy import classify_loaded_permissions
-
-            return classify_loaded_permissions(facts[2], principals=principals, action=action, context=context) == "allow"
         primary, *additional = principals
         try:
             return await check_permission(
@@ -477,8 +473,11 @@ async def _agent_access_for_loaded(db, user, agent, *, facts=None) -> Tuple[Agen
                 resource_id=agent_id,
                 action=action,
                 context=context,
+                **({"_permissions": facts[2]} if facts is not None else {}),
             )
-        except Exception:
+        except Exception as exc:
+            if facts is not None:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent") from exc
             return False
 
     async def _execute_decision() -> str:

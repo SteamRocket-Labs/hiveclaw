@@ -616,7 +616,8 @@ async def test_run20_source_paths(source_graph, owner_sessionmaker, app_user_ses
         assert 1 in counts, "Run both graph scales to verify constant statement work."
         print("A2W_SCALING", json.dumps({"volume": volume, "counts": counts}), flush=True)
     for row in measurements:
-        bound = 5 if row["path"] == "read_runtime_result_524" else 3
+        # R7: memory retains base's three per-node passes (admission, selection, record), restored for security in R6/R7.
+        bound = 5 if row["path"] in {"read_runtime_result_524", "search_memory_8_entries"} else 3
         constant = constants.get(row["path"])
         value = {key: row[key] for key in ("path", "statements", "seconds")}
         value.update(scale=scale, volume=volume, live_checkpoints=budgets[row["path"]], C=40, time_bound=bound,

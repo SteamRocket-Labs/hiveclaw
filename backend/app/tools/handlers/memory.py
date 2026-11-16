@@ -988,7 +988,7 @@ def _memory_availability(content, issues):
 async def _load_scoped_memory(agent_id, arguments, execution_context):
     from app.services.content_input_receipts import group_source_read
 
-    with group_source_read(batch_inputs=True, source_catalog=True):
+    with group_source_read(source_catalog=True):
         return await _read_scoped_memory(agent_id, arguments, execution_context)
 
 
@@ -1116,8 +1116,8 @@ async def search_memory(
     from app.services.content_input_receipts import group_source_read
 
     # Share retained evidence across this tool's independent authorizations.
-    # The outer frame holds no live checkpoint or successful-source decisions.
-    with group_source_read(batch_inputs=True, source_catalog=True):
+    # Unbatched steps retain their own live reads and successful-source decisions.
+    with group_source_read(source_catalog=True):
         return await _search_memory(agent_id, arguments, tenant_id, execution_context=execution_context)
 
 

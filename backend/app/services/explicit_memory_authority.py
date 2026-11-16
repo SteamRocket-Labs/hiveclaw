@@ -30,7 +30,7 @@ from app.services.session_model_inputs import model_output_dependencies
 from app.services.session_tool_runtime import _sha256
 
 from app.services.source_read_queries import (
-    SESSION_SOURCE_FIELDS, USER_READER_FIELDS,
+    AGENT_READER_EXTRA_FIELDS, SESSION_SOURCE_FIELDS, USER_READER_FIELDS,
 )
 
 AUTHORITY_SCHEMA = "hive.explicit_memory_authority.v1"
@@ -181,7 +181,7 @@ async def latest_memory_receipt(db, tenant_id, agent_id, entry_id):
                 return vector[memory_ref(agent_id, entry_id)][0]
     rows = _preflight_inputs(db, authority=True)
     key = ("latest", "explicit_memory", memory_ref(agent_id, entry_id))
-    # Like the reader frame, latest is a preflight snapshot; the next call sees revocations.
+    # Only the non-catalogue fallback below uses the legacy preflight snapshot.
     if rows is not None and key in rows:
         return rows[key]
     return await db.scalar(select(ContentInputReceipt).where(
@@ -439,7 +439,10 @@ async def authorize_memory_history(db, *, tenant_id, agent_id, entry_id, request
         active_workspace_receipts=active_receipts | {receipt.id})
 
     async def after():
-        with source_read_checkpoint(phase="memory_audience_after"):
+        from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
+
+        scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+        with source_read_checkpoint(phase=(scope.checkpoint[1] if scope is not None else None, "memory_audience_after")):
             await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
         latest = await latest_memory_receipt(db, tenant_id, agent_id, entry_id)
         if (latest is None or latest.authority_json.get("state") == "revoked"
@@ -494,7 +497,7 @@ async def _browser_memory_checkpoint(db, tenant_id, user, *, before=None, single
     if before is None:
         agent_binding = source_uuid(func.split_part(ContentInputReceipt.carrier_ref, "\n", 1))
         statement = source_reader_facts_statement(user, agent_binding, source=ContentInputReceipt,
-            agent_fields="deactivation_reason name role_description status agent_class agent_type created_at" if single is not None else "").add_columns(
+            agent_fields=AGENT_READER_EXTRA_FIELDS if single is not None else "").add_columns(
             fact_columns(ContentInputReceipt, "id tenant_id carrier_kind carrier_ref revision content_sha256 "
                 "authority_json dependencies_json"),
             fact_columns(User, USER_READER_FIELDS),
@@ -521,7 +524,7 @@ async def _browser_memory_checkpoint(db, tenant_id, user, *, before=None, single
         ).order_by(ContentInputReceipt.revision.desc()).limit(1).correlate(refs).scalar_subquery()
     source = outerjoin(refs, ChatSession, ChatSession.id == refs.c.session)
     statement = source_reader_facts_statement(user, ChatSession.agent_id, source=source,
-        agent_fields="deactivation_reason name role_description status agent_class agent_type created_at" if single is not None else "").add_columns(
+        agent_fields=AGENT_READER_EXTRA_FIELDS if single is not None else "").add_columns(
         fact_columns(User, USER_READER_FIELDS),
         fact_columns(ChatSession, SESSION_SOURCE_FIELDS),
         fact_columns(current, "id authority_json"), refs.c.id).outerjoin(User, User.id == user.id).outerjoin(

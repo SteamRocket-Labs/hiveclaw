@@ -18,7 +18,7 @@ from app.services.team_memory import _safe_component, _slugify
 from app.core.permissions import agent_access_from_facts
 
 from app.services.source_read_queries import (
-    RUNTIME_ACTOR_FIELDS, SESSION_ACTOR_FIELDS, SESSION_SOURCE_FIELDS, USER_READER_FIELDS,
+    AGENT_READER_EXTRA_FIELDS, RUNTIME_ACTOR_FIELDS, SESSION_ACTOR_FIELDS, SESSION_SOURCE_FIELDS, USER_READER_FIELDS,
 )
 
 _ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
@@ -1170,7 +1170,11 @@ async def _validate_input_dependency_batch(
         and len(scope.visiting) == 1 and not scope.revisiting):
         # A one-root walk ends inside its original judge. Changes committed by
         # its caller afterwards belong to the next independent checkpoint.
-        await _recheck_workspace_checkpoint(point)
+        try:
+            await _recheck_workspace_checkpoint(point)
+        except BaseException:
+            scope.verified = {key: value for key, value in scope.verified.items() if key in point.verified}
+            raise
         point.observed.clear()
 
 
@@ -2403,18 +2407,23 @@ async def _runtime_input_actor(db, tenant_id, request):
     from app.core.source_read_purpose import current_source_recipient
 
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is not None and scope.active and scope.source_catalog:
+    if (scope is not None and scope.active and scope.source_catalog
+        and not (scope.batch_inputs and scope.cache_authority)):
         # Each calling source kind/phase owns its current actor observation.
         # Nodes at that checkpoint share rows, never a different checkpoint.
         with source_read_checkpoint(kind="runtime_actor", phase=scope.checkpoint):
             return await _resolve_runtime_input_actor(db, tenant_id, request)
-    if scope is None or not scope.active or not scope.batch_inputs or not scope.cache_authority or scope.source_catalog:
+    if scope is None or not scope.active or not scope.batch_inputs or not scope.cache_authority:
         return await _resolve_runtime_input_actor(db, tenant_id, request)
     key = (db.get_transaction(), tenant_id, id(request), current_source_recipient())
     if key in scope.actors:
         return scope.actors[key][1]
     # One preflight uses a point-in-time reader frame; the next preflight resolves it afresh.
-    actor = await _resolve_runtime_input_actor(db, tenant_id, request)
+    if scope.source_catalog:
+        with source_read_checkpoint(kind="runtime_actor", phase=("frame", id(request))):
+            actor = await _resolve_runtime_input_actor(db, tenant_id, request)
+    else:
+        actor = await _resolve_runtime_input_actor(db, tenant_id, request)
     if scope.active:
         key = (db.get_transaction(), tenant_id, id(request), current_source_recipient())
         scope.actors[key] = (request, actor)
@@ -2583,9 +2592,17 @@ async def _runtime_request_facts(db, tenant_id, request):
 
 async def runtime_actor_session(db, tenant_id, principal):
     from app.models.chat_session import ChatSession
+    from app.core.source_read_purpose import current_source_recipient
 
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    with source_read_checkpoint(kind="runtime_actor", phase=scope.checkpoint if scope is not None else None):
+    phase = scope.checkpoint if scope is not None else None
+    if scope is not None and scope.active and scope.source_catalog and scope.batch_inputs and scope.cache_authority:
+        # Use the same request/recipient observation as the frame's cached actor.
+        for key, (_request, actor) in scope.actors.items():
+            if key[:2] == (db.get_transaction(), tenant_id) and key[3] == current_source_recipient() and actor[0] is principal:
+                phase = ("frame", key[2])
+                break
+    with source_read_checkpoint(kind="runtime_actor", phase=phase):
         facts = await _runtime_principal_facts(db, tenant_id, principal)
     return facts[6] if facts is not None else await _input_row(db, ChatSession, uuid.UUID(str(principal.session_id)))
 
@@ -2833,7 +2850,7 @@ async def _workspace_checkpoint_rows(db, tenant_id, reader, *, runtime_request=N
     root_owned = select(ChatSession.id).where(ChatSession.id == WorkspaceResourceManifest.root_session_id,
         ChatSession.agent_id == refs.c.agent, ChatSession.user_id == reader.id).correlate(refs, WorkspaceResourceManifest).exists()
     statement = source_reader_facts_statement(reader, refs.c.agent, source=refs,
-        agent_fields="deactivation_reason name role_description status agent_class agent_type created_at" if receipts is not None else "").add_columns(
+        agent_fields=AGENT_READER_EXTRA_FIELDS if receipts is not None else "").add_columns(
         fact_columns(WorkspaceResourceManifest, "id tenant_id agent_id path owner_user_id root_session_id "
             "authority_state audience_kind content_hash deleted_at"),
         fact_columns(current, "id revision content_sha256"), root_owned,
@@ -3071,7 +3088,8 @@ async def _validate_workspace_live(db, tenant_id, dependency, *, user, runtime_r
         raise ContentInputReceiptError(
             "content_source_changed", "The current workspace bytes have no matching receipt.", 403
         )
-    _validate_source_bytes(Path(str(agent_id)) / path, latest.content_sha256)
+    if not after:
+        _validate_source_bytes(Path(str(agent_id)) / path, latest.content_sha256)
     return user
 
 

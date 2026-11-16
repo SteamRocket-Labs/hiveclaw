@@ -23,7 +23,7 @@ from app.services.content_input_receipts import (
 )
 from app.services.session_model_inputs import _model_dependencies, _stored_dependencies
 from app.services.source_read_queries import (
-    RUNTIME_RESULT_FIELDS, SESSION_AUDIENCE_FIELDS, SESSION_ID_FIELDS, SESSION_SOURCE_FIELDS,
+    RUNTIME_RESULT_FIELDS, SESSION_AUDIENCE_FIELDS, SESSION_ID_FIELDS, SESSION_SOURCE_FIELDS, TRANSCRIPT_EVENT_FIELDS,
 )
 
 
@@ -55,13 +55,9 @@ async def _canonical_checkpoint(db, tenant_id):
             ChatTranscriptEvent.run_id == RuntimeTask.id,
             or_(ChatTranscriptEvent.item_kind.is_(None), ChatTranscriptEvent.item_kind != "run")
         ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1).correlate(RuntimeTask, ChatSession).scalar_subquery()
-        event_fields = "id sequence tenant_id agent_id session_id run_id parent_event_id root_session_id parent_session_id " \
-            "message_id schema_version item_id item_kind lifecycle payload_schema ordinal command_id input_id result_id " \
-            "invocation_id provider_tool_use_id content_hash parent_item_id item_type item_status turn_id causation_id " \
-            "correlation_id actor_type event_type visibility_scope listed_surface scope_json content parts_json metadata_json"
         # Correlated one-id reads keep the live observation driven by selected runs.
         # OFFSET 0 prevents flattening these lookups into tenant-wide hash joins.
-        event = aliased(ChatTranscriptEvent, select(*(getattr(ChatTranscriptEvent, name) for name in event_fields.split())).where(
+        event = aliased(ChatTranscriptEvent, select(*(getattr(ChatTranscriptEvent, name) for name in TRANSCRIPT_EVENT_FIELDS.split())).where(
             ChatTranscriptEvent.id == latest).correlate(RuntimeTask, ChatSession).offset(0).lateral("selected_event"))
         native_id = event.metadata_json["native_final_model_result_id"].astext
         chosen = select(candidate.id).where(candidate.tenant_id == tenant_id, candidate.run_id == RuntimeTask.id,
@@ -81,12 +77,12 @@ async def _canonical_checkpoint(db, tenant_id):
         model_fields = model_fields.op("||")(func.jsonb_build_object("model_request_snapshot_json", case((
             model.id.not_in(known_models) & model.state.in_(("sealed", "round_committed")),
             model.model_request_snapshot_json))))
-        commit = aliased(ChatTranscriptEvent, select(*(getattr(ChatTranscriptEvent, name) for name in event_fields.split())).where(
+        commit = aliased(ChatTranscriptEvent, select(*(getattr(ChatTranscriptEvent, name) for name in TRANSCRIPT_EVENT_FIELDS.split())).where(
             ChatTranscriptEvent.id == model.round_committed_event_id
         ).correlate(model).offset(0).lateral("selected_commit"))
         statement = select(fact_columns(RuntimeTask, RUNTIME_RESULT_FIELDS),
-            fact_columns(ChatSession, SESSION_ID_FIELDS), fact_columns(event, event_fields),
-            model_fields, fact_columns(commit, event_fields),
+            fact_columns(ChatSession, SESSION_ID_FIELDS), fact_columns(event, TRANSCRIPT_EVENT_FIELDS),
+            model_fields, fact_columns(commit, TRANSCRIPT_EVENT_FIELDS),
             native, RuntimeTask.id).select_from(RuntimeTask).outerjoin(ChatSession,
                 (ChatSession.id == source_uuid(RuntimeTask.child_session_id)) & (ChatSession.tenant_id == tenant_id)
                 & (ChatSession.agent_id == RuntimeTask.child_agent_id)).outerjoin(event, true()).outerjoin(

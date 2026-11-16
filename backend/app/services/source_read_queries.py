@@ -16,6 +16,12 @@ from app.models.user import User
 
 
 # Wider projections extend the fields shared by the same source checks.
+AGENT_READER_EXTRA_FIELDS = "deactivation_reason name role_description status agent_class agent_type created_at"
+TRANSCRIPT_EVENT_FIELDS = (
+    "id sequence tenant_id agent_id session_id run_id parent_event_id root_session_id parent_session_id "
+    "message_id schema_version item_id item_kind lifecycle payload_schema ordinal command_id input_id result_id "
+    "invocation_id provider_tool_use_id content_hash parent_item_id item_type item_status turn_id causation_id "
+    "correlation_id actor_type event_type visibility_scope listed_surface scope_json content parts_json metadata_json")
 SESSION_ID_FIELDS = "id tenant_id agent_id"
 SESSION_AUDIENCE_FIELDS = SESSION_ID_FIELDS + " user_id audience_kind"
 SESSION_SOURCE_FIELDS = SESSION_AUDIENCE_FIELDS + (

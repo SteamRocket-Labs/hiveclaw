@@ -306,7 +306,7 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
         from sqlalchemy.orm import aliased
 
         installation = aliased(ConfigRevision)
-        lineage = _installation_id(agent_id, _safe_folder_name(Path(source_path).parts[1]))
+        lineage = _installation_id(agent_id, Path(source_path).parts[1])
         statement = statement.add_columns(select(installation.id).where(installation.tenant_id == tenant_id,
             installation.entity_type == "agent_skill_install", installation.entity_id == lineage).exists())
     vector = await _platform_package_checkpoint(db, tenant_id, agent_id, source_path)

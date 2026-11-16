@@ -569,7 +569,7 @@ async def cancel_async_task(request: ToolExecutionRequest) -> str:
             principal=execution_principal_from_tool_context(request.context),
         ),
     )
-    return (await filter_task_result_content(request, content))[0]
+    return await filter_task_result_content(request, content)
 
 
 # -- list_async_tasks --------------------------------------------------------

@@ -24,8 +24,6 @@ def _result_records(body):
     if isinstance(body, dict):
         if isinstance(body.get("task"), dict):
             return [body["task"]]
-        if isinstance(body.get("runs"), list):
-            return body["runs"]
         return [body]
     return []
 
@@ -112,28 +110,60 @@ async def _task_result_refusals(db, request, results):
 
 async def filter_task_result_content(request, content):
     """Check a cancel response against its current published result before disclosure."""
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.models.runtime_result import RuntimeResultObject
+    from app.services.runtime_result_sources import load_canonical_result_sources
+
     context = request.context
+    if not all(getattr(context, key, None) for key in ("tool_call_id", "turn_id")):
+        return content
     try:
         body = json.loads(content)
     except (ValueError, TypeError):
-        return content, {}
+        return content
     records = [row for row in _result_records(body) if isinstance(row, dict) and row.get("status") == "completed"
         and (row.get("result") or row.get("result_summary"))]
     if not records:
-        return content, {}
+        return content
+    unbound = _result_refusal(ContentInputReceiptError(
+        "runtime_result_sources_unbound", "The result does not match its published source.", 503))
     if not all(getattr(context, key, None) for key in ("tenant_id", "session_id", "runtime_task_id")):
-        refusals = {"unbound": _result_refusal(ContentInputReceiptError(
-            "runtime_result_sources_unbound", "The result reader context is unavailable.", 503))}
-        return json.dumps(_project_refused_results(body, refusals), ensure_ascii=False, default=str), refusals
-    async with tenant_scoped_session(uuid.UUID(str(context.tenant_id))) as db:
-        results = list(await db.scalars(_published_result_statement(
-            uuid.UUID(str(context.tenant_id)), context.agent_id, context.session_id,
-            [uuid.UUID(str(row.get("task_id") or row.get("run_id"))) for row in records],
-        )))
-        refusals = await _task_result_refusals(db, request, results)
+        return json.dumps(_project_refused_results(body, {"unbound": unbound}), ensure_ascii=False, default=str)
+    tenant_id = uuid.UUID(str(context.tenant_id))
+    task_ids = {str(uuid.UUID(str(row.get("task_id") or row.get("run_id")))) for row in records}
+    refusals = {}
+    async with tenant_scoped_session(tenant_id) as db:
+        # Keep the pointer even when its object is missing or out of scope.
+        # Only the absence of a pointer retains unpublished BASE feedback.
+        pointers = list(await db.execute(select(RuntimeNotificationOutbox.source_run_id, RuntimeResultObject)
+            .select_from(RuntimeNotificationOutbox).outerjoin(RuntimeResultObject,
+                (RuntimeResultObject.id == RuntimeNotificationOutbox.result_object_id)
+                & (RuntimeResultObject.tenant_id == tenant_id)
+                & (RuntimeResultObject.source_run_id == RuntimeNotificationOutbox.source_run_id))
+            .where(RuntimeNotificationOutbox.tenant_id == tenant_id,
+                RuntimeNotificationOutbox.source_run_id.in_(task_ids),
+                RuntimeNotificationOutbox.parent_agent_id == context.agent_id,
+                RuntimeNotificationOutbox.parent_session_id == uuid.UUID(str(context.session_id)))))
+        for record in records:
+            task_id = uuid.UUID(str(record.get("task_id") or record.get("run_id")))
+            candidates = [result for identity, result in pointers if identity == str(task_id)]
+            if not candidates:
+                continue
+            for result in candidates:
+                if result is None:
+                    continue
+                try:
+                    canonical = await load_canonical_result_sources(db, result)
+                except ContentInputReceiptError:
+                    continue
+                if canonical and canonical[0].result_summary == record.get("result", record.get("result_summary")):
+                    refusals.update(await _task_result_refusals(db, request, [result]))
+                    break
+            else:
+                refusals[task_id.hex] = unbound
     if refusals:
         content = json.dumps(_project_refused_results(body, refusals), ensure_ascii=False, default=str)
-    return content, refusals
+    return content
 
 
 async def _task_sources(db, task, session_id, *, published_results=None):

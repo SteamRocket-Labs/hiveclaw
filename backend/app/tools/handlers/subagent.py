@@ -1036,7 +1036,7 @@ async def check_subagent(request: ToolExecutionRequest) -> str:
             parent_session_id=record.get("parent_session_id"),
             summary=result,
         )
-        content = _json(
+        return _json(
             {
                 "ok": True,
                 "run_id": run_id,
@@ -1070,9 +1070,7 @@ async def check_subagent(request: ToolExecutionRequest) -> str:
                 "orphaned_by_restart": bool(metadata.get("orphaned_by_restart")),
             }
         )
-    else:
-        content = _json({"ok": True, "runs": await list_subagent_runs(agent_id, principal=principal)})
-    return content
+    return _json({"ok": True, "runs": await list_subagent_runs(agent_id, principal=principal)})
 
 
 @tool(

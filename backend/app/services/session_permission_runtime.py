@@ -11,6 +11,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask, SEALED_RUNTIME_TASK_STATUSES
@@ -143,9 +144,16 @@ def _typed_execution_abort(*, invocation: SessionToolInvocation, reason_code: st
     )
 
 
-async def _source_result(db: AsyncSession, invocation: SessionToolInvocation) -> SessionModelResult:
+async def _source_result(
+    db: AsyncSession, invocation: SessionToolInvocation, *, input_snapshot: bool = False,
+) -> SessionModelResult:
+    columns = [SessionModelResult.id, SessionModelResult.tenant_id, SessionModelResult.session_id,
+        SessionModelResult.run_id, SessionModelResult.round_id, SessionModelResult.turn_id,
+        SessionModelResult.provider_request_id, SessionModelResult.state]
+    columns.extend([SessionModelResult.model_request_hash, SessionModelResult.model_request_snapshot_json]
+        if input_snapshot else [SessionModelResult.seal_json])
     result = await db.scalar(
-        select(SessionModelResult).where(
+        select(SessionModelResult).options(load_only(*columns)).where(
             SessionModelResult.tenant_id == invocation.tenant_id,
             SessionModelResult.session_id == invocation.session_id,
             SessionModelResult.run_id == invocation.run_id,
@@ -678,7 +686,7 @@ async def _resolve_session_tool_permission(
     ):
         raise ValueError("destructive_permission_must_be_allow_once")
     control_id = uuid.uuid5(permission_request_id, f"permission-response:{decision}")
-    await accept_tool_permission_response(
+    accepted = await accept_tool_permission_response(
         db,
         authority=authority,
         control_id=control_id,
@@ -691,7 +699,8 @@ async def _resolve_session_tool_permission(
         decision=decision,
         response_schema="hive.tool_permission_response.v1",
     )
-    await apply_permission_response_control_input(db, authority=authority, control_id=control_id)
+    await apply_permission_response_control_input(db, authority=authority, control_id=control_id,
+        accepted_sequence=accepted.accepted_sequence)
     await db.commit()
     await db.refresh(invocation)
 
@@ -793,8 +802,10 @@ async def _resolve_session_tool_permission(
                 from app.models.user import User
                 from app.services.approval_service import can_resolve_approval
 
-                agent = await db.get(Agent, authority.agent_id, populate_existing=True)
-                user = await db.get(User, authority.principal_id, populate_existing=True)
+                row = (await db.execute(select(Agent, User).join(User, User.id == authority.principal_id)
+                    .where(Agent.id == authority.agent_id)
+                    .execution_options(populate_existing=True))).first()
+                agent, user = row if row is not None else (None, None)
                 approval = ApprovalRequest(tenant_id=authority.tenant_id, agent_id=authority.agent_id,
                     action_type=f"tool.action_preflight.{invocation.tool_name}", details={"origin": {"type": "action_preflight"}})
                 if agent is None or user is None or not await can_resolve_approval(db, agent=agent, user=user, approval=approval):
@@ -840,7 +851,7 @@ async def _resolve_session_tool_permission(
             try:
                 from app.services.plan_mode_runtime_context import set_interactive_plan_mode
 
-                source_result = await _source_result(db, invocation)
+                source_result = await _source_result(db, invocation, input_snapshot=True)
                 from app.services.delegation_permission_runtime import delegated_permission_execution
 
                 delegated_execution = await delegated_permission_execution(db, authority=authority, session=session,
@@ -956,6 +967,7 @@ async def _resolve_session_tool_permission(
                     session_id=authority.session_id,
                     invocation_id=invocation.id,
                     provider_result_content=_result_text(tool_result),
+                    source_result=source_result,
                     execution_evidence=evidence,
                     execution_artifacts=list(getattr(tool_result, "artifacts", ()) or ()),
                     effective_arguments=(

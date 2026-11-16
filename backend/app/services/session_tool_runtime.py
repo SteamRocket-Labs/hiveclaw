@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask, TERMINAL_BOUNDARY_TERMINAL_STATUSES
@@ -339,9 +340,15 @@ def _progress_commentary_draft(
 async def _result_for_invocation(
     db: AsyncSession,
     invocation: SessionToolInvocation,
+    *,
+    scope_only: bool = False,
 ) -> SessionModelResult:
+    statement = select(SessionModelResult)
+    if scope_only:
+        statement = statement.options(load_only(SessionModelResult.id, SessionModelResult.session_id,
+            SessionModelResult.run_id, SessionModelResult.turn_id, SessionModelResult.round_id))
     result = await db.scalar(
-        select(SessionModelResult).where(
+        statement.where(
             SessionModelResult.tenant_id == invocation.tenant_id,
             SessionModelResult.session_id == invocation.session_id,
             SessionModelResult.run_id == invocation.run_id,
@@ -557,7 +564,7 @@ async def mark_tool_effect_started(
         raise RuntimeError("tool_effect_start_unexpected_permission_control")
     if invocation.effective_args_hash is not None and invocation.effective_args_hash != effective_hash:
         raise RuntimeError("tool_effect_start_effective_arguments_changed")
-    result = await _result_for_invocation(db, invocation)
+    result = await _result_for_invocation(db, invocation, scope_only=True)
     fence_ref = f"session-tool-effect:{invocation.id}:generation:{int(invocation.version) + 1}"
     invocation.effect_state = "effect_started"
     invocation.execution_fence_ref = fence_ref
@@ -716,6 +723,7 @@ async def complete_tool_invocation(
     parts: list[dict[str, Any]] | None = None,
     message_id: uuid.UUID | None = None,
     permission_resolution: Mapping[str, Any] | None = None,
+    source_result: SessionModelResult | None = None,
 ) -> list[ChatTranscriptEvent]:
     """Settle one invocation and append its unique Provider matching result.
 
@@ -741,7 +749,7 @@ async def complete_tool_invocation(
         raise RuntimeError("tool_invocation_not_found")
     if invocation.result_event_id is not None:
         return await _terminal_events_for_invocation(db, invocation.id)
-    result = await _result_for_invocation(db, invocation)
+    result = source_result if source_result is not None else await _result_for_invocation(db, invocation)
     effective_payload = _canonical(
         effective_arguments or invocation.effective_arguments_json or invocation.provider_arguments_json or {}
     )
@@ -1567,7 +1575,8 @@ async def load_permission_plan_mode(
     """Recover planning protocol from the canonical waiting event, never tool args."""
 
     event = await db.scalar(
-        select(ChatTranscriptEvent).where(
+        select(ChatTranscriptEvent).options(load_only(ChatTranscriptEvent.id,
+            ChatTranscriptEvent.content_hash, ChatTranscriptEvent.metadata_json)).where(
             ChatTranscriptEvent.tenant_id == invocation.tenant_id,
             ChatTranscriptEvent.agent_id == agent_id,
             ChatTranscriptEvent.session_id == invocation.session_id,
@@ -1656,7 +1665,7 @@ async def apply_tool_permission_response(
         )
     if invocation.permission_state != "waiting" or invocation.effect_state != "prepared_not_started":
         raise RuntimeError("tool_permission_response_requires_waiting_pre_effect_invocation")
-    result = await _result_for_invocation(db, invocation)
+    result = await _result_for_invocation(db, invocation, scope_only=True)
     receipt_ref = f"session-control:{control.id}:applied"
     events = await append_session_events(
         db,

@@ -2584,7 +2584,9 @@ async def _runtime_request_facts(db, tenant_id, request):
         fact_columns(ChatSession, SESSION_ACTOR_FIELDS),
         fact_columns(RuntimeTask, RUNTIME_ACTOR_FIELDS))
     statement = statement.outerjoin(User, (User.id == cast(refs.c.user, UUID)) & (User.tenant_id == tenant_id)).outerjoin(
-        ChatSession, ChatSession.id == refs.c.session).outerjoin(RuntimeTask, RuntimeTask.id == cast(refs.c.task, UUID))
+        ChatSession, (ChatSession.id == refs.c.session) & (ChatSession.tenant_id == tenant_id)).outerjoin(
+            RuntimeTask, (RuntimeTask.id == cast(refs.c.task, UUID)) & (RuntimeTask.tenant_id == tenant_id)
+        ).where(Agent.tenant_id == tenant_id)
     vector = await checkpoint_rows(db, "runtime_actor", statement, lambda row: "actor",
         binding=(tenant_id, *binding), entities={0: Agent, 5: User, 6: ChatSession, 7: RuntimeTask})
     return vector.get("actor") if vector is not None else None
@@ -2607,9 +2609,9 @@ async def runtime_actor_session(db, tenant_id, principal):
     return facts[6] if facts is not None else await _input_row(db, ChatSession, uuid.UUID(str(principal.session_id)))
 
 
-async def machine_source_tasks(db, current_id):
+async def machine_source_tasks(db, tenant_id, current_id):
     """Batch the live machine/human classification at its existing checkpoint."""
-    current = checkpoint_values(db, "machine_source_task")
+    current = checkpoint_values(db, "machine_source_task", binding=(tenant_id,))
     if current is not None:
         return current
     from sqlalchemy import values, column
@@ -2629,7 +2631,8 @@ async def machine_source_tasks(db, current_id):
     refs = values(column("id", UUID), name="machine_source_tasks").data([(identity,) for identity in ids])
     return await checkpoint_rows(db, "machine_source_task", select(refs.c.id, fact_columns(RuntimeTask,
         RUNTIME_ACTOR_FIELDS)
-    ).select_from(refs).outerjoin(RuntimeTask, RuntimeTask.id == refs.c.id), lambda row: row[0], entities={1: RuntimeTask})
+    ).select_from(refs).outerjoin(RuntimeTask, (RuntimeTask.id == refs.c.id) & (RuntimeTask.tenant_id == tenant_id)),
+        lambda row: row[0], binding=(tenant_id,), entities={1: RuntimeTask})
 
 
 def _validate_source_bytes(path, version: str) -> None:

@@ -68,7 +68,7 @@ async def machine_task_actor(db, *, tenant_id, agent_id, runtime_task_id, sessio
     from app.services.content_input_receipts import _input_row, machine_source_tasks
 
     identity = uuid.UUID(str(runtime_task_id))
-    vector = await machine_source_tasks(db, identity) if task_facts is None else None
+    vector = await machine_source_tasks(db, tenant_id, identity) if task_facts is None else None
     task = task_facts[0] if task_facts is not None else (
         vector[identity][1] if vector is not None and identity in vector else await _input_row(db, RuntimeTask, identity))
     if task is None or task.machine_credential_id is None:

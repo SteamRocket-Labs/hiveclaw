@@ -151,9 +151,10 @@ async def _directory_scope_facts(db, tenant_id):
             fact_columns(User, USER_READER_FIELDS),
             fact_columns(ChatSession, SESSION_SOURCE_FIELDS),
             fact_columns(RuntimeTask, RUNTIME_DIRECTORY_FIELDS),
-            refs.c.agent, refs.c.session, refs.c.run, refs.c.reader).outerjoin(User, User.id == refs.c.reader).outerjoin(
-                ChatSession, ChatSession.id == refs.c.session).outerjoin(RuntimeTask,
-                    (RuntimeTask.id == refs.c.run) & (RuntimeTask.tenant_id == tenant_id))
+            refs.c.agent, refs.c.session, refs.c.run, refs.c.reader).outerjoin(
+                User, (User.id == refs.c.reader) & (User.tenant_id == tenant_id)).outerjoin(
+                ChatSession, (ChatSession.id == refs.c.session) & (ChatSession.tenant_id == tenant_id)).outerjoin(RuntimeTask,
+                    (RuntimeTask.id == refs.c.run) & (RuntimeTask.tenant_id == tenant_id)).where(Agent.tenant_id == tenant_id)
         return await checkpoint_rows(db, "directory_scope", statement, lambda row: tuple(row[8:12]),
             binding=(tenant_id,), entities={0: Agent, 5: User, 6: ChatSession, 7: RuntimeTask})
 

@@ -685,6 +685,15 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
       }
     }
   });
+  // A stopped parent settles its still-open disclosure rows immediately;
+  // the colleague's later terminal evidence keeps its own outcome.
+  for (const message of messages) {
+    const summary = message.toolMemberSummary;
+    const task = key(summary?.taskId);
+    if (summary?.state === 'in_progress' && stoppedParentByTask.has(task) && !terminals.has(task)) {
+      terminals.set(task, 'cancelled');
+    }
+  }
   const foldedStarts = new Set<number>();
   const terminalAtStart = new Map<number, AgentChatMessage>();
   const movedTerminals = new Set<number>();
@@ -758,7 +767,9 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
     if (parent) message = { ...message, eventRuntimeTaskId: parent,
       ...(message.threadItem ? { threadItem: { ...message.threadItem, run_id: parent } } : {}) };
     if (message.role === 'event' && (metadata.action_kind === 'a2a_delegation' || message.eventType === 'child_session')) {
-      const status = terminals.get(key(metadata.runtime_task_id || metadata.task_id));
+      const status = terminals.get(key(metadata.runtime_task_id || metadata.task_id))
+        || (stoppedRuns.has(key(agentChatMessageRunId(message))) && !terminal(metadata.status || message.eventStatus)
+          ? 'cancelled' : undefined);
       if (!status) return message;
       if (message.eventType === 'runtime_action_started' && !key(metadata.child_session_id)) return null;
       const memberStatus = ['killed', 'canceled'].includes(status) ? 'cancelled' : status;
@@ -1080,7 +1091,7 @@ export function mergeCanonicalTerminalMessages(
     process.push(message);
   }
 
-  return terminalAnswer ? [...prefix, ...process, terminalAnswer] : [...prefix, ...process];
+  return projectMemberDelegationStates(terminalAnswer ? [...prefix, ...process, terminalAnswer] : [...prefix, ...process]);
 }
 
 function runtimeFailureRunIdOf(envelope: SessionEventV2): string | null {

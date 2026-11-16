@@ -159,7 +159,8 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     || canonicalPreview.willInstall.length > 0
     || canonicalPreview.deferredCapabilities.length > 0
     || canonicalPreview.knowledgeDebt.length > 0;
-  const durableAction = draft?.recovery?.can_retry ? 'retry' : draft ? hrCreationActionForStatus(status) : 'none';
+  const durableAction = draft?.recovery?.can_retry ? 'retry'
+    : draft && status !== 'provisioning' ? hrCreationActionForStatus(status) : 'none';
   const firstTask = draft?.provisioning?.first_task as { status?: string; session_id?: string; error?: string; message?: string } | undefined;
   const companyFailure = ['capability_denied', 'approval_required'].includes(String(draft?.failure?.code))
     ? (typeof draft?.failure?.message === 'string' && draft.failure.message) || creationActionError(draft?.failure, t)

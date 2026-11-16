@@ -1005,6 +1005,24 @@ function AgentChatSection({
   const visibleChatMessages = operatorReadEnabled && chatMessagesSessionId === activeSessionId ? chatMessages : EMPTY_CHAT_MESSAGES;
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
   const normalizedActiveRunStatus = String(activeRunStatus || '').trim().toLowerCase();
+  const permissionRejectionSequence = React.useCallback((request: SessionPermissionRequest) => visibleTimeline.reduce((sequence, message) => {
+    const item = message.sessionItem;
+    return item?.kind === 'control_input' && item.lifecycle === 'rejected' && item.payload.kind === 'permission_response'
+      && item.payload.permission_item_id === request.permission_request_id
+      && isSameSessionRunId(agentChatMessageRunId(message), request.runtime_task_id || activeRunId)
+      ? Math.max(sequence, item.last_sequence) : sequence;
+  }, 0), [activeRunId, visibleTimeline]);
+  const permissionDecisionAccepted = React.useCallback((request: SessionPermissionRequest) => {
+    const runId = request.runtime_task_id || activeRunId;
+    const rejectedSequence = permissionRejectionSequence(request);
+    return visibleTimeline.some(message => message.sessionItem?.kind === 'tool_permission' && message.sessionItem.lifecycle === 'waiting'
+      && message.sessionPermissionRequest?.permission_request_id === request.permission_request_id
+      && isSameSessionRunId(agentChatMessageRunId(message), runId))
+      && visibleTimeline.some(message => message.sessionItem?.kind === 'control_input'
+        && ['accepted', 'applied'].includes(message.sessionItem.lifecycle) && message.sessionItem.payload.kind === 'permission_response'
+        && message.sessionItem.payload.permission_item_id === request.permission_request_id
+        && message.sessionItem.last_sequence > rejectedSequence && isSameSessionRunId(agentChatMessageRunId(message), runId));
+  }, [activeRunId, permissionRejectionSequence, visibleTimeline]);
   const keepPermissionApplying = React.useCallback((request: SessionPermissionRequest) => {
     const runId = request.runtime_task_id || activeRunId;
     const terminalStatuses = ['completed', 'failed', 'cancelled', 'killed', 'stopped', 'needs_reconciliation'];
@@ -1020,19 +1038,13 @@ function AgentChatSection({
       if (item.kind !== 'run') return false;
       const terminal = terminalRuntimePhaseForSessionEvent(item.kind, item.lifecycle, item.payload);
       if (['done', 'failed', 'cancelled'].includes(terminal || '') || item.lifecycle === 'killed') return true;
+      if (permissionDecisionAccepted(request)) return false;
       if (item.payload?.reason_code === 'company_approval_required') return true;
       if (item.lifecycle === 'waiting') return item.payload?.reason_code !== 'tool_permission_required'
         || item.payload.permission_item_id !== request.permission_request_id;
       return Boolean(permission && ['queued', 'running'].includes(item.lifecycle) && item.last_sequence > permission.last_sequence);
     });
-  }, [activeRunId, normalizedActiveRunStatus, sessionWorkbenchBase, visibleTimeline]);
-  const permissionRejectionSequence = React.useCallback((request: SessionPermissionRequest) => visibleTimeline.reduce((sequence, message) => {
-    const item = message.sessionItem;
-    return item?.kind === 'control_input' && item.lifecycle === 'rejected' && item.payload.kind === 'permission_response'
-      && item.payload.permission_item_id === request.permission_request_id
-      && isSameSessionRunId(agentChatMessageRunId(message), request.runtime_task_id || activeRunId)
-      ? Math.max(sequence, item.last_sequence) : sequence;
-  }, 0), [activeRunId, visibleTimeline]);
+  }, [activeRunId, normalizedActiveRunStatus, permissionDecisionAccepted, sessionWorkbenchBase, visibleTimeline]);
   const unfinishedRunStatus = ['created', 'pending', 'queued', 'running', 'started', 'in_progress', 'resuming',
     'waiting', 'waiting_user', 'suspended', 'resumable'].includes(normalizedActiveRunStatus);
   const hasUnfinishedRun = Boolean(activeRunId?.trim()) && unfinishedRunStatus;
@@ -1284,6 +1296,7 @@ function AgentChatSection({
       const permissionActions = canAnswerQuestion && permissionRequest && msg.eventStatus === 'session_permission_required' ? (
         <SessionPermissionActions
           permissionRequest={permissionRequest}
+          decisionAccepted={permissionDecisionAccepted(permissionRequest)}
           keepApplying={keepPermissionApplying(permissionRequest)}
           rejectionSequence={permissionRejectionSequence(permissionRequest)}
           readOnly={permissionReadOnly}
@@ -1331,7 +1344,7 @@ function AgentChatSection({
         </div>
       );
     },
-    [activeSession?.operator_view, activeSession?.audience_kind, currentUser?.id, canMutateSession, canAnswerQuestion, onBranchMessage, onResolveSessionPermission, keepPermissionApplying, permissionRejectionSequence, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline, effectiveAgentId, openArtifact, downloadArtifactFile, operatorView, normalizedOperatorReason],
+    [activeSession?.operator_view, activeSession?.audience_kind, currentUser?.id, canMutateSession, canAnswerQuestion, onBranchMessage, onResolveSessionPermission, keepPermissionApplying, permissionDecisionAccepted, permissionRejectionSequence, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline, effectiveAgentId, openArtifact, downloadArtifactFile, operatorView, normalizedOperatorReason],
   );
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => {
@@ -1362,6 +1375,7 @@ function AgentChatSection({
       {canAnswerQuestion && msg.sessionPermissionRequest && (
         <SessionPermissionActions
           permissionRequest={msg.sessionPermissionRequest}
+          decisionAccepted={permissionDecisionAccepted(msg.sessionPermissionRequest)}
           keepApplying={keepPermissionApplying(msg.sessionPermissionRequest)}
           rejectionSequence={permissionRejectionSequence(msg.sessionPermissionRequest)}
           readOnly={activeSession?.audience_kind === 'group' && msg.sessionPermissionRequest.requested_by_user_id !== currentUser?.id}

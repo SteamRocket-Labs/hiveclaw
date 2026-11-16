@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import zh from '../../i18n/zh.json';
 import { translateFromCatalog } from '../../test/i18nMock';
@@ -113,13 +113,13 @@ it.each(['live', 'reload'] as const)('X7e-r2: %s does not override a different l
   assertState(model(prefix, mode, 'waiting_budget_approval'), 'waiting', 'blocked');
 });
 
-function chat(events: SessionEventV2[], resolve: ReturnType<typeof vi.fn>, connected = true, liveStatus = 'suspended') {
+function chat(events: SessionEventV2[], resolve: ReturnType<typeof vi.fn>, connected = true, liveStatus = 'suspended', mode: Mode = 'reload') {
   const noop = vi.fn();
   const ref = React.createRef<any>();
   const props = {
     agent: { id: 'agent', name: 'Assistant' }, currentUser: { id: session.user_id }, isAdmin: false,
     sessions: [session], activeSession: session, allSessions: [], historyMsgs: [],
-    chatMessages: project(events, 'reload'), chatMessagesSessionId: session.id, attachedFiles: [], wsConnected: connected,
+    chatMessages: project(events, mode), chatMessagesSessionId: session.id, attachedFiles: [], wsConnected: connected,
     sessionsLoading: false, allSessionsLoading: false, uploading: false, uploadProgress: -1, allUserFilter: '', chatInput: '',
     runtimeSummary: null, transportNotice: null, activeRunId: runId, activeRunStatus: liveStatus, runtimePhase: 'awaiting_approval',
     isWaiting: true, isStreaming: false, sessionOnly: true, historyContainerRef: ref, chatContainerRef: ref,
@@ -176,9 +176,16 @@ it('X7e-r2: a rejected control releases a successful HTTP decision on the same c
   expect(screen.queryByText('正在应用决定…')).toBeNull();
   expect((screen.getByRole('button', { name: '本次允许' }) as HTMLButtonElement).disabled).toBe(false);
 });
-it.each(['conversation', 'business task'])('X7e-r2: an HTTP-200 rejection restores the %s card with existing failure text', async surface => {
+it.each(['conversation', 'business task'].flatMap(surface =>
+  (['resolved', 'waiting_for_sibling_permissions', 'awaiting_tool_result'] as const).map(status => ({ surface, status }))))(
+  'X7e-r3: a real HTTP-200 $status receipt keeps the $surface card applying until events arrive', async ({ surface, status }) => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/resolve') ? { status: 'rejected' } : []), {
+  const receipt = { schema: 'hive.session_permission_resolution.v2', status,
+    permission_request_id: request.permission_request_id, invocation_id: 'call', control_id: 'control', run_id: runId,
+    run_status: status === 'waiting_for_sibling_permissions' ? 'suspended' : 'running',
+    result_event_id: null, retryable: false, recovery_action: status === 'awaiting_tool_result' ? 'read_tool_result'
+      : status === 'waiting_for_sibling_permissions' ? 'resolve_remaining_permission_items' : 'resume_same_runtime_task' };
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/resolve') ? receipt : []), {
     status: 200, headers: { 'content-type': 'application/json' },
   })));
   const resolve = vi.fn(() => chatApi.resolveSessionPermission('agent', session.id, request.permission_request_id, { action: 'allow_once' }));
@@ -188,7 +195,65 @@ it.each(['conversation', 'business task'])('X7e-r2: an HTTP-200 rejection restor
     permissions={[{ session_id: session.id, can_resolve: true, request }]} userId={session.user_id} onResolved={vi.fn().mockResolvedValue(undefined)} />);
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '本次允许' })); });
   expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/permissions/permission-1/resolve'))).toHaveLength(1);
-  expect(screen.getByRole('alert').textContent).toBe(zh.agent.chat.permission.resolveFailed);
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getByText('正在应用决定…')).toBeTruthy();
+  expect((screen.getByRole('button', { name: '本次允许' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it.each((['live', 'reload'] as const).flatMap(mode => ['accepted', 'applied'].flatMap(control =>
+  ['company', 'colleague', 'idless', 'queued', 'running'].map(next => ({ mode, control, next })))))(
+  'X7e-r3: $mode accepted card remains applying after $control and $next', async ({ mode, control, next }) => {
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let finish!: () => void;
+    const resolve = vi.fn(() => new Promise<void>(done => { finish = done; }));
+    const events = prefix.slice(0, control === 'accepted' ? 6 : 7);
+    events.push(event(events.length + 1, 'run', next === 'company' ? 'completed' : ['queued', 'running'].includes(next) ? next : 'waiting',
+      next === 'company' ? { reason_code: 'company_approval_required' }
+        : next === 'colleague' ? { reason_code: 'delegation_waiting' }
+          : next === 'idless' ? { reason_code: 'tool_permission_required' } : {}, runId));
+    const view = render(chat(mode === 'live' ? prefix.slice(0, 5) : events, resolve, true, 'suspended', mode));
+    if (mode === 'live') {
+      fireEvent.click(screen.getByRole('button', { name: '本次允许' }));
+      view.rerender(chat(events, resolve, true, 'suspended', mode));
+      await act(async () => { finish(); });
+    }
+    expect(screen.getByText('正在应用决定…')).toBeTruthy();
+    for (const name of ['本次允许', '本会话允许', '拒绝']) {
+      const button = screen.getByRole('button', { name }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      fireEvent.click(button);
+      fireEvent.click(button);
+    }
+    expect(resolve).toHaveBeenCalledTimes(mode === 'live' ? 1 : 0);
+  },
+);
+
+it.each((['live', 'reload'] as const).flatMap(mode => ['transcript', 'live', 'task'].map(source => ({ mode, source }))))(
+  'X7e-r3: $mode accepted card still releases on a real $source terminal', async ({ mode, source }) => {
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    if (source === 'task') client.setQueryData(['chat-session-workbench', 'agent', session.id, 'owner'], { runtime_tasks: [] });
+    const resolve = vi.fn();
+    const accepted = prefix.slice(0, 6);
+    const view = render(chat(accepted, resolve, true, 'suspended', mode));
+    expect(screen.getByText('正在应用决定…')).toBeTruthy();
+    if (source === 'transcript') view.rerender(chat([...accepted, event(7, 'run', 'failed', {}, runId)], resolve, true, 'suspended', mode));
+    if (source === 'live') view.rerender(chat(accepted, resolve, true, 'needs_reconciliation', mode));
+    if (source === 'task') await act(async () => {
+      client!.setQueryData(['chat-session-workbench', 'agent', session.id, 'owner'], { runtime_tasks: [{ id: runId, status: 'stopped' }] });
+    });
+    await waitFor(() => expect((screen.getByRole('button', { name: '本次允许' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByText('正在应用决定…')).toBeNull();
+  },
+);
+
+it.each(['live', 'reload'] as const)('X7e-r3: %s rejected control still releases an accepted card', mode => {
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const resolve = vi.fn();
+  const accepted = prefix.slice(0, 6);
+  const view = render(chat(accepted, resolve, true, 'suspended', mode));
+  expect(screen.getByText('正在应用决定…')).toBeTruthy();
+  view.rerender(chat([...accepted, event(7, 'control_input', 'rejected',
+    { kind: 'permission_response', permission_item_id: request.permission_request_id })], resolve, true, 'suspended', mode));
   expect(screen.queryByText('正在应用决定…')).toBeNull();
   expect((screen.getByRole('button', { name: '本次允许' }) as HTMLButtonElement).disabled).toBe(false);
 });

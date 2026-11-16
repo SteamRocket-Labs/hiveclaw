@@ -12,6 +12,7 @@ export default function SessionPermissionActions({
   readOnly = false,
   showArgumentDetails = true,
   keepApplying = true,
+  decisionAccepted = false,
   rejectionSequence,
   t,
 }: {
@@ -23,25 +24,24 @@ export default function SessionPermissionActions({
    * requester's "inspect the exact proposal" disclosure. */
   showArgumentDetails?: boolean;
   keepApplying?: boolean;
+  decisionAccepted?: boolean;
   rejectionSequence?: number;
   t: (key: string, fallback: string) => string;
 }) {
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState('');
+  const applying = keepApplying && (pending || decisionAccepted);
   React.useEffect(() => {
     if (pending && !keepApplying) setPending(false);
   }, [pending, keepApplying]);
   // An old rejection must not cancel a new attempt on the same card.
   React.useEffect(() => { setPending(false); }, [rejectionSequence]);
   const resolve = async (action: 'allow_once' | 'allow_session' | 'deny') => {
-    if (pending || readOnly || !onResolveSessionPermission) return;
+    if (applying || readOnly || !onResolveSessionPermission) return;
     setPending(true);
     setError('');
     try {
-      const response = await onResolveSessionPermission(permissionRequest, action);
-      if (response && typeof response === 'object' && 'status' in response && response.status === 'rejected') {
-        throw new Error(t('agent.chat.permission.resolveFailed', 'Failed to resolve permission request'));
-      }
+      await onResolveSessionPermission(permissionRequest, action);
       // Keep applying until the run's events replace this request card.
     } catch (err) {
       setError(err instanceof Error ? err.message : t('agent.chat.permission.resolveFailed', 'Failed to resolve permission request'));
@@ -68,7 +68,7 @@ export default function SessionPermissionActions({
         <button
           type="button"
           className="btn btn-secondary"
-          disabled={pending || !onResolveSessionPermission}
+          disabled={applying || !onResolveSessionPermission}
           onClick={() => void resolve('allow_once')}
           style={{ fontSize: '12px', padding: '6px 10px' }}
         >
@@ -78,7 +78,7 @@ export default function SessionPermissionActions({
           <button
             type="button"
             className="btn btn-secondary"
-            disabled={pending || !onResolveSessionPermission}
+            disabled={applying || !onResolveSessionPermission}
             onClick={() => void resolve('allow_session')}
             style={{ fontSize: '12px', padding: '6px 10px' }}
           >
@@ -88,14 +88,14 @@ export default function SessionPermissionActions({
         <button
           type="button"
           className="btn btn-secondary"
-          disabled={pending || !onResolveSessionPermission}
+          disabled={applying || !onResolveSessionPermission}
           onClick={() => void resolve('deny')}
           style={{ fontSize: '12px', padding: '6px 10px' }}
         >
           {t('agent.chat.permission.deny', 'Deny')}
         </button>
       </div>
-      {pending && <p role="status">{t('agent.chat.permission.applying', 'Applying decision…')}</p>}
+      {applying && <p role="status">{t('agent.chat.permission.applying', 'Applying decision…')}</p>}
       {error && <p role="alert">{error}</p>}
       {!allowSession && (
         <div style={{ marginTop: '7px', fontSize: '11px', color: 'var(--text-tertiary)' }}>

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconDownload, IconExternalLink, IconFileText, IconX } from '@tabler/icons-react';
 
@@ -7,7 +7,7 @@ import { fileApi, type ResourceAuthorityOptions } from '../../api/domains/files'
 import { officeApi } from '../../api/domains/office';
 import { saveBlob } from '../../utils/authenticatedResource';
 import { showAppToast } from '../../components/AppDialogs';
-import type { ChatArtifactPart } from './chatRuntime';
+import { agentChatMessageRunId, type AgentChatMessage, type ChatArtifactPart } from './chatRuntime';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
 import ArtifactContinuation, { type ArtifactContinuationContext } from './ArtifactContinuation';
 import OriginalUploadAction from './OriginalUploadAction';
@@ -89,6 +89,7 @@ export function ArtifactPreviewPanel({
   onRetry,
   onDownload,
   continuation,
+  messages = [],
   t,
 }: {
   preview: ArtifactPreviewState;
@@ -99,6 +100,7 @@ export function ArtifactPreviewPanel({
   onRetry?: () => void;
   onDownload?: () => void;
   continuation?: ArtifactContinuationContext;
+  messages?: AgentChatMessage[];
   t: Translate;
 }) {
   const previewKind = getEffectiveArtifactPreviewKind(preview.artifact);
@@ -108,11 +110,25 @@ export function ArtifactPreviewPanel({
   const fileIdentity = `${workspaceAgentId}:${preview.artifact.path}:${workspaceAuthority?.operatorView ? workspaceAuthority.reason : 'owner'}`;
   const [openedFile, setOpenedFile] = useState<string | null>(null);
   const [showCurrent, setShowCurrent] = useState(false);
+  const [minimizedPreview, setMinimizedPreview] = useState<ArtifactPreviewState | null>(null);
+  const minimized = minimizedPreview === preview;
   const currentFileOpen = openedFile === fileIdentity && showCurrent;
   const canOpenCurrent = workspaceAgentId && preview.artifact.path.startsWith('workspace/') && ['markdown', 'text', 'office'].includes(previewKind);
   const [editor, setEditor] = useState<{ identity: string; version: string; state: FileEditorState } | null>(null);
   const keepDraft = editor?.identity === fileIdentity && (editor.state.dirty || editor.state.busy || editor.state.unavailable);
-  const editorIdentity = keepDraft ? editor.version : `${fileIdentity}:${preview.artifact.id}:${preview.artifact.snapshotHash}`;
+  const finishedRuns = new Set(messages.filter(message => message.sessionItem?.kind === 'run' && message.sessionItem.terminal)
+    .map(agentChatMessageRunId));
+  const currentRevision = messages.filter(message => finishedRuns.has(agentChatMessageRunId(message))
+    && message.artifacts?.some(artifact => artifact.source === 'workspace_write' && artifact.path === preview.artifact.path
+      && artifactWorkspaceAgentId(artifact, agentId) === workspaceAgentId)).at(-1)?.id;
+  const editorIdentity = keepDraft ? editor.version : `${fileIdentity}:${preview.artifact.id}:${preview.artifact.snapshotHash}:${currentRevision || ''}`;
+  const previousEditor = useRef({ preview, editorIdentity });
+  useEffect(() => {
+    if (previousEditor.current.preview === preview && previousEditor.current.editorIdentity !== editorIdentity && currentRevision) {
+      setMinimizedPreview(preview);
+    }
+    previousEditor.current = { preview, editorIdentity };
+  }, [preview, editorIdentity, currentRevision]);
   const editorChanged = useCallback((state: FileEditorState) => setEditor({ identity: fileIdentity, version: editorIdentity, state }), [fileIdentity, editorIdentity]);
   const currentEditor = editor?.identity === fileIdentity && editor.version === editorIdentity ? editor.state : null;
   const continuationBlocked = Boolean(currentEditor && (currentEditor.dirty || currentEditor.busy || currentEditor.unavailable));
@@ -141,6 +157,10 @@ export function ArtifactPreviewPanel({
     </div>
   );
   return (
+    <>
+    {minimized && <button type="button" className="btn btn-secondary btn-sm" onClick={() => setMinimizedPreview(null)}>
+      {t('agent.chat.artifacts.viewCurrentFile', 'View current file')}
+    </button>}
     <div
       data-testid="session-artifact-preview-inspector"
       role="complementary"
@@ -152,7 +172,7 @@ export function ArtifactPreviewPanel({
         right: '16px',
         bottom: '112px',
         width: 'min(680px, calc(100vw - 32px))',
-        display: 'flex',
+        display: minimized ? 'none' : 'flex',
         pointerEvents: 'none',
       }}
     >
@@ -324,6 +344,7 @@ export function ArtifactPreviewPanel({
         )}
       </section>
     </div>
+    </>
   );
 }
 

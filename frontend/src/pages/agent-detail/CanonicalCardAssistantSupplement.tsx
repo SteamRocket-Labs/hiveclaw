@@ -11,7 +11,7 @@ export function isSupersededCreationCard(messages: AgentChatMessage[], index: nu
 }
 
 export function assistantReplyForDisplay(content: string): string {
-  return content.replace(/^[\t ]*(?:[-*][\t ]+)?(?:\*\*|`)?DELIVERABLE(?:\*\*|`)?[\t ]*[:：][^\r\n]*(?:\r?\n|$)/gim, '');
+  return content.replace(/^(?:[\t ]*(?:下载链接|Download link)[\t ]*[:：][\t ]*\r?\n(?:[\t ]*\r?\n)*)?[\t ]*(?:[-*][\t ]+)?(?:\*\*|`)?DELIVERABLE(?:\*\*|`)?[\t ]*[:：][^\r\n]*(?:\r?\n|$)/gim, '');
 }
 
 export function shouldCollapseAssistantSupplement(messages: AgentChatMessage[], index: number): boolean {

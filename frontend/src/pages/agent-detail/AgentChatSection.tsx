@@ -2083,6 +2083,7 @@ function AgentChatSection({
               <ArtifactPreviewPanel
                 key={`artifact-preview:${childAuthorityIdentity}`}
                 preview={artifactPreview}
+                messages={visibleTimeline}
                 agentId={effectiveAgentId || undefined}
                 workspaceAuthority={resourceOperatorOptions}
                 onWorkspaceAuthorityDenied={onOperatorAuthorityDenied}
@@ -2234,6 +2235,7 @@ function AgentChatSection({
                 <ArtifactPreviewPanel
                   key={`artifact-preview:${childAuthorityIdentity}`}
                   preview={artifactPreview}
+                  messages={visibleTimeline}
                   agentId={effectiveAgentId || undefined}
                   workspaceAuthority={resourceOperatorOptions}
                   onWorkspaceAuthorityDenied={onOperatorAuthorityDenied}

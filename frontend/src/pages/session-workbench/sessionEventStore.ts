@@ -341,6 +341,7 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
         content,
         payload: sourceHeld || sourceWasHeld ? event.payload : { ...(prior?.payload || {}), ...event.payload,
           ...(event.item_kind === 'run' ? { reason_code: event.payload.reason_code,
+            permission_item_id: event.payload.permission_item_id,
             // Only a real admission/start can supply this fallback. The first
             // run event of a continuation may instead be cancelling.
             started_at: prior?.payload.started_at ?? event.payload.started_at

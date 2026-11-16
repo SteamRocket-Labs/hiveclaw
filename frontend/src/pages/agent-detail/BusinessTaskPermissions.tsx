@@ -39,9 +39,10 @@ export default function BusinessTaskPermissions({ agentId, task, permissions, us
       <SessionPermissionActions permissionRequest={permission.request} t={t} showArgumentDetails={false}
         readOnly={!permission.can_resolve || permission.request.requested_by_user_id !== userId}
         onResolveSessionPermission={async (_request, action) => {
-          await resolveBusinessTaskPermission(agentId, task, permission, userId, action,
+          const response = await resolveBusinessTaskPermission(agentId, task, permission, userId, action,
             t('agent.chat.permission.changed', 'This permission request is no longer current. Refresh the assignment.'));
           await onResolved();
+          return response;
         }} />
     </article>
   ))}</>;

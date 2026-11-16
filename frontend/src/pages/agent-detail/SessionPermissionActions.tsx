@@ -11,6 +11,8 @@ export default function SessionPermissionActions({
   onResolveSessionPermission,
   readOnly = false,
   showArgumentDetails = true,
+  keepApplying = true,
+  rejectionSequence,
   t,
 }: {
   permissionRequest: SessionPermissionRequest;
@@ -20,16 +22,26 @@ export default function SessionPermissionActions({
    * details affordance there (B2 r2); standalone permission rows keep the
    * requester's "inspect the exact proposal" disclosure. */
   showArgumentDetails?: boolean;
+  keepApplying?: boolean;
+  rejectionSequence?: number;
   t: (key: string, fallback: string) => string;
 }) {
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState('');
+  React.useEffect(() => {
+    if (pending && !keepApplying) setPending(false);
+  }, [pending, keepApplying]);
+  // An old rejection must not cancel a new attempt on the same card.
+  React.useEffect(() => { setPending(false); }, [rejectionSequence]);
   const resolve = async (action: 'allow_once' | 'allow_session' | 'deny') => {
     if (pending || readOnly || !onResolveSessionPermission) return;
     setPending(true);
     setError('');
     try {
-      await onResolveSessionPermission(permissionRequest, action);
+      const response = await onResolveSessionPermission(permissionRequest, action);
+      if (response && typeof response === 'object' && 'status' in response && response.status === 'rejected') {
+        throw new Error(t('agent.chat.permission.resolveFailed', 'Failed to resolve permission request'));
+      }
       // Keep applying until the run's events replace this request card.
     } catch (err) {
       setError(err instanceof Error ? err.message : t('agent.chat.permission.resolveFailed', 'Failed to resolve permission request'));

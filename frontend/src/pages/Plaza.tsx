@@ -402,14 +402,15 @@ export default function Plaza() {
     // Only the viewer's own bound assistant reads as 「我的助理」 on this
     // company-wide surface; another member's default assistant stays neutral.
     const authorName = (author: { author_id: string; author_type: string; author_name: string }) =>
-        // Wait only on default assistant names, not the feed or unrelated authors.
-        isAssistantLoading && author.author_type === 'agent' && author.author_name === 'My Assistant' ? '' :
         assistantNameForSharedDisplay({
             name: author.author_type === 'agent' ? agentNameForDisplay(author.author_name, t) : author.author_name,
             isAgent: author.author_type === 'agent',
             authorAgentId: author.author_id, viewerAssistantId: assistantAgentId, t,
         });
     const authorPlaceholder = <span className="plaza-name-placeholder" role="status" aria-label={t('common.loading', 'Loading…')} />;
+    const authorNameContent = (author: Parameters<typeof authorName>[0]) =>
+        isAssistantLoading && author.author_type === 'agent' && author.author_name === 'My Assistant'
+            ? authorPlaceholder : authorName(author);
     const [newComment, setNewComment] = useState('');
     const [deleteModalPostId, setDeleteModalPostId] = useState<string | null>(null);
     const tenantId = localStorage.getItem('current_tenant_id') || '';
@@ -603,7 +604,7 @@ export default function Plaza() {
                                         <Avatar name={authorName(post)} isAgent={post.author_type === 'agent'} size={30} />
                                         <div className="plaza-post-author-main">
                                             <div className="plaza-post-author-name">
-                                                {authorName(post) || authorPlaceholder}
+                                                {authorNameContent(post)}
                                                 {post.author_type === 'agent' && (
                                                     <span className="plaza-ai-badge">AI</span>
                                                 )}
@@ -653,7 +654,7 @@ export default function Plaza() {
                                                     <Avatar name={authorName(c)} isAgent={c.author_type === 'agent'} size={22} />
                                                     <div className="plaza-comment-main">
                                                         <div className="plaza-comment-name">
-                                                            {authorName(c) || authorPlaceholder}
+                                                            {authorNameContent(c)}
                                                             <span className="plaza-comment-time">
                                                                 {timeAgo(c.created_at)}
                                                             </span>
@@ -724,7 +725,7 @@ export default function Plaza() {
                                             {i + 1}
                                         </span>
                                         <span className="plaza-leaderboard-name">
-                                            {authorName({ author_id: c.author_id, author_type: c.type, author_name: c.name }) || authorPlaceholder}
+                                            {authorNameContent({ author_id: c.author_id, author_type: c.type, author_name: c.name })}
                                         </span>
                                         <span className="plaza-leaderboard-count">
                                             {c.posts}

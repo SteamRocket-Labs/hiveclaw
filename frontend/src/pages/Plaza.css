@@ -453,3 +453,11 @@
   color: var(--text-tertiary);
   line-height: 1.6;
 }
+.plaza-name-placeholder {
+  display: inline-block;
+  width: 4em;
+  height: 0.8em;
+  vertical-align: middle;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+}

@@ -73,6 +73,8 @@ export interface RunStepSnapshot {
 /** Locale-neutral run aggregate: the renderer composes the sentence. */
 export interface RunAggregateSummary {
   files: number;
+  writes?: number;
+  edits?: number;
   searches: number;
   commands: number;
 }
@@ -873,7 +875,11 @@ export function buildRunAggregateSummary(steps: RunStepSnapshot[]): RunAggregate
     && ['read_file', 'fs_read', 'read_document'].includes(String((step.details as { toolName?: string } | null)?.toolName))).length;
   const searches = hiddenProcessTools.filter((step) => step.kind === 'search').length;
   const commands = hiddenProcessTools.filter((step) => step.kind === 'command').length;
-  return files + searches + commands > 0 ? { files, searches, commands } : undefined;
+  const successfulFiles = completed.filter(step => step.status === 'done' && step.presentation !== 'external');
+  const writes = successfulFiles.filter(step => ['write_file', 'fs_write'].includes(String((step.details as { toolName?: string })?.toolName))).length;
+  const edits = successfulFiles.filter(step => (step.details as { toolName?: string })?.toolName === 'edit_file').length;
+  return files + writes + edits + searches + commands > 0
+    ? { files, searches, commands, ...(writes ? { writes } : {}), ...(edits ? { edits } : {}) } : undefined;
 }
 
 function workflowEventKey(message: AgentChatMessage): string | null {

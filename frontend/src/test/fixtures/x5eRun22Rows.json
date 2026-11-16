@@ -1,0 +1,601 @@
+{
+  "creation": [
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "session",
+        "thread_id": "00000000-0000-0000-0000-00000000000d",
+        "session_id": "00000000-0000-0000-0000-00000000000d"
+      },
+      "item_id": "00000000-0000-0000-0000-00000000000e",
+      "item_kind": "human_input",
+      "kind": "human_input.accepted",
+      "lifecycle": "accepted",
+      "payload_schema": "hive.session.payload.human_input.accepted.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "intent": "start_turn",
+        "content_parts": [
+          {}
+        ],
+        "content": "整理报告"
+      },
+      "occurred_at": "2026-11-15T03:14:16.914719+00:00",
+      "persisted_at": "2026-11-15T03:14:16.939364+00:00",
+      "tenant_id": "tenant",
+      "event_id": "source-1",
+      "sequence": 1,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "run",
+        "run_id": "00000000-0000-0000-0000-00000000000f",
+        "turn_id": "00000000-0000-0000-0000-000000000010",
+        "thread_id": "00000000-0000-0000-0000-00000000000d",
+        "session_id": "00000000-0000-0000-0000-00000000000d"
+      },
+      "item_id": "00000000-0000-0000-0000-00000000000f",
+      "item_kind": "run",
+      "kind": "run.queued",
+      "lifecycle": "queued",
+      "payload_schema": "hive.session.payload.run.queued.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "run_id": "00000000-0000-0000-0000-00000000000f"
+      },
+      "occurred_at": "2026-11-15T03:14:18.644234+00:00",
+      "persisted_at": "2026-11-15T03:14:18.675276+00:00",
+      "run_id": "00000000-0000-0000-0000-00000000000f",
+      "tenant_id": "tenant",
+      "event_id": "source-10",
+      "sequence": 2,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "run",
+        "run_id": "00000000-0000-0000-0000-00000000000f",
+        "turn_id": "00000000-0000-0000-0000-000000000010",
+        "thread_id": "00000000-0000-0000-0000-00000000000d",
+        "session_id": "00000000-0000-0000-0000-00000000000d"
+      },
+      "item_id": "00000000-0000-0000-0000-00000000000f",
+      "item_kind": "run",
+      "kind": "run.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.run.completed.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "started_at": "2026-11-15T03:14:18.731754+00:00"
+      },
+      "occurred_at": "2026-11-15T03:14:55.019933+00:00",
+      "persisted_at": "2026-11-15T03:14:55.029195+00:00",
+      "run_id": "00000000-0000-0000-0000-00000000000f",
+      "tenant_id": "tenant",
+      "event_id": "source-100",
+      "sequence": 3,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event_compatibility",
+      "schema_version": 1,
+      "compatibility_status": "needs_reconciliation",
+      "reason": "unmapped_legacy_kind",
+      "legacy_kind": "legacy_unknown",
+      "legacy_lifecycle": "legacy_unknown",
+      "legacy_event_type": "runtime_action_completed",
+      "legacy_item_type": "event",
+      "legacy_item_status": "succeeded",
+      "payload": {
+        "content": "已完成",
+        "parts": [
+          {
+            "type": "event",
+            "event_type": "runtime_action_completed",
+            "text": "已完成",
+            "status": "completed",
+            "task_id": "00000000-0000-0000-0000-000000000011",
+            "task_type": "hr_provisioning",
+            "action_kind": "hr_provisioning",
+            "artifact_count": 0,
+            "runtime_task_id": "00000000-0000-0000-0000-000000000011",
+            "child_session_id": null,
+            "result_size_bytes": 909,
+            "target_agent_name": null,
+            "notification_source": "employee_creation",
+            "runtime_action_from_result_integration": true
+          }
+        ],
+        "metadata": {
+          "status": "completed",
+          "message": "已完成",
+          "task_id": "00000000-0000-0000-0000-000000000011",
+          "task_type": "hr_provisioning",
+          "action_kind": "hr_provisioning",
+          "artifact_count": 0,
+          "runtime_task_id": "00000000-0000-0000-0000-000000000011",
+          "child_session_id": null,
+          "result_size_bytes": 909,
+          "target_agent_name": null,
+          "notification_source": "employee_creation",
+          "runtime_action_from_result_integration": true,
+          "role": "system",
+          "event_type": "runtime_action_completed"
+        }
+      },
+      "occurred_at": "2026-11-15T03:15:14.924565+00:00",
+      "tenant_id": "tenant",
+      "event_id": "source-104",
+      "sequence": 4
+    },
+    {
+      "schema": "hive.session_event_compatibility",
+      "schema_version": 1,
+      "compatibility_status": "needs_reconciliation",
+      "reason": "unmapped_legacy_kind",
+      "legacy_kind": "legacy_unknown",
+      "legacy_lifecycle": "legacy_unknown",
+      "legacy_event_type": "agent_task_notification",
+      "legacy_item_type": "subagent_activity",
+      "legacy_item_status": "succeeded",
+      "payload": {
+        "content": "1 runtime result(s) ready in integration epoch 1 (terminal=1/expected=2).",
+        "parts": [],
+        "metadata": {
+          "status": "ready",
+          "message": "1 runtime result(s) ready in integration epoch 1 (terminal=1/expected=2).",
+          "task_type": "runtime_result_integration",
+          "item_count": 1,
+          "result_manifest": {
+            "items": [
+              {
+                "task_type": "hr_provisioning",
+                "source_kind": "employee_creation",
+                "source_run_id": "00000000-0000-0000-0000-000000000011",
+                "artifact_count": 0,
+                "terminal_status": "completed",
+                "child_agent_name": null,
+                "child_session_id": null,
+                "result_size_bytes": 909
+              }
+            ],
+            "schema": "hive.runtime_result_integration_page.v1",
+            "item_count": 1,
+            "root_runtime_task_id": "00000000-0000-0000-0000-00000000000f"
+          },
+          "parent_session_id": "00000000-0000-0000-0000-00000000000d",
+          "root_runtime_task_id": "00000000-0000-0000-0000-00000000000f",
+          "runtime_result_integration_page": true,
+          "has_kept_result": true,
+          "role": "system",
+          "event_type": "agent_task_notification"
+        }
+      },
+      "occurred_at": "2026-11-15T03:15:14.924565+00:00",
+      "tenant_id": "tenant",
+      "event_id": "source-105",
+      "sequence": 5
+    }
+  ],
+  "files": [
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "session",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-000000000013",
+      "item_kind": "human_input",
+      "kind": "human_input.accepted",
+      "lifecycle": "accepted",
+      "payload_schema": "hive.session.payload.human_input.accepted.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "intent": "start_turn",
+        "content_parts": [
+          {},
+          {}
+        ],
+        "content": "整理报告"
+      },
+      "occurred_at": "2026-11-15T02:30:57.668407+00:00",
+      "persisted_at": "2026-11-15T02:30:57.681111+00:00",
+      "tenant_id": "tenant",
+      "event_id": "source-1",
+      "sequence": 1,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "run",
+        "run_id": "00000000-0000-0000-0000-000000000014",
+        "turn_id": "00000000-0000-0000-0000-000000000015",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-000000000014",
+      "item_kind": "run",
+      "kind": "run.queued",
+      "lifecycle": "queued",
+      "payload_schema": "hive.session.payload.run.queued.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "run_id": "00000000-0000-0000-0000-000000000014"
+      },
+      "occurred_at": "2026-11-15T02:30:59.207188+00:00",
+      "persisted_at": "2026-11-15T02:30:59.229366+00:00",
+      "run_id": "00000000-0000-0000-0000-000000000014",
+      "tenant_id": "tenant",
+      "event_id": "source-10",
+      "sequence": 2,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "round",
+        "run_id": "00000000-0000-0000-0000-000000000014",
+        "turn_id": "00000000-0000-0000-0000-000000000015",
+        "round_id": "00000000-0000-0000-0000-000000000016",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-000000000017",
+      "item_kind": "tool_call",
+      "kind": "tool_call.started",
+      "lifecycle": "started",
+      "payload_schema": "hive.session.payload.tool_call.started.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "args_hash": "29e893415626cd0cca989ac8a40a3ea6cbb0111296af087aee0f8d8d94f1ebad",
+        "tool_name": "read_file",
+        "invocation_id": "00000000-0000-0000-0000-000000000018",
+        "provider_tool_use_id": "00000000-0000-0000-0000-000000000019"
+      },
+      "occurred_at": "2026-11-15T02:31:11.004622+00:00",
+      "persisted_at": "2026-11-15T02:31:11.013244+00:00",
+      "run_id": "00000000-0000-0000-0000-000000000014",
+      "invocation_id": "00000000-0000-0000-0000-000000000018",
+      "provider_tool_use_id": "00000000-0000-0000-0000-000000000019",
+      "tenant_id": "tenant",
+      "event_id": "source-25",
+      "sequence": 3,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "round",
+        "run_id": "00000000-0000-0000-0000-000000000014",
+        "turn_id": "00000000-0000-0000-0000-000000000015",
+        "round_id": "00000000-0000-0000-0000-000000000016",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-000000000017",
+      "item_kind": "tool_call",
+      "kind": "tool_call.progress",
+      "lifecycle": "progress",
+      "payload_schema": "hive.session.payload.tool_call.progress.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "invocation_id": "00000000-0000-0000-0000-000000000018",
+        "provider_tool_use_id": "00000000-0000-0000-0000-000000000019"
+      },
+      "occurred_at": "2026-11-15T02:31:11.992945+00:00",
+      "persisted_at": "2026-11-15T02:31:12.016683+00:00",
+      "run_id": "00000000-0000-0000-0000-000000000014",
+      "invocation_id": "00000000-0000-0000-0000-000000000018",
+      "provider_tool_use_id": "00000000-0000-0000-0000-000000000019",
+      "tenant_id": "tenant",
+      "event_id": "source-26",
+      "sequence": 4,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "round",
+        "run_id": "00000000-0000-0000-0000-000000000014",
+        "turn_id": "00000000-0000-0000-0000-000000000015",
+        "round_id": "00000000-0000-0000-0000-000000000016",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-000000000017",
+      "item_kind": "tool_call",
+      "kind": "tool_call.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.tool_call.completed.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "outcome": "success",
+        "retryable": false,
+        "invocation_id": "00000000-0000-0000-0000-000000000018",
+        "provider_tool_use_id": "00000000-0000-0000-0000-000000000019"
+      },
+      "occurred_at": "2026-11-15T02:31:13.467342+00:00",
+      "persisted_at": "2026-11-15T02:31:13.475826+00:00",
+      "run_id": "00000000-0000-0000-0000-000000000014",
+      "invocation_id": "00000000-0000-0000-0000-000000000018",
+      "provider_tool_use_id": "00000000-0000-0000-0000-000000000019",
+      "tenant_id": "tenant",
+      "event_id": "source-27",
+      "sequence": 5,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "round",
+        "run_id": "00000000-0000-0000-0000-000000000014",
+        "turn_id": "00000000-0000-0000-0000-000000000015",
+        "round_id": "00000000-0000-0000-0000-000000000016",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-00000000001a",
+      "item_kind": "tool_result",
+      "kind": "tool_result.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.tool_result.completed.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "content": "",
+        "outcome": "success",
+        "retryable": false,
+        "tool_name": "read_file",
+        "invocation_id": "00000000-0000-0000-0000-000000000018",
+        "provider_tool_use_id": "00000000-0000-0000-0000-000000000019",
+        "member_summary": {
+          "kind": "file_read",
+          "state": "done",
+          "filename": "sales-run22.csv"
+        }
+      },
+      "occurred_at": "2026-11-15T02:31:13.467367+00:00",
+      "persisted_at": "2026-11-15T02:31:13.476183+00:00",
+      "run_id": "00000000-0000-0000-0000-000000000014",
+      "invocation_id": "00000000-0000-0000-0000-000000000018",
+      "provider_tool_use_id": "00000000-0000-0000-0000-000000000019",
+      "tenant_id": "tenant",
+      "event_id": "source-28",
+      "sequence": 6,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "round",
+        "run_id": "00000000-0000-0000-0000-000000000014",
+        "turn_id": "00000000-0000-0000-0000-000000000015",
+        "round_id": "00000000-0000-0000-0000-00000000001b",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-00000000001c",
+      "item_kind": "tool_call",
+      "kind": "tool_call.started",
+      "lifecycle": "started",
+      "payload_schema": "hive.session.payload.tool_call.started.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "args_hash": "07c68c918a9b2ffe6fec4f5f51e256acea6810a13c1010273ffd606c04cd6376",
+        "tool_name": "write_file",
+        "invocation_id": "00000000-0000-0000-0000-00000000001d",
+        "provider_tool_use_id": "00000000-0000-0000-0000-00000000001e"
+      },
+      "occurred_at": "2026-11-15T02:32:27.256503+00:00",
+      "persisted_at": "2026-11-15T02:32:27.264520+00:00",
+      "run_id": "00000000-0000-0000-0000-000000000014",
+      "invocation_id": "00000000-0000-0000-0000-00000000001d",
+      "provider_tool_use_id": "00000000-0000-0000-0000-00000000001e",
+      "tenant_id": "tenant",
+      "event_id": "source-99",
+      "sequence": 7,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "round",
+        "run_id": "00000000-0000-0000-0000-000000000014",
+        "turn_id": "00000000-0000-0000-0000-000000000015",
+        "round_id": "00000000-0000-0000-0000-00000000001b",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-00000000001c",
+      "item_kind": "tool_call",
+      "kind": "tool_call.progress",
+      "lifecycle": "progress",
+      "payload_schema": "hive.session.payload.tool_call.progress.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "invocation_id": "00000000-0000-0000-0000-00000000001d",
+        "provider_tool_use_id": "00000000-0000-0000-0000-00000000001e"
+      },
+      "occurred_at": "2026-11-15T02:32:28.034515+00:00",
+      "persisted_at": "2026-11-15T02:32:28.063341+00:00",
+      "run_id": "00000000-0000-0000-0000-000000000014",
+      "invocation_id": "00000000-0000-0000-0000-00000000001d",
+      "provider_tool_use_id": "00000000-0000-0000-0000-00000000001e",
+      "tenant_id": "tenant",
+      "event_id": "source-100",
+      "sequence": 8,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "round",
+        "run_id": "00000000-0000-0000-0000-000000000014",
+        "turn_id": "00000000-0000-0000-0000-000000000015",
+        "round_id": "00000000-0000-0000-0000-00000000001b",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-00000000001c",
+      "item_kind": "tool_call",
+      "kind": "tool_call.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.tool_call.completed.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "outcome": "success",
+        "retryable": false,
+        "invocation_id": "00000000-0000-0000-0000-00000000001d",
+        "provider_tool_use_id": "00000000-0000-0000-0000-00000000001e"
+      },
+      "occurred_at": "2026-11-15T02:33:02.293256+00:00",
+      "persisted_at": "2026-11-15T02:33:02.302896+00:00",
+      "run_id": "00000000-0000-0000-0000-000000000014",
+      "invocation_id": "00000000-0000-0000-0000-00000000001d",
+      "provider_tool_use_id": "00000000-0000-0000-0000-00000000001e",
+      "tenant_id": "tenant",
+      "event_id": "source-101",
+      "sequence": 9,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "round",
+        "run_id": "00000000-0000-0000-0000-000000000014",
+        "turn_id": "00000000-0000-0000-0000-000000000015",
+        "round_id": "00000000-0000-0000-0000-00000000001b",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-00000000001f",
+      "item_kind": "tool_result",
+      "kind": "tool_result.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.tool_result.completed.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "content": "",
+        "outcome": "success",
+        "retryable": false,
+        "tool_name": "write_file",
+        "invocation_id": "00000000-0000-0000-0000-00000000001d",
+        "provider_tool_use_id": "00000000-0000-0000-0000-00000000001e",
+        "member_summary": {
+          "kind": "file_write",
+          "state": "done",
+          "filename": "sales-report-sales-run22.md"
+        }
+      },
+      "occurred_at": "2026-11-15T02:33:02.293377+00:00",
+      "persisted_at": "2026-11-15T02:33:02.303208+00:00",
+      "run_id": "00000000-0000-0000-0000-000000000014",
+      "invocation_id": "00000000-0000-0000-0000-00000000001d",
+      "provider_tool_use_id": "00000000-0000-0000-0000-00000000001e",
+      "tenant_id": "tenant",
+      "event_id": "source-102",
+      "sequence": 10,
+      "actor": {
+        "type": "runtime"
+      }
+    },
+    {
+      "schema": "hive.session_event",
+      "schema_version": 2,
+      "scope": {
+        "level": "run",
+        "run_id": "00000000-0000-0000-0000-000000000014",
+        "turn_id": "00000000-0000-0000-0000-000000000015",
+        "thread_id": "00000000-0000-0000-0000-000000000012",
+        "session_id": "00000000-0000-0000-0000-000000000012"
+      },
+      "item_id": "00000000-0000-0000-0000-000000000014",
+      "item_kind": "run",
+      "kind": "run.completed",
+      "lifecycle": "completed",
+      "payload_schema": "hive.session.payload.run.completed.v2",
+      "visibility": {
+        "audience": "direct_user"
+      },
+      "payload": {
+        "started_at": "2026-11-15T02:30:59.295030+00:00"
+      },
+      "occurred_at": "2026-11-15T02:37:01.110819+00:00",
+      "persisted_at": "2026-11-15T02:37:01.120384+00:00",
+      "run_id": "00000000-0000-0000-0000-000000000014",
+      "tenant_id": "tenant",
+      "event_id": "source-285",
+      "sequence": 11,
+      "actor": {
+        "type": "runtime"
+      }
+    }
+  ]
+}

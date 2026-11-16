@@ -2564,6 +2564,16 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
 
   return {
     cells: settledCells.map(cell => excludeMemberApprovalWait(cell, input.messages))
+      .filter(cell => {
+        if (cell.kind !== 'boundary' || !isRunningTaskReadStop(cell.message)) return true;
+        // This notice describes current waiting. The check rows retain their
+        // earlier observations; only typed terminals for every observed task
+        // can clear the separate notice.
+        const checks = input.messages.filter(message => isSameSessionRunId(messageRunId(message), messageRunId(cell.message))
+          && message.toolMemberSummary?.kind === 'colleague_result'
+          && message.toolMemberSummary.state === 'in_progress' && message.toolMemberSummary.taskId);
+        return !checks.length || checks.some(message => !message.toolTaskTerminalStatus);
+      })
       .filter(cell => cell.kind !== 'active_run' || cell.timeline.status !== 'done'
         || cell.totalsUnknown
         || cell.timeline.steps.length > 0

@@ -44,6 +44,13 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
   }
   if (event.type.startsWith('runtime_action_') && metadata.runtime_action_from_result_integration === true) {
     const status = String(metadata.status);
+    if (metadata.action_kind === 'hr_provisioning' && metadata.notification_source === 'employee_creation'
+      && ['completed', 'done'].includes(status)) {
+      const name = typeof metadata.target_agent_name === 'string' ? metadata.target_agent_name.trim() : '';
+      return display(t('agent.chat.disclosure.system.employeeCreatedTitle', 'Digital employee created'), name
+        ? t('agent.chat.disclosure.system.employeeCreatedNamed', 'Created the digital employee “{{name}}”.', { name })
+        : t('agent.chat.disclosure.system.employeeCreated', 'Created a digital employee.'));
+    }
     const sentence = ['completed', 'done'].includes(status) ? t('agent.chat.toolResults.stepCompleted', 'Completed')
       : ['failed', 'error'].includes(status) ? t('approvalExecution.failed', 'Failed')
       : ['killed', 'cancelled'].includes(status) ? t('agent.chat.disclosure.stoppedMarker', 'Stopped')

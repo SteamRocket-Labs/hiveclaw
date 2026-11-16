@@ -192,24 +192,52 @@ const colleagueStopped = [...delegated,
     child_session_id: 'child-session-x7f', to_agent: 'colleague-x7f', to_agent_name: '同事',
   }, '2026-11-16T12:21:20.891884Z'),
 ];
-it.each(['live', 'reload'] as const)('X7f: %s stops unsettled colleague rows in the first stopped-parent frame', mode => {
+const colleagueCompleted = [...delegated,
+  compatibility(8, 'runtime_action_completed', '同事已完成这项工作。', {
+    action_kind: 'a2a_delegation', status: 'completed', reason: 'delegation_terminal',
+    runtime_task_id: 'child-task-x7f', child_session_id: 'child-session-x7f', target_agent_name: '同事',
+  }, '2026-11-16T12:21:20.891884Z'),
+  compatibility(9, 'child_session', '同事已完成这项工作。', {
+    status: 'completed', reason: 'delegation_terminal', runtime_task_id: 'child-task-x7f',
+    child_session_id: 'child-session-x7f', to_agent: 'colleague-x7f', to_agent_name: '同事',
+  }, '2026-11-16T12:21:20.891884Z'),
+];
+const colleagueRows = (container: HTMLElement) => Array.from(container.querySelectorAll('.run-step, .run-tool-history-item'))
+  .map(row => row.textContent).join('\n');
+function colleagueBlocks(events: unknown[], mode: Mode, status: string | null) {
+  const model = buildThreadTimeline({ messages: messages(events, mode), activeSession: session,
+    activeRunId: status ? runId.replaceAll('-', '') : null, activeRunStatus: status,
+    isWaiting: Boolean(status), isStreaming: false });
+  return <>{model.cells.filter(cell => cell.kind === 'active_run').map(cell =>
+    <RunDisclosureBlock key={cell.id} timeline={cell.timeline} presentationKey={`${session.id}:${cell.id}`} />)}</>;
+}
+it.each((['live', 'reload'] as const).flatMap(mode => ['completed', 'cancelled'].map(outcome => ({ mode, outcome }))))(
+  'X7f: $mode keeps the colleague running after parent stop until its own $outcome terminal', ({ mode, outcome }) => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-11-16T12:21:20.600Z'));
-  const view = render(block(delegated.slice(0, -1), mode, 'running'));
+  const view = render(colleagueBlocks(delegated.slice(0, -1), mode, 'running'));
   expand(view.container);
   expect(view.container.textContent).toContain('同事正在处理');
   expect(view.container.querySelector('[aria-label="等待同事"]')).toBeTruthy();
-  view.rerender(block(delegated, mode, null));
+  view.rerender(colleagueBlocks(delegated, mode, null));
   expand(view.container);
   expect(view.container.querySelector('[data-status="cancelled"]')).toBeTruthy();
-  expect.soft(view.container.textContent).not.toContain('同事正在处理');
-  expect.soft(view.container.textContent).not.toContain('后台执行中');
-  expect.soft(view.container.querySelector('[aria-label="等待同事"]')).toBeNull();
-  expect(view.container.querySelector('.run-step [aria-label="已停止"], .run-tool-history-item [aria-label="已停止"]')).toBeTruthy();
-  view.rerender(block(colleagueStopped, mode, null));
-  expect(view.container.textContent).not.toContain('后台执行中');
+  expect.soft(colleagueRows(view.container)).not.toContain('已停止');
+  expect.soft(colleagueRows(view.container)).not.toContain('没有完成');
+  expect.soft(colleagueRows(view.container)).toContain('同事正在处理');
+  expect.soft(colleagueRows(view.container)).toContain('后台执行中');
+  expect.soft(view.container.querySelector('[aria-label="等待同事"]')).toBeTruthy();
+  const terminal = outcome === 'completed' ? colleagueCompleted : colleagueStopped;
+  const sentence = outcome === 'completed' ? '同事已完成这项工作。' : '已停止，同事没有完成这项工作。';
+  view.rerender(colleagueBlocks(terminal, mode, null));
+  expand(view.container);
+  expect.soft(colleagueRows(view.container)).toContain(sentence);
+  expect.soft(colleagueRows(view.container)).not.toContain('同事正在处理');
+  expect.soft(colleagueRows(view.container)).not.toContain('后台执行中');
   view.unmount();
-  const reload = render(block(colleagueStopped, 'reload', null));
+  const reload = render(colleagueBlocks(terminal, 'reload', null));
+  expand(reload.container);
+  expect(colleagueRows(reload.container)).toContain(sentence);
   expect(reload.container.textContent).not.toContain('同事正在处理');
   expect(reload.container.querySelector('[aria-label="等待同事"]')).toBeNull();
 });
@@ -222,7 +250,11 @@ it.each((['live', 'reload'] as const).flatMap(mode => ['zh', 'en'].map(language 
       content: permission.content, status: permission.eventStatus, permission_request: permission.sessionPermissionRequest })!;
     const view = render(<ThreadItemRenderer item={item} approvalArguments={permission.sessionPermissionRequest!.arguments} />);
     fireEvent.click(view.getByText(language === 'zh' ? '详情' : 'Details'));
-    const date = new Date(permission.sessionPermissionRequest!.expires_at!).toLocaleString(language);
-    expect(view.container.textContent).toContain(`${date} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`);
+    const expires = new Date(permission.sessionPermissionRequest!.expires_at!);
+    const date = expires.toLocaleString(language);
+    const zone = new Intl.DateTimeFormat(language, { timeZoneName: 'long' }).formatToParts(expires)
+      .find(part => part.type === 'timeZoneName')!.value;
+    expect(view.container.textContent).toContain(language === 'zh' ? `${date}（${zone}）` : `${date} (${zone})`);
+    expect(view.container.textContent).not.toContain(Intl.DateTimeFormat().resolvedOptions().timeZone);
   },
 );

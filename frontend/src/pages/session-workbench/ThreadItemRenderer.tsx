@@ -95,7 +95,12 @@ function statusIcon(status: ThreadItemStatus, itemType: ThreadItemType): React.R
 
 function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => string, language: string, approvalArguments: unknown): Detail[] {
   const userAction = item.user_action;
-  const expiry = (value: string) => `${new Date(value).toLocaleString(language)} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
+  const expiry = (value: string) => {
+    const date = new Date(value);
+    const zone = new Intl.DateTimeFormat(language, { timeZoneName: 'long' }).formatToParts(date)
+      .find(part => part.type === 'timeZoneName')!.value;
+    return `${date.toLocaleString(language)}${language.startsWith('zh') ? `（${zone}）` : ` (${zone})`}`;
+  };
   if (item.item_type === 'approval_request') {
     const data = item.item_data;
     const expires = userAction?.expires_at || data.expires_at;

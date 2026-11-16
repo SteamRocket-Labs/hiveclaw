@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconDownload, IconExternalLink, IconFileText, IconX } from '@tabler/icons-react';
 
@@ -7,7 +7,7 @@ import { fileApi, type ResourceAuthorityOptions } from '../../api/domains/files'
 import { officeApi } from '../../api/domains/office';
 import { saveBlob } from '../../utils/authenticatedResource';
 import { showAppToast } from '../../components/AppDialogs';
-import type { ChatArtifactPart } from './chatRuntime';
+import { agentChatMessageRunId, type AgentChatMessage, type ChatArtifactPart } from './chatRuntime';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
 import ArtifactContinuation, { type ArtifactContinuationContext } from './ArtifactContinuation';
 import OriginalUploadAction from './OriginalUploadAction';
@@ -89,6 +89,7 @@ export function ArtifactPreviewPanel({
   onRetry,
   onDownload,
   continuation,
+  messages = [],
   t,
 }: {
   preview: ArtifactPreviewState;
@@ -99,6 +100,7 @@ export function ArtifactPreviewPanel({
   onRetry?: () => void;
   onDownload?: () => void;
   continuation?: ArtifactContinuationContext;
+  messages?: AgentChatMessage[];
   t: Translate;
 }) {
   const previewKind = getEffectiveArtifactPreviewKind(preview.artifact);
@@ -112,9 +114,23 @@ export function ArtifactPreviewPanel({
   const canOpenCurrent = workspaceAgentId && preview.artifact.path.startsWith('workspace/') && ['markdown', 'text', 'office'].includes(previewKind);
   const [editor, setEditor] = useState<{ identity: string; version: string; state: FileEditorState } | null>(null);
   const keepDraft = editor?.identity === fileIdentity && (editor.state.dirty || editor.state.busy || editor.state.unavailable);
+  const finishedRuns = new Set(messages.filter(message => message.sessionItem?.kind === 'run' && message.sessionItem.terminal)
+    .map(agentChatMessageRunId));
+  const currentRevision = messages.filter(message => message.eventStatus === 'success' && finishedRuns.has(agentChatMessageRunId(message))
+    && message.artifacts?.some(artifact => artifact.source === 'workspace_write' && artifact.path === preview.artifact.path
+      && artifactWorkspaceAgentId(artifact, agentId) === workspaceAgentId)).at(-1)?.id;
   const editorIdentity = keepDraft ? editor.version : `${fileIdentity}:${preview.artifact.id}:${preview.artifact.snapshotHash}`;
   const editorChanged = useCallback((state: FileEditorState) => setEditor({ identity: fileIdentity, version: editorIdentity, state }), [fileIdentity, editorIdentity]);
   const currentEditor = editor?.identity === fileIdentity && editor.version === editorIdentity ? editor.state : null;
+  const observedRevision = useRef({ preview, revision: currentRevision });
+  useEffect(() => {
+    if (observedRevision.current.preview !== preview) {
+      observedRevision.current = { preview, revision: currentRevision };
+    } else if (currentRevision && observedRevision.current.revision !== currentRevision && !currentEditor?.dirty && !currentEditor?.busy) {
+      observedRevision.current = { preview, revision: currentRevision };
+      onClose();
+    }
+  }, [preview, currentRevision, currentEditor?.dirty, currentEditor?.busy, onClose]);
   const continuationBlocked = Boolean(currentEditor && (currentEditor.dirty || currentEditor.busy || currentEditor.unavailable));
   const showPendingEmptyPreview = isPendingEmptyArtifactPreview(
     preview.artifact,

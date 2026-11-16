@@ -11,7 +11,20 @@ export function isSupersededCreationCard(messages: AgentChatMessage[], index: nu
 }
 
 export function assistantReplyForDisplay(content: string): string {
-  return content.replace(/^[\t ]*(?:[-*][\t ]+)?(?:\*\*|`)?DELIVERABLE(?:\*\*|`)?[\t ]*[:：][^\r\n]*(?:\r?\n|$)/gim, '');
+  const lines = content.match(/[^\n]*\n|[^\n]+$/g) || [];
+  const removed = new Set<number>();
+  for (let index = 0; index < lines.length; index++) {
+    if (!/^[\t ]*(?:[-*][\t ]+)?(?:\*\*|`)?DELIVERABLE(?:\*\*|`)?[\t ]*[:：]/i.test(lines[index])) continue;
+    removed.add(index);
+    let previous = index - 1;
+    while (previous >= 0 && !lines[previous].trim()) previous--;
+    if (previous < 0) continue;
+    const label = lines[previous].replace(/[*_]/g, '').trim().replace(/^#+\s*/, '').replace(/^(?:-|\d+\.)\s+/, '').trim();
+    if (Array.from(label).length <= 30 && /[:：]$/.test(label) && !/[。，,；;！!？?]/.test(label.slice(0, -1))) {
+      for (let line = previous; line < index; line++) removed.add(line);
+    }
+  }
+  return lines.filter((_line, index) => !removed.has(index)).join('');
 }
 
 export function shouldCollapseAssistantSupplement(messages: AgentChatMessage[], index: number): boolean {

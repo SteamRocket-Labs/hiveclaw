@@ -97,9 +97,11 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
   const userAction = item.user_action;
   const expiry = (value: string) => {
     const date = new Date(value);
+    const plain = date.toLocaleString(language);
+    if (Number.isNaN(date.getTime())) return plain;
     const zone = new Intl.DateTimeFormat(language, { timeZoneName: 'long' }).formatToParts(date)
-      .find(part => part.type === 'timeZoneName')!.value;
-    return `${date.toLocaleString(language)}${language.startsWith('zh') ? `（${zone}）` : ` (${zone})`}`;
+      .find(part => part.type === 'timeZoneName')?.value;
+    return zone ? `${plain}${language.startsWith('zh') ? `（${zone}）` : ` (${zone})`}` : plain;
   };
   if (item.item_type === 'approval_request') {
     const data = item.item_data;

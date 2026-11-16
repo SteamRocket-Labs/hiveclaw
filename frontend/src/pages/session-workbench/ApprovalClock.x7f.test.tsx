@@ -6,6 +6,7 @@ import i18n from 'i18next';
 import zh from '../../i18n/zh.json';
 import en from '../../i18n/en.json';
 import RunDisclosureBlock from '../agent-detail/RunDisclosureBlock';
+import { AgentDetailErrorBoundary } from '../agent-detail/AgentDetailErrorSurfaces';
 import { normalizeRuntimeEventMessage, replayTranscriptEvents, uiForPhase, type AgentChatMessage, type ChatTranscriptEventPayload } from '../agent-detail/chatRuntime';
 import { hydrateSessionTranscriptEvents } from '../agent-detail/sessionEventConsumer';
 import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } from '../agent-detail/sessionTranscriptApplier';
@@ -258,3 +259,49 @@ it.each((['live', 'reload'] as const).flatMap(mode => ['zh', 'en'].map(language 
     expect(view.container.textContent).not.toContain(Intl.DateTimeFormat().resolvedOptions().timeZone);
   },
 );
+
+const invalidExpiries = (['live', 'reload'] as const).flatMap(mode => ['zh', 'en'].flatMap(language =>
+  ['not-a-date', '   ', 1700000000000].map(expires => ({ mode, language, expires }))));
+it.each(invalidExpiries)('X7f: $mode keeps the conversation and collapsed approval for invalid expiry $expires in $language', async ({ mode, language, expires }) => {
+  await i18n.changeLanguage(language);
+  const item = normalizeThreadItemPayload({ id: 'invalid-expiry', sequence: 2, event_type: 'permission',
+    permission_request: { ...request, expires_at: expires } })!;
+  if (item.item_type !== 'approval_request') throw new Error('Expected an approval request');
+  // Legacy normalization trims blank text; a typed canonical card may still
+  // carry it. Numeric legacy values must pass through the real text reducer.
+  if (typeof expires === 'string' && !expires.trim()) item.item_data.expires_at = expires;
+  expect(item.item_data.expires_at).toBe(String(expires));
+  const projected = messages([run23Waiting[0], item], mode);
+  const caught = vi.spyOn(AgentDetailErrorBoundary.prototype, 'componentDidCatch').mockImplementation(() => {});
+  try {
+    const view = render(<AgentDetailErrorBoundary><section data-testid="expiry-conversation">
+      {projected.map((message, index) => message.threadItem
+        ? <ThreadItemRenderer key={index} item={message.threadItem} />
+        : <p key={index}>{message.content}</p>)}
+    </section></AgentDetailErrorBoundary>);
+    expect(caught).not.toHaveBeenCalled();
+    expect(view.queryByText('Something went wrong')).toBeNull();
+    expect(view.getByTestId('expiry-conversation').textContent).toContain('Publish a post.');
+    const card = view.container.querySelector('[data-thread-item-type="approval_request"]');
+    expect(card).toBeTruthy();
+    expect(card!.querySelector('details')?.hasAttribute('open')).toBe(false);
+    fireEvent.click(view.getByText(language === 'zh' ? '详情' : 'Details'));
+    const label = view.getByText(i18n.t('sessionWorkbench.threadItem.field.expires'));
+    expect(label.nextElementSibling?.textContent).toBe(new Date(String(expires)).toLocaleString(language));
+  } finally {
+    caught.mockRestore();
+  }
+});
+
+it.each(['zh', 'en'])('X7f: %s keeps the plain expiry when Intl supplies no zone name', async language => {
+  await i18n.changeLanguage(language);
+  const item = normalizeThreadItemPayload({ event_type: 'permission', permission_request: request })!;
+  const parts = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts').mockReturnValue([]);
+  try {
+    const view = render(<ThreadItemRenderer item={item} />);
+    const label = view.getByText(i18n.t('sessionWorkbench.threadItem.field.expires'));
+    expect(label.nextElementSibling?.textContent).toBe(new Date(request.expires_at).toLocaleString(language));
+  } finally {
+    parts.mockRestore();
+  }
+});

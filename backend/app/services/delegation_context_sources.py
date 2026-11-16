@@ -468,13 +468,14 @@ async def bind_native_recovery_context(db, *, task, session):
     )
 
 
-async def _facts(db, task):
+async def _facts(db, task, *, _checkpoint_point=None):
     from app.agents.orchestrator import (
         _build_delegated_worker_prompt,
         _permission_profile_mode,
         _resolve_delegation_tool_profile,
     )
     from app.runtime.ccplus_contracts import permission_profile_snapshot
+    from app.services.content_input_receipts import checkpoint_rows, checkpoint_values
 
     metadata = task.metadata_json or {}
     if not isinstance(metadata, dict) or not task.child_session_id or not task.parent_session_id:
@@ -487,8 +488,18 @@ async def _facts(db, task):
         session_id = uuid.UUID(task.child_session_id)
     except (ValueError, TypeError):
         return None
-    session = await db.get(ChatSession, session_id, populate_existing=True)
-    parent = await db.get(Agent, task.parent_agent_id, populate_existing=True)
+    binding = (task.tenant_id, session_id, task.parent_agent_id)
+    current = checkpoint_values(db, _checkpoint_point, binding=binding) if _checkpoint_point else None
+    if current is None and _checkpoint_point:
+        current = await checkpoint_rows(db, _checkpoint_point, select(ChatSession, Agent)
+            .select_from(ChatSession)
+            .outerjoin(Agent, Agent.id == task.parent_agent_id).where(ChatSession.id == session_id)
+            .execution_options(populate_existing=True), lambda row: "context", binding=binding)
+    if current is None:
+        session = await db.get(ChatSession, session_id, populate_existing=True)
+        parent = await db.get(Agent, task.parent_agent_id, populate_existing=True)
+    else:
+        session, parent = current.get("context", (None, None))
     stored_profile = metadata.get("permission_profile")
     if stored_profile is None:
         stored_profile = permission_profile_snapshot(None)

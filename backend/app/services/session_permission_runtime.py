@@ -803,11 +803,7 @@ async def _resolve_session_tool_permission(
                 from app.services.approval_service import can_resolve_approval
 
                 row = (await db.execute(select(Agent, User).join(User, User.id == authority.principal_id)
-                    .where(Agent.id == authority.agent_id).options(
-                        load_only(Agent.id, Agent.tenant_id, Agent.owner_user_id, Agent.creator_id,
-                            Agent.home_business_team_id),
-                        load_only(User.id, User.tenant_id, User.role, User.department_id, User.is_active,
-                            User.username, User.display_name))
+                    .where(Agent.id == authority.agent_id)
                     .execution_options(populate_existing=True))).first()
                 agent, user = row if row is not None else (None, None)
                 approval = ApprovalRequest(tenant_id=authority.tenant_id, agent_id=authority.agent_id,

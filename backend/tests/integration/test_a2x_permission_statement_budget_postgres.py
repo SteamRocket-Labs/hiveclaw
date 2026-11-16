@@ -1,17 +1,14 @@
 """Permission resolution keeps real tool execution and bounded PostgreSQL work."""
 
-from collections import Counter
-from contextlib import contextmanager
-from contextvars import ContextVar
 from datetime import datetime, timezone
 import inspect
 import json
+import re
 import time
 import uuid
 
 import pytest
-from sqlalchemy import event, func, select
-from sqlalchemy.engine import Engine
+from sqlalchemy import func, select
 
 from app.database import pin_rls_tenant_context
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -20,62 +17,11 @@ from app.models.plaza import PlazaPost
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.models.user import User
+from tests.integration._a2x_profile import permission_client, request_statements, save_inventory
 from tests.services.test_session_permission_runtime import _seed_waiting_batch
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
-_PHASE = ContextVar("a2x_sql_phase", default="execution_lease_relock_and_settlement")
-
-
-@contextmanager
-def _statements(monkeypatch):
-    from app.api import chat_sessions
-    from app.services import agent_tools, session_control_input, session_permission_runtime, session_v2_persistence
-
-    phases, callers = Counter(), Counter()
-
-    def before(_connection, _cursor, statement, _parameters, _context, _many):
-        from greenlet import getcurrent
-
-        phase = _PHASE.get()
-        if phase == "tool_checks" and statement.lstrip().startswith("INSERT INTO plaza_posts"):
-            phase = "tool_effect"
-        phases[phase] += 1
-        current, frame = getcurrent(), inspect.currentframe()
-        while current is not None:
-            while frame is not None:
-                if "/app/" in frame.f_code.co_filename:
-                    callers[(phase, frame.f_code.co_name)] += 1
-                    return
-                frame = frame.f_back
-            current = current.parent
-            frame = current.gr_frame if current is not None else None
-        callers[(phase, "framework")] += 1
-
-    def wrap(patch, module, name, phase):
-        original = getattr(module, name)
-
-        async def measured(*args, **kwargs):
-            token = _PHASE.set(phase)
-            try:
-                return await original(*args, **kwargs)
-            finally:
-                _PHASE.reset(token)
-
-        patch.setattr(module, name, measured)
-
-    with monkeypatch.context() as patch:
-        wrap(patch, chat_sessions, "_get_run_session_and_agent", "route_authority")
-        wrap(patch, session_v2_persistence, "resolve_session_mutation_authority", "route_authority")
-        for name in ("accept_tool_permission_response", "apply_permission_response_control_input"):
-            wrap(patch, session_control_input, name, "permission_acceptance_and_control_input")
-        wrap(patch, agent_tools, "execute_session_permission_tool", "tool_checks")
-        wrap(patch, session_permission_runtime, "_settle_unstarted_batch_siblings", "sibling_settlement")
-        wrap(patch, session_permission_runtime, "_queue_same_run_continuation", "continuation")
-        event.listen(Engine, "before_cursor_execute", before)
-        try:
-            yield phases, callers
-        finally:
-            event.remove(Engine, "before_cursor_execute", before)
+RESOLVE_STATEMENT_CEILING = 184
 
 
 async def _history(seed, owner, scale):
@@ -164,96 +110,277 @@ async def _history(seed, owner, scale):
         return counts
 
 
+@pytest.mark.parametrize("budget", ["ceiling", "history", "siblings"])
 async def test_allow_once_statement_budget_is_bounded_by_history_and_siblings(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, _route_default_app_engine, budget,
 ):
-    from app.api.chat_sessions import ResolveSessionPermissionIn, resolve_session_permission
-    from app.services import runtime_task_worker
-
-    async def no_wakeup(**_kwargs):
-        pass
-
-    # Only the background worker notification is muted. Authority, lease,
-    # governance, source checks, effect, settlement and continuation are real.
-    monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", no_wakeup)
     observations = []
+    projection_violations = []
     for scale, pending in ((1, 1), (2, 1), (1, 2), (1, 3)):
         seed = await _seed_waiting_batch(owner_sessionmaker, tool_name="plaza_create_post",
             tool_arguments={"content": "[A2x] Approved local integration post."}, tool_count=pending)
         counts = await _history(seed, owner_sessionmaker, scale)
-        async with app_user_sessionmaker() as db:
-            await pin_rls_tenant_context(db, seed.tenant_id)
-            user = await db.get(User, seed.user_id)
+        async with permission_client(app_user_sessionmaker, seed, monkeypatch, _route_default_app_engine) as (client, app):
             started = time.perf_counter()
-            with _statements(monkeypatch) as (phases, callers):
-                receipt = await resolve_session_permission(agent_id=seed.agent_id, session_id=seed.session_id,
-                    permission_request_id=seed.permission_ids[0], body=ResolveSessionPermissionIn(action="allow_once"),
-                    current_user=user, db=db)
-            observation = {"scale": scale, "pending": pending, "history": counts,
-                "statements": sum(phases.values()), "phases": dict(phases),
+            url = f"/api/agents/{seed.agent_id}/sessions/{seed.session_id}/permissions/{seed.permission_ids[0]}/resolve"
+            with request_statements(monkeypatch, app) as sample:
+                response = await client.post(url, json={"action": "allow_once"})
+            assert response.status_code == 200, response.text
+            receipt = response.json()
+            full_count = int(re.search(r'desc="(\d+)"', response.headers["server-timing"])[1])
+            phases = sample["phases"]
+            assert full_count == len(sample["sql"]) == sum(phases.values())
+            assert sample["route_body"] == full_count - phases["authentication_and_middleware"]
+            observation = {"budget": budget, "scale": scale, "pending": pending, "history": counts,
+                "statements": full_count, "route_body": sample["route_body"], "phases": dict(phases),
                 "seconds": round(time.perf_counter() - started, 4),
-                "callers": {f"{phase}/{caller}": count for (phase, caller), count in sorted(callers.items())}}
+                "server_timing": response.headers["server-timing"]}
             observations.append(observation)
-            print("A2X_RESOLVE", json.dumps(observation), flush=True)
+            save_inventory(f"{budget}_s{scale}_p{pending}", observation, sample)
+            print("A2X_FULL_RESOLVE", json.dumps(observation), flush=True)
+            if budget == "ceiling":
+                for statement in sample["sql"]:
+                    checkpoint = statement["checkpoint"]
+                    if ("mark_tool_effect_started" in checkpoint or "_source_result#2" in checkpoint
+                        or ("apply_permission_response_control_input" in checkpoint
+                            and statement["stack"][0]["function"] == "_result_for_invocation")):
+                        if "model_request_snapshot_json" in statement["sql"]:
+                            projection_violations.append((checkpoint, statement["number"]))
+                    if "complete_tool_invocation" in checkpoint:
+                        if "session_model_results" in statement["tables"]:
+                            projection_violations.append((checkpoint, statement["number"]))
             assert receipt["run_id"] == str(seed.run_id)
             assert receipt["run_status"] == ("resumable" if pending == 1 else "suspended")
             assert receipt["status"] == ("resolved" if pending == 1 else "waiting_for_sibling_permissions")
+            replay = await client.post(url, json={"action": "allow_once"})
+            assert replay.status_code == 200, replay.text
+            assert replay.json()["result_event_id"] == receipt["result_event_id"]
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed.tenant_id)
             invocation = await db.get(SessionToolInvocation, seed.invocation_ids[0])
             assert invocation.result_event_id is not None
             assert invocation.effect_state == "effect_committed"
             assert await db.scalar(select(func.count()).select_from(PlazaPost).where(
                 PlazaPost.tenant_id == seed.tenant_id, PlazaPost.author_id == seed.agent_id)) == 1
             assert phases["tool_effect"] == 1
-            replay = await resolve_session_permission(agent_id=seed.agent_id, session_id=seed.session_id,
-                permission_request_id=seed.permission_ids[0], body=ResolveSessionPermissionIn(action="allow_once"),
-                current_user=user, db=db)
-            assert replay["result_event_id"] == receipt["result_event_id"]
-            assert await db.scalar(select(func.count()).select_from(PlazaPost).where(
-                PlazaPost.tenant_id == seed.tenant_id, PlazaPost.author_id == seed.agent_id)) == 1
-    assert observations[0]["statements"] <= 140, observations
-    assert observations[1]["statements"] <= observations[0]["statements"] + 5, observations
-    for phase in set(observations[2]["phases"]) | set(observations[3]["phases"]):
-        assert observations[3]["phases"].get(phase, 0) <= observations[2]["phases"].get(phase, 0) + 3, observations
+    if budget == "ceiling":
+        assert observations[0]["statements"] <= RESOLVE_STATEMENT_CEILING, observations
+        assert not projection_violations
+    elif budget == "history":
+        assert observations[1]["statements"] <= observations[0]["statements"] + 5, observations
+    else:
+        for previous, current in ((observations[0], observations[2]), (observations[2], observations[3])):
+            for phase in set(previous["phases"]) | set(current["phases"]):
+                assert current["phases"].get(phase, 0) <= previous["phases"].get(phase, 0) + 3, observations
 
 
-async def test_permission_sources_observe_owner_transfer_between_result_checks(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+@pytest.mark.parametrize("mutation", ["transfer", "revoke_member"])
+@pytest.mark.parametrize("point,allows_effect", [
+    ("pre_effect_sources", False),
+    ("lease_before_sources", False),
+    ("lease_after_source_failure", False),
+    ("responsible_approver", False),
+    ("effect_fence", True),
+    ("fence_advisory", True),
+    ("fence_invocation", True),
+    ("fence_run_state", True),
+    ("fence_model_binding", True),
+    ("tool_extension_policy", True),
+    ("tool_workspace_read", True),
+    ("tool_workspace_inputs", True),
+    ("plaza_hr", True),
+    ("plaza_hr_tenant", True),
+    ("plaza_hr_agent", True),
+    ("plaza_effect_tenant", True),
+    ("plaza_agent", True),
+    ("plaza_insert", True),
+    ("asset_usage", True),
+    ("result_settlement", True),
+    ("sibling_settlement", True),
+    ("continuation", True),
+])
+async def test_distinct_permission_checkpoints_keep_baseline_authority(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, _route_default_app_engine,
+    mutation, point, allows_effect,
 ):
     from app.models.agent import Agent
-    from app.models.chat_session import ChatSession
-    from app.services import content_input_receipts
-    from app.services.delegation_permission_runtime import validate_permission_input_sources
-    from tests.services.test_session_permission_runtime import _authority
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from app.services import chat_transcript, content_input_receipts, delegation_permission_runtime
+    from app.services import ai_assets, permission_execution, session_permission_runtime, session_tool_runtime
+    from app.services.agent_tool_domains import plaza
+    from app.tools.service import ToolRuntimeService
 
     seed = await _seed_waiting_batch(owner_sessionmaker, tool_name="plaza_create_post",
         tool_arguments={"content": "[A2x] Source authority must stay current."})
     await _history(seed, owner_sessionmaker, 1)
+    if point == "lease_after_source_failure":
+        from app.services.session_model_inputs import _hash
+
+        async with owner_sessionmaker() as db:
+            model = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed.run_id))
+            snapshot = dict(model.model_request_snapshot_json)
+            bindings = dict(snapshot["input_bindings"])
+            dependencies = [dict(row) for row in bindings["dependencies"]]
+            dependencies[0]["source_version"] = "0" * 64
+            snapshot["input_bindings"] = {**bindings, "dependencies": dependencies}
+            model.model_request_snapshot_json, model.model_request_hash = snapshot, _hash(snapshot)
+            await db.commit()
     successor_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
         db.add(User(id=successor_id, tenant_id=seed.tenant_id, username=f"successor-{successor_id.hex}",
             email=f"{successor_id.hex}@permission.test", password_hash="x", display_name="Successor"))
         await db.commit()
-    original = content_input_receipts._validate_session_dependency
-    checked = []
+    changed, sources_finished, source_attempted, lease_calls = False, False, False, 0
+    reached, denied_sources, observed_owners = [], [], []
 
-    async def transfer_after_first_check(*args, **kwargs):
-        await original(*args, **kwargs)
-        checked.append(args[2]["source_id"])
-        if len(checked) == 1:
+    async def boundary(name):
+        nonlocal changed
+        scope = content_input_receipts._DISCLOSURE_SOURCE_VALIDATIONS.get()
+        assert scope is None, (name, "A source observation escaped its checkpoint")
+        reached.append(name)
+        if name == point and not changed:
+            changed = True
             async with owner_sessionmaker() as other:
-                agent = await other.get(Agent, seed.agent_id)
-                agent.owner_user_id = successor_id
+                if mutation == "transfer":
+                    agent = await other.get(Agent, seed.agent_id)
+                    agent.owner_user_id = successor_id
+                else:
+                    member = await other.get(User, seed.user_id)
+                    member.is_active = False
                 await other.commit()
 
-    monkeypatch.setattr(content_input_receipts, "_validate_session_dependency", transfer_after_first_check)
-    async with app_user_sessionmaker() as db:
-        await pin_rls_tenant_context(db, seed.tenant_id)
-        _user, authority = await _authority(db, seed)
-        session = await db.get(ChatSession, seed.session_id)
+    def wrap(module, name, checkpoint, *, after_sources=False):
+        original = getattr(module, name)
+
+        async def observed(*args, **kwargs):
+            if not after_sources or sources_finished:
+                await boundary(checkpoint)
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, observed)
+
+    original_sources = delegation_permission_runtime.validate_permission_input_sources
+
+    async def source_checkpoint(*args, **kwargs):
+        nonlocal sources_finished, source_attempted
+        source_attempted = True
+        await boundary("pre_effect_sources")
+        try:
+            result = await original_sources(*args, **kwargs)
+        except content_input_receipts.ContentInputReceiptError as exc:
+            assert content_input_receipts._DISCLOSURE_SOURCE_VALIDATIONS.get() is None
+            denied_sources.append(exc.code)
+            raise
+        sources_finished = True
+        assert content_input_receipts._DISCLOSURE_SOURCE_VALIDATIONS.get() is None
+        return result
+
+    monkeypatch.setattr(delegation_permission_runtime, "validate_permission_input_sources", source_checkpoint)
+    original_lease = permission_execution.PermissionExecutionLease.ensure_owned
+
+    async def lease_owned(*args, **kwargs):
+        nonlocal lease_calls
+        name = ("lease_after_source_failure" if source_attempted else "lease_after_pre_effect_failure") \
+            if lease_calls else "lease_before_sources"
+        lease_calls += 1
+        await boundary(name)
+        return await original_lease(*args, **kwargs)
+
+    monkeypatch.setattr(permission_execution.PermissionExecutionLease, "ensure_owned", lease_owned)
+    wrap(session_tool_runtime, "mark_tool_effect_started", "effect_fence")
+    wrap(ToolRuntimeService, "_l2_extension_policy_block", "tool_extension_policy", after_sources=True)
+    wrap(content_input_receipts, "authorize_workspace_receipt_read", "tool_workspace_read", after_sources=True)
+    wrap(content_input_receipts, "authorize_workspace_execution_inputs", "tool_workspace_inputs", after_sources=True)
+    wrap(plaza, "_is_system_hr", "plaza_hr", after_sources=True)
+    original_tenant = plaza.resolve_tenant_for_agent
+
+    async def plaza_tenant(*args, **kwargs):
+        if sources_finished:
+            name = "plaza_hr_tenant" if inspect.currentframe().f_back.f_code.co_name == "_is_system_hr" \
+                else "plaza_effect_tenant"
+            await boundary(name)
+        return await original_tenant(*args, **kwargs)
+
+    monkeypatch.setattr(plaza, "resolve_tenant_for_agent", plaza_tenant)
+    wrap(ai_assets, "resolve_asset_ref", "asset_usage", after_sources=True)
+    wrap(session_tool_runtime, "complete_tool_invocation", "result_settlement")
+    wrap(session_permission_runtime, "_settle_unstarted_batch_siblings", "sibling_settlement")
+    wrap(session_permission_runtime, "_queue_same_run_continuation", "continuation")
+    original_lock = chat_transcript.lock_transcript_session
+
+    async def lock(*args, **kwargs):
+        if inspect.currentframe().f_back.f_code.co_name == "mark_tool_effect_started":
+            await boundary("fence_advisory")
+        return await original_lock(*args, **kwargs)
+
+    monkeypatch.setattr(chat_transcript, "lock_transcript_session", lock)
+    original_scalar, original_execute, original_get = AsyncSession.scalar, AsyncSession.execute, AsyncSession.get
+    original_commit = AsyncSession.commit
+
+    async def scalar(self, statement, *args, **kwargs):
+        caller = inspect.currentframe().f_back.f_code.co_name
+        if sources_finished and caller == "mark_tool_effect_started":
+            entity = statement.column_descriptions[0]["entity"]
+            await boundary("fence_invocation" if entity is SessionToolInvocation else "fence_run_state")
+        elif sources_finished and caller == "_result_for_invocation":
+            await boundary("fence_model_binding")
+        return await original_scalar(self, statement, *args, **kwargs)
+
+    async def execute(self, statement, *args, **kwargs):
+        caller = inspect.currentframe().f_back.f_code.co_name
+        if sources_finished and caller == "_is_system_hr":
+            await boundary("plaza_hr_agent")
+        if caller == "_pre_effect" and statement.column_descriptions[0]["entity"] is Agent:
+            await boundary("responsible_approver")
+        is_agent = (sources_finished and caller == "_plaza_create_post"
+            and statement.column_descriptions[0]["entity"] is Agent)
+        if is_agent:
+            await boundary("plaza_agent")
+        result = await original_execute(self, statement, *args, **kwargs)
+        if is_agent:
+            frozen = result.freeze()
+            observed_owners.extend(str(agent.owner_user_id) for agent in frozen.data)
+            return frozen()
+        return result
+
+    async def get(self, entity, *args, **kwargs):
+        if entity is Agent and inspect.currentframe().f_back.f_code.co_name == "_pre_effect":
+            await boundary("responsible_approver")
+        return await original_get(self, entity, *args, **kwargs)
+
+    async def commit(self):
+        if any(isinstance(row, PlazaPost) for row in self.new):
+            await boundary("plaza_insert")
+        return await original_commit(self)
+
+    monkeypatch.setattr(AsyncSession, "scalar", scalar)
+    monkeypatch.setattr(AsyncSession, "execute", execute)
+    monkeypatch.setattr(AsyncSession, "get", get)
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    async with permission_client(app_user_sessionmaker, seed, monkeypatch, _route_default_app_engine) as (client, _app):
+        response = await client.post(
+            f"/api/agents/{seed.agent_id}/sessions/{seed.session_id}/permissions/{seed.permission_ids[0]}/resolve",
+            json={"action": "allow_once"})
+    assert response.status_code == 200, response.text
+    assert changed and point in reached, reached
+    async with owner_sessionmaker() as db:
         invocation = await db.get(SessionToolInvocation, seed.invocation_ids[0])
-        model = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed.run_id))
-        with pytest.raises(content_input_receipts.ContentInputReceiptError) as denied:
-            await validate_permission_input_sources(db, authority=authority, session=session,
-                invocation=invocation, model=model, execution={})
-        assert denied.value.code == "content_source_access_denied"
-        assert len(checked) == 1
+        event_row = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        posts = await db.scalar(select(func.count()).select_from(PlazaPost).where(PlazaPost.tenant_id == seed.tenant_id))
+        observation = {"point": point, "mutation": mutation, "posts": posts,
+            "effect_state": invocation.effect_state, "denied_sources": denied_sources,
+            "checkpoints_without_source_scope": reached, "run_status": response.json()["run_status"]}
+        print("A2X_BOUNDARY", json.dumps(observation), flush=True)
+        assert posts == int(allows_effect), observation
+        assert invocation.effect_state == ("effect_committed" if allows_effect else "prepared_not_started")
+        assert response.json()["run_id"] == str(seed.run_id)
+        assert response.json()["run_status"] == "resumable"
+        assert invocation.result_event_id is not None
+        if point == "pre_effect_sources":
+            assert denied_sources == ["content_source_access_denied"]
+        if point == "lease_after_source_failure":
+            assert denied_sources and lease_calls == 2
+        if not allows_effect:
+            assert json.loads(event_row.metadata_json["v2_payload"]["content"])["status"] == "failed"
+        if point == "plaza_agent" and mutation == "transfer":
+            assert observed_owners == [str(successor_id)]

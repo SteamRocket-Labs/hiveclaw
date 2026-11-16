@@ -5,7 +5,9 @@ import uuid
 from app.core.execution_context import A2AToolAuthorityFrame, ExecutionIdentity, ExecutionPrincipal
 from app.models.runtime_task import RuntimeTask
 from app.runtime.ccplus_contracts import build_permission_profile, permission_profile_snapshot, permission_profile_snapshot_hash
-from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+from app.services.content_input_receipts import (
+    ContentInputReceiptError, _preload_execution_sources, _validate_input_dependencies, group_source_read,
+)
 from app.services.session_model_inputs import _hash, _model_dependencies, model_output_dependencies
 
 
@@ -71,7 +73,10 @@ async def validate_permission_input_sources(db, *, authority, session, invocatio
         dependencies, _complete = _model_dependencies(model)
         principal = AgentRuntimePrincipal(agent_id=authority.agent_id, requester_user_id=authority.principal_id,
             session_id=str(session.id), runtime_task_id=str(invocation.run_id))
-        await _validate_input_dependencies(db, authority.tenant_id, dependencies, runtime_request=principal)
+        with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True):
+            if dependencies:
+                await _preload_execution_sources(db, authority.tenant_id, dependencies)
+            await _validate_input_dependencies(db, authority.tenant_id, dependencies, runtime_request=principal)
         return
     from pathlib import Path
     from app.config import get_settings

@@ -458,6 +458,7 @@ async def apply_permission_response_control_input(
     *,
     authority: AuthenticatedSessionAuthority,
     control_id: uuid.UUID | str,
+    accepted_sequence: int | None = None,
 ) -> ControlInputReceipt:
     """Atomically apply the control and its tool-permission consequence."""
 
@@ -514,14 +515,16 @@ async def apply_permission_response_control_input(
         return _permission_response_receipt(
             control=control,
             command=command,
-            accepted_sequence=await _accepted_sequence(db, command.id),
+            accepted_sequence=(accepted_sequence if accepted_sequence is not None
+                else await _accepted_sequence(db, command.id)),
             replayed=True,
         )
     if control.status != "accepted" or command.status != "accepted":
         return _permission_response_receipt(
             control=control,
             command=command,
-            accepted_sequence=await _accepted_sequence(db, command.id),
+            accepted_sequence=(accepted_sequence if accepted_sequence is not None
+                else await _accepted_sequence(db, command.id)),
             replayed=True,
         )
     if decision not in _TOOL_PERMISSION_DECISIONS:
@@ -643,7 +646,8 @@ async def apply_permission_response_control_input(
         command.id,
         control.id,
         "applied",
-        accepted_sequence=await _accepted_sequence(db, command.id),
+        accepted_sequence=(accepted_sequence if accepted_sequence is not None
+            else await _accepted_sequence(db, command.id)),
         recovery_action=_permission_recovery_action(decision, "applied"),
         replayed=False,
     )

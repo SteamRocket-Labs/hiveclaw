@@ -876,8 +876,15 @@ export function buildRunAggregateSummary(steps: RunStepSnapshot[]): RunAggregate
   const searches = hiddenProcessTools.filter((step) => step.kind === 'search').length;
   const commands = hiddenProcessTools.filter((step) => step.kind === 'command').length;
   const successfulFiles = completed.filter(step => step.status === 'done' && step.presentation !== 'external');
-  const writes = successfulFiles.filter(step => ['write_file', 'fs_write'].includes(String((step.details as { toolName?: string })?.toolName))).length;
-  const edits = successfulFiles.filter(step => (step.details as { toolName?: string })?.toolName === 'edit_file').length;
+  const fileActions = successfulFiles.map(step => {
+    const details = step.details as { toolName?: string; memberSummary?: { kind?: string } } | null;
+    if (details?.toolName === 'fs_write') return details.memberSummary?.kind ?? 'file_write';
+    if (['write_file', 'office_document_create'].includes(details?.toolName || '')) return 'file_write';
+    if (['edit_file', 'office_document_apply'].includes(details?.toolName || '')) return 'file_edit';
+    return undefined;
+  });
+  const writes = fileActions.filter(kind => kind === 'file_write').length;
+  const edits = fileActions.filter(kind => kind === 'file_edit').length;
   return files + writes + edits + searches + commands > 0
     ? { files, searches, commands, ...(writes ? { writes } : {}), ...(edits ? { edits } : {}) } : undefined;
 }

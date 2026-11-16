@@ -3061,7 +3061,15 @@ async def _validate_workspace_live(db, tenant_id, dependency, *, user, runtime_r
         else:
             access = None
             if facts is not None:
-                if runtime_request is not None and not after:
+                published_access = (_preflight_inputs(db) or {}).get("published_agent_access")
+                if published_access is not None:
+                    from app.core.permissions import check_agent_access
+
+                    key = (user.id, agent_id, _DISCLOSURE_SOURCE_VALIDATIONS.get().checkpoint, after)
+                    if key not in published_access:
+                        published_access[key] = await check_agent_access(db, user, agent_id, _source_facts=facts)
+                    access = published_access[key]
+                elif runtime_request is not None and not after:
                     from app.core.permissions import check_agent_access
 
                     access = await check_agent_access(db, user, agent_id, _source_facts=facts)
@@ -3412,6 +3420,9 @@ async def validate_published_workspace_receipt(db, tenant_id: uuid.UUID, user, r
     with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as scope:
         scope.browser_reader = user
         await _preload_execution_sources(db, tenant_id, dependencies)
+        # Each publication owns a file savepoint. Reuse its canonical Agent ACL
+        # only at the same live checkpoint; the after-check reads it again.
+        _preflight_inputs(db)["published_agent_access"] = {}
         await validate_browser_input_dependencies(db, tenant_id, user, dependencies)
 
 

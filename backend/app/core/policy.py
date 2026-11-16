@@ -145,7 +145,8 @@ async def check_permission(
 
     Evaluates live matching allow/deny rows; any applicable deny wins.
     Returns True if allowed, False if denied or absent.
-    Internal callers may supply rows read at this same live checkpoint.
+    Internal _permissions rows must already be filtered to this tenant,
+    resource type and resource id, and read at the caller's current checkpoint.
     """
     if _permissions is not None:
         return classify_loaded_permissions(_permissions,

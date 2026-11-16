@@ -368,10 +368,9 @@ async def approval_execution_matches(db, *, task, session, invocation_id=None):
         return False
 
 
-async def _permission_execution_matches(db, *, task, session, runtime_request=None, _checkpoint_point=None):
+async def _permission_execution_matches(db, *, task, session, runtime_request=None):
     from app.models.session_v2 import SessionCommand, SessionControlInput, SessionToolInvocation
     from app.services.session_model_inputs import _hash
-    from app.services.content_input_receipts import checkpoint_rows, checkpoint_values
 
     scope = _GROUP_PERMISSION_EXECUTION.get()
     if scope is None or task is None or task.status not in {"running", "suspended", "resumable"}:
@@ -387,20 +386,9 @@ async def _permission_execution_matches(db, *, task, session, runtime_request=No
         or task.root_user_id != authority.principal_id
     ):
         return False
-    binding = (task.tenant_id, control_id, invocation_id)
-    current = checkpoint_values(db, _checkpoint_point, binding=binding) if _checkpoint_point else None
-    if current is None and _checkpoint_point:
-        current = await checkpoint_rows(db, _checkpoint_point, select(SessionControlInput, SessionCommand, SessionToolInvocation)
-            .select_from(SessionControlInput)
-            .outerjoin(SessionCommand, SessionCommand.id == SessionControlInput.command_id)
-            .outerjoin(SessionToolInvocation, SessionToolInvocation.id == invocation_id)
-            .where(SessionControlInput.id == control_id), lambda row: "permission", binding=binding)
-    if current is None:
-        control = await db.get(SessionControlInput, control_id)
-        command = await db.get(SessionCommand, control.command_id) if control else None
-        invocation = await db.get(SessionToolInvocation, invocation_id)
-    else:
-        control, command, invocation = current.get("permission", (None, None, None))
+    control = await db.get(SessionControlInput, control_id)
+    command = await db.get(SessionCommand, control.command_id) if control else None
+    invocation = await db.get(SessionToolInvocation, invocation_id)
     if runtime_request is not None:
         context = runtime_request.context
         try:

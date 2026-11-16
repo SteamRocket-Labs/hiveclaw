@@ -408,9 +408,7 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
     from app.agents.delegation_token import DelegationToken, validate_delegation_token
     from app.models.agent import Agent
     from app.models.runtime_task import RuntimeTask
-    from app.services.content_input_receipts import (
-        _input_row, _preflight_inputs, _runtime_input_actor, checkpoint_rows, checkpoint_values,
-    )
+    from app.services.content_input_receipts import _input_row, _preflight_inputs, _runtime_input_actor
     from app.services.hr_creation_service import direct_creation_authorization
 
     context = getattr(request, "context", None)
@@ -425,14 +423,7 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
     except (ValueError, TypeError):
         return None, []
     cached = _preflight_inputs(db)
-    current = checkpoint_values(db, "creation_seed_task", binding=(tenant_id, task_id))
-    if current is None:
-        current = await checkpoint_rows(db, "creation_seed_task", select(RuntimeTask).where(
-            RuntimeTask.id == task_id, RuntimeTask.tenant_id == tenant_id)
-            .execution_options(populate_existing=True), lambda row: row[0].id,
-            binding=(tenant_id, task_id))
-    task = current.get(task_id, (None,))[0] if current is not None else (
-        await _input_row(db, RuntimeTask, task_id) if cached is not None else await db.scalar(
+    task = await _input_row(db, RuntimeTask, task_id) if cached is not None else await db.scalar(
         select(RuntimeTask).where(
             RuntimeTask.id == task_id,
             RuntimeTask.tenant_id == tenant_id,
@@ -440,7 +431,7 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
             RuntimeTask.child_agent_id == context.agent_id,
             RuntimeTask.root_user_id == context.user_id,
         )
-    ))
+    )
     if (
         task is None or task.tenant_id != tenant_id or task.task_type != "delegation"
         or task.child_agent_id != context.agent_id or task.root_user_id != context.user_id
@@ -457,7 +448,7 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
 
         session = await db.get(ChatSession, session_id)
         if session is None or not await _permission_execution_matches(
-            db, task=task, session=session, runtime_request=request, _checkpoint_point="creation_seed_permission"
+            db, task=task, session=session, runtime_request=request
         ):
             return None, []
     principal, requester = await _runtime_input_actor(db, tenant_id, request)
@@ -477,14 +468,8 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
     if cached is not None:
         cached[draft_key] = draft
     evidence = direct_creation_authorization(draft) if draft else None
-    current = checkpoint_values(db, "creation_seed_owners", binding=(tenant_id, task.id))
-    if current is None:
-        current = await checkpoint_rows(db, "creation_seed_owners", select(Agent).where(
-            Agent.id.in_((task.parent_agent_id, task.child_agent_id)), Agent.tenant_id == tenant_id)
-            .execution_options(populate_existing=True),
-            lambda row: row[0].id, binding=(tenant_id, task.id))
-    parent = current.get(task.parent_agent_id, (None,))[0] if current is not None else await _input_row(db, Agent, task.parent_agent_id)
-    child = current.get(task.child_agent_id, (None,))[0] if current is not None else await _input_row(db, Agent, task.child_agent_id)
+    parent = await _input_row(db, Agent, task.parent_agent_id)
+    child = await _input_row(db, Agent, task.child_agent_id)
     if draft is None or task.id != uuid.uuid5(draft.id, "explicit-first-task.v1"):
         return await _owned_delegation_parent_sources(
             db,
@@ -917,23 +902,16 @@ async def _owned_delegation_origin(db, *, task, requester, parent):
     from app.services.delegation_context_sources import _facts
     from app.services.delegation_input_origin import load_delegation_instruction_origin
 
-    from app.services.content_input_receipts import _input_row, checkpoint_rows, checkpoint_values
+    from app.services.content_input_receipts import _input_row
 
-    session_id = uuid.UUID(task.parent_session_id)
-    current = checkpoint_values(db, "delegation_origin_session", binding=(task.tenant_id, session_id))
-    if current is None:
-        current = await checkpoint_rows(db, "delegation_origin_session", select(ChatSession).where(
-            ChatSession.id == session_id, ChatSession.tenant_id == task.tenant_id)
-            .execution_options(populate_existing=True), lambda row: row[0].id,
-            binding=(task.tenant_id, session_id))
-    original_work = current.get(session_id, (None,))[0] if current is not None else await _input_row(db, ChatSession, session_id)
+    original_work = await _input_row(db, ChatSession, uuid.UUID(task.parent_session_id))
     if (
         original_work is None
         or original_work.tenant_id != task.tenant_id
         or original_work.agent_id != parent.id
         or original_work.user_id != requester.id
         or original_work.audience_kind not in {None, "private"}
-        or await _facts(db, task, _checkpoint_point="creation_seed_origin_facts") is None
+        or await _facts(db, task) is None
     ):
         return None
     original = _delegation_projection_request_from_record(

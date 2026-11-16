@@ -204,7 +204,7 @@ async def test_distinct_permission_checkpoints_keep_baseline_authority(
     mutation, point, allows_effect,
 ):
     from app.models.agent import Agent
-    from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession
     from app.services import chat_transcript, content_input_receipts, delegation_permission_runtime
     from app.services import ai_assets, permission_execution, session_permission_runtime, session_tool_runtime
     from app.services import agent_tools, approval_service
@@ -234,8 +234,7 @@ async def test_distinct_permission_checkpoints_keep_baseline_authority(
     changed, sources_finished, source_attempted, lease_calls = False, False, False, 0
     reached, denied_sources, observed_owners = [], [], []
     approver_rows, approver_decisions, approver_errors = [], [], []
-    lease_reads, lease_errors, replacement_connections = [], [], []
-    lease_expected = {}
+    lease_successes, lease_errors = [], []
     deleted_marker = datetime(2026, 11, 16, tzinfo=timezone.utc)
     refreshed_email = f"fresh-{seed.user_id.hex}@permission.test"
 
@@ -293,33 +292,19 @@ async def test_distinct_permission_checkpoints_keep_baseline_authority(
             if lease_calls else "lease_before_sources"
         lease_calls += 1
         await boundary(name)
-        lease = args[0]
-        if name == point and point in {"lease_before_sources", "lease_after_source_failure"}:
-            # A different physical connection cannot inherit the old lease.
-            replacement = await lease.connection.engine.connect()
-            replacement_connections.append(replacement)
-            lease_expected[replacement] = (name, lease.pid)
-            lease.connection = replacement
+        # The lease reads connection/PID, not owner or is_active. Keep access
+        # mutations separate from PID faults and identify the actual refusal.
         try:
             value = await original_lease(*args, **kwargs)
         except permission_execution.PermissionExecutionUnavailable:
             lease_errors.append(name)
             raise
+        lease_successes.append(name)
         if lease_calls == 1:
             await boundary("responsible_approver")
         return value
 
     monkeypatch.setattr(permission_execution.PermissionExecutionLease, "ensure_owned", lease_owned)
-    connection_scalar = AsyncConnection.scalar
-
-    async def lease_scalar(connection, statement, *args, **kwargs):
-        value = await connection_scalar(connection, statement, *args, **kwargs)
-        if connection in lease_expected and str(statement) == "SELECT pg_backend_pid()":
-            name, expected = lease_expected[connection]
-            lease_reads.append({"point": name, "expected_pid": expected, "observed_pid": value})
-        return value
-
-    monkeypatch.setattr(AsyncConnection, "scalar", lease_scalar)
     original_approver = approval_service.can_resolve_approval
 
     async def approver(db, *, agent, user, approval):
@@ -410,33 +395,24 @@ async def test_distinct_permission_checkpoints_keep_baseline_authority(
     monkeypatch.setattr(AsyncSession, "scalar", scalar)
     monkeypatch.setattr(AsyncSession, "execute", execute)
     monkeypatch.setattr(AsyncSession, "commit", commit)
-    try:
-        async with permission_client(app_user_sessionmaker, seed, monkeypatch, _route_default_app_engine) as (client, _app):
-            response = await client.post(
-                f"/api/agents/{seed.agent_id}/sessions/{seed.session_id}/permissions/{seed.permission_ids[0]}/resolve",
-                json={"action": "allow_once"})
-    finally:
-        for connection in replacement_connections:
-            await connection.close()
-    lease_point = point in {"lease_before_sources", "lease_after_source_failure"}
-    if lease_point:
-        assert response.status_code == 503, response.text
-        assert response.json()["detail"]["code"] == "permission_execution_unavailable"
-        assert point in lease_errors and len(lease_reads) == 1, (lease_errors, lease_reads)
-        assert lease_reads[0]["observed_pid"] != lease_reads[0]["expected_pid"]
-        assert "effect_fence" not in reached and "result_settlement" not in reached
-        if point == "lease_before_sources":
-            assert not source_attempted and not approver_rows
-        else:
-            assert source_attempted and denied_sources and lease_calls == 2
-        async with owner_sessionmaker() as db:
-            invocation = await db.get(SessionToolInvocation, seed.invocation_ids[0])
-            assert invocation.effect_state == "prepared_not_started" and invocation.result_event_id is None
-            assert await db.scalar(select(func.count()).select_from(PlazaPost).where(PlazaPost.tenant_id == seed.tenant_id)) == 0
-        print("A2X_BOUNDARY", json.dumps({"point": point, "mutation": mutation, "http": 503,
-            "own_lease_refusal": lease_errors, "lease_pid_readback": lease_reads,
-            "checkpoints_without_source_scope": reached}), flush=True)
-        return
+    async with permission_client(app_user_sessionmaker, seed, monkeypatch, _route_default_app_engine) as (client, _app):
+        response = await client.post(
+            f"/api/agents/{seed.agent_id}/sessions/{seed.session_id}/permissions/{seed.permission_ids[0]}/resolve",
+            json={"action": "allow_once"})
+    if point == "lease_before_sources":
+        assert lease_successes == ["lease_before_sources", "lease_after_pre_effect_failure"]
+        assert not lease_errors
+        assert approver_decisions == [False]
+        assert approver_errors == ["Only the responsible approver can decide this action"]
+        assert not source_attempted and not denied_sources and "effect_fence" not in reached
+        assert approver_rows[0]["owner"] == str(successor_id if mutation == "transfer" else seed.user_id)
+        assert approver_rows[0]["is_active"] == (mutation != "revoke_member")
+    if point == "lease_after_source_failure":
+        assert lease_successes == ["lease_before_sources", "lease_after_source_failure"]
+        assert not lease_errors and approver_decisions == [True] and not approver_errors
+        assert denied_sources == ["content_source_changed"] and not sources_finished
+        assert reached.index("pre_effect_sources") < reached.index(point)
+        assert "effect_fence" not in reached
     assert response.status_code == 200, response.text
     assert changed and point in reached, reached
     async with owner_sessionmaker() as db:
@@ -445,7 +421,10 @@ async def test_distinct_permission_checkpoints_keep_baseline_authority(
         posts = await db.scalar(select(func.count()).select_from(PlazaPost).where(PlazaPost.tenant_id == seed.tenant_id))
         observation = {"point": point, "mutation": mutation, "posts": posts,
             "effect_state": invocation.effect_state, "denied_sources": denied_sources,
-            "checkpoints_without_source_scope": reached, "run_status": response.json()["run_status"]}
+            "checkpoints_without_source_scope": reached, "run_status": response.json()["run_status"],
+            "lease_successes": lease_successes,
+            "refusing_checkpoint": ("responsible_approver" if point in {"lease_before_sources", "responsible_approver"}
+                else "pre_effect_sources" if point in {"pre_effect_sources", "lease_after_source_failure"} else None)}
         print("A2X_BOUNDARY", json.dumps(observation), flush=True)
         assert posts == int(allows_effect), observation
         assert invocation.effect_state == ("effect_committed" if allows_effect else "prepared_not_started")
@@ -466,3 +445,99 @@ async def test_distinct_permission_checkpoints_keep_baseline_authority(
             assert json.loads(event_row.metadata_json["v2_payload"]["content"])["status"] == "failed"
         if point == "plaza_agent":
             assert observed_owners == [str(successor_id if mutation == "transfer" else seed.user_id)]
+
+
+@pytest.mark.parametrize("point", ["lease_before_sources", "lease_after_source_failure"])
+async def test_permission_lease_pid_change_refuses_at_its_own_checkpoint(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, _route_default_app_engine, point,
+):
+    from sqlalchemy.ext.asyncio import AsyncConnection
+    from app.services import content_input_receipts, delegation_permission_runtime, permission_execution, session_tool_runtime
+    from app.services.session_model_inputs import _hash
+
+    seed = await _seed_waiting_batch(owner_sessionmaker, tool_name="plaza_create_post",
+        tool_arguments={"content": "[A2x] A lost execution connection must refuse before effects."})
+    await _history(seed, owner_sessionmaker, 1)
+    if point == "lease_after_source_failure":
+        async with owner_sessionmaker() as db:
+            model = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed.run_id))
+            snapshot = dict(model.model_request_snapshot_json)
+            bindings = dict(snapshot["input_bindings"])
+            dependencies = [dict(row) for row in bindings["dependencies"]]
+            dependencies[0]["source_version"] = "0" * 64
+            snapshot["input_bindings"] = {**bindings, "dependencies": dependencies}
+            model.model_request_snapshot_json, model.model_request_hash = snapshot, _hash(snapshot)
+            await db.commit()
+    reached, refused, source_errors, pid_reads, connections, expected = [], [], [], [], [], {}
+    original_sources = delegation_permission_runtime.validate_permission_input_sources
+
+    async def sources(*args, **kwargs):
+        reached.append("pre_effect_sources")
+        try:
+            return await original_sources(*args, **kwargs)
+        except content_input_receipts.ContentInputReceiptError as error:
+            source_errors.append(error.code)
+            assert content_input_receipts._DISCLOSURE_SOURCE_VALIDATIONS.get() is None
+            raise
+
+    monkeypatch.setattr(delegation_permission_runtime, "validate_permission_input_sources", sources)
+    original_lease = permission_execution.PermissionExecutionLease.ensure_owned
+    lease_calls = 0
+
+    async def lease_owned(lease):
+        nonlocal lease_calls
+        name = "lease_before_sources" if lease_calls == 0 else "lease_after_source_failure"
+        lease_calls += 1
+        reached.append(name)
+        if name == point:
+            # This scenario changes only the connection, never owner/is_active.
+            replacement = await lease.connection.engine.connect()
+            connections.append(replacement)
+            expected[replacement] = lease.pid
+            lease.connection = replacement
+        try:
+            return await original_lease(lease)
+        except permission_execution.PermissionExecutionUnavailable:
+            refused.append(name)
+            raise
+
+    monkeypatch.setattr(permission_execution.PermissionExecutionLease, "ensure_owned", lease_owned)
+    original_scalar = AsyncConnection.scalar
+
+    async def scalar(connection, statement, *args, **kwargs):
+        value = await original_scalar(connection, statement, *args, **kwargs)
+        if connection in expected and str(statement) == "SELECT pg_backend_pid()":
+            pid_reads.append({"expected": expected[connection], "observed": value})
+        return value
+
+    monkeypatch.setattr(AsyncConnection, "scalar", scalar)
+    for name in ("mark_tool_effect_started", "complete_tool_invocation"):
+        original = getattr(session_tool_runtime, name)
+
+        async def observed(*args, _name=name, _original=original, **kwargs):
+            reached.append(_name)
+            return await _original(*args, **kwargs)
+
+        monkeypatch.setattr(session_tool_runtime, name, observed)
+    try:
+        async with permission_client(app_user_sessionmaker, seed, monkeypatch, _route_default_app_engine) as (client, _app):
+            response = await client.post(
+                f"/api/agents/{seed.agent_id}/sessions/{seed.session_id}/permissions/{seed.permission_ids[0]}/resolve",
+                json={"action": "allow_once"})
+    finally:
+        for connection in connections:
+            await connection.close()
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"]["code"] == "permission_execution_unavailable"
+    assert refused == [point] and len(pid_reads) == 1
+    assert pid_reads[0]["observed"] != pid_reads[0]["expected"]
+    assert "mark_tool_effect_started" not in reached and "complete_tool_invocation" not in reached
+    assert source_errors == (["content_source_changed"] if point == "lease_after_source_failure" else [])
+    assert ("pre_effect_sources" in reached) == (point == "lease_after_source_failure")
+    assert lease_calls == (2 if point == "lease_after_source_failure" else 1)
+    async with owner_sessionmaker() as db:
+        invocation = await db.get(SessionToolInvocation, seed.invocation_ids[0])
+        assert invocation.effect_state == "prepared_not_started" and invocation.result_event_id is None
+        assert await db.scalar(select(func.count()).select_from(PlazaPost).where(PlazaPost.tenant_id == seed.tenant_id)) == 0
+    print("A2X4_LEASE_PID", json.dumps({"point": point, "http": response.status_code,
+        "refused_at": refused, "pid_readback": pid_reads, "source_errors": source_errors, "reached": reached}), flush=True)

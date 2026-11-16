@@ -245,11 +245,16 @@ async def _latest_run_event(
     agent_id: uuid.UUID,
     session_id: str,
     lock_rows: bool,
+    source_rows=None,
 ) -> ChatTranscriptEvent | None:
     try:
         session_uuid = uuid.UUID(session_id)
     except (TypeError, ValueError):
         return None
+    if source_rows is not None and not lock_rows:
+        session, event, _model, _commit = source_rows
+        return event if session is not None and session.id == session_uuid and (
+            session.tenant_id == task.tenant_id and session.agent_id == agent_id) else None
     session_statement = select(ChatSession.id).where(
         ChatSession.id == session_uuid,
         ChatSession.tenant_id == task.tenant_id,
@@ -287,6 +292,7 @@ async def _validate_response_payload(
     source: str,
     terminal_event: ChatTranscriptEvent,
     payload: dict[str, Any],
+    source_rows=None,
 ) -> None:
     if str(payload.get("agent_id") or "") != str(agent_id):
         raise TerminalBoundaryCanonicalMismatch("direct response Agent authority mismatch")
@@ -322,9 +328,11 @@ async def _validate_response_payload(
                 raise TerminalBoundaryCanonicalMismatch(
                     "direct delegated final has an invalid model reference"
                 ) from exc
-        result = await db.scalar(statement)
+        result = source_rows[2] if source_rows is not None else await db.scalar(statement)
+        if source_rows is not None and result is not None and result.state != "round_committed":
+            result = None
         commit_event = (
-            await db.get(ChatTranscriptEvent, result.round_committed_event_id)
+            (source_rows[3] if source_rows is not None else await db.get(ChatTranscriptEvent, result.round_committed_event_id))
             if native_final_id is not None and result is not None
             else terminal_event
         )
@@ -389,6 +397,7 @@ async def _build_direct_terminal_spec(
     task: RuntimeTask,
     *,
     lock_rows: bool = False,
+    source_rows=None,
 ) -> _DirectBoundarySpec:
     if task.task_type not in DIRECT_INVOCATION_TASK_TYPES:
         raise TerminalBoundaryCanonicalMismatch("RuntimeTask is not a direct invocation lane")
@@ -404,6 +413,7 @@ async def _build_direct_terminal_spec(
         agent_id=agent_id,
         session_id=session_id,
         lock_rows=lock_rows,
+        **({"source_rows": source_rows} if source_rows is not None and not lock_rows else {}),
     )
     response_payload = _response_payload(task)
     reason = _terminal_reason(task)
@@ -427,6 +437,7 @@ async def _build_direct_terminal_spec(
             source=source,
             terminal_event=terminal_event,
             payload=response_payload,
+            **({"source_rows": source_rows} if source_rows is not None and not lock_rows else {}),
         )
         event_kind = "turn_stop"
     elif terminal_event is not None:

@@ -238,13 +238,53 @@ async def record_original_platform_skill_sources(db, *, agent, workspace):
         )
 
 
+async def _platform_package_checkpoint(db, tenant_id, agent_id, source_path):
+    from app.services.content_input_receipts import checkpoint_query
+
+    from sqlalchemy import column, values, func
+    from sqlalchemy.dialects.postgresql import UUID
+    from sqlalchemy.orm import aliased
+    from app.models.agent import Agent
+    from app.services.content_input_receipts import checkpoint_source_ids, checkpoint_rows
+    from app.services.source_read_queries import fact_columns
+
+    paths, installations = set(), set()
+    for raw in checkpoint_source_ids("agent_platform_skill_file"):
+        try:
+            raw_agent, path, _revision = raw.split("\n")
+            identity = uuid.UUID(raw_agent)
+            folder = _safe_folder_name(Path(path).parts[1])
+            paths.add((identity, path))
+            installations.add((identity, _installation_id(identity, folder)))
+        except (ValueError, IndexError):
+            pass
+    if (agent_id, source_path) not in paths:
+        return None
+    async def read():
+        refs = values(column("agent", UUID), column("installation", UUID), name="skill_lineages").data(list(installations))
+        installed = aliased(ConfigRevision)
+        superseded = select(func.jsonb_agg(installed.entity_id)).select_from(installed).join(
+            refs, refs.c.installation == installed.entity_id).where(refs.c.agent == Agent.id,
+                installed.tenant_id == tenant_id, installed.entity_type == "agent_skill_install").correlate(Agent).scalar_subquery()
+        statement = select(fact_columns(ConfigRevision, "id tenant_id entity_type entity_id version is_active "
+            "content content_hash change_source changed_by_user_id changed_by_agent_id"),
+            fact_columns(Agent, "id tenant_id creator_id"), superseded, Agent.id).select_from(Agent).outerjoin(
+                ConfigRevision, (ConfigRevision.tenant_id == tenant_id) & (ConfigRevision.entity_type == "agent_bootstrap")
+                & (ConfigRevision.entity_id == Agent.id) & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True)
+            ).where(Agent.id.in_({identity for identity, _path in paths}))
+        return await checkpoint_rows(db, "platform_package", statement, lambda row: row[3], binding=(tenant_id,),
+            entities={0: ConfigRevision, 1: Agent})
+
+    return await checkpoint_query(db, "platform_package", read, binding=(tenant_id,))
+
+
 async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
     from app.config import get_settings
     from app.models.agent import Agent
     from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS, _preflight_inputs
 
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    rows = _preflight_inputs(db, authority=scope is not None and scope.source_catalog)
+    rows = _preflight_inputs(db) if scope is None or not scope.source_catalog else None
     key = ("platform_skill_sources", tenant_id, agent_id)
     if rows is not None and key in rows:
         sources = rows[key]
@@ -269,7 +309,12 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
         lineage = _installation_id(agent_id, Path(source_path).parts[1])
         statement = statement.add_columns(select(installation.id).where(installation.tenant_id == tenant_id,
             installation.entity_type == "agent_skill_install", installation.entity_id == lineage).exists())
-    row = (await db.execute(statement)).first()
+    vector = await _platform_package_checkpoint(db, tenant_id, agent_id, source_path)
+    if vector is not None:
+        loaded = vector.get(agent_id)
+        row = (loaded[0], loaded[1], str(lineage) in (loaded[2] or [])) if loaded is not None else None
+    else:
+        row = (await db.execute(statement)).first()
     revision, agent = row[:2] if row is not None else (None, None)
     content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
     if agent is None or agent.tenant_id != tenant_id:
@@ -623,18 +668,18 @@ async def validate_skill_file_dependency(db, tenant_id, dependency, *, user, run
 
                 if not project_source_read_allowed(tenant_id, principal):
                     raise ValueError("skill_source_actor_mismatch")
-                agent, _level = await check_agent_access(db, user, agent_id)
+                from app.services.content_input_receipts import _input_agent_access
+
+                agent, _level = await _input_agent_access(db, user, agent_id)
                 if agent.tenant_id != tenant_id:
                     raise ValueError("skill_source_tenant_mismatch")
         else:
             from app.services.content_input_receipts import _batch_browser_point
 
             if _batch_browser_point(db, user):
-                from app.core.permissions import agent_access_from_facts
-                from app.services.source_read_queries import source_reader_statement
+                from app.services.content_input_receipts import _input_agent_access
 
-                facts = (await db.execute(source_reader_statement(user, agent_id))).first()
-                agent, _level = await agent_access_from_facts(db, user, facts)
+                agent, _level = await _input_agent_access(db, user, agent_id)
             else:
                 agent, _level = await check_agent_access(db, user, agent_id)
             if agent.tenant_id != tenant_id:

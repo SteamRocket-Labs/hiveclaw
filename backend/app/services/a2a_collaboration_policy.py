@@ -305,10 +305,11 @@ async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_ag
     return groups
 
 
-async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UUID) -> dict[str, Any]:
+def collaboration_read_statement(agent_ids):
     from sqlalchemy import func
     from sqlalchemy.dialects.postgresql import aggregate_order_by
     from sqlalchemy.orm import load_only
+    from app.services.source_read_queries import fact_columns
 
     source, peer = aliased(Agent), aliased(Agent)
     group, member, source_member = AgentCollaborationGroup, aliased(AgentCollaborationGroupMember), aliased(AgentCollaborationGroupMember)
@@ -343,11 +344,14 @@ async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UU
             source_participating, group.tenant_id == source.tenant_id, group.status == ACTIVE_GROUP_STATUS,
             exists(select(1).where(source_member.group_id == group.id, source_member.agent_id == source.id,
                 source_member.status == ACTIVE_MEMBER_STATUS).correlate(group, source))).correlate(source).scalar_subquery()
-    row = (await db.execute(select(source, same_owner, public, groups).where(source.id == agent_id)
-        .options(load_only(source.id, source.name, source.agent_class))
-        .execution_options(populate_existing=True))).first()
+    return select(fact_columns(source, "id name agent_class"), same_owner, public, groups).where(
+        source.id.in_(agent_ids)).execution_options(populate_existing=True)
+
+
+def collaboration_read_model(row):
     empty = {"same_owner_agents": [], "public_agents": [], "collaboration_groups": []}
-    if row is None or not is_a2a_participating_agent(row[0]):
+    source = SimpleNamespace(**row[0]) if row is not None and isinstance(row[0], dict) else row[0] if row else None
+    if source is None or not is_a2a_participating_agent(source):
         return empty
     same = [SimpleNamespace(**peer) for peer in row[1] or []]
     public = [SimpleNamespace(**peer) for peer in row[2] or []]
@@ -362,3 +366,8 @@ async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UU
         "public_agents": [serialize_agent_for_a2a(peer, relation="public") for peer in public if is_a2a_participating_agent(peer)],
         "collaboration_groups": groups,
     }
+
+
+async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UUID) -> dict[str, Any]:
+    row = (await db.execute(collaboration_read_statement([agent_id]))).first()
+    return collaboration_read_model(row)

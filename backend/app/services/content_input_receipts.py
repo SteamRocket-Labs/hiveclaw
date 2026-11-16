@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +16,10 @@ from sqlalchemy import String, bindparam, or_, select, text
 from app.models.organization_identity import ContentInputReceipt
 from app.services.team_memory import _safe_component, _slugify
 from app.core.permissions import agent_access_from_facts
+
+from app.services.source_read_queries import (
+    AGENT_READER_EXTRA_FIELDS, RUNTIME_ACTOR_FIELDS, SESSION_ACTOR_FIELDS, SESSION_SOURCE_FIELDS, USER_READER_FIELDS,
+)
 
 _ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
 _DISCLOSURE_SOURCE_VALIDATIONS = ContextVar("disclosure_source_validations", default=None)
@@ -120,16 +124,47 @@ class _DisclosureSourceValidations:
         self.model_digests = {}
         self.model_inputs = {}
         self.statements = {}
+        self.source_ids = {}
+        self.retained = {}
+        self.checkpoint = (None, None)
+        self.workspace_read = None
 
 
 @contextmanager
 def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalog=False):
     """Reuse successful exact source checks only inside one reader disclosure."""
+    parent = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     scope = _DisclosureSourceValidations(batch_inputs=batch_inputs, cache_authority=cache_authority, source_catalog=source_catalog)
+    if source_catalog and parent is not None and parent.active and parent.source_catalog:
+        # Only retained evidence crosses a disclosure boundary. In particular,
+        # neither reader/Agent rows nor checkpoint vectors are inherited.
+        scope.source_ids = {kind: set(ids) for kind, ids in parent.source_ids.items()}
+        scope.retained = {key: set(row) if key == "catalogue_sources" else row
+            for key, row in parent.retained.items()}
+        scope.inputs = {tx: {key: set(row) if key == "catalogue_sources" else row
+            for key, row in values.items() if _catalogue_key(key, row)}
+            for tx, values in parent.inputs.items()}
+        from app.services.source_read_queries import index_source_catalogue
+
+        for rows in scope.inputs.values():
+            index_source_catalogue(rows)
+        scope.model_digests = dict(parent.model_digests)
     token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
         yield scope
     finally:
+        if source_catalog and parent is not None and parent.active and parent.source_catalog:
+            # A tool may have independent pre/post disclosure sessions. Only
+            # written-once rows and their computed digests cross that boundary.
+            parent.retained.update(scope.retained)
+            for kind, ids in scope.source_ids.items():
+                parent.source_ids.setdefault(kind, set()).update(ids)
+            parent.model_digests.update(scope.model_digests)
+            from app.services.source_read_queries import index_source_catalogue
+
+            for rows in parent.inputs.values():
+                rows.update(parent.retained)
+                index_source_catalogue(rows)
         scope.active = False
         scope.verified.clear()
         scope.visiting.clear()
@@ -140,7 +175,133 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
         scope.model_digests.clear()
         scope.model_inputs.clear()
         scope.statements.clear()
+        scope.source_ids.clear()
+        scope.retained.clear()
+        scope.checkpoint = (None, None)
+        scope.workspace_read = None
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
+
+
+def _catalogue_key(key, row):
+    if key == "catalogue_sources":
+        return True
+    if isinstance(key, tuple) and key[0] == "memory_receipt_binding":
+        return True  # Only id/carrier_ref; never memory authority or audience.
+    if isinstance(key, tuple) and key[0] == "event_orm_projection":
+        return isinstance(getattr(row, "metadata_json", None), dict) and isinstance(row.metadata_json.get("v2_payload"), dict)
+    if row is None or not isinstance(key, tuple) or not isinstance(key[0], type):
+        return False
+    name = key[0].__name__
+    return name in {"SessionCommand", "RuntimeResultObject", "RuntimeResultIntegrationPage"} or (
+        name == "ChatTranscriptEvent" and isinstance(row.metadata_json, dict)
+        and isinstance(row.metadata_json.get("v2_payload"), dict)) or (
+        name == "SessionToolInvocation" and row.result_event_id is not None and row.permission_state != "waiting") or (
+        name == "SessionModelResult" and row.state in {"sealed", "round_committed"}) or (
+        name == "ContentInputReceipt" and row.carrier_kind == "workspace_artifact") or (
+        name == "InvocationSpan" and row.span_type not in {"workspace_output", "remote_action"})
+
+
+@contextmanager
+def source_read_checkpoint(*, kind=None, phase=None):
+    """Enter one kind/phase of the current disclosure, restoring it on recursion."""
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if scope is None:
+        yield
+        return
+    previous = scope.checkpoint
+    scope.checkpoint = (kind or previous[0], phase if phase is not None else previous[1])
+    try:
+        yield
+    finally:
+        scope.checkpoint = previous
+
+
+def checkpoint_source_ids(kind):
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    return scope.source_ids.get(kind, set()) if scope is not None and scope.active else set()
+
+
+def checkpoint_source_uuids(kind):
+    values = set()
+    for raw in checkpoint_source_ids(kind):
+        try:
+            values.add(uuid.UUID(raw))
+        except (ValueError, TypeError):
+            pass  # Ordered validation owns malformed-source errors.
+    return values
+
+
+def _source_reader_hint(user, request):
+    """A lookup identity only; the original validator still authorizes it."""
+    if request is None:
+        return user
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+
+    identity = request.requester_user_id if isinstance(request, AgentRuntimePrincipal) else getattr(
+        getattr(request, "context", None), "user_id", None)
+    return SimpleNamespace(id=identity) if identity is not None else None
+
+
+def _freeze_source_fact(value):
+    # SQLAlchemy's identity map must not overwrite an earlier checkpoint's
+    # observations when a later checkpoint refreshes the same mutable row.
+    if hasattr(value, "_sa_instance_state"):
+        return SimpleNamespace(**{key: _freeze_source_fact(item) for key, item in vars(value).items()
+            if not key.startswith("_")})
+    return value
+
+
+def _checkpoint_key(scope, point, binding):
+    from app.core.source_read_purpose import current_source_recipient
+    from app.services.project_context import _SOURCE_READER
+
+    return ("checkpoint", scope.checkpoint, point, binding, current_source_recipient(), _SOURCE_READER.get() is not None)
+
+
+def _checkpoint_scope():
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if (scope is None or not scope.active or not scope.batch_inputs or not scope.source_catalog
+        or scope.checkpoint == (None, None) or (not scope.source_ids and scope.checkpoint[0] != "runtime_actor")):
+        return None
+    return scope
+
+
+def checkpoint_values(db, point, *, binding=()):
+    """Reuse this phase's rows before constructing an all-node statement again."""
+    scope = _checkpoint_scope()
+    if scope is None:
+        return None
+    return _preflight_inputs(db).get(_checkpoint_key(scope, point, binding))
+
+
+async def checkpoint_rows(db, point, statement, identity, *, binding=(), entities=None):
+    """One set read at this live phase, followed by SQL-free node decisions."""
+    scope = _checkpoint_scope()
+    if scope is None:
+        return None
+    rows = _preflight_inputs(db)
+    key = _checkpoint_key(scope, point, binding)
+    if key not in rows:
+        from app.services.source_read_queries import fact_object
+
+        values = await db.execute(statement)
+        if not scope.active:
+            return None
+        rows = scope.inputs.setdefault(db.get_transaction(), {})
+        # Share projected row identities only within this one SQL observation.
+        # Never retain this map across live checkpoints.
+        identities = {}
+        rows[key] = {identity(row): tuple(fact_object(entities[index], value, identities=identities) if index in (entities or {})
+            else _freeze_source_fact(value) for index, value in enumerate(row)) for row in values}
+    return rows[key]
+
+
+async def checkpoint_query(db, point, read, *, binding=(), accept=None):
+    """Build a set query only when this checkpoint has no suitable observation."""
+    current = checkpoint_values(db, point, binding=binding)
+    if current is not None and (accept is None or accept(current)):
+        return current
+    return await read()
 
 
 class ContentInputReceiptError(ValueError):
@@ -172,7 +333,14 @@ def _preflight_inputs(db, *, authority=False):
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     if (scope is not None and scope.active and scope.batch_inputs
         and (not authority or scope.cache_authority)):
-        return scope.inputs.setdefault(db.get_transaction(), {})
+        transaction = db.get_transaction()
+        if transaction not in scope.inputs:
+            rows = {key: set(row) if key == "catalogue_sources" else row for key, row in scope.retained.items()}
+            from app.services.source_read_queries import index_source_catalogue
+
+            index_source_catalogue(rows)
+            scope.inputs[transaction] = rows
+        return scope.inputs[transaction]
     return None
 
 
@@ -188,27 +356,59 @@ def _batch_browser_point(db, user=None):
 async def _input_row(db, model, source_id, *, populate_existing=True):
     rows = _preflight_inputs(db)
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is not None and scope.source_catalog and model.__name__ in {"ChatSession", "RuntimeTask", "User"}:
+    if scope is not None and scope.source_catalog and model.__name__ in {"Agent", "ChatSession", "RuntimeTask", "User"}:
         rows = None
     key = (model, source_id)
     if rows is not None and key in rows:
         row = rows[key]
+        if model.__name__ == "ChatTranscriptEvent" and scope.source_catalog:
+            from app.services.source_read_queries import transcript_event_row
+
+            return transcript_event_row(db, row)
         if model.__name__ == "SessionModelResult" and row is not None and scope.source_catalog:
-            live = (await db.execute(select(model.state, model.seal_json)
-                .where(model.id == source_id, model.tenant_id == row.tenant_id))).first()
+            vector = checkpoint_values(db, "model_state")
+            if vector is None:
+                ids = [key[1] for key in rows if isinstance(key, tuple) and key[0] is model]
+                vector = await checkpoint_rows(db, "model_state", select(model.id, model.state, model.seal_json)
+                    .where(model.id.in_(ids), model.tenant_id == row.tenant_id), lambda value: value[0])
+            live = vector.get(source_id)[1:] if vector is not None and source_id in vector else (
+                (await db.execute(select(model.state, model.seal_json)
+                    .where(model.id == source_id, model.tenant_id == row.tenant_id))).first())
             return SimpleNamespace(**{**vars(row), "state": live[0] if live else None,
                 "seal_json": live[1] if live else None})
+        if model.__name__ == "RuntimeResultIntegrationPage" and row is not None and scope.source_catalog:
+            vector = checkpoint_values(db, "result_page_publication")
+            if vector is None:
+                ids = [key[1] for key in rows if isinstance(key, tuple) and key[0] is model]
+                vector = await checkpoint_rows(db, "result_page_publication",
+                    select(model.id, model.delivery_mode, model.status).where(model.id.in_(ids),
+                        model.tenant_id == row.tenant_id), lambda value: value[0])
+            live = vector[source_id][1:] if vector is not None and source_id in vector else (
+                await db.execute(select(model.delivery_mode, model.status).where(
+                    model.id == source_id, model.tenant_id == row.tenant_id))).first()
+            return SimpleNamespace(**{**vars(row), "delivery_mode": live[0] if live else None,
+                "status": live[1] if live else None})
         return row
+    if scope is not None and scope.source_catalog and model.__name__ == "InvocationSpan":
+        from app.services.source_read_queries import fact_columns
+
+        # Output spans retain mutable approval bookkeeping. Read all of them at
+        # this checkpoint, including missing deterministic IDs, instead of
+        # treating an absent retained span as immutable evidence.
+        ids = (rows or {}).get("workspace_output_span_ids", set())
+        vector = await checkpoint_rows(db, "current_output_spans", select(model.id,
+            fact_columns(model, "id tenant_id agent_id user_id runtime_task_id session_id trace_id span_id "
+                "span_type name status input_hash metadata_json")).where(model.id.in_(ids)),
+            lambda value: value[0], entities={1: model}) if source_id in ids else None
+        if vector is not None and source_id in ids:
+            return vector[source_id][1] if source_id in vector else None
     options = {}
     if scope is not None and scope.source_catalog and model.__name__ == "InvocationSpan":
         options["options"] = [load_only(model.id, model.tenant_id, model.agent_id, model.user_id,
             model.runtime_task_id, model.session_id, model.trace_id, model.span_id, model.span_type,
             model.name, model.status, model.input_hash, model.metadata_json)]
     row = await db.get(model, source_id, populate_existing=populate_existing, **options)
-    if rows is not None and not (scope.source_catalog and (
-        (model is ContentInputReceipt and row is not None and row.carrier_kind != "workspace_artifact")
-        or (model.__name__ == "InvocationSpan" and (row is None or row.span_type in {"workspace_output", "remote_action"}))
-    )):
+    if rows is not None and (not scope.source_catalog or _catalogue_key(key, row)):
         rows[key] = row
     return row
 
@@ -250,6 +450,39 @@ def _model_request_digest(db, model_result):
 async def _input_agent_access(db, user, agent_id):
     from app.core.permissions import check_agent_access
 
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    # Preserve A2a's existing admission-frame reuse. At uncached file-version
+    # checkpoints the original scalar ACL must still observe later changes.
+    if _batch_browser_point(db, user) and scope.checkpoint[0] != "workspace_artifact":
+        from app.models.agent import Agent
+        from app.services.source_read_queries import source_reader_facts_statement
+
+        current = checkpoint_values(db, "agent_access", binding=(user.id,))
+        if current is not None and agent_id in current:
+            return await agent_access_from_facts(db, user, current[agent_id])
+        ids = {agent_id}
+        for kind in ("agent_context_resource", "agent_resident_memory", "agent_identity", "owner_action_policy",
+            "agent_platform_skill_file", "agent_skill_file", "learned_skill_file"):
+            for raw in checkpoint_source_ids(kind):
+                try:
+                    ids.add(uuid.UUID(raw.split("\n", 1)[0]))
+                except (ValueError, TypeError):
+                    pass
+        statement = source_reader_facts_statement(user, Agent.id).where(Agent.id.in_(ids))
+        vector = await checkpoint_rows(db, "agent_access", statement,
+            lambda row: uuid.UUID(row[0]["id"]) if row[0] else None,
+            binding=(user.id,), entities={0: Agent})
+        if vector is not None and agent_id in vector:
+            return await agent_access_from_facts(db, user, vector[agent_id])
+        if vector is None:
+            # Standalone checks retain A2r-2's single live ACL statement.
+            from app.services.source_read_queries import fact_object
+
+            facts = (await db.execute(source_reader_facts_statement(user, agent_id))).first()
+            if facts is not None:
+                facts = (fact_object(Agent, facts[0]), *facts[1:])
+            return await agent_access_from_facts(db, user, facts)
+
     rows = _preflight_inputs(db, authority=True)
     key = ("agent_access", id(user), agent_id)
     if rows is not None and key in rows:
@@ -273,32 +506,64 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
     # A private recursive transit row expands each immutable model's bindings
     # once, even when many invocations share its request. It is neither stored
     # nor returned as a source; ordered validation still walks the original refs.
-    selected = await db.execute(text("""
+    # Parameterized PK probes avoid a tenant hash/seq scan on every recursive step.
+    # Model branches are disjoint by kind; non-PK span matches retain every row.
+    closure_sql = """
         WITH RECURSIVE sources(kind, id) AS (
             SELECT value->>'source_kind', value->>'source_id'
             FROM jsonb_array_elements(CAST(:dependencies AS jsonb))
             UNION
             SELECT child->>'source_kind', child->>'source_id'
             FROM sources s
-            LEFT JOIN content_input_receipts r ON s.kind IN ('workspace_artifact', 'explicit_memory')
-                AND r.id = CASE WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
-                    THEN s.id::uuid END AND r.tenant_id = :tenant_id
-            LEFT JOIN session_tool_invocations t ON s.kind = 'session_tool_invocation'
-                AND t.id = CASE WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
-                    THEN s.id::uuid END AND t.tenant_id = :tenant_id
-            LEFT JOIN session_model_results m ON m.tenant_id = :tenant_id AND (
-                (s.kind IN ('session_model_result', '__model_request_inputs') AND m.id = CASE
-                    WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END)
-                OR (m.session_id = t.session_id AND m.run_id = t.run_id
-                    AND m.provider_request_id = t.provider_request_id))
-            LEFT JOIN invocation_spans p ON p.tenant_id = :tenant_id AND p.runtime_task_id = t.run_id
-                AND p.span_type IN ('workspace_output', 'workspace_input', 'memory_result')
-                AND COALESCE(p.metadata_json #>> '{workspace_execution_evidence,invocation_id}',
-                    p.metadata_json #>> '{workspace_input_evidence,invocation_id}',
-                    p.metadata_json #>> '{memory_result,invocation_id}') = t.id::text
+            LEFT JOIN LATERAL (
+                SELECT r.dependencies_json FROM content_input_receipts r WHERE s.kind IN ('workspace_artifact','explicit_memory')
+                    AND r.id=CASE WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
+                        THEN s.id::uuid END AND r.tenant_id=:tenant_id LIMIT 1
+            ) r ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT t.id,t.session_id,t.run_id,t.provider_request_id FROM session_tool_invocations t
+                    WHERE s.kind='session_tool_invocation' AND t.tenant_id=:tenant_id AND t.id=CASE
+                        WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END LIMIT 1
+            ) t ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT o.source_run_id FROM runtime_result_objects o WHERE s.kind='runtime_result' AND o.tenant_id=:tenant_id
+                    AND o.id=CASE WHEN split_part(s.id,chr(10),3) ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
+                        THEN split_part(s.id,chr(10),3)::uuid END LIMIT 1
+            ) o ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT g.parent_agent_id,g.parent_session_id,g.manifest_json FROM runtime_result_integration_pages g
+                    WHERE s.kind='runtime_result_page' AND g.tenant_id=:tenant_id AND g.id=CASE
+                        WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END LIMIT 1
+            ) g ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT q.metadata_json FROM invocation_spans q WHERE s.kind='runtime_team_context' AND q.tenant_id=:tenant_id
+                    AND q.id=CASE WHEN split_part(s.id,chr(10),3) ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
+                        THEN split_part(s.id,chr(10),3)::uuid END LIMIT 1
+            ) q ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT m.id,m.model_request_snapshot_json FROM session_model_results m WHERE m.tenant_id=:tenant_id
+                    AND s.kind IN ('session_model_result','__model_request_inputs') AND m.id=CASE
+                        WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END
+                UNION ALL
+                SELECT m.id,m.model_request_snapshot_json FROM session_model_results m WHERE m.tenant_id=:tenant_id
+                    AND s.kind='session_tool_invocation' AND (m.session_id,m.run_id,m.provider_request_id)
+                        =(t.session_id,t.run_id,t.provider_request_id)
+                UNION ALL
+                SELECT m.id,m.model_request_snapshot_json FROM session_model_results m WHERE m.tenant_id=:tenant_id
+                    AND s.kind='runtime_result' AND m.run_id=CASE
+                        WHEN o.source_run_id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
+                        THEN o.source_run_id::uuid END
+            ) m ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT p.metadata_json FROM invocation_spans p WHERE p.tenant_id=:tenant_id AND p.runtime_task_id=t.run_id
+                    AND p.span_type IN ('workspace_output','workspace_input','memory_result') AND COALESCE(
+                        p.metadata_json #>> '{workspace_execution_evidence,invocation_id}',
+                        p.metadata_json #>> '{workspace_input_evidence,invocation_id}',
+                        p.metadata_json #>> '{memory_result,invocation_id}')=t.id::text OFFSET 0
+            ) p ON TRUE
             CROSS JOIN LATERAL jsonb_array_elements(
                 CASE WHEN jsonb_typeof(r.dependencies_json) = 'array' THEN r.dependencies_json ELSE '[]'::jsonb END
-                || CASE WHEN s.kind IN ('session_tool_invocation', 'session_model_result') AND m.id IS NOT NULL
+                || CASE WHEN s.kind IN ('session_tool_invocation', 'session_model_result', 'runtime_result') AND m.id IS NOT NULL
                     THEN jsonb_build_array(jsonb_build_object('source_kind', '__model_request_inputs', 'source_id', m.id::text))
                     ELSE '[]'::jsonb END
                 || CASE WHEN s.kind = '__model_request_inputs'
@@ -313,9 +578,21 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                         p.metadata_json #>> '{workspace_input_evidence,carrier_kind}', 'workspace_artifact'),
                         'source_id', p.metadata_json #>> '{workspace_input_evidence,content_input_receipt_id}'))
                     ELSE '[]'::jsonb END
+                || CASE WHEN jsonb_typeof(q.metadata_json #> '{observation,sources}')='array'
+                    THEN q.metadata_json #> '{observation,sources}' ELSE '[]'::jsonb END
+                || COALESCE((SELECT jsonb_agg(jsonb_build_object('source_kind','runtime_result',
+                    'source_id',g.parent_agent_id::text||chr(10)||g.parent_session_id::text||chr(10)
+                        ||split_part(item->>'result_ref','/',3))) FROM jsonb_array_elements(
+                            CASE WHEN jsonb_typeof(g.manifest_json->'items')='array'
+                                THEN g.manifest_json->'items' ELSE '[]'::jsonb END) item),'[]'::jsonb)
             ) child
         ) SELECT kind, id FROM sources WHERE kind != '__model_request_inputs'
-    """), {"dependencies": json.dumps(dependencies), "tenant_id": tenant_id})
+    """
+    if immutable_only:
+        from app.services.source_read_queries import load_source_catalogue
+
+        return await load_source_catalogue(db, tenant_id, dependencies, closure_sql)
+    selected = await db.execute(text(closure_sql), {"dependencies": json.dumps(dependencies), "tenant_id": tenant_id})
     ids = {}
     for kind, raw_id in selected:
         try:
@@ -498,7 +775,8 @@ async def latest_team_memory_receipts(db, tenant_id: uuid.UUID, workspace_key: s
 
 async def validate_browser_input_dependencies(db, tenant_id: uuid.UUID, user, dependencies: list) -> None:
     # Browser authority, including PDEC-013, must not authorize Agent prompt consumption.
-    await _validate_input_dependencies(db, tenant_id, dependencies, user=user)
+    async with workspace_read_checkpoint(db, tenant_id):
+        await _validate_input_dependencies(db, tenant_id, dependencies, user=user)
 
 
 async def validate_runtime_input_dependencies(db, request, dependencies: list) -> None:
@@ -517,7 +795,6 @@ async def _validate_input_dependencies(
     active_workspace_receipts: frozenset[uuid.UUID] = frozenset(),
 ) -> None:
     from app.core.source_read_purpose import current_source_recipient
-    from app.services.project_context import _SOURCE_READER
 
     recipient = current_source_recipient()
     if recipient is not None and (runtime_request is not None or str(getattr(user, "id", None)) != recipient[1]):
@@ -526,7 +803,9 @@ async def _validate_input_dependencies(
         )
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     context = {"user": user, "runtime_request": runtime_request, "active_workspace_receipts": active_workspace_receipts}
-    if scope is None or not scope.active:
+    if scope is None or not scope.active or (scope.source_catalog and not scope.batch_inputs):
+        # Preserve callers' original non-batched authority entry (including
+        # T2 admission). Measured entries explicitly establish their batch.
         with group_source_read():
             return await _validate_input_dependencies(db, tenant_id, dependencies, **context)
     if (
@@ -539,6 +818,21 @@ async def _validate_input_dependencies(
         )
     ):
         return await _validate_input_dependency_batch(db, tenant_id, dependencies, **context)
+    if not scope.visiting:
+        previous = scope.workspace_read
+        async with workspace_read_checkpoint(db, tenant_id):
+            if previous is None and scope.workspace_read is not None and len(dependencies) == 1:
+                scope.workspace_read.node_boundary = dependencies[0]
+            return await _walk_input_dependencies(db, tenant_id, dependencies, scope=scope,
+                recipient=recipient, context=context)
+    return await _walk_input_dependencies(db, tenant_id, dependencies, scope=scope,
+        recipient=recipient, context=context)
+
+
+async def _walk_input_dependencies(db, tenant_id, dependencies, *, scope, recipient, context):
+    from app.services.project_context import _SOURCE_READER
+
+    user, runtime_request = context["user"], context["runtime_request"]
     for dependency in dependencies:
         try:
             source_key = (dependency["source_kind"], dependency["source_id"], dependency["source_version"])
@@ -552,6 +846,11 @@ async def _validate_input_dependencies(
                 recipient,
                 source_key,
             )
+            point = scope.workspace_read
+            if point is not None and point.paths is not None:
+                # Attribute shared descendants even when the round's existing
+                # successful-source decision skips a repeated subtree.
+                point.paths.setdefault(reader_key, set()).add(point.current_path)
             if reader_key in scope.visiting:
                 # Re-enter a gray source once so its own active-chain check can classify
                 # the cycle; a second re-entry means no kind check fires on this cycle.
@@ -561,7 +860,7 @@ async def _validate_input_dependencies(
                     )
                 scope.revisiting.add(reader_key)
                 try:
-                    await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+                    await _validate_source_node(db, tenant_id, dependency, **context)
                 finally:
                     scope.revisiting.discard(reader_key)
                 continue
@@ -576,7 +875,7 @@ async def _validate_input_dependencies(
             ):
                 scope.visiting.add(reader_key)
                 try:
-                    await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+                    await _validate_source_node(db, tenant_id, dependency, **context)
                 finally:
                     # The scope may have closed (and cleared visiting) while this
                     # validation awaited; a closed scope never caches the result.
@@ -588,6 +887,11 @@ async def _validate_input_dependencies(
             if exc.dependency is None:
                 exc.dependency = dependency
             raise
+
+
+async def _validate_source_node(db, tenant_id, dependency, **context):
+    with source_read_checkpoint(kind=dependency["source_kind"]):
+        await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
 
 
 async def _validate_input_dependency_batch(
@@ -860,6 +1164,57 @@ async def _validate_input_dependency_batch(
             )
         _validate_source_bytes(document.canonical_md_path, dependency["source_version"])
 
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    point = scope.workspace_read if scope is not None and scope.active else None
+    if (point is not None and point.node_boundary is not None and dependencies == [point.node_boundary]
+        and len(scope.visiting) == 1 and not scope.revisiting):
+        # A one-root walk ends inside its original judge. Changes committed by
+        # its caller afterwards belong to the next independent checkpoint.
+        try:
+            await _recheck_workspace_checkpoint(point)
+        except BaseException:
+            scope.verified = {key: value for key, value in scope.verified.items() if key in point.verified}
+            raise
+        point.observed.clear()
+
+
+async def _context_checkpoint_facts(db, tenant_id, reader, kind):
+    if reader is not None:
+        current = checkpoint_values(db, "context_metadata", binding=(tenant_id, reader.id, kind))
+        if current is not None:
+            return current
+    from sqlalchemy import values, column
+    from sqlalchemy.dialects.postgresql import UUID
+    from app.models.agent import Agent
+    from app.models.config_revision import ConfigRevision
+    from app.services.source_read_queries import source_reader_facts_statement, fact_columns
+
+    bindings = set()
+    for raw in checkpoint_source_ids(kind):
+        try:
+            identity, ref = raw.split("\n")
+            bindings.add((uuid.UUID(identity), uuid.UUID(ref) if kind == "owner_action_policy" else None))
+        except (ValueError, TypeError):
+            pass
+    if not bindings or reader is None or getattr(reader, "id", None) is None or getattr(reader, "role", None) == "platform_admin":
+        return None
+    refs = values(column("agent", UUID), column("revision", UUID), name="context_sources").data(list(bindings))
+    statement = source_reader_facts_statement(reader, refs.c.agent, source=refs,
+        agent_fields="name role_description" if kind == "agent_identity" else "")
+    if kind in {"owner_action_policy", "agent_identity", "agent_resident_memory"}:
+        join = ConfigRevision.id == refs.c.revision if kind == "owner_action_policy" else (
+            (ConfigRevision.tenant_id == tenant_id) & (ConfigRevision.entity_type == "agent_bootstrap")
+            & (ConfigRevision.entity_id == refs.c.agent) & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
+        statement = statement.add_columns(fact_columns(ConfigRevision, "id tenant_id entity_id entity_type version "
+            "is_active content content_hash change_source changed_by_user_id changed_by_agent_id")).outerjoin(ConfigRevision, join)
+    else:
+        from sqlalchemy import null
+
+        statement = statement.add_columns(null())
+    statement = statement.add_columns(refs.c.agent, refs.c.revision).where(Agent.tenant_id == tenant_id)
+    return await checkpoint_rows(db, "context_metadata", statement, lambda row: tuple(row[6:8]),
+        binding=(tenant_id, reader.id, kind), entities={0: Agent, 5: ConfigRevision})
+
 
 async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user, runtime_request):
     from fastapi import HTTPException
@@ -891,12 +1246,17 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
     try:
         if runtime_request is not None:
             principal, _requester = await _runtime_input_actor(db, tenant_id, runtime_request)
+            vector = await _context_checkpoint_facts(db, tenant_id, _requester, dependency["source_kind"])
+            if vector is not None:
+                reader_facts = vector.get((agent_id, policy_id if policy_source else None))
+                source = reader_facts[0] if reader_facts is not None else None
+                current_revision = reader_facts[5] if reader_facts is not None else None
             if principal.agent_id != agent_id:
                 from app.services.project_context import project_source_read_allowed
 
                 if not project_source_read_allowed(tenant_id, principal):
                     raise ValueError("context_source_actor_mismatch")
-                source = await db.scalar(
+                source = reader_facts[0] if reader_facts is not None else await db.scalar(
                     select(Agent)
                     .where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
                     .execution_options(populate_existing=True)
@@ -906,20 +1266,29 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 from app.services.machine_runtime_authority import is_machine_runtime_actor
 
                 if not is_machine_runtime_actor(_requester):
-                    await check_agent_access(db, _requester, agent_id)
+                    if reader_facts is not None:
+                        await agent_access_from_facts(db, _requester, reader_facts)
+                    else:
+                        await check_agent_access(db, _requester, agent_id)
         else:
             if _batch_browser_point(db, user):
                 from app.models.config_revision import ConfigRevision
                 from app.services.source_read_queries import source_reader_statement
 
-                statement = source_reader_statement(user, agent_id).where(Agent.tenant_id == tenant_id)
-                if policy_source:
-                    statement = statement.add_columns(ConfigRevision).outerjoin(ConfigRevision, ConfigRevision.id == policy_id)
-                elif resident or identity:
-                    statement = statement.add_columns(ConfigRevision).outerjoin(ConfigRevision,
-                        (ConfigRevision.tenant_id == tenant_id) & (ConfigRevision.entity_type == "agent_bootstrap")
-                        & (ConfigRevision.entity_id == Agent.id) & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
-                reader_facts = (await db.execute(statement)).first()
+                vector = await _context_checkpoint_facts(db, tenant_id, user, dependency["source_kind"])
+                if vector is not None:
+                    reader_facts = vector.get((agent_id, policy_id if policy_source else None))
+                if reader_facts is None:
+                    # Creation witnesses can reveal a source outside the initial
+                    # closure. Its original live reader must still run here.
+                    statement = source_reader_statement(user, agent_id).where(Agent.tenant_id == tenant_id)
+                    if policy_source:
+                        statement = statement.add_columns(ConfigRevision).outerjoin(ConfigRevision, ConfigRevision.id == policy_id)
+                    elif resident or identity:
+                        statement = statement.add_columns(ConfigRevision).outerjoin(ConfigRevision,
+                            (ConfigRevision.tenant_id == tenant_id) & (ConfigRevision.entity_type == "agent_bootstrap")
+                            & (ConfigRevision.entity_id == Agent.id) & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
+                    reader_facts = (await db.execute(statement)).first()
                 source = reader_facts[0] if reader_facts is not None else None
                 current_revision = reader_facts[5] if reader_facts is not None and len(reader_facts) > 5 else None
                 if source is None:
@@ -1446,14 +1815,20 @@ async def _validate_session_actor_identity(db, tenant_id, dependency, *, user, r
             "content_source_unavailable", "The actor observation is invalid or unavailable.", 503
         ) from exc
     reader_facts = None
-    if _batch_browser_point(db, user) and runtime_request is None:
+    reader = _source_reader_hint(user, runtime_request)
+    vector = await _actor_checkpoint_facts(db, tenant_id, reader) if reader is not None and (
+        runtime_request is not None or getattr(reader, "role", None) != "platform_admin") else None
+    if vector is not None:
+        reader_facts = vector.get(scope["session_id"])
+        session = reader_facts[5] if reader_facts is not None else None
+    if reader_facts is None and _batch_browser_point(db, user) and runtime_request is None:
         from app.services.source_read_queries import source_reader_statement, reader_columns
 
         reader_facts = (await db.execute(source_reader_statement(user, ChatSession.agent_id, source=ChatSession)
             .add_columns(ChatSession).where(ChatSession.id == scope["session_id"])
             .options(*reader_columns(ChatSession)))).first()
         session = reader_facts[5] if reader_facts is not None else None
-    else:
+    elif reader_facts is None:
         session = await _input_row(db, ChatSession, scope["session_id"])
     if session is None or session.agent_id != scope["agent_id"] or session.tenant_id != tenant_id:
         raise ContentInputReceiptError("content_source_changed", "The actor's source session is unavailable.", 403)
@@ -1461,20 +1836,79 @@ async def _validate_session_actor_identity(db, tenant_id, dependency, *, user, r
         reader_facts=reader_facts)
 
 
+async def _actor_checkpoint_facts(db, tenant_id, reader):
+    current = checkpoint_values(db, "actor_session", binding=(tenant_id, reader.id))
+    if current is not None:
+        return current
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.invocation_span import InvocationSpan
+    from app.services.source_read_queries import source_reader_facts_statement, fact_columns
+
+    retained, sessions = _preflight_inputs(db), set()
+    for identity in checkpoint_source_uuids("session_actor_identity"):
+        row = retained.get((InvocationSpan, identity))
+        try:
+            sessions.add(uuid.UUID(row.session_id))
+        except (AttributeError, TypeError, ValueError):
+            pass
+    if not sessions:
+        return None
+    statement = source_reader_facts_statement(reader, ChatSession.agent_id, source=ChatSession).add_columns(
+        fact_columns(ChatSession, SESSION_SOURCE_FIELDS), ChatSession.id
+        ).where(ChatSession.id.in_(sessions), ChatSession.tenant_id == tenant_id)
+    return await checkpoint_rows(db, "actor_session", statement, lambda row: row[6], binding=(tenant_id, reader.id),
+        entities={0: Agent, 5: ChatSession})
+
+
+async def _session_checkpoint_facts(db, tenant_id, kind, model, reader):
+    current = checkpoint_values(db, "session_source", binding=(tenant_id, reader.id, kind))
+    if current is not None:
+        return current
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.session_v2 import SessionToolInvocation, SessionModelResult, SessionTurnInput
+    from app.services.source_read_queries import source_reader_facts_statement, fact_columns, model_source_state_columns
+
+    all_ids = checkpoint_source_uuids(kind)
+    statement = source_reader_facts_statement(reader, ChatSession.agent_id, source=ChatSession).add_columns(
+        fact_columns(ChatSession, SESSION_SOURCE_FIELDS), model.id).join(
+                model, model.session_id == ChatSession.id).where(model.tenant_id == tenant_id,
+                    ChatSession.tenant_id == tenant_id, model.id.in_(all_ids))
+    entities = {0: Agent, 5: ChatSession}
+    if model is SessionToolInvocation:
+        statement = statement.add_columns(*model_source_state_columns()).outerjoin(SessionModelResult,
+            (SessionModelResult.tenant_id == tenant_id) & (SessionModelResult.session_id == model.session_id)
+            & (SessionModelResult.run_id == model.run_id)
+            & (SessionModelResult.provider_request_id == model.provider_request_id))
+    else:
+        statement = statement.add_columns(fact_columns(SessionTurnInput,
+            "id tenant_id session_id command_id content_parts_json content_hash")).outerjoin(SessionTurnInput,
+            (SessionTurnInput.command_id == model.id) & (SessionTurnInput.tenant_id == tenant_id)
+            & (SessionTurnInput.session_id == model.session_id))
+        entities[7] = SessionTurnInput
+    return await checkpoint_rows(db, "session_source", statement, lambda row: row[6],
+        binding=(tenant_id, reader.id, kind), entities=entities) if all_ids else None
+
+
 async def _validate_session_dependencies(db, tenant_id, dependencies, **context):
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.session_v2 import SessionCommand, SessionToolInvocation, SessionTurnInput
 
-    for kind, model, linked, binding in (
-        ("session_command", SessionCommand, SessionTurnInput,
-            SessionTurnInput.command_id == SessionCommand.id),
-        ("session_tool_invocation", SessionToolInvocation, ChatTranscriptEvent,
-            (ChatTranscriptEvent.id == SessionToolInvocation.result_event_id)
-            & (ChatTranscriptEvent.agent_id == ChatSession.agent_id)
-            & (ChatTranscriptEvent.run_id == SessionToolInvocation.run_id)
-            & (ChatTranscriptEvent.invocation_id == SessionToolInvocation.id)),
-    ):
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    templates = scope.statements if scope is not None and scope.active else {}
+    if "session_dependency_bindings" not in templates:
+        templates["session_dependency_bindings"] = (
+            ("session_command", SessionCommand, SessionTurnInput,
+                SessionTurnInput.command_id == SessionCommand.id),
+            ("session_tool_invocation", SessionToolInvocation, ChatTranscriptEvent,
+                (ChatTranscriptEvent.id == SessionToolInvocation.result_event_id)
+                & (ChatTranscriptEvent.agent_id == ChatSession.agent_id)
+                & (ChatTranscriptEvent.run_id == SessionToolInvocation.run_id)
+                & (ChatTranscriptEvent.invocation_id == SessionToolInvocation.id)),
+        )
+    for kind, model, linked, binding in templates["session_dependency_bindings"]:
         selected = [item for item in dependencies if item["source_kind"] == kind]
         if not selected:
             continue
@@ -1483,6 +1917,32 @@ async def _validate_session_dependencies(db, tenant_id, dependencies, **context)
         except ValueError as exc:
             raise ContentInputReceiptError("content_source_unavailable", "The session source receipt is invalid.", 503) from exc
         cached = _preflight_inputs(db)
+        scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+        runtime = context.get("runtime_request")
+        reader = _source_reader_hint(context.get("user"), runtime)
+        vector = await _session_checkpoint_facts(db, tenant_id, kind, model, reader) if (
+            scope is not None and scope.source_catalog and reader is not None
+            and (runtime is not None or getattr(reader, "role", None) != "platform_admin")) else None
+        if vector is not None and all(identity in vector and cached.get(("session_source", model, identity)) is not None and (
+            model is SessionCommand or cached["session_source", model, identity][2] is not None) for identity in ids):
+            for dependency, source_id in zip(selected, ids):
+                retained = cached["session_source", model, source_id]
+                current = vector.get(source_id)
+                source, _binding, linked_row = retained
+                session = current[5] if current is not None else None
+                if model is SessionCommand:
+                    linked_row = current[7] if current is not None else None
+                elif session is not None and (linked_row.agent_id != session.agent_id
+                    or linked_row.session_id != source.session_id or linked_row.run_id != source.run_id
+                    or linked_row.invocation_id != source.id):
+                    linked_row = None
+                facts = (*current[:6], *current[7:]) if current is not None else None
+                await _validate_session_dependency(db, tenant_id, dependency,
+                    row=(source, session, linked_row) if session is not None else None, model=model,
+                    reader_facts=facts,
+                    model_state=tuple(current[7:]) if current is not None and model is SessionToolInvocation else None,
+                    **context)
+            continue
         if _batch_browser_point(db, context.get("user")) and context.get("runtime_request") is None:
             from app.models.agent import Agent
             from app.models.session_v2 import SessionModelResult
@@ -1589,7 +2049,9 @@ async def _validate_session_dependency(
             {"command_kind": source.command_kind, "request": source.request_json}
         ) and source.target_hash == _hash(source.target_json)
     else:
-        event = linked
+        from app.services.source_read_queries import transcript_event_row
+
+        event = transcript_event_row(db, linked)
         payload = _event_payload(event) if event is not None else {}
         content, version = payload.get("content"), payload.get("content_hash")
         valid = isinstance(content, str) and version == _hash(content)
@@ -1945,20 +2407,30 @@ async def _runtime_input_actor(db, tenant_id, request):
     from app.core.source_read_purpose import current_source_recipient
 
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if (scope is not None and scope.active and scope.source_catalog
+        and not (scope.batch_inputs and scope.cache_authority)):
+        # Each calling source kind/phase owns its current actor observation.
+        # Nodes at that checkpoint share rows, never a different checkpoint.
+        with source_read_checkpoint(kind="runtime_actor", phase=scope.checkpoint):
+            return await _resolve_runtime_input_actor(db, tenant_id, request)
     if scope is None or not scope.active or not scope.batch_inputs or not scope.cache_authority:
         return await _resolve_runtime_input_actor(db, tenant_id, request)
     key = (db.get_transaction(), tenant_id, id(request), current_source_recipient())
     if key in scope.actors:
         return scope.actors[key][1]
     # One preflight uses a point-in-time reader frame; the next preflight resolves it afresh.
-    actor = await _resolve_runtime_input_actor(db, tenant_id, request)
+    if scope.source_catalog:
+        with source_read_checkpoint(kind="runtime_actor", phase=("frame", id(request))):
+            actor = await _resolve_runtime_input_actor(db, tenant_id, request)
+    else:
+        actor = await _resolve_runtime_input_actor(db, tenant_id, request)
     if scope.active:
         key = (db.get_transaction(), tenant_id, id(request), current_source_recipient())
         scope.actors[key] = (request, actor)
     return actor
 
 
-async def _resolve_runtime_input_actor(db, tenant_id, request):
+async def _resolve_runtime_input_actor(db, tenant_id, request, *, _workspace_facts=None):
     from fastapi import HTTPException
     from app.core.permissions import load_runtime_user_agent_access
     from app.models.chat_session import ChatSession
@@ -1967,7 +2439,9 @@ async def _resolve_runtime_input_actor(db, tenant_id, request):
 
     from app.services.machine_runtime_authority import machine_request_actor
 
-    machine = await machine_request_actor(db, tenant_id, request)
+    actor_facts = _workspace_facts if _workspace_facts is not None else await _runtime_request_facts(db, tenant_id, request)
+    machine = await machine_request_actor(db, tenant_id, request,
+        **({"task_facts": (actor_facts[7],)} if actor_facts is not None else {}))
     if machine is not None:
         context = getattr(request, "context", None) or request
         session = getattr(context, "session_context", None)
@@ -2005,11 +2479,25 @@ async def _resolve_runtime_input_actor(db, tenant_id, request):
         principal = request if isinstance(request, AgentRuntimePrincipal) else _personal_kb_runtime_principal(
             request, require_delegation_binding=False,
         )
-        requester, agent = await load_runtime_user_agent_access(db, tenant_id=tenant_id,
-            user_id=principal.requester_user_id, agent_id=principal.agent_id)
+        facts = _human_runtime_facts(actor_facts)
+        if facts is None:
+            requester, agent = await load_runtime_user_agent_access(db, tenant_id=tenant_id,
+                user_id=principal.requester_user_id, agent_id=principal.agent_id)
+        else:
+            from app.services.runtime_user_identity import is_scoped_runtime_user
+
+            requester = facts[5]
+            if is_scoped_runtime_user(requester, tenant_id=tenant_id):
+                # Preserve the session-reader facts shape at the actor boundary;
+                # workspace after-checks supply their separate ACL observation.
+                acl = facts[:5] if _workspace_facts is not None else (*facts[:5], facts[6])
+                agent, _level = await agent_access_from_facts(db, requester, acl)
+            else:
+                requester, agent = None, None
         if requester is None:
             raise ValueError("runtime_requester_unavailable")
-        current_session = await _input_row(db, ChatSession, uuid.UUID(str(principal.session_id)))
+        current_session = facts[6] if facts is not None else await _input_row(
+            db, ChatSession, uuid.UUID(str(principal.session_id)))
         if (current_session is None or current_session.tenant_id != tenant_id
             or (current_session.agent_id != principal.agent_id and not (
                 current_session.peer_agent_id == principal.agent_id and current_session.source_channel == "agent"
@@ -2031,6 +2519,9 @@ async def _resolve_runtime_input_actor(db, tenant_id, request):
             raise ValueError("runtime_session_actor_mismatch")
         if agent.tenant_id != tenant_id:
             raise ValueError("runtime_agent_tenant_mismatch")
+        scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+        if scope is not None and scope.source_catalog:
+            scope.browser_reader = requester
         return principal, requester
     except HTTPException as exc:
         unavailable = exc.status_code >= 500
@@ -2043,6 +2534,105 @@ async def _resolve_runtime_input_actor(db, tenant_id, request):
         raise ContentInputReceiptError(
             "content_source_access_denied", "The runtime source reader is no longer authorized.", 403
         ) from exc
+
+
+async def _runtime_principal_facts(db, tenant_id, principal):
+    return _human_runtime_facts(await _runtime_request_facts(db, tenant_id, principal))
+
+
+def _human_runtime_facts(facts):
+    if facts is None or facts[5] is None or facts[5].role == "platform_admin" or (
+        facts[6] is not None and facts[6].audience_kind == "group"):
+        return None
+    return facts
+
+
+async def _runtime_request_facts(db, tenant_id, request):
+    """One current actor read, including its machine/human discriminator."""
+    from app.database import get_current_tenant_id
+    from app.models.agent import Agent
+    from app.models.user import User
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.services.source_read_queries import source_reader_facts_statement, fact_columns
+    from sqlalchemy import cast, column, values
+    from sqlalchemy.dialects.postgresql import UUID
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if (scope is None or not scope.active or not scope.batch_inputs or not scope.source_catalog
+        or str(get_current_tenant_id()) != str(tenant_id)):
+        return None
+    context = getattr(request, "context", None) or request
+    session_context = getattr(context, "session_context", None)
+    metadata = getattr(session_context, "metadata", None) or {}
+    try:
+        raw_task = getattr(context, "runtime_task_id", None) or metadata.get("runtime_task_id") or metadata.get("task_id")
+        raw_user = getattr(context, "user_id", getattr(context, "requester_user_id", None))
+        binding = (uuid.UUID(str(context.agent_id)), uuid.UUID(str(raw_user)) if raw_user is not None else None,
+            uuid.UUID(str(getattr(context, "session_id", None) or getattr(session_context, "session_id", None))),
+            uuid.UUID(str(raw_task)) if raw_task else None)
+    except (TypeError, ValueError, AttributeError):
+        return None  # Keep the original validator's malformed-principal order.
+    current = checkpoint_values(db, "runtime_actor", binding=(tenant_id, *binding))
+    if current is not None:
+        return current.get("actor")
+    refs = values(column("agent", UUID), column("user", UUID), column("session", UUID), column("task", UUID),
+        name="runtime_source_actor").data([binding])
+    statement = source_reader_facts_statement(SimpleNamespace(id=binding[1]), refs.c.agent, source=refs)
+    statement = statement.add_columns(
+        fact_columns(User, USER_READER_FIELDS),
+        fact_columns(ChatSession, SESSION_ACTOR_FIELDS),
+        fact_columns(RuntimeTask, RUNTIME_ACTOR_FIELDS))
+    statement = statement.outerjoin(User, (User.id == cast(refs.c.user, UUID)) & (User.tenant_id == tenant_id)).outerjoin(
+        ChatSession, (ChatSession.id == refs.c.session) & (ChatSession.tenant_id == tenant_id)).outerjoin(
+            RuntimeTask, (RuntimeTask.id == cast(refs.c.task, UUID)) & (RuntimeTask.tenant_id == tenant_id)
+        ).where(Agent.tenant_id == tenant_id)
+    vector = await checkpoint_rows(db, "runtime_actor", statement, lambda row: "actor",
+        binding=(tenant_id, *binding), entities={0: Agent, 5: User, 6: ChatSession, 7: RuntimeTask})
+    return vector.get("actor") if vector is not None else None
+
+
+async def runtime_actor_session(db, tenant_id, principal):
+    from app.models.chat_session import ChatSession
+    from app.core.source_read_purpose import current_source_recipient
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    phase = scope.checkpoint if scope is not None else None
+    if scope is not None and scope.active and scope.source_catalog and scope.batch_inputs and scope.cache_authority:
+        # Use the same request/recipient observation as the frame's cached actor.
+        for key, (_request, actor) in scope.actors.items():
+            if key[:2] == (db.get_transaction(), tenant_id) and key[3] == current_source_recipient() and actor[0] is principal:
+                phase = ("frame", key[2])
+                break
+    with source_read_checkpoint(kind="runtime_actor", phase=phase):
+        facts = await _runtime_principal_facts(db, tenant_id, principal)
+    return facts[6] if facts is not None else await _input_row(db, ChatSession, uuid.UUID(str(principal.session_id)))
+
+
+async def machine_source_tasks(db, tenant_id, current_id):
+    """Batch the live machine/human classification at its existing checkpoint."""
+    current = checkpoint_values(db, "machine_source_task", binding=(tenant_id,))
+    if current is not None:
+        return current
+    from sqlalchemy import values, column
+    from sqlalchemy.dialects.postgresql import UUID
+    from app.models.runtime_task import RuntimeTask
+    from app.models.invocation_span import InvocationSpan
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.source_read_queries import fact_columns
+
+    ids = {current_id}
+    for key, row in (_preflight_inputs(db) or {}).items():
+        if isinstance(key, tuple) and row is not None:
+            if key[0] is InvocationSpan and row.runtime_task_id is not None:
+                ids.add(row.runtime_task_id)
+            elif key[0] is SessionToolInvocation:
+                ids.add(row.run_id)
+    refs = values(column("id", UUID), name="machine_source_tasks").data([(identity,) for identity in ids])
+    return await checkpoint_rows(db, "machine_source_task", select(refs.c.id, fact_columns(RuntimeTask,
+        RUNTIME_ACTOR_FIELDS)
+    ).select_from(refs).outerjoin(RuntimeTask, (RuntimeTask.id == refs.c.id) & (RuntimeTask.tenant_id == tenant_id)),
+        lambda row: row[0], binding=(tenant_id,), entities={1: RuntimeTask})
 
 
 def _validate_source_bytes(path, version: str) -> None:
@@ -2146,7 +2736,215 @@ async def _validate_company_publication_dependency(db, tenant_id, dependency, *,
     _validate_source_bytes(document.canonical_md_path, dependency["source_version"])
 
 
+@asynccontextmanager
+async def workspace_read_checkpoint(db, tenant_id):
+    """Recheck passed workspace and memory nodes before the outer walk returns."""
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if scope is None or not scope.active or not scope.batch_inputs or not scope.source_catalog:
+        yield
+        return
+    previous = scope.workspace_read
+    if previous is not None and previous.db is db and previous.tenant_id == tenant_id:
+        yield
+        return
+    point = SimpleNamespace(db=db, tenant_id=tenant_id, groups={}, observed=[], phase=object(),
+        verified=set(scope.verified), paths=None, current_path=None, omitted=None, node_boundary=None)
+    scope.workspace_read = point
+    try:
+        yield
+    except BaseException:
+        raise  # Preserve the first walk's denial and its exact error.
+    else:
+        try:
+            await _recheck_workspace_checkpoint(point)
+        except BaseException:
+            # A source rejected at the new post-check is not a successful
+            # source for the next root. Leave pre-walk failures unchanged.
+            scope.verified = {key: value for key, value in scope.verified.items() if key in point.verified}
+            raise
+    finally:
+        scope.workspace_read = previous
+
+
+def defer_memory_after(db, tenant_id, dependency, recheck):
+    """Keep the node's after-judge in the enclosing walk's completion order."""
+    from app.core.source_read_purpose import current_source_recipient
+    from app.services.project_context import _SOURCE_READER
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    point = scope.workspace_read if scope is not None and scope.active else None
+    if point is None or point.db is not db or point.tenant_id != tenant_id:
+        return False
+    group = SimpleNamespace(recipient=current_source_recipient(), project=_SOURCE_READER.get(),
+        phase=scope.checkpoint[1])
+    point.observed.append(SimpleNamespace(kind="explicit_memory", group=group, passed=True,
+        dependency=dependency, recheck=recheck, ancestors=tuple(scope.visiting) if point.paths is not None else ()))
+    return True
+
+
+def _workspace_reader_group(db, tenant_id, user, runtime_request):
+    from app.core.source_read_purpose import current_source_recipient
+    from app.services.project_context import _SOURCE_READER
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    point = scope.workspace_read if scope is not None and scope.active else None
+    if point is None or point.db is not db or point.tenant_id != tenant_id:
+        return None
+    reader = user
+    if runtime_request is not None:
+        hint = _source_reader_hint(None, runtime_request)
+        reader = scope.browser_reader
+        if reader is None or getattr(reader, "id", None) != getattr(hint, "id", None):
+            return None
+    if (reader is None or getattr(reader, "id", None) is None
+        or getattr(reader, "role", None) in {None, "platform_admin"}):
+        return None  # Preserve the original audited/global/machine paths.
+    context = getattr(runtime_request, "context", None) or runtime_request
+    binding = (type(runtime_request), getattr(context, "agent_id", None),
+        str(getattr(context, "session_id", None)), str(getattr(context, "runtime_task_id", None)),
+        getattr(context, "purpose", None))
+    recipient, project = current_source_recipient(), _SOURCE_READER.get()
+    key = (db.get_transaction(), reader.id, binding, recipient, project, scope.checkpoint[1])
+    if key not in point.groups:
+        point.groups[key] = SimpleNamespace(reader=reader, recipient=recipient, project=project,
+            phase=scope.checkpoint[1], request=runtime_request, before=None, after=None)
+    return point.groups[key]
+
+
+def workspace_root_session_ids():
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    point = scope.workspace_read if scope is not None else None
+    return {facts[5].root_session_id for group in point.groups.values()
+        for rows in (group.before, group.after) for facts in (rows or {}).values()
+        if facts[5] is not None and facts[5].root_session_id is not None} if point is not None else set()
+
+
+async def _workspace_checkpoint_rows(db, tenant_id, reader, *, runtime_request=None, receipts=None):
+    from fastapi import HTTPException
+    from sqlalchemy import column, values
+    from sqlalchemy.dialects.postgresql import UUID
+    from sqlalchemy.orm import aliased
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.workspace_resource import WorkspaceResourceManifest
+    from app.services.source_read_queries import fact_columns, fact_object, source_reader_facts_statement, resource_permission_rows
+    from app.core.resource_authority import workspace_resource_id
+
+    bindings = []
+    selected = receipts if receipts is not None else [receipt for key, receipt in (_preflight_inputs(db) or {}).items()
+        if isinstance(key, tuple) and key[0] is ContentInputReceipt and receipt is not None]
+    for receipt in selected:
+        if receipt.carrier_kind != "workspace_artifact" or receipt.tenant_id != tenant_id:
+            continue
+        try:
+            agent, path = receipt.carrier_ref.split("\n", 1)
+            identity = uuid.UUID(agent)
+            bindings.append((receipt.id, identity, path, receipt.carrier_ref, workspace_resource_id(identity, path)))
+        except (ValueError, TypeError, HTTPException):
+            continue  # The ordered judge owns malformed bindings.
+    if not bindings:
+        return {}
+    refs = values(column("receipt", UUID), column("agent", UUID), column("path", String),
+        column("carrier", String), column("resource", UUID), name="workspace_read_sources").data(bindings)
+    current = aliased(ContentInputReceipt)
+    latest = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
+        ContentInputReceipt.carrier_kind == "workspace_artifact", ContentInputReceipt.carrier_ref == refs.c.carrier
+        ).order_by(ContentInputReceipt.revision.desc()).limit(1).correlate(refs).scalar_subquery()
+    root_owned = select(ChatSession.id).where(ChatSession.id == WorkspaceResourceManifest.root_session_id,
+        ChatSession.agent_id == refs.c.agent, ChatSession.user_id == reader.id).correlate(refs, WorkspaceResourceManifest).exists()
+    statement = source_reader_facts_statement(reader, refs.c.agent, source=refs,
+        agent_fields=AGENT_READER_EXTRA_FIELDS if receipts is not None else "").add_columns(
+        fact_columns(WorkspaceResourceManifest, "id tenant_id agent_id path owner_user_id root_session_id "
+            "authority_state audience_kind content_hash deleted_at"),
+        fact_columns(current, "id revision content_sha256"), root_owned,
+        resource_permission_rows("workspace_file", refs.c.resource, tenant_id), refs.c.receipt)
+    statement = statement.outerjoin(WorkspaceResourceManifest, (WorkspaceResourceManifest.tenant_id == tenant_id)
+        & (WorkspaceResourceManifest.agent_id == refs.c.agent) & (WorkspaceResourceManifest.path == refs.c.path)
+        ).outerjoin(current, current.id == latest)
+    actor_column = None
+    if runtime_request is not None:
+        from sqlalchemy import func
+        from app.models.user import User
+        from app.models.runtime_task import RuntimeTask
+
+        context = getattr(runtime_request, "context", None) or runtime_request
+        session_context = getattr(context, "session_context", None)
+        metadata = getattr(session_context, "metadata", None) or {}
+        session_id = uuid.UUID(str(getattr(context, "session_id", None) or getattr(session_context, "session_id", None)))
+        raw_task = getattr(context, "runtime_task_id", None) or metadata.get("runtime_task_id") or metadata.get("task_id")
+        actor = source_reader_facts_statement(reader, uuid.UUID(str(context.agent_id))).add_columns(
+            fact_columns(User, USER_READER_FIELDS),
+            fact_columns(ChatSession, SESSION_ACTOR_FIELDS),
+            fact_columns(RuntimeTask, RUNTIME_ACTOR_FIELDS))
+        actor = actor.outerjoin_from(Agent, User, (User.id == reader.id) & (User.tenant_id == tenant_id)).outerjoin_from(
+            Agent, ChatSession, ChatSession.id == session_id).outerjoin_from(Agent, RuntimeTask,
+                RuntimeTask.id == (uuid.UUID(str(raw_task)) if raw_task else None))
+        actor_column = actor.with_only_columns(func.jsonb_build_array(*actor.selected_columns),
+            maintain_column_froms=True).correlate(None).scalar_subquery()
+        statement = statement.add_columns(actor_column)
+    rows = await db.execute(statement)
+    identities = {}
+    result = {}
+    for row in rows:
+        facts = tuple(fact_object(model, value, identities=identities) if model is not None else value
+            for model, value in zip((Agent, None, None, None, None, WorkspaceResourceManifest, ContentInputReceipt,
+                None, None), row[:9]))
+        actor = tuple(fact_object(model, value, identities=identities) if model is not None else value
+            for model, value in zip((Agent, None, None, None, None, User, ChatSession, RuntimeTask), row[10])) if (
+                actor_column is not None and row[10] is not None) else None
+        result[row[9]] = (*facts, actor)
+    return result
+
+
+async def _recheck_workspace_checkpoint(point):
+    from app.core.source_read_purpose import _RECIPIENT_READ
+    from app.services.project_context import _SOURCE_READER
+
+    for observation in point.observed:
+        if not observation.passed:
+            continue
+        affected = set().union(*(point.paths.get(key, ()) for key in observation.ancestors)) if point.paths is not None else set()
+        if affected and affected <= point.omitted:
+            continue
+        group = observation.group
+        recipient = _RECIPIENT_READ.set(group.recipient)
+        project = _SOURCE_READER.set(group.project)
+        try:
+            phase = "workspace_after" if observation.kind == "workspace_artifact" else "memory_after"
+            with source_read_checkpoint(kind=observation.kind, phase=(group.phase, phase, point.phase)):
+                try:
+                    if observation.kind == "explicit_memory":
+                        await observation.recheck()
+                    else:
+                        arguments = observation.arguments
+                        if group.after is None:
+                            group.after = await _workspace_checkpoint_rows(point.db, point.tenant_id, group.reader,
+                                runtime_request=group.request)
+                        facts = group.after.get(arguments["receipt"].id)
+                        manifest, latest = (facts[5], facts[6]) if facts is not None else (None, None)
+                        await _validate_workspace_live(point.db, point.tenant_id, **{**arguments,
+                            "manifest": manifest, "latest": latest, "facts": facts,
+                            "source_facts": (manifest, facts[7], facts[8]) if facts is not None else None}, after=True)
+                except ContentInputReceiptError as exc:
+                    if exc.dependency is None:
+                        exc.dependency = observation.dependency
+                    if point.omitted is None or not affected:
+                        raise
+                    point.omitted.update(affected)
+                    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+                    scope.verified = {key: value for key, value in scope.verified.items() if key in point.verified}
+        finally:
+            _SOURCE_READER.reset(project)
+            _RECIPIENT_READ.reset(recipient)
+
+
 async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, runtime_request, active_receipts):
+    async with workspace_read_checkpoint(db, tenant_id):
+        return await _validate_workspace_node(db, tenant_id, dependency, user=user,
+            runtime_request=runtime_request, active_receipts=active_receipts)
+
+
+async def _validate_workspace_node(db, tenant_id, dependency, *, user, runtime_request, active_receipts):
     from fastapi import HTTPException
     from app.models.workspace_resource import WorkspaceResourceManifest
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
@@ -2178,42 +2976,58 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
         ) from exc
     cached = _preflight_inputs(db)
     facts, source_facts, latest = None, None, None
-    if _batch_browser_point(db, user) and runtime_request is None:
-        from sqlalchemy.orm import aliased
-        from app.models.chat_session import ChatSession
-        from app.services.source_read_queries import source_reader_statement, resource_permission_rows
-        from app.core.resource_authority import workspace_resource_id
-
-        statements = _DISCLOSURE_SOURCE_VALIDATIONS.get().statements
-        statement_key = ("live_workspace_source", user.id, tenant_id, agent_id)
-        statement = statements.get(statement_key)
-        if statement is None:
-            current = aliased(ContentInputReceipt)
-            latest_id = select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == tenant_id,
-                ContentInputReceipt.carrier_kind == "workspace_artifact",
-                ContentInputReceipt.carrier_ref == bindparam("source_workspace_ref")
-                ).order_by(ContentInputReceipt.revision.desc()).limit(1).scalar_subquery()
-            root_owned = select(ChatSession.id).where(ChatSession.id == WorkspaceResourceManifest.root_session_id,
-                ChatSession.agent_id == agent_id, ChatSession.user_id == user.id).exists()
-            statement = source_reader_statement(user, agent_id).add_columns(
-                WorkspaceResourceManifest, current, root_owned,
-                resource_permission_rows("workspace_file", bindparam("source_workspace_resource"), tenant_id))
-            statement = (statement.outerjoin(WorkspaceResourceManifest, (WorkspaceResourceManifest.tenant_id == tenant_id)
-                & (WorkspaceResourceManifest.agent_id == agent_id) & (WorkspaceResourceManifest.path == bindparam("source_workspace_path")))
-                .outerjoin(current, current.id == latest_id)
-                .options(load_only(current.id, current.revision, current.content_sha256)))
-            statements[statement_key] = statement
-        facts = (await db.execute(statement, {"source_workspace_ref": receipt.carrier_ref,
-            "source_workspace_path": path, "source_workspace_resource": workspace_resource_id(agent_id, path)})).first()
+    group = _workspace_reader_group(db, tenant_id, user, runtime_request)
+    if group is not None:
+        if group.before is None:
+            group.before = await _workspace_checkpoint_rows(db, tenant_id, group.reader)
+        facts = group.before.get(receipt_id)
+        if facts is None:
+            group = None  # Late, non-catalogue sources retain the original reader.
+        else:
+            manifest, latest = facts[5], facts[6]
+            source_facts = (manifest, facts[7], facts[8])
+    if group is None and _batch_browser_point(db, user) and runtime_request is None:
+        # A later version of the same path must observe a manifest or ACL
+        # change made after its earlier version was checked (R12a).
+        facts = await _workspace_single_point(db, tenant_id, agent_id, path, receipt, user)
         manifest, latest = (facts[5], facts[6]) if facts is not None else (None, None)
         source_facts = (manifest, facts[7], facts[8]) if facts is not None else None
-    else:
+    elif group is None:
         manifest_key = ("manifest", agent_id, path)
         manifest = cached[manifest_key] if cached is not None and manifest_key in cached else await db.scalar(
             select(WorkspaceResourceManifest)
             .where(WorkspaceResourceManifest.tenant_id == tenant_id,
                 WorkspaceResourceManifest.agent_id == agent_id, WorkspaceResourceManifest.path == path)
             .execution_options(populate_existing=True))
+    arguments = dict(dependency=dependency, user=user,
+        runtime_request=runtime_request, active_receipts=active_receipts, receipt=receipt, agent_id=agent_id,
+        path=path, manifest=manifest, latest=latest, facts=facts, source_facts=source_facts)
+    observation = None
+    if group is not None:
+        point = _DISCLOSURE_SOURCE_VALIDATIONS.get().workspace_read
+        observation = SimpleNamespace(kind="workspace_artifact", group=group, arguments=arguments, passed=False,
+            dependency=dependency, ancestors=tuple(_DISCLOSURE_SOURCE_VALIDATIONS.get().visiting) if point.paths is not None else ())
+        point.observed.append(observation)
+    user = await _validate_workspace_live(db, tenant_id, **arguments)
+    # A later write is not a source of the previously observed version.
+    await _validate_workspace_receipt_inputs(db, receipt, user=user, runtime_request=runtime_request,
+        active_receipts=active_receipts | {receipt.id})
+    if observation is not None:
+        observation.passed = True
+
+
+async def _workspace_single_point(db, tenant_id, agent_id, path, receipt, user):
+    rows = await _workspace_checkpoint_rows(db, tenant_id, user, receipts=[receipt])
+    facts = rows.get(receipt.id)
+    return facts[:9] if facts is not None and facts[0] is not None else None
+
+
+async def _validate_workspace_live(db, tenant_id, dependency, *, user, runtime_request, active_receipts,
+    receipt, agent_id, path, manifest, latest, facts, source_facts, after=False):
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
+    from fastapi import HTTPException
+
+    receipt_id = receipt.id
     if manifest is None or manifest.authority_state != "owned" or manifest.deleted_at is not None:
         raise ContentInputReceiptError(
             "content_source_access_denied", "The workspace source is unavailable or quarantined.", 403
@@ -2224,7 +3038,11 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
         )
     principal = None
     if runtime_request is not None:
-        principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
+        if after and facts is not None and facts[9] is not None:
+            principal, user = await _resolve_runtime_input_actor(db, tenant_id, runtime_request,
+                _workspace_facts=facts[9])
+        else:
+            principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
         from app.services.project_context import project_source_read_allowed
 
         if principal.agent_id != agent_id and not project_source_read_allowed(tenant_id, principal):
@@ -2241,6 +3059,14 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
                     "workspace_resource_forbidden", "The machine cannot read this workspace source."
                 )
         else:
+            access = None
+            if facts is not None:
+                if runtime_request is not None and not after:
+                    from app.core.permissions import check_agent_access
+
+                    access = await check_agent_access(db, user, agent_id, _source_facts=facts)
+                else:
+                    access = await agent_access_from_facts(db, user, facts)
             await authorize_workspace_path(
                 db,
                 user,
@@ -2252,7 +3078,7 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
                 if principal is not None and principal.agent_id == agent_id
                 else None,
                 runtime_principal=principal,
-                agent_access=await agent_access_from_facts(db, user, facts) if facts is not None else None,
+                agent_access=access,
                 source_facts=source_facts,
             )
     except (HTTPException, WorkspaceAuthorityError) as exc:
@@ -2265,16 +3091,20 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
         raise ContentInputReceiptError(
             "content_source_changed", "The current workspace bytes have no matching receipt.", 403
         )
-    _validate_source_bytes(Path(str(agent_id)) / path, latest.content_sha256)
-    # A later write is not a source of the previously observed version.
-    await _validate_workspace_receipt_inputs(
-        db, receipt, user=user, runtime_request=runtime_request, active_receipts=active_receipts | {receipt_id}
-    )
+    if not after:
+        _validate_source_bytes(Path(str(agent_id)) / path, latest.content_sha256)
+    return user
 
 
 async def _validate_workspace_receipt_inputs(
     db, receipt, *, user=None, runtime_request=None, active_receipts=frozenset()
 ):
+    async with workspace_read_checkpoint(db, receipt.tenant_id):
+        return await _walk_workspace_receipt_inputs(db, receipt, user=user, runtime_request=runtime_request,
+            active_receipts=active_receipts)
+
+
+async def _walk_workspace_receipt_inputs(db, receipt, *, user, runtime_request, active_receipts):
     if runtime_request is not None:
         from app.services.runtime_result_sources import validate_published_workspace_inputs
 
@@ -2297,7 +3127,7 @@ async def _validate_workspace_tool_input(db, request, receipt):
 
     tenant_id = uuid.UUID(str(request.context.tenant_id))
     principal, user = await _runtime_input_actor(db, tenant_id, request)
-    session = await _input_row(db, ChatSession, uuid.UUID(principal.session_id))
+    session = await runtime_actor_session(db, tenant_id, principal)
     # Private Web and delegation outputs publish as the session's member;
     # group and machine outputs retain their runtime reader.
     if session.user_id is None or session.audience_kind == "group":
@@ -2345,7 +3175,10 @@ async def authorize_workspace_execution_inputs(request):
                 .order_by(ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())
                 .execution_options(populate_existing=True)
             )} if paths else {}
-            with group_source_read(batch_inputs=True):
+            with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as frame:
+                from app.services.source_read_queries import transcript_event_columns
+
+                transcript_event_columns(frame)
                 source_rows = _preflight_inputs(db)
                 if task is not None:
                     source_rows[(RuntimeTask, task.id)] = task
@@ -2355,25 +3188,29 @@ async def authorize_workspace_execution_inputs(request):
                     receipts = {ref: source_rows.get((ContentInputReceipt, receipt_id)) for ref, receipt_id in receipt_ids.items()}
                 else:
                     receipts = {}
-                for path in sorted(paths):
-                    ref = workspace_artifact_ref(context.agent_id, path)
-                    receipt = receipts.get(ref)
-                    if ref in receipt_ids and (receipt is None or receipt.carrier_kind != "workspace_artifact"
-                        or receipt.carrier_ref != ref):
-                        omitted.add(path)
-                        continue
-                    if receipt is None and path not in scope.full_control_paths:
-                        continue
-                    if receipt is not None:
-                        try:
-                            await _validate_workspace_tool_input(db, request, receipt)
-                        except ContentInputReceiptError:
+                async with workspace_read_checkpoint(db, tenant_id):
+                    point = frame.workspace_read
+                    point.paths, point.omitted = {}, omitted
+                    for path in sorted(paths):
+                        point.current_path = path
+                        ref = workspace_artifact_ref(context.agent_id, path)
+                        receipt = receipts.get(ref)
+                        if ref in receipt_ids and (receipt is None or receipt.carrier_kind != "workspace_artifact"
+                            or receipt.carrier_ref != ref):
                             omitted.add(path)
                             continue
-                    reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
-                        revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
-                        dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
-        context.workspace_authority_scope = replace(scope, input_reads=tuple(reads),
+                        if receipt is None and path not in scope.full_control_paths:
+                            continue
+                        if receipt is not None:
+                            try:
+                                await _validate_workspace_tool_input(db, request, receipt)
+                            except ContentInputReceiptError:
+                                omitted.add(path)
+                                continue
+                        reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
+                            revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
+                            dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
+        context.workspace_authority_scope = replace(scope, input_reads=tuple(read for read in reads if read.path not in omitted),
             allowed_paths=scope.allowed_paths - omitted)
     except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
         code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
@@ -2431,7 +3268,10 @@ async def authorize_workspace_receipt_read(request):
                     if receipt is None and path not in scope.full_control_paths:
                         return None
                     if receipt is not None:
-                        with group_source_read(batch_inputs=True):
+                        with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as frame:
+                            from app.services.source_read_queries import transcript_event_columns
+
+                            transcript_event_columns(frame)
                             await _preload_execution_sources(db, uuid.UUID(str(context.tenant_id)), [{
                                 "source_kind": "workspace_artifact", "source_id": str(receipt.id)}])
                             await _validate_workspace_tool_input(db, request, receipt)

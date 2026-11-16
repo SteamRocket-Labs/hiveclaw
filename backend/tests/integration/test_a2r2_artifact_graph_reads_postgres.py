@@ -18,7 +18,7 @@ from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_cal
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-async def _six_native_tools(n, app_user_sessionmaker):
+async def _six_native_tools(n, app_user_sessionmaker, *, directory_tools=4):
     """One admitted command/model round, six real native tool settlements."""
     from app.kernel.engine import _mid_run_items_to_user_messages, _normalize_tool_result_for_llm
     from app.runtime.hooks import HookResult
@@ -35,7 +35,7 @@ async def _six_native_tools(n, app_user_sessionmaker):
     async def allow(**_kwargs):
         return HookResult()
 
-    specs = [("list_files", {"path": "workspace"})] * 4 + [("get_current_time", {})] * 2
+    specs = [("list_files", {"path": "workspace"})] * directory_tools + [("get_current_time", {})] * 2
     turn = f"turn-{n.run.hex}"
     calls = [{"id": f"shape-{i}", "type": "function", "function": {
         "name": name, "arguments": json.dumps(args)}} for i, (name, args) in enumerate(specs)]
@@ -83,7 +83,10 @@ async def _six_native_tools(n, app_user_sessionmaker):
     return invocations
 
 
-async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
+async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker, *,
+    workspace_nodes=45, memory_nodes=6, directory_nodes=27, actor_nodes=18, tool_rounds=26,
+    directory_tools=4, root_dependencies=57, workspace_paths=None,
+    workspace_lineages=1, memory_reference_nodes=None):
     from app.memory.types import MemoryItem, MemoryKind
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
@@ -119,22 +122,25 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
     # Seed historical working copies through the existing receipt/manifest writers.
     # Their exact bytes and upstream edges still pass the real browser readers.
     async with owner_sessionmaker() as db:
-        previous = None
-        for i in range(44):
-            path = f"workspace/sales-run-{i:02d}.md"
+        by_lineage, by_path = {}, {}
+        for i in range(workspace_nodes - 1):
+            previous = by_lineage.get(i % workspace_lineages)
+            path = f"workspace/sales-run-{i if workspace_paths is None else i % (workspace_paths - 1):02d}.md"
             (n.root / path).write_text(BODY)
             await register_workspace_path(db, tenant_id=n.tenant, agent_id=n.agent, path=path,
                 owner_user_id=n.user, root_session_id=n.session, source="native_tool",
                 content_hash=hashlib.sha256(BODY.encode()).hexdigest())
             previous = record_workspace_receipt(db, n.tenant, n.agent, path,
-                hashlib.sha256(BODY.encode()).hexdigest(), None,
+                hashlib.sha256(BODY.encode()).hexdigest(), by_path.get(path),
                 additional_dependencies=[{"source_kind": "workspace_artifact", "source_id": str(previous.id),
                     "source_version": previous.content_sha256}] if previous is not None else ())
             n.receipts.append(previous)
+            by_lineage[i % workspace_lineages] = previous
+            by_path[path] = previous
         memories = list(await db.scalars(select(ContentInputReceipt).where(
             ContentInputReceipt.tenant_id == n.tenant, ContentInputReceipt.carrier_kind == "explicit_memory")))
         template = memories[0]
-        for i in range(4):
+        for i in range(memory_nodes - len(memories)):
             entry = f"shape-memory-{i}"
             path = n.root / f"memory/explicit/entries/{entry}.md"
             path.write_text(f"Retained sales reporting convention {i}.\n")
@@ -148,7 +154,7 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
             "source_version": row.content_sha256} for row in memories]
         await db.commit()
     # Distinct observations, with one current directory and reader check per ID.
-    for i in range(27):
+    for i in range(directory_nodes):
         async with owner_sessionmaker() as db:
             (await db.get(RuntimeTask, n.run)).status = "completed"
             n.run = uuid.uuid4()
@@ -162,7 +168,9 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
         async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
             _, directory = await observe_directory(db, tenant_id=n.tenant, agent_id=n.agent, runtime_request=principal)
             dependencies.append(directory)
-            for index in ([i, 27] if i == 26 else [i]):
+            reference_indexes = ([i, 27] if i == 26 else [i] if i < 27 else []) if memory_reference_nodes is None else (
+                [i] if i < memory_reference_nodes else [])
+            for index in reference_indexes:
                 resource = f"memory/t2/sessions/{n.session}/segments/shape-{index}"
                 (n.root / resource).mkdir(parents=True)
                 (n.root / resource / "manifest.json").write_text("{}")
@@ -171,7 +179,7 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
                     source=resource, metadata={"session_id": str(n.session)}), data_root=n.root.parent,
                     tenant_id=n.tenant, reader=principal, user=await db.get(User, n.user))
                 dependencies += reference
-            if i < 18:
+            if i < actor_nodes:
                 user = await db.get(User, n.user)
                 user.display_name = f"Report owner {i}"
                 await db.flush()
@@ -179,8 +187,8 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
                     session_id=n.session, user_id=n.user, display_name=user.display_name, runtime_task_id=n.run)
                 dependencies.append(actor)
             await db.commit()
-        if i < 26:
-            invocations = await _six_native_tools(n, app_user_sessionmaker)
+        if i < tool_rounds:
+            invocations = await _six_native_tools(n, app_user_sessionmaker, directory_tools=directory_tools)
             async with owner_sessionmaker() as db:
                 for invocation in invocations:
                     tool = await db.get(SessionToolInvocation, invocation.id)
@@ -190,14 +198,14 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
     # Keep the root at 57 direct dependencies, while its receipt closure retains
     # all the observations. Historical receipts are immutable fixture inputs.
     async with owner_sessionmaker() as db:
-        root_sources = dependencies[:56]
-        remainder = dependencies[56:]
+        root_sources = dependencies[:root_dependencies - 1]
+        remainder = dependencies[root_dependencies - 1:]
         for i, receipt in enumerate(n.receipts):
             receipt.dependencies_json = [*receipt.dependencies_json, *remainder[i::len(n.receipts)]]
             await db.merge(receipt)
         await db.commit()
-    n.sources = [*root_sources, {"source_kind": "workspace_artifact", "source_id": str(n.receipts[-1].id),
-        "source_version": n.receipts[-1].content_sha256}]
+    n.sources = [*root_sources, *[{"source_kind": "workspace_artifact", "source_id": str(row.id),
+        "source_version": row.content_sha256} for row in by_lineage.values()]]
     n.path = "workspace/sales-report-production-shape.md"
     output, _ = await memory_call(n, app_user_sessionmaker, "write_file", {"path": n.path, "content": BODY})
     async with owner_sessionmaker() as db:
@@ -206,7 +214,7 @@ async def _production_shape(n, owner_sessionmaker, app_user_sessionmaker):
         assert artifact.snapshot_json["snapshot_storage_path"], output
         n.artifact = artifact.id
         n.receipts.append(await db.get(ContentInputReceipt, uuid.UUID(artifact.snapshot_json["content_input_receipt_id"])))
-    n.depth = 44
+    n.depth = workspace_nodes - 1
 
 
 async def test_production_shaped_delivered_reads(graph, owner_sessionmaker, app_user_sessionmaker, monkeypatch):  # noqa: F811

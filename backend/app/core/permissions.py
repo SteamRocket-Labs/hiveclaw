@@ -376,7 +376,7 @@ async def require_agent_execution_access(
 
 
 async def check_agent_access(
-    db: AsyncSession, user: User, agent_id: uuid.UUID, *, _retirement_history: bool = False
+    db: AsyncSession, user: User, agent_id: uuid.UUID, *, _retirement_history: bool = False, _source_facts=None
 ) -> Tuple[Agent, str]:
     """Check whether a user may use or manage a specific Agent.
 
@@ -384,6 +384,9 @@ async def check_agent_access(
     must call :func:`check_agent_operator_reachability` explicitly.
     """
 
+    if (_source_facts is not None and not _retirement_history and user.role != "platform_admin"
+        and (_source_facts[0] is None or _source_facts[0].id == agent_id)):
+        return await agent_access_from_facts(db, user, _source_facts)
     agent = await _load_agent_for_user(db, user, agent_id, retirement_history=_retirement_history)
     return await _agent_access_for_loaded(db, user, agent)
 

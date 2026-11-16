@@ -7,9 +7,10 @@ from app.database import tenant_scoped_session
 from app.models.invocation_span import InvocationSpan
 from app.services.content_input_receipts import ContentInputReceiptError, _input_row, group_source_read
 from app.services.explicit_memory_authority import (
-    _actor, _authorize_entry, _recheck_group_memory_audiences, _writer_input, source_dependency,
+    _actor, _authorize_entry, _latest_entry_receipts, _recheck_group_memory_audiences, _writer_input, memory_ref, source_dependency,
 )
 from app.services.session_model_inputs import _hash, _stored_dependencies, _unique_dependencies
+from app.services.session_tool_runtime import _sha256
 
 MEMORY_RESULT_TOOLS = frozenset({"save_memory", "update_memory", "retire_memory", "reconcile_memory_write",
     "load_memory", "search_memory"})
@@ -19,11 +20,27 @@ async def record_memory_result(request, *, content, entries=(), team_entries=(),
     """Pin actual emitted entries, never infer source completeness from prose."""
     tenant_id = uuid.UUID(str(request.context.tenant_id))
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
-        with group_source_read(batch_inputs=True):
+        with group_source_read(batch_inputs=True, source_catalog=True) as frame:
+            from app.services.source_read_queries import transcript_event_columns
+
+            transcript_event_columns(frame)
             await _actor(db, tenant_id, request)
+            from app.services.explicit_memory_authority import preload_memory_receipts
+
+            await preload_memory_receipts(db, tenant_id, [source_dependency(receipt) for _entry, receipt in entries])
+            versions = {}
             for entry, receipt in entries:
+                versions[entry.entry_id] = _sha256(receipt.authority_json) if receipt is not None else None
                 await _authorize_entry(db, tenant_id=tenant_id, agent_id=request.context.agent_id,
-                    request=request, entry=entry, receipt=receipt)
+                    request=request, entry=entry, receipt=receipt, final_receipt_check=False)
+            refreshed = await _latest_entry_receipts(db, tenant_id, request.context.agent_id,
+                [entry for entry, _receipt in entries])
+            for entry, receipt in entries:
+                current = refreshed.get(memory_ref(request.context.agent_id, entry.entry_id))
+                if (current is None or current.id != receipt.id
+                    or _sha256(current.authority_json) != versions[entry.entry_id]):
+                    raise ContentInputReceiptError("explicit_memory_source_changed",
+                        "The memory authority changed while reading.", 403)
         from app.services.team_memory_runtime import authorize_entry, source_dependency as team_source
 
         for entry, receipt in team_entries:

@@ -21,6 +21,10 @@ from app.services.explicit_memory_authority import (
 )
 from app.services.session_tool_runtime import _sha256
 
+from app.services.source_read_queries import (
+    SESSION_SOURCE_FIELDS,
+)
+
 CANDIDATE_SCHEMA = "hive.learned_skill_candidate.v1"
 CANDIDATE_ENTITY = "learned_skill_candidate"
 _REVIEW = ContextVar("learned_skill_review", default=None)
@@ -50,24 +54,68 @@ async def validate_model_source(db, tenant_id, dependency, *, request=None, user
     return (await validate_model_sources(db, tenant_id, [dependency], request=request, user=user))[0]
 
 
+async def _model_source_checkpoint(db, tenant_id, request, user):
+    from sqlalchemy import case, func
+    from app.models.agent import Agent
+    from app.services.content_input_receipts import (
+        checkpoint_rows, checkpoint_query, checkpoint_source_uuids, _preflight_inputs, _source_reader_hint,
+    )
+    from app.services.source_read_queries import fact_columns, source_reader_facts_statement
+
+    reader = _source_reader_hint(user, request)
+    if reader is None or getattr(reader, "id", None) is None or getattr(reader, "role", None) == "platform_admin":
+        return None  # Keep the existing audited global/machine authority path.
+    async def read():
+        ids = checkpoint_source_uuids("session_model_result")
+        if not ids:
+            return None
+        retained = _preflight_inputs(db) or {}
+        known = {key[1] for key in retained if isinstance(key, tuple) and key[0] is SessionModelResult}
+        model = fact_columns(SessionModelResult, "id tenant_id session_id run_id provider_request_id "
+            "model_request_hash state seal_json")
+        model = model.op("||")(func.jsonb_build_object("model_request_snapshot_json", case((
+            SessionModelResult.id.not_in(known) & SessionModelResult.state.in_(("sealed", "round_committed")),
+            SessionModelResult.model_request_snapshot_json))))
+        statement = source_reader_facts_statement(reader, ChatSession.agent_id, source=ChatSession).join(
+            SessionModelResult, ChatSession.id == SessionModelResult.session_id).add_columns(
+                fact_columns(ChatSession, SESSION_SOURCE_FIELDS), model,
+                SessionModelResult.id).where(SessionModelResult.id.in_(ids), SessionModelResult.tenant_id == tenant_id)
+        vector = await checkpoint_rows(db, "model_source", statement, lambda row: row[7],
+            binding=(tenant_id, reader.id), entities={0: Agent, 5: ChatSession, 6: SessionModelResult})
+        if vector is not None:
+            for row in vector.values():
+                original = retained.get((SessionModelResult, row[6].id))
+                if original is not None:
+                    row[6].model_request_snapshot_json = original.model_request_snapshot_json
+        return vector
+
+    return await checkpoint_query(db, "model_source", read, binding=(tenant_id, reader.id))
+
+
 async def validate_model_sources(db, tenant_id, dependencies, *, request=None, user=None):
     from app.services.content_input_receipts import _input_row
 
+    vector = await _model_source_checkpoint(db, tenant_id, request, user)
     rows = []
     for dependency in dependencies:
         try:
             source_id = uuid.UUID(dependency["source_id"])
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise ContentInputReceiptError("learned_model_source_unavailable", "Restore the exact sealed workflow and its inputs.", 403) from exc
-        result = await _input_row(db, SessionModelResult, source_id)
-        session = await _input_row(db, ChatSession, result.session_id) if result else None
-        sources = await _validate_model_source(db, tenant_id, dependency, result, session, request=request, user=user)
+        facts = vector.get(source_id) if vector is not None else None
+        result = facts[6] if facts is not None else None
+        session = facts[5] if facts is not None else None
+        if facts is None:
+            result = await _input_row(db, SessionModelResult, source_id)
+            session = await _input_row(db, ChatSession, result.session_id) if result else None
+        sources = await _validate_model_source(db, tenant_id, dependency, result, session,
+            request=request, user=user, reader_facts=facts)
         await _validate_input_dependencies(db, tenant_id, sources, user=user, runtime_request=request)
         rows.append((result, session))
     return rows
 
 
-async def _validate_model_source(db, tenant_id, dependency, result, session, *, request, user):
+async def _validate_model_source(db, tenant_id, dependency, result, session, *, request, user, reader_facts=None):
     from app.services.content_input_receipts import _authorize_session_input_source
     from app.services.session_model_inputs import model_output_dependencies
 
@@ -79,7 +127,8 @@ async def _validate_model_source(db, tenant_id, dependency, result, session, *, 
             or seal.get("run_id") != str(result.run_id) or seal.get("provider_request_id") != result.provider_request_id
             or seal.get("content_hash") != _sha256(seal.get("semantic_content")) or model_source(result) != dependency):
             raise ValueError("learned_model_source_invalid")
-        await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=request)
+        await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=request,
+            reader_facts=reader_facts)
         return sources
     except ContentInputReceiptError:
         raise

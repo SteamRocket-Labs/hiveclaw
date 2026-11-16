@@ -559,8 +559,9 @@ async def cancel_async_task(request: ToolExecutionRequest) -> str:
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result
     from app.services.agent_tools import _cancel_async_task
     from app.services.runtime_task_authority import execution_principal_from_tool_context
+    from app.services.runtime_task_read_sources import filter_task_result_content
 
-    return _normalize_messaging_result(
+    content = _normalize_messaging_result(
         "cancel_async_task",
         await _cancel_async_task(
             request.context.agent_id,
@@ -568,6 +569,7 @@ async def cancel_async_task(request: ToolExecutionRequest) -> str:
             principal=execution_principal_from_tool_context(request.context),
         ),
     )
+    return await filter_task_result_content(request, content)
 
 
 # -- list_async_tasks --------------------------------------------------------

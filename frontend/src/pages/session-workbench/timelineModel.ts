@@ -2140,13 +2140,28 @@ function isFiniteTimelineTime(value: unknown): value is string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }
 
-function runAwaitsApproval(messages: AgentChatMessage[], runId?: string | null): boolean {
+function runApprovalStatus(messages: AgentChatMessage[], runId?: string | null): 'waiting' | 'running' | null {
+  if (!runId) return null;
   if (messages.some(message => isSameSessionRunId(messageRunId(message), runId)
-    && isCanonicalRunTerminal(message))) return false;
-  return Boolean(runId && messages.some(message => isSameSessionRunId(messageRunId(message), runId)
-    && ((message.eventStatus === 'session_permission_required' && message.sessionPermissionRequest)
+    && isCanonicalRunTerminal(message))) return null;
+  const runMessages = messages.filter(message => isSameSessionRunId(messageRunId(message), runId));
+  const waiting = runMessages.filter(message =>
+    ((message.eventStatus === 'session_permission_required' && message.sessionPermissionRequest)
       || (message.sessionItem?.kind === 'run'
-        && terminalRuntimePhaseForSessionEvent('run', message.sessionItem.lifecycle, message.sessionItem.payload) === 'awaiting_approval'))));
+        && ((message.sessionItem.lifecycle === 'waiting' && message.sessionItem.payload?.reason_code === 'tool_permission_required')
+          || terminalRuntimePhaseForSessionEvent('run', message.sessionItem.lifecycle, message.sessionItem.payload) === 'awaiting_approval'))));
+  if (!waiting.length) return null;
+  // The member has decided once the matching control is accepted, even while
+  // the old run.waiting item and the resolve HTTP response are still in flight.
+  const accepted = new Set(runMessages.filter(message => message.sessionItem?.kind === 'control_input'
+    && ['accepted', 'applied'].includes(message.sessionItem.lifecycle)
+    && message.sessionItem.payload.kind === 'permission_response')
+    .map(message => readString(message.sessionItem!.payload, ['permission_item_id'], '')));
+  return waiting.some(message => {
+    const permissionId = message.sessionPermissionRequest?.permission_request_id
+      || readString(message.sessionItem?.payload ?? {}, ['permission_item_id'], '');
+    return !permissionId || !accepted.has(permissionId);
+  }) ? 'waiting' : 'running';
 }
 
 function excludeMemberApprovalWait(cell: ThreadTimelineCell, messages: AgentChatMessage[]): ThreadTimelineCell {
@@ -2263,12 +2278,13 @@ function applyCanonicalRunTerminalEvidence(
     const nativeReplyPendingTerminal = !terminal && messages.some(message => message.sessionItem?.kind === 'assistant_final'
       && message.sessionItem.completedEventId && message.sessionItem.payload?.legacy !== true
       && isSameSessionRunId(messageRunId(message), runId));
-    const awaitingApproval = runAwaitsApproval(messages, runId);
+    const approvalStatus = runApprovalStatus(messages, runId);
+    const awaitingApproval = approvalStatus === 'waiting';
     const liveStatus = activeRunStatus && activeRunId && isSameSessionRunId(runId, activeRunId)
       ? runtimeStatusKey(activeRunStatus) : null;
     const task = runtimeTasks.find(task => isSameSessionRunId(readString(task, ['runtime_task_id', 'id'], ''), runId));
     const taskStatus = task && runtimeStatusKey(readString(task, ['status'], ''));
-    const canonicalStatus = terminal?.status || (awaitingApproval ? 'waiting' : taskStatus || liveStatus);
+    const canonicalStatus = terminal?.status || approvalStatus || taskStatus || liveStatus;
     const status = canonicalStatus ? (canonicalStatus === 'waiting' ? 'blocked' : canonicalStatus === 'stopped' ? 'cancelled'
       : canonicalStatus === 'done' ? 'done' : canonicalStatus) : terminal?.status;
     if (nativeReplyPendingTerminal && (!canonicalStatus || canonicalStatus === 'done')) return { ...cell, runId,
@@ -2444,7 +2460,8 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     || sessionRunId;
   const currentTask = input.sessionWorkbench?.runtime_tasks?.find(task => isSameSessionRunId(
     readString(task, ['runtime_task_id', 'id'], ''), currentRunId));
-  const awaitingApproval = runAwaitsApproval(input.messages, currentRunId);
+  const approvalStatus = runApprovalStatus(input.messages, currentRunId);
+  const awaitingApproval = approvalStatus === 'waiting';
   const taskLifecycle = awaitingApproval ? '' : readString(currentTask ?? {}, ['status'], '');
   if (taskLifecycle && !CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     && (!currentRun || CANONICAL_RUN_TERMINAL_LIFECYCLES.has(taskLifecycle))) {
@@ -2518,8 +2535,8 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     .reverse().find(message => messageRunId(message)));
   const blockedRun = sessionWorkbench?.runtime_tasks?.find(task => isSameSessionRunId(
     readString(task, ['runtime_task_id', 'id'], ''), headerRunId));
-  const runLifecycle = pendingSendState ? undefined : awaitingApproval ? 'waiting' : CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
-    ? currentRun?.lifecycle : readString(blockedRun ?? {}, ['status'], '') || currentRun?.lifecycle;
+  const runLifecycle = pendingSendState ? undefined : CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
+    ? currentRun?.lifecycle : approvalStatus || readString(blockedRun ?? {}, ['status'], '') || currentRun?.lifecycle;
   const guidance = runLifecycle === 'needs_reconciliation'
     ? readString(asRecord(blockedRun?.user_blocker) ?? {}, ['next_action'], '') : '';
   const runDisplay = runLifecycle ? runtimeStatusKey(runLifecycle) : null;

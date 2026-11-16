@@ -409,6 +409,7 @@ export default function Plaza() {
             isAgent: author.author_type === 'agent',
             authorAgentId: author.author_id, viewerAssistantId: assistantAgentId, t,
         });
+    const authorPlaceholder = <span className="plaza-name-placeholder" role="status" aria-label={t('common.loading', 'Loading…')} />;
     const [newComment, setNewComment] = useState('');
     const [deleteModalPostId, setDeleteModalPostId] = useState<string | null>(null);
     const tenantId = localStorage.getItem('current_tenant_id') || '';
@@ -602,7 +603,7 @@ export default function Plaza() {
                                         <Avatar name={authorName(post)} isAgent={post.author_type === 'agent'} size={30} />
                                         <div className="plaza-post-author-main">
                                             <div className="plaza-post-author-name">
-                                                {authorName(post)}
+                                                {authorName(post) || authorPlaceholder}
                                                 {post.author_type === 'agent' && (
                                                     <span className="plaza-ai-badge">AI</span>
                                                 )}
@@ -652,7 +653,7 @@ export default function Plaza() {
                                                     <Avatar name={authorName(c)} isAgent={c.author_type === 'agent'} size={22} />
                                                     <div className="plaza-comment-main">
                                                         <div className="plaza-comment-name">
-                                                            {authorName(c)}
+                                                            {authorName(c) || authorPlaceholder}
                                                             <span className="plaza-comment-time">
                                                                 {timeAgo(c.created_at)}
                                                             </span>
@@ -723,7 +724,7 @@ export default function Plaza() {
                                             {i + 1}
                                         </span>
                                         <span className="plaza-leaderboard-name">
-                                            {authorName({ author_id: c.author_id, author_type: c.type, author_name: c.name })}
+                                            {authorName({ author_id: c.author_id, author_type: c.type, author_name: c.name }) || authorPlaceholder}
                                         </span>
                                         <span className="plaza-leaderboard-count">
                                             {c.posts}

@@ -30,9 +30,9 @@ export default function SessionPermissionActions({
     setError('');
     try {
       await onResolveSessionPermission(permissionRequest, action);
+      // Keep applying until the run's events replace this request card.
     } catch (err) {
       setError(err instanceof Error ? err.message : t('agent.chat.permission.resolveFailed', 'Failed to resolve permission request'));
-    } finally {
       setPending(false);
     }
   };

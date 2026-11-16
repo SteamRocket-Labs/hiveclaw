@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
 import {
   IconBell,
   IconBuilding,
@@ -20,7 +21,7 @@ import {
 import { type HrAgentInfo } from '../../api/domains/agents';
 import { isActiveCompany } from '../../api/domains/admin';
 import { isManagedEmployeeAgent } from '../../roles';
-import { assistantNameForDisplay, sidebarAgentLink, sortSidebarAgents, useAssistantAgentId } from '../assistant/assistantScope';
+import { assistantBindingQuery, assistantNameForDisplay, sidebarAgentLink, sortSidebarAgents } from '../assistant/assistantScope';
 
 const sidebarIcons = {
   user: <IconUser size={16} stroke={1.5} />,
@@ -129,7 +130,12 @@ export default function AppSidebar({
   // The bot is the way in (B3): My Assistant's own binding decides which bot
   // leads the list. The read shares the assistant cache the entry route uses,
   // so it adds no request once that page has loaded.
-  const assistantAgentId = useAssistantAgentId(user, currentTenant || (user?.role === 'platform_admin' ? '' : user?.tenant_id) || '');
+  const assistantTenantId = currentTenant || (user?.role === 'platform_admin' ? '' : user?.tenant_id) || '';
+  const { data: assistantBinding, isLoading: isAssistantLoading } = useQuery({
+    ...assistantBindingQuery(user?.id || null, assistantTenantId || null, user?.role || null),
+    enabled: Boolean(user?.id && assistantTenantId),
+  });
+  const assistantAgentId = assistantBinding?.agent?.id || null;
 
   // Creation uses an ordinary conversation; the legacy HR system bot stays
   // outside the member's bot list.
@@ -245,6 +251,7 @@ export default function AppSidebar({
             // managed entry; local-runtime bots keep the management landing
             // (their channel does not use chat sessions).
             const botEntry = sidebarAgentLink(agent);
+            // A single row cannot change order; hold a larger list until its binding settles.
             return (
               <NavLink
                 key={agent.id}
@@ -252,6 +259,7 @@ export default function AppSidebar({
                 className={() => `sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
                 title={name}
                 aria-label={t('layout.openNamed', 'Open {{name}}', { name })}
+                style={{ visibility: isAssistantLoading && sortedAgents.length > 1 ? 'hidden' : undefined }}
               >
                 <span className="sidebar-item-icon" style={{ position: 'relative' }}>
                   <span className={`agent-avatar${isLocalAgentRuntimeType(agent) ? ' local-runtime' : ''}`}>{avatarChar}</span>

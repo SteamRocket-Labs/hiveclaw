@@ -620,6 +620,16 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
   const terminalSessions = new Map<string, Map<string, number>>();
   const startsBySession = new Map<string, Array<{ index: number; sequence: number }>>();
   const key = (value: unknown) => typeof value === 'string' ? value.replaceAll('-', '').toLowerCase() : '';
+  const stoppedRuns = new Map(messages.filter(message => message.sessionItem?.kind === 'run'
+    && ['cancelled', 'killed'].includes(message.sessionItem.lifecycle))
+    .map(message => [key(agentChatMessageRunId(message)), agentChatMessageRunId(message)!]));
+  const stoppedParentByTask = new Map<string, string>();
+  for (const message of messages) {
+    const parent = stoppedRuns.get(key(agentChatMessageRunId(message)));
+    if (parent && message.toolMemberSummary?.kind === 'delegation' && message.toolMemberSummary.taskId) {
+      stoppedParentByTask.set(key(message.toolMemberSummary.taskId), parent);
+    }
+  }
   const runningReadStops = new Set(messages.filter(message => message.sessionItem?.kind === 'runtime_failure'
     && message.sessionItem.payload?.failure_code === 'identical_running_task_read')
     .map(message => key(agentChatMessageRunId(message))));
@@ -726,9 +736,27 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
   }
   return messages.map((source, index) => {
     if (movedTerminals.has(index)) return null;
-    const message = terminalAtStart.get(index) || source;
+    let message = terminalAtStart.get(index) || source;
     if (foldedStarts.has(index) && !terminalAtStart.has(index)) return null;
     const metadata = metadataOf(message);
+    const manifest = recordValue(metadata.result_manifest);
+    const integration = message.eventType === 'agent_task_notification'
+      && (metadata.runtime_result_integration_page === true || metadata.task_type === 'runtime_result_integration');
+    const manifestParents = new Set<string>();
+    for (const item of integration && Array.isArray(manifest?.items) ? manifest.items : []) {
+      const parent = stoppedParentByTask.get(key(item.source_run_id));
+      if (parent) manifestParents.add(parent);
+    }
+    const root = key(manifest?.root_runtime_task_id || metadata.root_runtime_task_id);
+    const parent = integration
+      ? root ? stoppedRuns.get(root) : manifestParents.size === 1 ? [...manifestParents][0] : undefined
+      : ['runtime_action_failed', 'child_session'].includes(message.eventType || '')
+        && ['killed', 'cancelled', 'canceled'].includes(String(metadata.status || message.eventStatus))
+        ? stoppedParentByTask.get(key(metadata.runtime_task_id || metadata.task_id)) : undefined;
+    // Group late stop evidence with its parent; keep every row and the
+    // child's task identity, original sequence, status and details intact.
+    if (parent) message = { ...message, eventRuntimeTaskId: parent,
+      ...(message.threadItem ? { threadItem: { ...message.threadItem, run_id: parent } } : {}) };
     if (message.role === 'event' && (metadata.action_kind === 'a2a_delegation' || message.eventType === 'child_session')) {
       const status = terminals.get(key(metadata.runtime_task_id || metadata.task_id));
       if (!status) return message;
@@ -754,7 +782,7 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
     const status = statuses.find(status => ['failed', 'error'].includes(status!))
       || statuses.find(status => status !== 'completed') || 'completed';
     if (waitingRead && runningReadStops.has(key(agentChatMessageRunId(message)))
-      && ['check_async_task', 'task_output', 'list_async_tasks'].includes(message.toolName || '')) {
+      && ['check_async_task', 'task_output', 'list_async_tasks', 'read_runtime_result', 'check_subagent'].includes(message.toolName || '')) {
       // R26a: this check observed running. Keep that observation; the later
       // receipt only clears the current handoff indicator for its run.
       return { ...message, toolTaskTerminalStatus: status };

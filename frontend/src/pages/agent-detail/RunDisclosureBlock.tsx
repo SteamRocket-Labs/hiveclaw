@@ -490,6 +490,8 @@ function localizedAggregateSummary(
   if (summary.files > 0) {
     parts.push(t('agent.chat.disclosure.aggregate.files', 'Read {{count}} files', { count: summary.files }));
   }
+  if (summary.writes) parts.push(t('agent.chat.disclosure.aggregate.writes', 'Wrote {{count}} files', { count: summary.writes }));
+  if (summary.edits) parts.push(t('agent.chat.disclosure.aggregate.edits', 'Edited {{count}} files', { count: summary.edits }));
   if (summary.searches > 0) {
     parts.push(t('agent.chat.disclosure.aggregate.searches', 'Searched the web {{count}} times', { count: summary.searches }));
   }

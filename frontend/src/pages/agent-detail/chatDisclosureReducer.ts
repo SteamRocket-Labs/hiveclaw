@@ -73,6 +73,8 @@ export interface RunStepSnapshot {
 /** Locale-neutral run aggregate: the renderer composes the sentence. */
 export interface RunAggregateSummary {
   files: number;
+  writes?: number;
+  edits?: number;
   searches: number;
   commands: number;
 }
@@ -873,7 +875,18 @@ export function buildRunAggregateSummary(steps: RunStepSnapshot[]): RunAggregate
     && ['read_file', 'fs_read', 'read_document'].includes(String((step.details as { toolName?: string } | null)?.toolName))).length;
   const searches = hiddenProcessTools.filter((step) => step.kind === 'search').length;
   const commands = hiddenProcessTools.filter((step) => step.kind === 'command').length;
-  return files + searches + commands > 0 ? { files, searches, commands } : undefined;
+  const successfulFiles = completed.filter(step => step.status === 'done' && step.presentation !== 'external');
+  const fileActions = successfulFiles.map(step => {
+    const details = step.details as { toolName?: string; memberSummary?: { kind?: string } } | null;
+    if (details?.toolName === 'fs_write') return details.memberSummary?.kind ?? 'file_write';
+    if (['write_file', 'office_document_create'].includes(details?.toolName || '')) return 'file_write';
+    if (['edit_file', 'office_document_apply'].includes(details?.toolName || '')) return 'file_edit';
+    return undefined;
+  });
+  const writes = fileActions.filter(kind => kind === 'file_write').length;
+  const edits = fileActions.filter(kind => kind === 'file_edit').length;
+  return files + writes + edits + searches + commands > 0
+    ? { files, searches, commands, ...(writes ? { writes } : {}), ...(edits ? { edits } : {}) } : undefined;
 }
 
 function workflowEventKey(message: AgentChatMessage): string | null {

@@ -1866,11 +1866,13 @@ function buildCells(messages: AgentChatMessage[], delegationReceiptExpected: boo
   let turnHasRun = false;
   let turnTerminalSequence: number | undefined;
   const terminalSequences = new Map<string, number>();
+  const stoppedRuns = new Set<string>();
   for (const message of messages) {
     const runId = messageRunId(message);
     if (runId && isCanonicalRunTerminal(message)) {
       const item = message.sessionItem!;
       terminalSequences.set(runId, Math.min(terminalSequences.get(runId) ?? Infinity, item.terminalSequence ?? item.last_sequence));
+      if (['cancelled', 'killed'].includes(item.lifecycle)) stoppedRuns.add(runId);
     }
   }
 
@@ -1956,7 +1958,14 @@ function buildCells(messages: AgentChatMessage[], delegationReceiptExpected: boo
     const sessionCompaction = !runId && message.threadItem?.metadata?.manual === true
       && (message.eventType === 'session_compact' || message.sessionItem?.kind === 'context_compaction');
     const firstSequence = message.sessionItem?.first_sequence ?? message.threadItem?.sequence;
-    const afterTerminal = firstSequence != null && firstSequence > (runId
+    const metadata = message.threadItem?.metadata || message.sessionItem?.payload || {};
+    const lateStopResult = runId && stoppedRuns.has(runId) && (
+      (['runtime_action_failed', 'child_session'].includes(message.eventType || '')
+        && (metadata.action_kind === 'a2a_delegation' || String(metadata.reason || '').startsWith('delegation_'))
+        && ['cancelled', 'killed', 'canceled'].includes(message.eventStatus || ''))
+      || (message.eventType === 'agent_task_notification'
+        && (metadata.runtime_result_integration_page === true || metadata.task_type === 'runtime_result_integration')));
+    const afterTerminal = !lateStopResult && firstSequence != null && firstSequence > (runId
       ? terminalSequences.get(runId) ?? Infinity : turnTerminalSequence ?? Infinity);
     if (!sessionCompaction && !afterTerminal && (
       isStreamingAssistantMessage(message)
@@ -2564,6 +2573,16 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
 
   return {
     cells: settledCells.map(cell => excludeMemberApprovalWait(cell, input.messages))
+      .filter(cell => {
+        if (cell.kind !== 'boundary' || !isRunningTaskReadStop(cell.message)) return true;
+        // This notice describes current waiting. The check rows retain their
+        // earlier observations; only typed terminals for every observed task
+        // can clear the separate notice.
+        const checks = input.messages.filter(message => isSameSessionRunId(messageRunId(message), messageRunId(cell.message))
+          && message.toolMemberSummary?.kind === 'colleague_result'
+          && message.toolMemberSummary.state === 'in_progress');
+        return !checks.length || checks.some(message => !message.toolTaskTerminalStatus);
+      })
       .filter(cell => cell.kind !== 'active_run' || cell.timeline.status !== 'done'
         || cell.totalsUnknown
         || cell.timeline.steps.length > 0

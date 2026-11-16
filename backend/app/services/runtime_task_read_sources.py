@@ -18,6 +18,96 @@ TASK_READ_TOOLS = frozenset({"task_output", "list_async_tasks", "check_async_tas
 _KIND = "runtime_task_read"
 
 
+def _result_records(body):
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        if isinstance(body.get("task"), dict):
+            return [body["task"]]
+        if isinstance(body.get("runs"), list):
+            return body["runs"]
+        return [body]
+    return []
+
+
+def _project_refused_results(body, refusals):
+    # Keep only task status and navigation, including no metadata-derived
+    # digest that could repeat the refused result under a different key.
+    navigation = {
+        "task_id", "run_id", "task_type", "status", "name", "type", "child_agent_name",
+        "session_id", "child_session_id", "parent_session_id", "root_session_id",
+        "created_at", "started_at", "completed_at", "transcript_refs", "continuation", "session_state",
+    }
+    for record in _result_records(body):
+        identity = str(record.get("task_id") or record.get("run_id") or "").replace("-", "")
+        page = refusals.get(identity)
+        if page is None:
+            continue
+        projection = {key: value for key, value in record.items() if key in navigation}
+        projection.update({key: None for key in ("result", "result_summary") if key in record})
+        record.clear()
+        record.update(projection, result_publication=page)
+    return body
+
+
+async def _task_result_refusals(db, request, records, *, result_ids=None):
+    """Check result sources at the task reader's content-admission checkpoint."""
+    from app.models.runtime_result import RuntimeResultObject
+    from app.services.content_input_receipts import log_source_refusal
+    from app.services.runtime_result_sources import validate_runtime_result_sources
+    from app.services.runtime_result_store import runtime_result_ref
+
+    identities = {str(uuid.UUID(str(row.get("task_id") or row.get("run_id"))))
+        for row in records if isinstance(row, dict) and row.get("status") == "completed"
+        and (row.get("result") or row.get("result_summary"))}
+    if not identities:
+        return {}
+    refusals = {}
+    statement = select(RuntimeResultObject).where(
+        RuntimeResultObject.tenant_id == uuid.UUID(str(request.context.tenant_id)),
+        RuntimeResultObject.source_run_id.in_(identities),
+    )
+    if result_ids is not None:
+        statement = statement.where(RuntimeResultObject.id.in_(result_ids))
+    results = list(await db.scalars(statement))
+    for result in results:
+        try:
+            # This is the A2w batched entry point also used by
+            # read_runtime_result, with the same current member request.
+            await validate_runtime_result_sources(db, request, result)
+        except ContentInputReceiptError as exc:
+            log_source_refusal(exc, operation=request.tool_name)
+            refusals[uuid.UUID(result.source_run_id).hex] = {
+                "schema": "hive.runtime_result_page.v1",
+                "status": "source_access_denied" if exc.status_code == 403 else "source_unavailable",
+                "reason_code": exc.code,
+                "result_ref": runtime_result_ref(result_id=result.id, sha256=result.sha256),
+                "retryable": exc.status_code == 503,
+                "recovery_action": "reconcile_result_sources",
+            }
+    return refusals
+
+
+async def filter_task_result_content(request, content):
+    """Keep legacy subagent coverage while sharing the result reader's source check."""
+    context = request.context
+    if not all(getattr(context, key, None) for key in ("tenant_id", "session_id", "runtime_task_id")):
+        return content, {}
+    try:
+        body = json.loads(content)
+    except (ValueError, TypeError):
+        return content, {}
+    records = _result_records(body)
+    if not any(isinstance(row, dict) and row.get("status") == "completed"
+        and (row.get("result") or row.get("result_summary")) for row in records):
+        return content, {}
+    async with tenant_scoped_session(uuid.UUID(str(context.tenant_id))) as db:
+        refusals = await _task_result_refusals(db, request, records)
+    if refusals:
+        content = json.dumps(_project_refused_results(body, refusals), ensure_ascii=False, default=str)
+    return content, refusals
+
+
 async def _task_sources(db, task, session_id):
     if task.task_type == "hr_provisioning":
         from app.models.hr_creation import HrCreationDraft
@@ -163,7 +253,7 @@ def _pending_result_record(record):
     }
 
 
-def _matches_status_body(body, task_id, record):
+def _matches_status_body(body, task_id, record, *, tool_name="check_async_task"):
     expected = {
         "task_id": task_id,
         "task_type": record["task_type"],
@@ -177,10 +267,13 @@ def _matches_status_body(body, task_id, record):
     }
     running = {k: v for k, v in expected.items() if k != "timed_out"}
     running.update(status="running", result=None, parent_session_id=None)
+    if tool_name == "cancel_async_task":
+        cancelled = {key: value for key, value in expected.items() if key not in {"task_type", "timed_out"}}
+        return body == expected or body == cancelled
     return body == expected or record["status"] in {"pending", "running"} and body == running
 
 
-async def record_task_read(request, content, *, capture=None):
+async def record_task_read(request, content, *, capture=None, result_sources_checked=False):
     """Capture only the exact authorized records emitted by a native read, at read time."""
     from app.services.explicit_memory_authority import _writer_input, audience_for_session
     from app.services.runtime_task_authority import authorize_runtime_task_record, execution_principal_from_tool_context
@@ -190,6 +283,7 @@ async def record_task_read(request, content, *, capture=None):
     if not isinstance(capture, NativeTaskReadCapture):
         capture = None
 
+    refusals = {}
     context = request.context
     if not all(getattr(context, key, None) for key in ("tenant_id", "runtime_task_id", "tool_call_id", "turn_id")):
         return content
@@ -207,13 +301,14 @@ async def record_task_read(request, content, *, capture=None):
             body = json.loads(content)
             if call.tool_name == "task_output":
                 records = [body["task"]] if body.get("ok") is True else None
-            elif call.tool_name == "check_async_task":
+            elif call.tool_name in {"check_async_task", "cancel_async_task"}:
                 task_id = request.arguments.get("task_id")
                 task = await db.get(RuntimeTask, uuid.UUID(task_id), populate_existing=True)
                 if task is None:
                     return content
                 candidates = [*(capture.records_for(task_id) if capture else []), _task_to_dict(task)]
-                record = next((row for row in candidates if _matches_status_body(body, task_id, row)), None)
+                record = next((row for row in candidates if _matches_status_body(body, task_id, row,
+                    tool_name=call.tool_name)), None)
                 if record is None:
                     return content
                 records = [record]
@@ -266,13 +361,13 @@ async def record_task_read(request, content, *, capture=None):
                     # read_runtime_result uses — no codes left to quote.
                     if call.tool_name == "task_output":
                         body["task"] = page
-                    elif call.tool_name == "check_async_task":
+                    elif call.tool_name in {"check_async_task", "cancel_async_task"}:
                         body = page
                     else:
                         body[index] = page
                     failure_projected = True
                     continue
-                if call.tool_name == "check_async_task" and body.get("result") is None and body.get("receipt") is None:
+                if call.tool_name in {"check_async_task", "cancel_async_task"} and body.get("result") is None and body.get("receipt") is None:
                     # This exact authorized SQL observation contains only task
                     # status/coordinates, not the instruction or result body.
                     continue
@@ -280,6 +375,16 @@ async def record_task_read(request, content, *, capture=None):
                 if current is None:
                     unbound.append("task_read_sources_unbound")
                 elif current[1]:
+                    # Unbound legacy bodies remain withheld by the existing
+                    # input compiler. Check a bound result before certifying
+                    # its content as a model input, never on a later round.
+                    if not result_sources_checked:
+                        result_ids = {uuid.UUID(source["source_id"].rsplit("\n", 1)[-1])
+                            for source in current[0] if source["source_kind"] == "runtime_result"}
+                        refusals.update(await _task_result_refusals(db, request, [record],
+                            result_ids=result_ids if task.task_type == "delegation" else None))
+                    if task.id.hex in refusals:
+                        continue
                     sources.extend(current[0])
                 elif task.task_type == "delegation" and task.status == "completed":
                     sources.extend(current[0])
@@ -287,7 +392,7 @@ async def record_task_read(request, content, *, capture=None):
                     projection = _pending_result_record(record)
                     if call.tool_name == "task_output":
                         body["task"] = projection
-                    elif call.tool_name == "check_async_task":
+                    elif call.tool_name in {"check_async_task", "cancel_async_task"}:
                         body = {key: value for key, value in body.items() if key not in {"result", "receipt"}}
                         body.update(result=None, receipt=None, result_publication=projection["result_publication"])
                     else:
@@ -296,8 +401,8 @@ async def record_task_read(request, content, *, capture=None):
                     unbound.append("task_read_sources_unbound")
         except (ValueError, TypeError, KeyError, AttributeError, ContentInputReceiptError):
             return content
-        if pending or failure_projected:
-            content = json.dumps(body, ensure_ascii=False, default=str)
+        if pending or failure_projected or refusals:
+            content = json.dumps(_project_refused_results(body, refusals), ensure_ascii=False, default=str)
         proof = {
             "schema": "hive.runtime_task_read.v1",
             "invocation_id": str(call.id),

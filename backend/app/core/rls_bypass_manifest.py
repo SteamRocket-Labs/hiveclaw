@@ -1013,7 +1013,16 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land32 versus land31: still 797 entries and 123 callsites, no new bypass scope. Only
 # tenants.py changed: G1b's delete_tenant blocking filter excludes system HR
 # (agent_class internal_system) and its comment; no new bypass write.
-RLS_BYPASS_SCOPES_SHA256 = "530b95ac7791311d791884214a145bca85bd688574b465d1f86e80bf00c605f3"
+# Land33 versus land32: 805 entries and 123 callsites, no new bypass scope. A2w's batched
+# source checkpoints are reached statically only from expire_session_permission_requests_once
+# (runtime_task_worker.py); at runtime outcome approval_required and the missing
+# agent_directory_sources key close the artifact and directory paths, and the ContextVar is
+# unset there. New keys: _directory_scope_facts, _runtime_request_facts, checkpoint_query,
+# checkpoint_rows, checkpoint_values, machine_source_tasks, transcript_event_row and the
+# source_read_queries module; the statements of _directory_scope_facts, _runtime_request_facts
+# and machine_source_tasks filter by tenant themselves (A2w round 7b).
+# Every consumer compares tenant_id before use. No new bypass write.
+RLS_BYPASS_SCOPES_SHA256 = "5d409658fe759914627786019f311c70e355fac8368d97e3ae56e4e173c7d8f8"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

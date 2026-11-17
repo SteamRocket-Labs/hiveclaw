@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
+from sqlalchemy import Date, case, cast, func, or_, select, update
 
 _DEFAULT_CHARS_PER_TOKEN = 3.5
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]")
@@ -128,22 +129,8 @@ def _coerce_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
         return None
 
 
-def _reset_user_or_tenant_counter(subject: Any, *, now: datetime) -> None:
-    reset_at = getattr(subject, "tokens_reset_at", None)
-    if reset_at is None:
-        subject.tokens_reset_at = now
-        return
-    if now.date() > reset_at.date():
-        subject.tokens_used_today = 0
-    if now.month != reset_at.month or now.year != reset_at.year:
-        subject.tokens_used_month = 0
-    subject.tokens_reset_at = now
-
-
 def _charge_counter_values(subject: Any, *, tokens: int, now: datetime, agent: bool = False) -> dict:
     """Increment the locked row in SQL, preserving the existing UTC resets."""
-    from sqlalchemy import Date, case, cast, func, or_
-
     daily_at = subject.last_daily_reset if agent else subject.tokens_reset_at
     monthly_at = subject.last_monthly_reset if agent else subject.tokens_reset_at
     day_changed = cast(func.timezone("UTC", daily_at), Date) < now.date()
@@ -181,36 +168,23 @@ async def _record_token_usage_event(
         from app.models.tenant import Tenant
         from app.models.token_usage_event import TokenUsageEvent
         from app.models.user import User
-        from sqlalchemy import select
-
         async with tenant_scoped_session(tenant_id) as db:
-            now = datetime.now(timezone.utc)
+            locked_tenant_id = None
             if tenant_id is not None:
-                tenant = (
-                    await db.execute(select(Tenant).where(Tenant.id == tenant_id).with_for_update(key_share=True))
-                ).scalar_one_or_none()
-                if tenant:
-                    _reset_user_or_tenant_counter(tenant, now=now)
-                    tenant.tokens_used_today = (tenant.tokens_used_today or 0) + tokens
-                    tenant.tokens_used_month = (tenant.tokens_used_month or 0) + tokens
-                    tenant.tokens_used_total = (tenant.tokens_used_total or 0) + tokens
+                locked_tenant_id = await db.scalar(
+                    select(Tenant.id).where(Tenant.id == tenant_id).with_for_update(key_share=True)
+                )
+            now = datetime.now(timezone.utc)
+            if locked_tenant_id is not None:
+                await db.execute(
+                    update(Tenant).where(Tenant.id == tenant_id)
+                    .values(**_charge_counter_values(Tenant, tokens=tokens, now=now))
+                )
             if user_id is not None:
-                user = (
-                    await db.execute(
-                        select(User)
-                        .where(
-                            User.id == user_id,
-                            User.tenant_id == tenant_id,
-                        )
-                        .with_for_update()
-                    )
-                ).scalar_one_or_none()
-                if user:
-                    _reset_user_or_tenant_counter(user, now=now)
-                    user.tokens_used_today = (user.tokens_used_today or 0) + tokens
-                    user.tokens_used_month = (user.tokens_used_month or 0) + tokens
-                    user.tokens_used_total = (user.tokens_used_total or 0) + tokens
-                    user.tokens_reset_at = now
+                await db.execute(
+                    update(User).where(User.id == user_id, User.tenant_id == tenant_id)
+                    .values(**_charge_counter_values(User, tokens=tokens, now=now))
+                )
             db.add(
                 TokenUsageEvent(
                     tenant_id=tenant_id,
@@ -271,7 +245,6 @@ async def record_token_usage(
         from app.models.token_usage_event import TokenUsageEvent
         from app.models.user import User
         from app.services.tenant_resolver import resolve_tenant_for_agent
-        from sqlalchemy import select
 
         # Independent session (avoids the caller's tx) with no tenant in scope:
         # under enforced RLS a bare session sees neither the agent nor user row,
@@ -280,16 +253,14 @@ async def record_token_usage(
         # the same tenant.
         tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tenant_id) as db:
-            from sqlalchemy import update
-
-            # Serialize before reading the clock or doing counter arithmetic.
-            # Keep Tenant -> User -> Agent, including the actual writes.
+            # NO KEY UPDATE (key_share=True) avoids the restart loader's self-deadlock.
+            # Keep this lock separate so dedup sees the previous holder's commit.
             locked_tenant_id = await db.scalar(
                 select(Tenant.id).where(Tenant.id == tenant_id).with_for_update(key_share=True)
             )
+            if locked_tenant_id is None:
+                raise RuntimeError("Tenant row was not locked")
             now = datetime.now(timezone.utc)
-            # UPDATE also takes NO KEY UPDATE only while SET touches no unique
-            # or key column; otherwise PostgreSQL takes FOR UPDATE.
             tenant_charge = update(Tenant).where(Tenant.id == tenant_id)
             if idempotency_key:
                 # This later statement gets a fresh READ COMMITTED snapshot of
@@ -306,7 +277,8 @@ async def record_token_usage(
                 tenant_charge.values(**_charge_counter_values(Tenant, tokens=tokens, now=now))
                 .returning(Tenant.id)
             )
-            if idempotency_key and locked_tenant_id is not None and charged_tenant_id is None:
+            if idempotency_key and charged_tenant_id is None:
+                await db.rollback()
                 return False
 
             # Snapshot the charge principal before locking User then Agent.

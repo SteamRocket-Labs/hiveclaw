@@ -26,7 +26,7 @@ from tests.integration.test_web_chat_worker_restart_kernel_recovery import Scrip
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 _ACTIVE_METER = ContextVar("rl0c_active_meter", default=None)
-SEND_STATEMENT_CEILING = 550
+TOKEN_TRACKER_SEND_STATEMENT_CEILING = 100
 
 
 def caller():
@@ -272,7 +272,9 @@ async def test_send_statement_budget(member_request, owner_sessionmaker, app_use
         assert "provider" in meter.points and "visible" in meter.points, list(meter.points)
         # Send to the first provider request, including this fixture's pending
         # historical settlement retries; this turn's charge happens later.
-        assert meter.points["provider"]["statements"] <= SEND_STATEMENT_CEILING, meter.points["provider"]
+        point = meter.points["provider"]
+        business = point["modules"]["app/services/token_tracker.py"]["count"]
+        assert business <= TOKEN_TRACKER_SEND_STATEMENT_CEILING, point
     finally:
         await runtime.web_chat_broker.disconnect(str(seed.agent_id), socket)
 
@@ -372,6 +374,11 @@ async def test_charge_event_failure_rolls_back_all_counters(
 
     seed = await _seed_offboarding_fixture(owner_sessionmaker)
     monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
+    async with owner_sessionmaker() as db:
+        stamps = {}
+        for kind, key in ((Tenant, "tenant_id"), (User, "user_id"), (Agent, "agent_id")):
+            row = await db.get(kind, seed[key])
+            stamps[key] = (row.last_daily_reset, row.last_monthly_reset) if kind is Agent else (row.tokens_reset_at,)
 
     def fail_event(_conn, _cursor, statement, _params, _context, _many):
         if statement.startswith("INSERT INTO token_usage_events"):
@@ -388,12 +395,19 @@ async def test_charge_event_failure_rolls_back_all_counters(
         for kind, key in ((Tenant, "tenant_id"), (User, "user_id"), (Agent, "agent_id")):
             row = await db.get(kind, seed[key])
             assert (row.tokens_used_today, row.tokens_used_month, row.tokens_used_total) == (0, 0, 0)
+            assert ((row.last_daily_reset, row.last_monthly_reset) if kind is Agent else (row.tokens_reset_at,)) == stamps[key]
         assert await db.scalar(select(func.count()).select_from(TokenUsageEvent).where(
             TokenUsageEvent.agent_id == seed["agent_id"])) == 0
     assert await record_token_usage(seed["agent_id"], 17, tenant_id=seed["tenant_id"],
         user_id=seed["user_id"], idempotency_key="sp1-rollback", raise_on_error=True) is True
     assert await record_token_usage(seed["agent_id"], 17, tenant_id=seed["tenant_id"],
         user_id=seed["user_id"], idempotency_key="sp1-rollback", raise_on_error=True) is False
+    async with owner_sessionmaker() as db:
+        for kind, key in ((Tenant, "tenant_id"), (User, "user_id"), (Agent, "agent_id")):
+            row = await db.get(kind, seed[key])
+            assert (row.tokens_used_today, row.tokens_used_month, row.tokens_used_total) == (17, 17, 17)
+        assert await db.scalar(select(func.count()).select_from(TokenUsageEvent).where(
+            TokenUsageEvent.agent_id == seed["agent_id"])) == 1
 
 
 @pytest.mark.parametrize("reset_at, expected", [
@@ -474,6 +488,7 @@ async def test_idempotent_replay_at_integer_limit_does_not_write(
     from app.models.tenant import Tenant
     from app.models.token_usage_event import TokenUsageEvent
     from app.services.token_tracker import record_token_usage
+    from sqlalchemy.ext.asyncio import AsyncSession
     from tests.integration.test_web_chat_worker_restart_post_commit_accounting import _seed_offboarding_fixture
     import app.database as database
 
@@ -499,6 +514,14 @@ async def test_idempotent_replay_at_integer_limit_does_not_write(
 
     before = await snapshot()
     writes = []
+    rollbacks = []
+    original_rollback = AsyncSession.rollback
+
+    async def rollback(db):
+        rollbacks.append(db)
+        return await original_rollback(db)
+
+    monkeypatch.setattr(AsyncSession, "rollback", rollback)
 
     def after(_conn, cursor, statement, _params, _context, _many):
         if statement.lstrip().upper().startswith(("UPDATE ", "INSERT ", "DELETE ")):
@@ -510,7 +533,65 @@ async def test_idempotent_replay_at_integer_limit_does_not_write(
     finally:
         event.remove(Engine, "after_cursor_execute", after)
     assert all(count == 0 for count in writes), writes
+    assert len(rollbacks) == 1
     assert await snapshot() == before
+
+
+@pytest.mark.parametrize("raise_on_error", [False, True])
+async def test_charge_requires_a_committed_tenant_lock(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, raise_on_error,
+):
+    from app.models.tenant import Tenant
+    from app.models.token_usage_event import TokenUsageEvent
+    from app.services.token_tracker import record_token_usage
+    import app.database as database
+
+    tenant_id, user_id, agent_id = (uuid.uuid4() for _ in range(3))
+    monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
+    args = dict(tenant_id=tenant_id, user_id=user_id, idempotency_key="sp1-uncommitted")
+    attempted_writes = []
+
+    def forbid_write(_conn, _cursor, statement, _params, _context, _many):
+        if statement.lstrip().upper().startswith(("UPDATE ", "INSERT ", "DELETE ")):
+            attempted_writes.append(statement.split()[0])
+            # Fail at the first forbidden write instead of waiting for W's FK
+            # transaction, which cannot commit until this charge returns.
+            raise RuntimeError("SP1 attempted a write without the tenant lock")
+
+    async with owner_sessionmaker() as writer:
+        writer.add(Tenant(id=tenant_id, name="Uncommitted charge", slug=tenant_id.hex))
+        writer.add(User(id=user_id, tenant_id=tenant_id, username=user_id.hex,
+            email=f"{user_id.hex}@sp1.test", password_hash="fixture", display_name="Charge owner"))
+        await writer.flush()
+        writer.add(Agent(id=agent_id, tenant_id=tenant_id, name="Uncommitted agent",
+            creator_id=user_id, owner_user_id=user_id))
+        await writer.flush()
+        event.listen(Engine, "before_cursor_execute", forbid_write)
+        try:
+            if raise_on_error:
+                with pytest.raises(RuntimeError, match="Tenant row was not locked"):
+                    await record_token_usage(agent_id, 5, **args, raise_on_error=True)
+            else:
+                assert await record_token_usage(agent_id, 5, **args) is None
+            assert attempted_writes == []
+        finally:
+            event.remove(Engine, "before_cursor_execute", forbid_write)
+        assert await writer.scalar(select(func.count()).select_from(TokenUsageEvent).where(
+            TokenUsageEvent.tenant_id == tenant_id)) == 0
+        for kind, row_id in ((Tenant, tenant_id), (User, user_id), (Agent, agent_id)):
+            row = await writer.get(kind, row_id)
+            assert (row.tokens_used_today, row.tokens_used_month, row.tokens_used_total) == (0, 0, 0)
+        await writer.commit()
+
+    assert await record_token_usage(agent_id, 5, **args, raise_on_error=True) is True
+    assert await record_token_usage(agent_id, 5, **args, raise_on_error=True) is False
+    async with owner_sessionmaker() as db:
+        for kind, row_id in ((Tenant, tenant_id), (User, user_id), (Agent, agent_id)):
+            row = await db.get(kind, row_id)
+            assert (row.tokens_used_today, row.tokens_used_month, row.tokens_used_total) == (5, 5, 5)
+        assert await db.scalar(select(func.count()).select_from(TokenUsageEvent).where(
+            TokenUsageEvent.tenant_id == tenant_id,
+            TokenUsageEvent.details["idempotency_key"].astext == args["idempotency_key"])) == 1
 
 
 @pytest.mark.parametrize("before, after", [
@@ -519,6 +600,29 @@ async def test_idempotent_replay_at_integer_limit_does_not_write(
 ], ids=["midnight", "month_boundary"])
 async def test_waiting_charge_uses_clock_after_tenant_lock(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, before, after,
+):
+    await _waiting_charge_interleaving(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, before, after, charge_kind="agent")
+
+
+async def test_waiting_same_key_charge_deduplicates_after_tenant_lock(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+):
+    await _waiting_charge_interleaving(owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+        datetime(2026, 1, 30, 23, 59, 59, tzinfo=timezone.utc),
+        datetime(2026, 1, 31, tzinfo=timezone.utc), charge_kind="same_key")
+
+
+async def test_waiting_autonomous_charge_uses_clock_after_tenant_lock(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+):
+    await _waiting_charge_interleaving(owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+        datetime(2026, 1, 30, 23, 59, 59, tzinfo=timezone.utc),
+        datetime(2026, 1, 31, tzinfo=timezone.utc), charge_kind="autonomous")
+
+
+async def _waiting_charge_interleaving(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, before, after, *, charge_kind,
 ):
     import asyncio
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -585,11 +689,16 @@ async def test_waiting_charge_uses_clock_after_tenant_lock(
     event.listen(Engine, "before_cursor_execute", executing)
 
     async def charge(tokens, key):
+        if charge_kind == "autonomous" and tokens == 7:
+            return await token_tracker.record_autonomous_llm_token_usage(
+                tenant_id=seed["tenant_id"], user_id=seed["user_id"],
+                source="sp1-autonomous", usage={"total_tokens": tokens}, raise_on_error=True)
         return await token_tracker.record_token_usage(seed["agent_id"], tokens,
             tenant_id=seed["tenant_id"], user_id=seed["user_id"], idempotency_key=key, raise_on_error=True)
 
     try:
-        waiter = asyncio.create_task(charge(7, "sp1-boundary-waiter"))
+        waiter = asyncio.create_task(charge(7,
+            "sp1-boundary-holder" if charge_kind == "same_key" else "sp1-boundary-waiter"))
         await asyncio.wait_for(waiter_ready.wait(), timeout=20)
         current = after
         holder = asyncio.create_task(charge(11, "sp1-boundary-holder"))
@@ -597,7 +706,8 @@ async def test_waiting_charge_uses_clock_after_tenant_lock(
         admit_waiter.set()
         await asyncio.wait_for(waiter_started.wait(), timeout=20)
         release.set()
-        assert await asyncio.wait_for(asyncio.gather(holder, waiter), timeout=20) == [True, True]
+        expected = {"agent": [True, True], "same_key": [True, False], "autonomous": [True, None]}
+        assert await asyncio.wait_for(asyncio.gather(holder, waiter), timeout=20) == expected[charge_kind]
     finally:
         event.remove(Engine, "before_cursor_execute", executing)
         admit_waiter.set()
@@ -610,11 +720,22 @@ async def test_waiting_charge_uses_clock_after_tenant_lock(
     async with owner_sessionmaker() as db:
         for kind, key in ((Tenant, "tenant_id"), (User, "user_id"), (Agent, "agent_id")):
             row = await db.get(kind, seed[key])
-            assert (row.tokens_used_today, row.tokens_used_month, row.tokens_used_total) == (18, 18, 18)
+            total = 11 if charge_kind == "same_key" or (charge_kind == "autonomous" and kind is Agent) else 18
+            assert (row.tokens_used_today, row.tokens_used_month, row.tokens_used_total) == (total, total, total)
             if kind is Agent:
                 assert row.last_daily_reset == after
                 assert row.last_monthly_reset == (after if before.month != after.month else before)
             else:
                 assert row.tokens_reset_at == after
         assert await db.scalar(select(func.count()).select_from(TokenUsageEvent).where(
-            TokenUsageEvent.agent_id == seed["agent_id"])) == 2
+            TokenUsageEvent.tenant_id == seed["tenant_id"])) == (1 if charge_kind == "same_key" else 2)
+
+    if charge_kind == "autonomous":
+        assert await charge(3, "sp1-after-autonomous") is True
+        async with owner_sessionmaker() as db:
+            for kind, key in ((Tenant, "tenant_id"), (User, "user_id"), (Agent, "agent_id")):
+                row = await db.get(kind, seed[key])
+                total = 14 if kind is Agent else 21
+                assert (row.tokens_used_today, row.tokens_used_month, row.tokens_used_total) == (total, total, total)
+            assert await db.scalar(select(func.count()).select_from(TokenUsageEvent).where(
+                TokenUsageEvent.tenant_id == seed["tenant_id"])) == 3

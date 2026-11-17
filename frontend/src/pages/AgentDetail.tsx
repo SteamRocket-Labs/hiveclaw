@@ -2444,19 +2444,26 @@ function AgentDetailInner() {
         const sessionId = String(activeSession.id);
         const activeRuntimeKey = buildSessionRuntimeKey(id, sessionId);
         const activeRun = activeRunStateRef.current[activeRuntimeKey];
-        if (activeRun?.runId) {
-            const stillCurrent = () => currentAgentIdRef.current === id && activeSessionIdRef.current === sessionId
-                && normalizeSessionRunId(activeRunStateRef.current[activeRuntimeKey]?.runId) === normalizeSessionRunId(activeRun.runId);
-            try {
-                const receipt = await chatApi.cancelSessionRun(id, sessionId, activeRun.runId);
+        let targetRunId: string | undefined = activeRun?.runId;
+        const stillCurrent = () => currentAgentIdRef.current === id && activeSessionIdRef.current === sessionId
+            && (activeRun?.runId || activeRunStateRef.current[activeRuntimeKey]?.runId
+                ? normalizeSessionRunId(activeRunStateRef.current[activeRuntimeKey]?.runId) === normalizeSessionRunId(targetRunId)
+                : true);
+        try {
+            if (!targetRunId) targetRunId = (await chatApi.getActiveSessionRun(id, sessionId))?.run_id;
+            if (targetRunId) {
+                const receipt = await chatApi.cancelSessionRun(id, sessionId, targetRunId);
                 if (stillCurrent()) setTransportNotice(receipt.accepted
                     ? t('agent.chat.stopRecorded', 'Stop request recorded. Waiting for the run to settle.')
                     : t('agent.chat.stopRejected', 'The stop request was rejected. The run may still be active.'));
-            } catch (error) {
-                if (stillCurrent()) setTransportNotice(error instanceof ApiError && [403, 404, 409].includes(error.status)
-                    ? t('agent.chat.stopRejected', 'The stop request was rejected. The run may still be active.')
-                    : t('agent.chat.stopUnconfirmed', 'The stop request could not be confirmed. Check this work or try Stop again.'));
             }
+        } catch (error) {
+            if (stillCurrent()) setTransportNotice(error instanceof ApiError && [403, 404, 409].includes(error.status)
+                ? t('agent.chat.stopRejected', 'The stop request was rejected. The run may still be active.')
+                : t('agent.chat.stopUnconfirmed', 'The stop request could not be confirmed. Check this work or try Stop again.'));
+            if (!targetRunId) return;
+        }
+        if (targetRunId) {
             invalidateSessionRuntimeQueries(id, sessionId);
             return;
         }

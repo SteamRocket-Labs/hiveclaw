@@ -17,7 +17,7 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Load a named skill from the skills/ directory.\n\n"
-            "A skill is a progressive-disclosure capability capsule. It may include instructions, "
+            "A skill provides reusable task instructions, with details loaded when relevant. It may include instructions, "
             "references, templates, scripts, workflow definitions, subagent definitions, and examples. "
             "Loading it adds context and guidance only. Executable components still run through their "
             "governed runtime: workflows via `preview_workflow`/`start_workflow`, subagents via "
@@ -139,7 +139,7 @@ async def run_skill_tool(workspace: Path, arguments: dict, tenant_id: str | None
         name="save_skill",
         description=(
             "Submit a reusable approach as a skill activation candidate for external verification.\n\n"
-            "A skill is a progressive-disclosure capability capsule: reusable HOW-knowledge plus optional "
+            "A skill provides reusable task instructions, with details loaded when relevant. It may include "
             "references, templates, scripts, workflow component declarations, and subagent component guidance. "
             "It can package or point at executable components, but packaging is not execution. Anything with "
             "fixed ordering, mandatory approval, external side effects, or large fan-out belongs in a workflow "
@@ -153,7 +153,7 @@ async def run_skill_tool(workspace: Path, arguments: dict, tenant_id: str | None
             "this does not generate a replacement or reuse the submission approval.\n\n"
             "Usage:\n"
             "- Only use this after an approach has succeeded repeatedly and the steps, decision rules, and verification pattern are stable.\n"
-            "- Save durable, reusable capsule instructions that will help future runs of a similar task.\n"
+            "- Save durable, reusable task instructions that will help future runs of a similar task.\n"
             "- If step order must not drift, describe the workflow component the skill should point to; do not turn the skill text itself into an execution bypass.\n"
             "- Do NOT save one-off notes, transient state, or raw transcripts as skills. Durable user corrections belong in `save_memory` when the memory prompt/tool schema qualifies them; operational notes and evidence belong in workspace files.\n"
             "- Include declared tools/runtime tool groups only as discovery hints for capabilities used by the repeatable approach.\n"
@@ -174,7 +174,7 @@ async def run_skill_tool(workspace: Path, arguments: dict, tenant_id: str | None
                 },
                 "instructions": {
                     "type": "string",
-                    "description": "Reusable capability-capsule guidance. Include context, steps, decision rules, component boundaries, verification, and output expectations.",
+                    "description": "Reusable task guidance. Include context, steps, decision rules, component boundaries, verification, and output expectations.",
                 },
                 "tools": {
                     "type": "array",

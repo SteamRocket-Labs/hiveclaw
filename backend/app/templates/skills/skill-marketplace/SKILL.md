@@ -14,7 +14,7 @@ is_default: true
 
 <role>
 Use this skill when the user explicitly asks to find, review, or install a
-third-party skill. A skill is a progressive-disclosure capability capsule:
+third-party skill. A skill provides reusable task instructions with details loaded when relevant:
 instructions, references, templates, scripts, evals, workflow definitions, and
 subagent definitions may be packaged together, but executable components still
 run through their governed runtimes.

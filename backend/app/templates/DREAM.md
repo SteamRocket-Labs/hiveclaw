@@ -85,7 +85,7 @@ Skill candidate (soft knowledge → hard capability). Mark the entry with a
 candidates up through its own eval/promotion gates — memory never creates
 Skill files directly. After a Skill is promoted, the self entry is NOT
 deleted: mark it `- 已固化 → [[skill-<name>]]` so the two-way link survives
-(self keeps the narrative, the Skill carries the executable capsule).
+(self keeps the narrative, the Skill carries reusable instructions and component definitions).
 </self_to_skill_handoff>
 
 <t3_feedback_policy>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, fireEvent, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import i18n from 'i18next';
 import zh from '../../i18n/zh.json';
@@ -11,6 +11,7 @@ import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } fr
 import { agentChatMessageRunId, isSameSessionRunId, type AgentChatMessage, type ChatTranscriptEventPayload } from '../agent-detail/chatRuntime';
 import { buildThreadTimeline, type BuildThreadTimelineInput } from './timelineModel';
 import { SessionWorkbenchHeader } from './SessionWorkbenchChrome';
+import { SessionRunControls } from './SessionRunControls';
 import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from './ThreadItemRenderer';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({
@@ -19,7 +20,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
 }) }));
 // The duration formatter reads the shared i18n instance, as the real page does.
 beforeAll(async () => { await i18n.init({ lng: 'zh', resources: { zh: { translation: zh } }, initImmediate: false }); });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.useRealTimers(); window.sessionStorage.clear(); });
 
 // Run 21, step 10: selected transcript sequences 1/10, 49/52, 63/64,
 // 72/73, 76/77, 94/97, 118/121, 150/153, 169/172, 186/189,
@@ -57,6 +58,11 @@ function mount(messages: AgentChatMessage[], extra: Partial<BuildThreadTimelineI
     isWaiting: false, isStreaming: false, activeRunStatus: null, ...extra });
   const view = render(<>
     <SessionWorkbenchHeader model={model.header} />
+    <SessionRunControls disabled={false} canSend={false} running={model.header.status === 'running'}
+      composerMenuOpen={false} permissionMenuOpen={false} permissionMode="default" permissionModeLabel=""
+      permissionOptions={[]} modelLabel="" uploading={false} uploadProgress={0}
+      onToggleComposerMenu={vi.fn()} onTogglePermissionMenu={vi.fn()} onPermissionModeChange={vi.fn()}
+      onCancelUpload={vi.fn()} onStop={vi.fn()} onSubmit={vi.fn()} />
     {model.cells.map(cell => cell.kind === 'active_run'
       ? <section key={cell.id} data-run={cell.runId}><RunDisclosureBlock timeline={cell.timeline} /></section>
       : cell.kind === 'boundary' && cell.message.threadItem && shouldRenderThreadItemInConversation(cell.message.threadItem, false)
@@ -76,6 +82,8 @@ function mount(messages: AgentChatMessage[], extra: Partial<BuildThreadTimelineI
 
 it.each(['live', 'reload'])('R26a: a running-read stop waits neutrally, then the next turn delivers (%s)', mode => {
   for (const [input, stillWorking] of [[waiting, true], [events, false]] as const) {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(rows.parentTask.completed_at));
     const messages = projectBoth([...input])[mode === 'live' ? 0 : 1];
     // The backend event and its typed failure remain intact in both consumers.
     expect(messages.filter(message => message.sessionItem?.kind === 'runtime_failure')).toHaveLength(1);
@@ -91,12 +99,20 @@ it.each(['live', 'reload'])('R26a: a running-read stop waits neutrally, then the
     expect(parent.timeline.status).toBe('done');
     expect(Boolean(parent.timeline.delegationInFlight)).toBe(stillWorking);
     expect(block.querySelector('.run-disclosure-title')?.textContent).toBe(stillWorking ? '运行中' : '完成');
-    expect(parent.timeline.durationMs).toBe(108805);
-    expect(parent.timeline.durationIsFinal).toBe(true);
+    if (stillWorking) {
+      expect(parent.timeline.durationIsFinal).toBe(false);
+      const before = block.querySelector('.run-disclosure-duration')?.textContent;
+      act(() => { vi.advanceTimersByTime(10_000); });
+      expect(block.querySelector('.run-disclosure-duration')?.textContent).not.toBe(before);
+      expect(getByTestId('session-composer-stop')).toBeTruthy();
+    } else {
+      expect(parent.timeline.durationMs).toBe(108805);
+      expect(parent.timeline.durationIsFinal).toBe(true);
+    }
     expect(block.textContent).not.toContain('失败');
     // Existing Chinese duration copy includes spaces; keep the exact typed
     // 108805 ms assertion above and the existing localized formatter here.
-    expect(block.textContent).toContain('1 分 49 秒');
+    if (!stillWorking) expect(block.textContent).toContain('1 分 49 秒');
     if (!stillWorking) {
       const answer = model.cells.find(cell => cell.kind === 'assistant_final' && cell.message.content.includes('大家好'));
       expect(answer?.kind).toBe('assistant_final');

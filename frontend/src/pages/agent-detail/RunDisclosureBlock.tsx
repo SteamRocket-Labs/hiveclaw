@@ -114,7 +114,7 @@ function persistObservedRunDuration(presentationKey: string | null, durationMs: 
 }
 
 function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string | null): string {
-  const running = timeline.status === 'running';
+  const running = timeline.status === 'running' || Boolean(timeline.delegationInFlight);
   const parsed = timeline.startedAt ? Date.parse(timeline.startedAt) : NaN;
   const sampleEnd = Date.parse(timeline.completedAt || '');
   const waitingMs = timeline.durationMs != null && Number.isFinite(sampleEnd)
@@ -172,7 +172,7 @@ function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string |
   // clock may only serve live work (run 18: 44 s at the failed status settled
   // to the typed 35 s); a delayed terminal projection never re-inflates it.
   // `blocked` keeps the live elapsed clock while the member waits.
-  if (timeline.status !== 'running' && timeline.status !== 'blocked' && timeline.status !== 'idle') {
+  if (!running && timeline.status !== 'blocked' && timeline.status !== 'idle') {
     return formatDuration(timeline.durationMs);
   }
   const duration = formatDuration(Math.max(observedDurationMs, timeline.durationMs ?? 0));

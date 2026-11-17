@@ -569,7 +569,8 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
   const failedDelegations = new Set(Object.values(store.items)
     .filter(item => item.kind === 'run' && item.lifecycle === 'failed' && item.payload.task_type === 'delegation')
     .map(item => 'run_id' in item.scope ? item.scope.run_id : null));
-  const items = Object.values(store.items).map(item => item.atRunTerminal ?? item).filter(item => !(
+  const items = Object.values(store.items).map(item => item.kind === 'control_input' && item.payload.kind === 'cancel_run'
+    ? item : item.atRunTerminal ?? item).filter(item => !(
     item.payload.legacy === true && ['assistant_text', 'assistant_final'].includes(item.kind)
     && 'run_id' in item.scope && failedDelegations.has(item.scope.run_id)));
   const terminalFinalSources = new Set(items.filter(item => item.kind === 'assistant_final' && item.terminal)

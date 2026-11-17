@@ -743,7 +743,7 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
             f"**Deferred tools:** {', '.join(pack.tools)}\n\n"
             "This is a runtime tool group, not a skill file. load_skill does not make these schemas callable. "
             f"Use `tool_search` with this group name or a specific selector such as {tool_selectors} to load "
-            "matching deferred schemas for this session. If you need capability-capsule guidance, load the relevant skill or "
+            "matching deferred schemas for this session. If you need reusable task guidance, load the relevant skill or "
             "system guide separately."
         )
 
@@ -1099,7 +1099,7 @@ def _submit_skill_activation_candidate(
                 skill_origin=ORIGIN_USER_SKILL_CREATOR,
                 evolvable=True,
                 source_refs=["tool:save_skill"],
-                reason="Agent submitted a reusable capability capsule for external behavior verification.",
+                reason="Agent submitted reusable task instructions for external behavior verification.",
                 declared_tools=tuple(dict.fromkeys(tool.strip() for tool in declared_tools if tool.strip())),
                 declared_packs=tuple(dict.fromkeys(pack.strip() for pack in declared_packs if pack.strip())),
                 status="pending_behavior_verification",

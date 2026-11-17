@@ -789,7 +789,7 @@
     "controlLinks": "Control plane links",
     "controlLinksDesc": "Company-level settings remain in the control plane; the employee still owns runtime execution.",
     "skillRegistry": "Skill registry",
-    "skillRegistryDesc": "Skill capsules and evolution candidates",
+    "skillRegistryDesc": "Reusable skills and evolution candidates",
     "workflowWorkbench": "Workflow workbench",
     "workflowWorkbenchDesc": "Preview, start, inspect, and promote workflow runs",
     "memoryGovernance": "Memory governance",

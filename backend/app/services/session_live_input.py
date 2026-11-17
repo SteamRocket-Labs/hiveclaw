@@ -732,6 +732,12 @@ async def submit_live_cancel_input(
     await db.commit()
     if signal_local:
         await signal_web_chat_cancel(run_id=run_uuid, agent_id=agent.id, session_id=session.id, user_id=user.id)
+        if target is not None and target.status == "completed":
+            from app.services.session_control_input import settle_cancel_control_input
+
+            receipt = await settle_cancel_control_input(db, authority=authority, control_id=receipt.control_id,
+                execution_fence_ref=str((target.metadata_json or {}).get("terminal_execution_fence_ref") or ""))
+            await db.commit()
     return {"schema": "hive.control_input_receipt", "schema_version": 2, **asdict(receipt)}
 
 

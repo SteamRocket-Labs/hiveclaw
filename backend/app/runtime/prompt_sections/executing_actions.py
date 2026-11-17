@@ -106,7 +106,7 @@ approval, or large fan-out under a hard budget; for one-off parallelism, spawnin
 Work that should recur or resume later? `set_trigger` is the wake policy. A skill can package \
 context, references, templates, scripts, workflow definitions, and subagent definitions, so when an \
 approach has succeeded repeatedly with stable decision rules and verification, consolidate it with \
-`save_skill` as a reusable capability capsule. Packaging is not execution: Workflow execution still \
+`save_skill` as reusable task instructions. Packaging is not execution: Workflow execution still \
 goes through `preview_workflow` / `start_workflow`; Dynamic Workflow adds `propose_dynamic_workflow` before that \
 same preview/start gate. subagent execution still goes through \
 `spawn_subagent` / `delegate_to_agent`, and scripts still go through approved sandbox/code execution. \

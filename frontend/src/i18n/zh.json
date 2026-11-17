@@ -764,7 +764,7 @@
     "controlLinks": "控制中台入口",
     "controlLinksDesc": "公司级设置保留在控制中台；员工仍然拥有运行时执行。",
     "skillRegistry": "Skill 注册表",
-    "skillRegistryDesc": "Skill 胶囊和进化候选",
+    "skillRegistryDesc": "可复用技能和进化候选",
     "workflowWorkbench": "工作流工作台",
     "workflowWorkbenchDesc": "预览、启动、检查和提升工作流运行",
     "memoryGovernance": "记忆治理",

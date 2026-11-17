@@ -10,6 +10,7 @@ import { ccParityApi } from '../api/domains/ccParity';
 import ArtifactContinuation from './agent-detail/ArtifactContinuation';
 import { StructuredToolResultBody } from './agent-detail/StructuredToolResult';
 import zh from '../i18n/zh.json';
+import colleagueRows from '../test/fixtures/r26aRun21Rows.json';
 
 const mocks = vi.hoisted(() => ({
   queryCalls: [] as Array<{ key: unknown[]; enabled: unknown }>,
@@ -1854,4 +1855,40 @@ it.each([
   expect(mocks.chatProps.historyMessagesSessionId).toBe(child.id);
   expect(mocks.chatProps.historyMsgs.some((message: any) => message.content === 'The already loaded colleague transcript.')).toBe(true);
   expect(mocks.startSessionRun).not.toHaveBeenCalled();
+});
+
+it.each(['live', 'reload'])('X8 stops the handoff through the real page cancel handler (%s)', async mode => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.sessionId = 'owned-artifact-work';
+  const failure = colleagueRows.events.find(event => event.item_kind === 'runtime_failure')!;
+  const parentRunId = failure.scope!.run_id!;
+  const waiting = colleagueRows.events.filter(event => event.sequence <= failure.sequence).map(event => ({
+    ...event, scope: { ...event.scope, session_id: mocks.sessionId, thread_id: mocks.sessionId },
+  }));
+  mocks.listSessions.mockResolvedValue([{ id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
+    title: 'Colleague handoff', session_kind: 'human_chat', read_only: false }]);
+  mocks.getSessionTranscript.mockResolvedValue(mode === 'reload' ? waiting : []);
+  // The parent terminal cleared the local execution identity; the active API
+  // still identifies the same request's outstanding colleague handoff.
+  mocks.activeSessionRun = null;
+  mocks.getActiveSessionRun.mockResolvedValue({ run_id: parentRunId, status: 'running' });
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  render(<AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe(mocks.sessionId));
+  if (mode === 'live') await receiveRunEvents(waiting as ReturnType<typeof activeRunEvent>[], waiting);
+  await waitFor(() => expect(mocks.chatProps.chatMessages.some((message: any) => message.sessionItem?.kind === 'runtime_failure')).toBe(true));
+  fireEvent.click(await screen.findByTestId('session-composer-stop'));
+  await waitFor(() => expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith(
+    'agent-1', 'owned-artifact-work', parentRunId));
+  const accepted = activeRunEvent(waiting.at(-1)!.sequence + 1, 'control_input', 'accepted', parentRunId,
+    { kind: 'cancel_run', expected_run_id: parentRunId }, 'x8-member-stop');
+  const cancelled = activeRunEvent(waiting.at(-1)!.sequence + 2, 'control_input', 'applied', parentRunId,
+    { expected_run_id: parentRunId, terminal_status: 'completed' }, 'x8-member-stop');
+  await receiveRunEvents([accepted, cancelled], [...waiting, accepted, cancelled]);
+  await waitFor(() => expect(screen.getByTestId('session-workbench-header').querySelector('.swb-header-status')?.textContent).toBe('已停止'));
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+  expect(mocks.createSessionRun).not.toHaveBeenCalled();
 });

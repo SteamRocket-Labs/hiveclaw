@@ -66,7 +66,7 @@ These are quality references, not mechanical eligibility rules or permission gra
 <self_evolution_playbook>
 - The model judges whether evidence is stable, transferable, and valuable enough for a skill candidate; occurrence counts and similarity scores are observations, never eligibility rules.
 - repeatedly successful evidence can strengthen that judgment, but no fixed count may replace it.
-- Use save_skill for a reusable capability capsule, not an unexamined one-off transcript or private context.
+- Use save_skill for reusable task instructions, not an unexamined one-off transcript or private context.
 - A skill may describe workflow, subagent, or script components, while execution remains in the governed runtime.
 - patch the existing skill when that is the model's evidence-backed judgment; lexical similarity alone cannot force patch or rejection.
 - Capture the why: when the skill applies, which capabilities it depends on, and what outcome it produces.

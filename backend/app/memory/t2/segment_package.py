@@ -831,18 +831,25 @@ async def _build_authorized_source_bundle(*, root, agent_id, tenant_id, session_
             except ValueError:
                 pass
         async with tenant_scoped_session(str(tenant_id)) as db:
-            session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id,
+            session_exists = await db.scalar(select(ChatSession.id).where(ChatSession.id == session_id,
                 ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
-            rows = list(await db.scalars(select(ChatTranscriptEvent).where(
+            rows = list(await db.execute(select(ChatTranscriptEvent.id, ChatTranscriptEvent.metadata_json).where(
                 ChatTranscriptEvent.tenant_id == tenant_id, ChatTranscriptEvent.agent_id == agent_id,
                 ChatTranscriptEvent.session_id == session_id,
                 or_(ChatTranscriptEvent.id.in_(transcript_ids),
                     ChatTranscriptEvent.metadata_json["t0_bridge_event_id"].astext.in_([e.event_id for e in candidates])))))
-            by_id = {str(row.id): row for row in rows}
-            by_t0 = {(row.metadata_json or {}).get("t0_bridge_event_id"): row for row in rows}
-            for event in candidates if session is not None else ():
-                row = by_id.get(str(event.metadata.get("transcript_event_id"))) or by_t0.get(event.event_id)
-                if row is None:
+            by_id = {str(row.id): row.id for row in rows}
+            by_t0 = {(row.metadata_json or {}).get("t0_bridge_event_id"): row.id for row in rows}
+        # Carry only selected ids; reader and source state belong to each event's transaction.
+        for event in candidates if session_exists is not None else ():
+            row_id = by_id.get(str(event.metadata.get("transcript_event_id"))) or by_t0.get(event.event_id)
+            if row_id is None:
+                continue
+            async with tenant_scoped_session(str(tenant_id)) as db:
+                session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id,
+                    ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
+                row = await db.get(ChatTranscriptEvent, row_id)
+                if session is None or row is None:
                     continue
                 if row.invocation_id is not None:
                     kind = "session-tool-permission" if row.item_kind == "tool_permission" else "session-tool-result"

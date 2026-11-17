@@ -20,7 +20,7 @@ from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.chat_message_parts import build_session_native_event
-from app.services.chat_transcript import append_session_event
+from app.services.chat_transcript import append_session_event, lock_transcript_session
 from app.services.runtime_root_ledger import RuntimeRootIntentSpec
 from app.services.runtime_display_status import DELEGATION_RUNNING_RESULT_READ_NOTE, FAILED_DELEGATION_MODEL_INSTRUCTION
 
@@ -639,6 +639,28 @@ async def _result_page_already_read(db, *, tenant_id, agent_id, session_id, user
     return not unread
 
 
+async def _result_page_root_continuation_denial(
+    db: AsyncSession, *, root_runtime_task_id, tenant_id, agent_id, session_id, user_id,
+) -> str | None:
+    from app.models.runtime_task import RuntimeTask
+
+    if root_runtime_task_id is None:
+        return None
+    root = (await db.execute(select(RuntimeTask.status,
+        RuntimeTask.metadata_json["cancel_state"].astext).where(
+        RuntimeTask.id == root_runtime_task_id, RuntimeTask.tenant_id == tenant_id,
+        RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id),
+        RuntimeTask.root_user_id == user_id))).one_or_none()
+    if root is None:
+        return None
+    root_status, root_cancel_state = root
+    denial = {"killed": "runtime_root_cancelled",
+        "needs_reconciliation": "runtime_root_needs_reconciliation"}.get(root_status)
+    if denial is None and root_cancel_state in {"cancelling", "cancelled"}:
+        denial = "runtime_root_cancelled"
+    return denial
+
+
 async def continue_parent_session_with_result_page(
     *,
     db: AsyncSession,
@@ -654,6 +676,15 @@ async def continue_parent_session_with_result_page(
 ) -> dict[str, Any]:
     """Project one durable result page and wake the parent at most once."""
 
+    if resume_parent:
+        # Use the same transaction lock as member stop and transcript writes;
+        # the preflight may precede a committed stop while reserving a wake.
+        await lock_transcript_session(db, session_id=session.id)
+        continuation_denial = await _result_page_root_continuation_denial(
+            db, root_runtime_task_id=_uuid_or_none(manifest.get("root_runtime_task_id")),
+            tenant_id=session.tenant_id, agent_id=agent.id, session_id=session.id, user_id=user.id,
+        ) or continuation_denial
+        resume_parent = continuation_denial is None
     items = [item for item in list(manifest.get("items") or []) if isinstance(item, dict)]
     coverage = dict(manifest.get("coverage") or {})
     display_content = (

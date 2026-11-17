@@ -1591,15 +1591,15 @@ class RuntimeNotificationOutboxService:
         return sorted(prepared, key=lambda page: (page.parent_session_id.hex, page.integration_epoch))
 
     async def _deliver_page(self, page: ClaimedResultIntegrationPage) -> dict[str, Any]:
-        from app.services.agent_session_continuation import _result_page_already_read, continue_parent_session_with_result_page
+        from app.services.agent_session_continuation import (
+            _result_page_already_read, _result_page_root_continuation_denial, continue_parent_session_with_result_page,
+        )
 
         subagent_items = [
             item for item in page.items if item.source_kind == "subagent" and item.child_session_id is not None
         ]
         subagent_summaries: dict[uuid.UUID, str] = {}
 
-        root_status = None
-        root_cancel_state = None
         already_read = False
         async with tenant_scoped_session(
             page.tenant_id,
@@ -1611,15 +1611,10 @@ class RuntimeNotificationOutboxService:
                 already_read = await _result_page_already_read(sequence_db, tenant_id=page.tenant_id,
                     agent_id=page.parent_agent_id, session_id=page.parent_session_id, user_id=page.parent_user_id,
                     items=list(page.manifest.get("items") or []))
-            if page.root_runtime_task_id is not None and page.delivery_mode == "parent_continuation":
-                root = (await sequence_db.execute(select(RuntimeTask.status,
-                    RuntimeTask.metadata_json["cancel_state"].astext).where(
-                    RuntimeTask.id == page.root_runtime_task_id, RuntimeTask.tenant_id == page.tenant_id,
-                    RuntimeTask.parent_agent_id == page.parent_agent_id,
-                    RuntimeTask.parent_session_id == str(page.parent_session_id),
-                    RuntimeTask.root_user_id == page.parent_user_id))).one_or_none()
-                if root is not None:
-                    root_status, root_cancel_state = root
+            continuation_denial = (await _result_page_root_continuation_denial(
+                sequence_db, root_runtime_task_id=page.root_runtime_task_id, tenant_id=page.tenant_id,
+                agent_id=page.parent_agent_id, session_id=page.parent_session_id, user_id=page.parent_user_id,
+            )) if page.delivery_mode == "parent_continuation" else None
             prior_pending_page = (
                 await sequence_db.execute(
                     select(RuntimeResultIntegrationPage.id)
@@ -1702,10 +1697,6 @@ class RuntimeNotificationOutboxService:
         admission: ExecutionAdmission | None = None
         admission_decision: ExecutionAdmissionDecision | None = None
         budget_run_id: uuid.UUID | None = None
-        continuation_denial = {"killed": "runtime_root_cancelled",
-            "needs_reconciliation": "runtime_root_needs_reconciliation"}.get(root_status)
-        if root_cancel_state in {"cancelling", "cancelled"}:
-            continuation_denial = "runtime_root_cancelled"
         if page.delivery_mode == "parent_continuation" and not already_read and budget_run_ids and continuation_denial is None:
             try:
                 budget_run_id = _uuid(next(iter(budget_run_ids)), field="budget_run_id")
@@ -1773,7 +1764,7 @@ class RuntimeNotificationOutboxService:
                 if admission is not None and admission_decision is not None:
                     await admission.settle(
                         admission_decision,
-                        actual_continuation_wakes=1,
+                        actual_continuation_wakes=0 if (existing.metadata_json or {}).get("consumer") == "session_projection" else 1,
                         reason="runtime_result_page_already_delivered",
                     )
                 return {
@@ -1864,7 +1855,7 @@ class RuntimeNotificationOutboxService:
             if admission is not None and admission_decision is not None:
                 await admission.settle(
                     admission_decision,
-                    actual_continuation_wakes=1,
+                    actual_continuation_wakes=0 if receipt.get("consumer") == "session_projection" else 1,
                     reason="runtime_result_page_delivered",
                 )
             return {

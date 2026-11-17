@@ -262,6 +262,11 @@ async def test_result_page_preserves_runtime_action_projection_without_copying_r
         ],
     }
 
+    async def no_root(_statement):
+        return SimpleNamespace(one_or_none=lambda: None)
+
+    db.execute = no_root
+
     async def fake_append(**kwargs):
         appended.append(kwargs)
         return SimpleNamespace(event_id=uuid4())

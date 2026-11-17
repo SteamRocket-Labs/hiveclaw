@@ -14,6 +14,7 @@ import { assistantReplyForDisplay } from '../agent-detail/CanonicalCardAssistant
 import {
   agentChatMessageRunId as messageRunId,
   isSameSessionRunId,
+  isAppliedRunCancel,
   isStreamingAssistantMessage,
   normalizeSessionRunId,
   terminalRuntimePhaseForSessionEvent,
@@ -2137,12 +2138,6 @@ function coalesceProcessCellsByUserTurn(
 }
 
 const CANONICAL_RUN_TERMINAL_LIFECYCLES = new Set(['completed', 'failed', 'killed', 'cancelled', 'needs_reconciliation']);
-
-function isAppliedRunCancel(message: AgentChatMessage): boolean {
-  const item = message.sessionItem;
-  return item?.kind === 'control_input' && item.lifecycle === 'applied' && item.payload.kind === 'cancel_run'
-    && isSameSessionRunId(messageRunId(message), String(item.payload.expected_run_id || ''));
-}
 
 function isCanonicalRunTerminal(message: AgentChatMessage): boolean {
   const item = message.sessionItem;

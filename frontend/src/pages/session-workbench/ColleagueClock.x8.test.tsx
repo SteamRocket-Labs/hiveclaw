@@ -84,6 +84,14 @@ it.each(['live', 'reload'] as const)('shows an applied handoff stop without chan
   expect(parent.timeline.delegationInFlight).not.toBe(true);
   const { container } = render(<RunDisclosureBlock timeline={parent.timeline} />);
   expect(container.querySelector('.run-disclosure-title')?.textContent).toBe('已停止');
+  for (let pass = 0; pass < 3; pass++) {
+    container.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]').forEach(button => fireEvent.click(button));
+  }
+  expect(container.querySelector('[aria-label="等待同事"]')).toBeNull();
+  const checks = parent.timeline.steps.filter(step => ['check_async_task', 'task_output'].includes(
+    (step.details as { toolName?: string })?.toolName || ''));
+  expect(checks).toHaveLength(5);
+  expect(checks.every(step => (step.details as { memberSummary: { state: string } }).memberSummary.state === 'in_progress')).toBe(true);
   expect(projected.filter(message => message.sessionItem?.kind === 'runtime_failure')).toHaveLength(1);
 });
 

@@ -3,7 +3,7 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 
 import { ApiError } from '../api/core';
 import { ccParityApi } from '../api/domains/ccParity';
@@ -42,6 +42,8 @@ const mocks = vi.hoisted(() => ({
   activeSessionRun: null as null | { run_id: string; status: string },
   activeRunObservedAt: 1,
   getActiveSessionRun: vi.fn(),
+  getRuntimeSummary: vi.fn(),
+  realRuntimeSummaryQuery: false,
   activeRunQueryClient: null as QueryClient | null,
   chatProps: null as any,
   answerQuestion: vi.fn(),
@@ -74,7 +76,8 @@ vi.mock('@tanstack/react-query', async importOriginal => {
   ...actual,
   useMutation: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useQuery: (options: { queryKey: unknown[]; queryFn?: () => unknown; enabled?: unknown }) => {
-    if (mocks.activeRunQueryClient && options.queryKey[0] === 'chat-active-run') {
+    if (mocks.activeRunQueryClient && (options.queryKey[0] === 'chat-active-run'
+      || (mocks.realRuntimeSummaryQuery && options.queryKey[0] === 'chat-runtime-summary'))) {
       return actual.useQuery(options as any);
     }
     mocks.queryCalls.push({ key: options.queryKey, enabled: options.enabled });
@@ -158,6 +161,7 @@ vi.mock('../api/domains/chat', () => ({
     createSessionRun: mocks.createSessionRun,
     cancelSessionRun: mocks.cancelSessionRun,
     getActiveSessionRun: mocks.getActiveSessionRun,
+    getRuntimeSummary: mocks.getRuntimeSummary,
     deleteSession: mocks.deleteSession,
     answerQuestion: mocks.answerQuestion,
   },
@@ -284,6 +288,8 @@ beforeEach(() => {
   mocks.activeSessionRun = null;
   mocks.activeRunObservedAt = 1;
   mocks.activeRunQueryClient = null;
+  mocks.realRuntimeSummaryQuery = false;
+  mocks.getRuntimeSummary.mockResolvedValue(null);
   mocks.getActiveSessionRun.mockImplementation(async () => mocks.activeSessionRun);
   mocks.questionControl = false;
   mocks.language = 'en';
@@ -1857,7 +1863,7 @@ it.each([
   expect(mocks.startSessionRun).not.toHaveBeenCalled();
 });
 
-it.each(['live', 'reload'])('X8 stops the handoff through the real page cancel handler (%s)', async mode => {
+async function mountColleagueHandoff(mode: 'live' | 'reload') {
   mocks.realChat = true;
   mocks.language = 'zh';
   mocks.userRole = 'member';
@@ -1870,15 +1876,24 @@ it.each(['live', 'reload'])('X8 stops the handoff through the real page cancel h
   mocks.listSessions.mockResolvedValue([{ id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
     title: 'Colleague handoff', session_kind: 'human_chat', read_only: false }]);
   mocks.getSessionTranscript.mockResolvedValue(mode === 'reload' ? waiting : []);
-  // The parent terminal cleared the local execution identity; the active API
-  // still identifies the same request's outstanding colleague handoff.
-  mocks.activeSessionRun = null;
-  mocks.getActiveSessionRun.mockResolvedValue({ run_id: parentRunId, status: 'running' });
+  mocks.activeSessionRun = { run_id: parentRunId, status: 'running' };
+  mocks.activeRunQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
-  render(<AgentDetail />);
+  render(<QueryClientProvider client={mocks.activeRunQueryClient}><AgentDetail /></QueryClientProvider>);
   await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe(mocks.sessionId));
   if (mode === 'live') await receiveRunEvents(waiting as ReturnType<typeof activeRunEvent>[], waiting);
   await waitFor(() => expect(mocks.chatProps.chatMessages.some((message: any) => message.sessionItem?.kind === 'runtime_failure')).toBe(true));
+  await waitFor(() => expect(mocks.getActiveSessionRun).toHaveBeenCalled());
+  return { parentRunId, waiting };
+}
+
+it.each(['live', 'reload'] as const)('X8 stops the polled handoff through the real page cancel handler (%s)', async mode => {
+  const { parentRunId, waiting } = await mountColleagueHandoff(mode);
+  expectMemberRunState('运行中');
+  const parentBlock = () => screen.getAllByTestId('run-disclosure-block').find(block =>
+    block.querySelector('.run-disclosure-title')?.textContent === '运行中')!;
+  expect(parentBlock()).toBeTruthy();
+  expect(parentBlock().querySelector('.run-disclosure-duration')?.textContent).toBeTruthy();
   fireEvent.click(await screen.findByTestId('session-composer-stop'));
   await waitFor(() => expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith(
     'agent-1', 'owned-artifact-work', parentRunId));
@@ -1888,7 +1903,46 @@ it.each(['live', 'reload'])('X8 stops the handoff through the real page cancel h
     { expected_run_id: parentRunId, terminal_status: 'completed' }, 'x8-member-stop');
   await receiveRunEvents([accepted, cancelled], [...waiting, accepted, cancelled]);
   await waitFor(() => expect(screen.getByTestId('session-workbench-header').querySelector('.swb-header-status')?.textContent).toBe('已停止'));
+  expect(screen.getAllByTestId('run-disclosure-block').some(block =>
+    block.querySelector('.run-disclosure-title')?.textContent === '已停止')).toBe(true);
+  expect(mocks.chatProps.isWaiting).toBe(false);
+  expect(mocks.chatProps.isStreaming).toBe(false);
+  // An active-run response can still be in flight when the stop is applied.
+  await act(async () => { await mocks.activeRunQueryClient!.invalidateQueries({ queryKey: ['chat-active-run'] }); });
+  expect(mocks.chatProps.isWaiting).toBe(false);
+  expectMemberRunState('已停止');
   expect(screen.queryByTestId('session-composer-stop')).toBeNull();
   expect(mocks.startSessionRun).not.toHaveBeenCalled();
   expect(mocks.createSessionRun).not.toHaveBeenCalled();
+});
+
+it.each(['live', 'reload'] as const)('X8 keeps one light poll without refetching handoff panels for a minute (%s)', async mode => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  mocks.realRuntimeSummaryQuery = true;
+  await mountColleagueHandoff(mode);
+  await waitFor(() => expect(mocks.activeRunQueryClient!.isFetching()).toBe(0));
+  mocks.getRuntimeSummary.mockClear();
+  // Seed one settled panel read after the live transcript's startup invalidations.
+  await act(async () => { await mocks.activeRunQueryClient!.refetchQueries({ queryKey: ['chat-runtime-summary'] }); });
+  const refetches = [mocks.getRuntimeSummary, vi.fn(async () => null), vi.fn(async () => null)];
+  const unsubscribes = ['chat-runtime-summary', 'chat-session-work-ledger', 'chat-session-workbench'].map((key, index) => {
+    if (index === 0) return () => {};
+    const observer = new QueryObserver(mocks.activeRunQueryClient!, {
+      queryKey: [key, 'agent-1', mocks.sessionId, 'owner'], queryFn: refetches[index], retry: false,
+    });
+    return observer.subscribe(() => {});
+  });
+  try {
+    await waitFor(() => refetches.forEach(refetch => expect(refetch).toHaveBeenCalledOnce()));
+    const reads = mocks.getActiveSessionRun.mock.calls.length;
+    refetches.forEach(refetch => refetch.mockClear());
+    // Advance each actual query interval, allowing each response to update the page.
+    for (let tick = 0; tick < 20; tick++) await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+    expect(mocks.getActiveSessionRun).toHaveBeenCalledTimes(reads + 20);
+    expect(refetches.map(refetch => refetch.mock.calls.length)).toEqual([0, 0, 0]);
+    expectMemberRunState('运行中');
+    expect(screen.getByTestId('session-composer-stop')).toBeTruthy();
+  } finally {
+    unsubscribes.forEach(unsubscribe => unsubscribe());
+  }
 });

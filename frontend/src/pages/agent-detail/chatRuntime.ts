@@ -386,6 +386,7 @@ export const TERMINAL_RUNTIME_PHASES: ReadonlySet<RuntimePhase> = new Set([
 export function terminalRuntimePhaseForSessionEvent(
   itemKind: string, lifecycle: string, payload: Record<string, unknown> = {},
 ): RuntimePhase | null {
+  if (itemKind === 'control_input' && lifecycle === 'applied' && payload.kind === 'cancel_run') return 'cancelled';
   if (itemKind === 'run' && lifecycle === 'completed'
     && payload.reason_code === 'company_approval_required') return 'awaiting_approval';
   if (itemKind === 'runtime_failure' && lifecycle === 'recorded') return 'failed';
@@ -393,6 +394,12 @@ export function terminalRuntimePhaseForSessionEvent(
   if (lifecycle === 'failed' || lifecycle === 'needs_reconciliation') return 'failed';
   if (lifecycle === 'cancelled') return 'cancelled';
   return null;
+}
+
+export function isAppliedRunCancel(message: AgentChatMessage): boolean {
+  const item = message.sessionItem;
+  return item?.kind === 'control_input' && item.lifecycle === 'applied' && item.payload.kind === 'cancel_run'
+    && isSameSessionRunId(agentChatMessageRunId(message), String(item.payload.expected_run_id || ''));
 }
 
 const STREAMING_RUNTIME_PHASES: ReadonlySet<RuntimePhase> = new Set([

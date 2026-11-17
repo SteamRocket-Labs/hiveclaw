@@ -2808,8 +2808,9 @@ async def get_active_web_chat_run(
     db: AsyncSession,
     agent_id: uuid.UUID,
     session_id: str | uuid.UUID,
+    include_handoff: bool = False,
 ) -> dict[str, Any] | None:
-    task = await _find_active_run(db, agent_id=agent_id, session_id=session_id, include_handoff=True)
+    task = await _find_active_run(db, agent_id=agent_id, session_id=session_id, include_handoff=include_handoff)
     if task is None:
         await _repair_latest_missing_model_terminal_event(
             db,
@@ -2819,7 +2820,10 @@ async def get_active_web_chat_run(
     if task is None:
         return None
     payload = _runtime_task_to_run(task)
-    return {**payload, "status": "running", "completed_at": None} if task.status == "completed" else payload
+    if task.status == "completed":
+        payload = {key: value for key, value in payload.items() if key not in {"result_summary", "terminal_reason"}}
+        payload.update(status="running", completed_at=None)
+    return payload
 
 
 def outstanding_web_chat_delegations(*, run_uuid: uuid.UUID, tenant_id: uuid.UUID):
@@ -2843,6 +2847,7 @@ async def find_stoppable_web_chat_handoff(db: AsyncSession, *, agent_id: uuid.UU
         RuntimeTask.parent_session_id == str(session_id),
     ).order_by(RuntimeTask.created_at.desc(), RuntimeTask.id.desc()).limit(1))).scalars().first()
     if (task is None or task.status != "completed" or (run_id is not None and task.id != run_id)
+        or not str((task.metadata_json or {}).get("terminal_execution_fence_ref") or "").strip()
         or (task.metadata_json or {}).get("cancel_state") == "cancelled"):
         return None
     pending = outstanding_web_chat_delegations(run_uuid=task.id, tenant_id=task.tenant_id)

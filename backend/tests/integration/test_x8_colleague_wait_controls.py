@@ -1,14 +1,18 @@
 """Completed handoffs remain stoppable through the member's real session API."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
 import pytest
 
+from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
+from app.models.session_v2 import SessionCommand, SessionControlInput, SessionTurnInput
 from app.models.user import User
 from tests.integration import test_a4b_company_approval_resumption as approvals
 from tests.integration import test_r11c_colleague_lifecycle_postgres as colleagues
@@ -124,3 +128,133 @@ async def test_handoff_cancel_retains_member_session_and_latest_target_authoriza
         assert child.status == "pending"
         assert not (await db.get(RuntimeTask, seed["run_id"])).metadata_json.get("cancel_state")
     print("X8 authorization: another member, another session and stale target refused; colleague unchanged")
+
+
+@pytest.mark.parametrize("caller", ["active_reader", "message", "workbench", "rewind", "legacy_steer", "payload"])
+async def test_handoff_only_changes_stop_surfaces(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, caller,
+):
+    from app.services import session_command_runtime, web_chat_runtime
+
+    seed, _parent, _provider = await colleagues._setup(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool="delegate_to_agent")
+    await colleagues._execute(seed["run_id"], owner_sessionmaker, worker="x8-caller")
+    child = await colleagues._child(owner_sessionmaker, seed)
+    if caller == "message":
+        from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+        from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
+
+        processor = WebTerminalBoundaryProcessor(session_factory=app_user_sessionmaker)
+        delivered = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
+            tenant_id=seed["tenant_id"], worker_id="x8-parent-boundary", canonical_validator=processor.validate,
+            process_callback=processor, task_types=("web_chat_turn",))
+        assert delivered["delivered"] == 1, delivered
+    async with owner_sessionmaker() as db:
+        if caller == "active_reader":
+            assert await web_chat_runtime.get_active_web_chat_run(
+                db=db, agent_id=seed["agent_id"], session_id=seed["session_id"]) is None
+        elif caller == "rewind":
+            cancel = AsyncMock()
+            monkeypatch.setattr(session_command_runtime, "submit_live_cancel_input", cancel)
+            result = await session_command_runtime._prepare_rewind_mutation(
+                db=db, agent=await db.get(Agent, seed["agent_id"]), user=await db.get(User, seed["user_id"]),
+                session=await db.get(ChatSession, seed["session_id"]), arguments={}, observed_last_sequence=0)
+            assert result["interrupted_active_run"] is False
+            cancel.assert_not_awaited()
+    app, headers = approvals._mounted_app(seed, app_user_sessionmaker, user_id=seed["user_id"])
+    prefix = f"/api/agents/{seed['agent_id']}/sessions/{seed['session_id']}"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://x8", headers=headers) as api:
+        if caller == "message":
+            input_id = uuid4()
+            response = await api.post(f"{prefix}/runs", json={"content": "Start a separate request.",
+                "input_id": str(input_id), "idempotency_key": f"x8-new:{input_id}"})
+            assert response.status_code == 201, response.text
+            assert response.json()["run_id"] != seed["run_id"].hex
+            async with owner_sessionmaker() as db:
+                item = await db.get(SessionTurnInput, input_id)
+                assert item.intent == "start_turn"
+                assert (await db.get(RuntimeTask, child.id)).status == "pending"
+        elif caller == "workbench":
+            response = await api.get(f"{prefix}/workbench")
+            assert response.status_code == 200, response.text
+            controls = response.json()["controls"]
+            assert controls["can_start_turn"] is True
+            assert controls["can_start_goal"] is True
+            assert controls["can_stop_active_run"] is True
+            assert response.json()["active_run"]["run_id"] == seed["run_id"].hex
+            assert response.json()["active_turn"] is None
+        elif caller == "legacy_steer":
+            response = await api.post(f"{prefix}/turns/steer", json={"content": "A new instruction."})
+            assert response.status_code == 404, response.text
+        elif caller == "payload":
+            response = await api.get(f"{prefix}/runs/active")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["status"] == "running"
+            assert payload["completed_at"] is None
+            assert "result_summary" not in payload
+            assert "terminal_reason" not in payload
+
+
+async def test_legacy_handoff_without_terminal_fence_is_not_stoppable(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    seed, _parent, _provider = await colleagues._setup(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool="delegate_to_agent")
+    await colleagues._execute(seed["run_id"], owner_sessionmaker, worker="x8-legacy")
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, seed["run_id"])
+        task.metadata_json = {key: value for key, value in task.metadata_json.items()
+            if key != "terminal_execution_fence_ref"}
+        await db.commit()
+    app, headers = approvals._mounted_app(seed, app_user_sessionmaker, user_id=seed["user_id"])
+    prefix = f"/api/agents/{seed['agent_id']}/sessions/{seed['session_id']}"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://x8", headers=headers) as api:
+        assert (await api.get(f"{prefix}/runs/active")).json() is None
+        response = await api.post(f"{prefix}/runs/{seed['run_id']}/cancel")
+        assert response.status_code == 200, response.text
+        assert response.json()["accepted"] is False
+    async with owner_sessionmaker() as db:
+        assert not (await db.get(RuntimeTask, seed["run_id"])).metadata_json.get("cancel_state")
+        assert (await colleagues._child(owner_sessionmaker, seed)).status == "pending"
+
+
+async def test_stale_handoff_cancel_backs_off_after_a_newer_turn(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    from tests.services.test_session_input_control_v2 import _authority
+    from app.services.session_control_input import (
+        accept_cancel_control_input, begin_cancel_control_input, recover_stale_cancel_control_inputs_once,
+    )
+
+    seed, _parent, _provider = await colleagues._setup(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool="delegate_to_agent")
+    await colleagues._execute(seed["run_id"], owner_sessionmaker, worker="x8-stale")
+    control_id = uuid4()
+    async with owner_sessionmaker() as db:
+        authority = await _authority(db, user_id=seed["user_id"], agent_id=seed["agent_id"], session_id=seed["session_id"])
+        accepted = await accept_cancel_control_input(db, authority=authority, control_id=control_id,
+            idempotency_key=f"x8-stale:{control_id}", expected_run_id=seed["run_id"])
+        await begin_cancel_control_input(db, authority=authority, control_id=control_id, worker_id="lost-stop")
+        command = await db.get(SessionCommand, accepted.command_id)
+        command.updated_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        db.add(RuntimeTask(id=uuid4(), tenant_id=seed["tenant_id"], task_type="web_chat_turn", status="completed",
+            parent_agent_id=seed["agent_id"], parent_session_id=str(seed["session_id"]), root_user_id=seed["user_id"]))
+        await db.commit()
+        first = await recover_stale_cancel_control_inputs_once(db, worker_id="x8-recovery",
+            tenant_id=seed["tenant_id"], stale_after=timedelta(minutes=1))
+        assert first["claimed"] == 1 and first["settled"] == 0
+        second = await recover_stale_cancel_control_inputs_once(db, worker_id="x8-recovery",
+            tenant_id=seed["tenant_id"], stale_after=timedelta(minutes=1))
+        assert second["claimed"] == 0, "An outstanding old handoff must use the existing recovery backoff"
+        child = await colleagues._child(owner_sessionmaker, seed)
+        child_row = await db.get(RuntimeTask, child.id)
+        child_row.status = "killed"
+        child_row.completed_at = datetime.now(timezone.utc)
+        command = await db.get(SessionCommand, accepted.command_id, populate_existing=True)
+        command.updated_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        await db.commit()
+        final = await recover_stale_cancel_control_inputs_once(db, worker_id="x8-recovery",
+            tenant_id=seed["tenant_id"], stale_after=timedelta(minutes=1))
+        assert final["settled"] == 1
+        assert (await db.get(SessionControlInput, control_id, populate_existing=True)).status == "applied"

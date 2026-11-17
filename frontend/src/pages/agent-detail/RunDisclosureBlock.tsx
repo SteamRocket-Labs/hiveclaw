@@ -192,6 +192,7 @@ function stepMarkerLabel(status: RunStepSnapshot['status'] | undefined, t: TFunc
 }
 
 function stepWaitingForColleague(step: RunStepSnapshot): boolean {
+  if (['cancelled', 'killed', 'canceled'].includes((step.details as { taskTerminalStatus?: string } | null)?.taskTerminalStatus || '')) return false;
   const summary = (step.details as { memberSummary?: { kind?: string; state?: string; status?: string } } | null)?.memberSummary;
   const observedRunning = summary?.kind === 'colleague_result' && summary.state === 'in_progress';
   // A new delegation is also suspended, so that status cannot distinguish

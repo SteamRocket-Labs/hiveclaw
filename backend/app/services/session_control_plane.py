@@ -2052,6 +2052,8 @@ async def build_session_workbench(
     latest_event = _compact_workbench_event_payload(_event_payload(events[-1])) if events else None
     active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
     active_run_projection = _active_run_with_event_refs(active_run, events)
+    stoppable_run = active_run_projection or _active_run_with_event_refs(await get_active_web_chat_run(
+        db=db, agent_id=agent.id, session_id=session.id, include_handoff=True), events)
     runtime_tasks = await _list_runtime_tasks(db, agent_id=agent.id, session_id=session.id)
     tool_effect_reconciliation_tasks = [
         task
@@ -2130,7 +2132,7 @@ async def build_session_workbench(
         },
         "controls": {
             "can_start_turn": active_run_projection is None and not tool_effect_reconciliation_required,
-            "can_stop_active_run": active_run_projection is not None,
+            "can_stop_active_run": stoppable_run is not None,
             "can_export_json": True,
             "can_branch": bool(checkpoints) and not tool_effect_reconciliation_required,
             "can_start_goal": active_run_projection is None and not tool_effect_reconciliation_required,
@@ -2139,7 +2141,7 @@ async def build_session_workbench(
             "tool_effect_reconciliation_run_ids": [str(task.id) for task in tool_effect_reconciliation_tasks],
             "expected_turn_id": active_turn.get("expected_turn_id") if active_turn else None,
         },
-        "active_run": active_run_projection,
+        "active_run": stoppable_run,
         "runtime_tasks": [_runtime_task_payload(task) for task in runtime_tasks],
         "completion_wake_policy": _completion_wake_policy_payload(),
         "completion_wake_summary": _completion_wake_summary(completion_wakes),

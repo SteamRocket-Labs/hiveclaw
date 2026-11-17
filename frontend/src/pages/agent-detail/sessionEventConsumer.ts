@@ -3,6 +3,7 @@ import {
   agentChatMessageRunId,
   createEmptyTranscriptReplayState,
   isSameSessionRunId,
+  isAppliedRunCancel,
   extractArtifactParts,
   type AgentChatMessage,
   type ChatTranscriptEventPayload,
@@ -621,9 +622,10 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
   const terminalSessions = new Map<string, Map<string, number>>();
   const startsBySession = new Map<string, Array<{ index: number; sequence: number }>>();
   const key = (value: unknown) => typeof value === 'string' ? value.replaceAll('-', '').toLowerCase() : '';
-  const stoppedRuns = new Map(messages.filter(message => message.sessionItem?.kind === 'run'
-    && ['cancelled', 'killed'].includes(message.sessionItem.lifecycle))
+  const stoppedRuns = new Map(messages.filter(message => (message.sessionItem?.kind === 'run'
+    && ['cancelled', 'killed'].includes(message.sessionItem.lifecycle)) || isAppliedRunCancel(message))
     .map(message => [key(agentChatMessageRunId(message)), agentChatMessageRunId(message)!]));
+  const appliedStopRuns = new Set(messages.filter(isAppliedRunCancel).map(message => key(agentChatMessageRunId(message))));
   const stoppedParentByTask = new Map<string, string>();
   for (const message of messages) {
     const parent = stoppedRuns.get(key(agentChatMessageRunId(message)));
@@ -686,6 +688,12 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
       }
     }
   });
+  for (const message of messages) {
+    const summary = message.toolMemberSummary;
+    if (appliedStopRuns.has(key(agentChatMessageRunId(message))) && summary?.taskId
+      && ['delegation', 'colleague_result'].includes(summary.kind) && summary.state === 'in_progress'
+      && !terminals.has(key(summary.taskId))) terminals.set(key(summary.taskId), 'cancelled');
+  }
   const foldedStarts = new Set<number>();
   const terminalAtStart = new Map<number, AgentChatMessage>();
   const movedTerminals = new Set<number>();
@@ -911,7 +919,7 @@ export function hydrateSessionTranscriptEvents(
         uiEvents.push(consumed.projectionEvent);
       }
       for (const canonical of consumed.application?.canonicalEvents || []) {
-        const projection = canonicalRuntimeProjectionEvent(canonical);
+        const projection = canonicalRuntimeProjectionEvent(canonical, store);
         if (projection) uiEvents.push(projection);
       }
       for (const drained of consumed.application?.compatibilityEvents || []) {
@@ -961,6 +969,7 @@ export function hydrateSessionTranscriptEvents(
  */
 export function canonicalRuntimeProjectionEvent(
   event: SessionEventV2,
+  store?: SessionEventStore,
 ): ChatTranscriptEventPayload | null {
   let eventType: string | null = null;
   if (event.item_kind === 'run' && ((event.lifecycle === 'waiting'
@@ -968,7 +977,9 @@ export function canonicalRuntimeProjectionEvent(
     && event.payload.reason_code === 'company_approval_required'))) {
     return { id: event.event_id, sequence: event.sequence, event_type: 'phase', phase: 'awaiting_approval' };
   }
-  if (event.item_kind === 'run') {
+  if (isAppliedCancelEvent(event, store)) {
+    eventType = 'run_cancelled';
+  } else if (event.item_kind === 'run') {
     eventType = event.kind;
   } else if (
     event.item_kind === 'runtime_failure'
@@ -1029,7 +1040,7 @@ export function mergeCanonicalTerminalMessages(
   canonical: AgentChatMessage[],
   terminalRunId: string | null,
 ): AgentChatMessage[] {
-  const runStates = new Map(canonical.filter(message => message.sessionItem?.kind === 'run')
+  const runStates = new Map(canonical.filter(message => message.sessionItem?.kind === 'run' || isAppliedRunCancel(message))
     .map(message => [message.sessionItem!.id, message]));
   previous = previous.map(message => runStates.get(message.sessionItem?.id || '') || message);
   let latestUserIndex = -1;
@@ -1081,7 +1092,7 @@ export function mergeCanonicalTerminalMessages(
     process.push(message);
   }
 
-  return terminalAnswer ? [...prefix, ...process, terminalAnswer] : [...prefix, ...process];
+  return projectMemberDelegationStates(terminalAnswer ? [...prefix, ...process, terminalAnswer] : [...prefix, ...process]);
 }
 
 function runtimeFailureRunIdOf(envelope: SessionEventV2): string | null {
@@ -1116,9 +1127,16 @@ export function isLegacyAssistantTerminalItem(
     && payload.legacy === true;
 }
 
-function isRunTerminalEvent(envelope: SessionEventV2): boolean {
+function isAppliedCancelEvent(event: SessionEventV2, store?: SessionEventStore): boolean {
+  const payload = store?.items[event.item_id]?.payload || event.payload;
+  return event.item_kind === 'control_input' && event.lifecycle === 'applied' && payload.kind === 'cancel_run'
+    && isSameSessionRunId(runTerminalRunIdOf(event), String(payload.expected_run_id || ''));
+}
+
+function isRunTerminalEvent(envelope: SessionEventV2, store?: SessionEventStore): boolean {
   return (envelope.item_kind === 'run'
     && TERMINAL_RUN_LIFECYCLES.has(envelope.lifecycle))
+    || isAppliedCancelEvent(envelope, store)
     // The canonical runtime_failure terminal event is the run-scoped terminal
     // witness of the web-chat provider-failure path; it seals the run exactly
     // like a run.failed lifecycle item.
@@ -1157,7 +1175,7 @@ export function projectCanonicalSessionSnapshot(
   runId: string | null;
 } {
   const envelope = event as unknown as SessionEventV2;
-  const runTerminal = isRunTerminalEvent(envelope);
+  const runTerminal = isRunTerminalEvent(envelope, store);
   const messages = projectSessionEventStoreToMessages(store);
   return {
     messages,
@@ -1189,9 +1207,11 @@ export function applyCanonicalSessionSnapshot(options: {
   let anyTerminalAccepted = false;
   let acceptedTerminalRunId: string | null = null;
   for (const event of options.events) {
-    if (!isRunTerminalEvent(event)) continue;
+    if (!isRunTerminalEvent(event, options.store)) continue;
     const runId = runTerminalRunIdOf(event);
-    if (options.onTerminal(runId, event) === false) continue;
+    const terminalEvent = isAppliedCancelEvent(event, options.store)
+      ? { ...event, payload: { ...event.payload, kind: 'cancel_run' } } : event;
+    if (options.onTerminal(runId, terminalEvent) === false) continue;
     anyTerminalAccepted = true;
     acceptedTerminalRunId = runId;
   }

@@ -36,6 +36,8 @@ import {
     shouldPreserveActiveSessionForRequestedId,
     shouldUseWritableSessionSurface,
     shouldIgnoreObservedActiveRun,
+    agentChatMessageRunId,
+    isSameSessionRunId,
     shouldClearStaleRuntimeState,
     reconcileSessionTranscriptSafely,
     shouldReconcileTranscriptOnActiveRunAbsence,
@@ -60,6 +62,7 @@ import {
 } from './agent-detail/sessionMessageStore';
 import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
 import { sessionRunStateFromPayload, submittedSessionInputIssue, submittedSessionRunState } from './agent-detail/runtimeBudgetState';
+import { buildRunTimelineFromMessages, stepDelegationStillInProgress } from './agent-detail/chatDisclosureReducer';
 import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } from '../api/domains/agents';
 import { enterpriseApi } from '../api/domains/enterprise';
 import { triggerApi } from '../api/domains/triggers';
@@ -2319,17 +2322,6 @@ function AgentDetailInner() {
         enabled: activeTab === 'settings' || activeTab === 'status' || activeTab === 'chat',
     });
 
-    const { data: persistedRuntimeSummary, error: persistedRuntimeSummaryError } = useQuery({
-        queryKey: ['chat-runtime-summary', id, activeSession?.id, activeSession?.operator_view ? normalizedOperatorReason : 'owner'],
-        queryFn: () => chatApi.getRuntimeSummary(String(activeSession!.id), operatorSessionRequestOptions(Boolean(activeSession?.operator_view), normalizedOperatorReason)),
-        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && activeOperatorSessionAuthorized && !isTranscriptOnlySession(activeSession, currentUser?.id) && (!activeSession?.operator_view || Boolean(canOperatorInspect && normalizedOperatorReason)) && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession),
-        refetchInterval: activeTab === 'chat' && activeSession?.id && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession) ? 10000 : false,
-    });
-    useEffect(() => {
-        if (activeSession?.operator_view !== true) return;
-        denyOperatorAuthority(persistedRuntimeSummaryError);
-    }, [activeSession?.operator_view, denyOperatorAuthority, persistedRuntimeSummaryError]);
-
     const { data: activeSessionRun, dataUpdatedAt: activeSessionRunObservedAt } = useQuery({
         queryKey: ['chat-active-run', id, activeSession?.id, activeSession?.operator_view ? normalizedOperatorReason : 'owner'],
         queryFn: () => chatApi.getActiveSessionRun(
@@ -2344,6 +2336,30 @@ function AgentDetailInner() {
         ),
     });
 
+    const observedColleagueHandoff = React.useMemo(() => {
+        if (!activeSessionRun || chatMessagesSessionId !== String(activeSession?.id)) return false;
+        const messages = chatMessages.filter(message => isSameSessionRunId(agentChatMessageRunId(message), activeSessionRun.run_id));
+        const parentEnded = messages.some(message => {
+            const item = message.sessionItem;
+            return (item?.kind === 'run' && item.lifecycle === 'completed')
+                || (item?.kind === 'runtime_failure' && item.payload.failure_code === 'identical_running_task_read')
+                || (item?.kind === 'assistant_final' && item.lifecycle === 'completed' && item.payload.legacy === true);
+        });
+        return parentEnded && buildRunTimelineFromMessages(messages).steps.some(stepDelegationStillInProgress);
+    }, [activeSessionRun?.run_id, chatMessages, chatMessagesSessionId, activeSession?.id]);
+
+    const { data: persistedRuntimeSummary, error: persistedRuntimeSummaryError } = useQuery({
+        queryKey: ['chat-runtime-summary', id, activeSession?.id, activeSession?.operator_view ? normalizedOperatorReason : 'owner'],
+        queryFn: () => chatApi.getRuntimeSummary(String(activeSession!.id), operatorSessionRequestOptions(Boolean(activeSession?.operator_view), normalizedOperatorReason)),
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && activeOperatorSessionAuthorized && !isTranscriptOnlySession(activeSession, currentUser?.id) && (!activeSession?.operator_view || Boolean(canOperatorInspect && normalizedOperatorReason)) && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession),
+        refetchInterval: !observedColleagueHandoff && activeTab === 'chat' && activeSession?.id && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession) ? 10000 : false,
+    });
+    useEffect(() => {
+        if (activeSession?.operator_view !== true) return;
+        denyOperatorAuthority(persistedRuntimeSummaryError);
+    }, [activeSession?.operator_view, denyOperatorAuthority, persistedRuntimeSummaryError]);
+
+
     useEffect(() => {
         if (!id || !activeSession?.id || !isWritableSession(activeSession)) return;
         const key = buildSessionRuntimeKey(id, String(activeSession.id));
@@ -2355,7 +2371,7 @@ function AgentDetailInner() {
                 terminalRunIds: locallyTerminalRunIdsRef.current,
                 terminalSessionKeys: locallyTerminalSessionKeysRef.current,
             })) {
-                invalidateSessionRuntimeQueries(id, String(activeSession.id), false);
+                if (!observedColleagueHandoff) invalidateSessionRuntimeQueries(id, String(activeSession.id), false);
                 return;
             }
             const observedUiState = observeActiveRunState(key, sessionRunStateFromPayload(activeSessionRun));
@@ -2386,7 +2402,7 @@ function AgentDetailInner() {
             selectSession(activeSession);
             fetchMySessions(true, id);
         }
-    }, [activeSessionRun, activeSessionRunObservedAt, activeSession?.id, id, compactingSessions]);
+    }, [activeSessionRun, activeSessionRunObservedAt, observedColleagueHandoff, activeSession?.id, id, compactingSessions]);
 
     const supportsVision = !!agent?.primary_model_id && llmModels.some(
         (m: any) => m.id === agent.primary_model_id && m.supports_vision

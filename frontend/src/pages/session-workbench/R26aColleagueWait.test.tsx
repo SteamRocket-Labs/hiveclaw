@@ -100,6 +100,7 @@ it.each(['live', 'reload'])('R26a: a running-read stop waits neutrally, then the
     expect(Boolean(parent.timeline.delegationInFlight)).toBe(stillWorking);
     expect(block.querySelector('.run-disclosure-title')?.textContent).toBe(stillWorking ? '运行中' : '完成');
     if (stillWorking) {
+      expect(parent.timeline.durationMs).toBe(108805);
       expect(parent.timeline.durationIsFinal).toBe(false);
       const before = block.querySelector('.run-disclosure-duration')?.textContent;
       act(() => { vi.advanceTimersByTime(10_000); });

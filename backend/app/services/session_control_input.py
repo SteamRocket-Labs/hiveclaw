@@ -1263,6 +1263,8 @@ async def recover_stale_cancel_control_inputs_once(
                     terminal_source="cancel_recovery_sweep",
                 )
                 counts["settled"] += int(settled["applied"]) + int(settled["rejected"])
+                if not any(settled.values()):
+                    command.updated_at = claimed_at
             continue
         if task.status not in _ACTIVE_RUN_STATUSES and not handoff_active:
             continue

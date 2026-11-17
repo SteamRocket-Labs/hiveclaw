@@ -296,11 +296,13 @@ async def _published_owned_delegation_input(
         directory_read = row.tool_name in {"list_files", "fs_list", "glob_search"}
         search_read = row.tool_name == "grep_search"
         clock_read = row.tool_name == "get_current_time"
+        memory_read = row.tool_name in {"search_memory", "load_memory"}
         if (
             not ledger_read
             and not directory_read
             and not search_read
             and not clock_read
+            and not memory_read
             and row.tool_name not in {"read_file", "read_document", "fs_read", "office_document_view",
                 "office_document_query", "office_document_validate", "office_document_dump"}
         ):
@@ -330,6 +332,22 @@ async def _published_owned_delegation_input(
         )
         if model is None:
             return False
+        if memory_read:
+            from app.models.chat_session import ChatSession
+            from app.services.explicit_memory_tool_sources import memory_result_sources
+
+            child_session = await _input_row(db, ChatSession, row.session_id)
+            if child_session is None or child_session.session_kind != "delegation_run":
+                return False
+            _sources, complete = await memory_result_sources(
+                db,
+                tenant_id=task.tenant_id,
+                agent_id=task.child_agent_id,
+                invocation=row,
+                model=model,
+                content_hash=payload.get("content_hash"),
+            )
+            return complete
         if clock_read:
             from app.services.content_input_receipts import load_native_clock_read_evidence
 

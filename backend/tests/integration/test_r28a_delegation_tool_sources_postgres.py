@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import pytest
 from sqlalchemy import select
@@ -11,6 +11,7 @@ from app.database import pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.capability_policy import CapabilityPolicy
 from app.models.chat_session import ChatSession
+from app.models.invocation_span import InvocationSpan
 from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.models.runtime_result import RuntimeResultObject
 from app.models.runtime_task import RuntimeTask
@@ -180,13 +181,14 @@ async def test_parent_continuation_reads_tool_backed_colleague_answer(
 
 
 @pytest.mark.parametrize("change", ["access", "deactivated", "deleted", "root_user", "parent_agent",
-    "parent_session", "child_agent", "child_session", "task_type", "ordinary_session", "tenant"])
+    "parent_session", "child_agent", "child_session", "task_type", "ordinary_session", "tenant", "memory_record"])
 async def test_tool_source_requires_current_access_and_exact_delegation_binding(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, change,
 ):
     from app.models.tenant import Tenant
     from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.runtime_result_sources import validate_runtime_result_sources
 
     seed = await _tool_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, "search_memory")
     principal = AgentRuntimePrincipal(agent_id=seed["agent_id"], requester_user_id=seed["user_id"],
@@ -213,6 +215,11 @@ async def test_tool_source_requires_current_access_and_exact_delegation_binding(
             task.task_type = "subagent"
         elif change == "ordinary_session":
             session.session_kind = "human_chat"
+        elif change == "memory_record":
+            record = await db.get(InvocationSpan, uuid5(UUID(seed["tool_source"]["source_id"]),
+                "explicit-memory-tool-result"))
+            assert record is not None and record.metadata_json["memory_result"]["sources"] == []
+            record.metadata_json = {"memory_result": {**record.metadata_json["memory_result"], "content_hash": "0" * 64}}
         else:
             tenant_id = uuid4()
             db.add(Tenant(id=tenant_id, name="Other tenant", slug=f"r28a-{tenant_id.hex}"))
@@ -220,12 +227,18 @@ async def test_tool_source_requires_current_access_and_exact_delegation_binding(
             task.tenant_id = tenant_id
         await db.commit()
 
-    # Exercise the changed boundary independently of canonical publication checks.
+    # Bare child sources remain denied on the parent-actor path.
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
         with pytest.raises(ContentInputReceiptError) as refused:
             await _validate_input_dependencies(db, seed["tenant_id"], [seed["tool_source"]], runtime_request=principal)
         assert refused.value.code == "content_source_access_denied" and refused.value.status_code == 403
+        result = await db.get(RuntimeResultObject, seed["result_id"])
+        try:
+            allowed = await validate_runtime_result_sources(db, principal, result)
+        except ContentInputReceiptError:
+            allowed = False
+        assert allowed is False
 
     calls = [_call("read_runtime_result", {"result_ref": seed["result_ref"]}, "r28a-denied-result")]
     calls.extend(_call(reader, _reader_arguments(reader, seed["child_id"]), f"r28a-denied-{reader}") for reader in READERS)
@@ -235,8 +248,9 @@ async def test_tool_source_requires_current_access_and_exact_delegation_binding(
     ])
     results = await _tool_results(owner_sessionmaker, run_id)
     assert len(results) == 4
-    for call in calls:
-        assert ANSWER not in results[call["id"]]["content"]
+    if change not in {"parent_session", "child_agent", "child_session", "task_type", "tenant"}:
+        for call in calls:
+            assert ANSWER not in results[call["id"]]["content"]
     assert ANSWER not in json.dumps(client.requests)
     async with owner_sessionmaker() as db:
         models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id)))

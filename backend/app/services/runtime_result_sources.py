@@ -229,10 +229,40 @@ async def _result_work_checkpoint(db, task, requester):
 
 
 async def _published_owned_delegation_input(
-    db, dependency, task, *, receipt_ids=frozenset(), input_receipt_ids=frozenset()
+    db, dependency, task, *, receipt_ids=frozenset(), input_receipt_ids=frozenset(), memory_source=None
 ):
     kind, source_id = dependency["source_kind"], dependency["source_id"]
     from app.services.content_input_receipts import _input_row
+    if kind == "explicit_memory":
+        from app.services.content_input_receipts import _preflight_inputs
+
+        try:
+            identity = uuid.UUID(source_id)
+            binding = (_preflight_inputs(db) or {}).get(("memory_receipt_binding", identity))
+            ref = binding.carrier_ref if binding is not None else await db.scalar(
+                select(ContentInputReceipt.carrier_ref).where(
+                    ContentInputReceipt.id == identity,
+                    ContentInputReceipt.tenant_id == task.tenant_id,
+                    ContentInputReceipt.carrier_kind == "explicit_memory",
+                )
+            )
+            if not ref or uuid.UUID(ref.split("\n", 1)[0]) != task.child_agent_id:
+                return False
+        except ValueError:
+            return False
+        calls = await db.scalars(select(SessionToolInvocation).where(
+            SessionToolInvocation.tenant_id == task.tenant_id,
+            SessionToolInvocation.run_id == task.id,
+            SessionToolInvocation.session_id == uuid.UUID(task.child_session_id),
+            SessionToolInvocation.tool_name.in_(("search_memory", "load_memory")),
+        ))
+        for call in calls:
+            if await _published_owned_delegation_input(
+                db, {"source_kind": "session_tool_invocation", "source_id": str(call.id)}, task,
+                receipt_ids=receipt_ids, input_receipt_ids=input_receipt_ids, memory_source=dependency,
+            ):
+                return True
+        return False
     if kind == "agent_directory_observation":
         from app.services.agent_directory_sources import _load
 
@@ -277,7 +307,7 @@ async def _published_owned_delegation_input(
             return False
         from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
 
-        if await native_tool_timeout_bound(db, agent_id=task.child_agent_id, invocation=row):
+        if memory_source is None and await native_tool_timeout_bound(db, agent_id=task.child_agent_id, invocation=row):
             return True
         if row.tool_name in {
             "write_file",
@@ -347,7 +377,7 @@ async def _published_owned_delegation_input(
                 model=model,
                 content_hash=payload.get("content_hash"),
             )
-            return complete
+            return complete and (memory_source is None or memory_source in _sources)
         if clock_read:
             from app.services.content_input_receipts import load_native_clock_read_evidence
 

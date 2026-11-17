@@ -165,6 +165,7 @@ async def test_parent_continuation_reads_tool_backed_colleague_answer(
     print("R28A_READER", json.dumps({"tool": tool, "reader": reader, "direct_status": direct["status"],
         "task_publication": checked.get("result_publication"), "answer_present": ANSWER in json.dumps(checked)}))
     assert direct["status"] == "ok" and direct["complete"] is True, direct
+    assert direct["dependency_coverage"] == {"complete": True}, direct
     assert ANSWER in direct["content"] and checked["result"] == ANSWER
     assert checked["status"] == "completed" and "result_publication" not in checked
     assert len(client.requests) == 3
@@ -236,7 +237,9 @@ async def test_tool_source_requires_current_access_and_exact_delegation_binding(
         result = await db.get(RuntimeResultObject, seed["result_id"])
         try:
             allowed = await validate_runtime_result_sources(db, principal, result)
-        except ContentInputReceiptError:
+        except ContentInputReceiptError as exc:
+            assert exc.code == ("runtime_result_sources_unbound" if change in {"child_agent", "child_session"}
+                else "content_source_access_denied")
             allowed = False
         assert allowed is False
 
@@ -271,6 +274,7 @@ async def test_colleague_workspace_source_reads_use_the_existing_member_path(
     results = await _tool_results(owner_sessionmaker, run_id)
     direct = json.loads(results["r28a-workspace-result"]["content"])
     assert direct["status"] == "ok" and FILE_RESULT in direct["content"], direct
+    assert direct["dependency_coverage"] == {"complete": True}, direct
     for reader in READERS:
         checked = _task_body(reader, json.loads(results[f"r28a-workspace-{reader}"]["content"]), seed["child_id"])
         assert checked["result"] == FILE_RESULT and "result_publication" not in checked
@@ -482,7 +486,7 @@ async def test_parent_continuation_reads_nonempty_colleague_memory(
     await _read_memory_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, seed, reader)
 
 
-async def _read_memory_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, seed, reader):
+async def _read_memory_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, seed, reader, *, answer=ANSWER):
     import app.runtime.invoker as invoker
 
     return_id = await _deliver_continuation(owner_sessionmaker, app_user_sessionmaker, seed)
@@ -496,18 +500,24 @@ async def _read_memory_result(owner_sessionmaker, app_user_sessionmaker, monkeyp
     await _execute(owner_sessionmaker, return_id, "r28a-hit-parent")
     results = await _tool_results(owner_sessionmaker, return_id)
     direct = json.loads(results["r28a-hit-result"]["content"])
-    checked = _task_body(reader, json.loads(results["r28a-hit-task"]["content"]), seed["child_id"])
     assert direct["status"] == "ok" and direct["complete"] is True, direct
-    assert ANSWER in direct["content"] and checked["result"] == ANSWER
-    assert checked["status"] == "completed" and "result_publication" not in checked
-    assert len(client.requests) == 3 and ANSWER not in json.dumps(client.requests[0])
-    assert all(ANSWER in json.dumps(request) for request in client.requests[1:])
+    assert direct["dependency_coverage"] == {"complete": True}, direct
+    assert answer in direct["content"]
+    assert len(client.requests) == 3 and answer not in json.dumps(client.requests[0])
+    assert all(answer in json.dumps(request) for request in client.requests[1:])
     async with owner_sessionmaker() as db:
         models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == return_id)
             .order_by(SessionModelResult.round_id)))
         assert len(models) == 3
-        assert ANSWER not in json.dumps(models[0].model_request_snapshot_json["wire_request"])
-        assert all(ANSWER in json.dumps(model.model_request_snapshot_json["wire_request"]) for model in models[1:])
+        assert answer not in json.dumps(models[0].model_request_snapshot_json["wire_request"])
+        assert all(answer in json.dumps(model.model_request_snapshot_json["wire_request"]) for model in models[1:])
+    print("R28A_MEMORY_PARENT_READ", json.dumps({"answer": answer, "reader": reader,
+        "dependency_coverage": direct["dependency_coverage"], "provider_and_wire": True,
+        "task_result": results["r28a-hit-task"]["content"]}))
+    assert answer in results["r28a-hit-task"]["content"], results["r28a-hit-task"]
+    checked = _task_body(reader, json.loads(results["r28a-hit-task"]["content"]), seed["child_id"])
+    assert checked["result"] == answer
+    assert checked["status"] == "completed" and "result_publication" not in checked
 
 
 @pytest.mark.parametrize("tool", ["search_memory", "load_memory"])
@@ -580,10 +590,14 @@ async def test_published_memory_keeps_member_rules_and_invocation_binding(
             with pytest.raises(ContentInputReceiptError) as refused:
                 await validate_browser_memory_dependency(db, seed["tenant_id"], source, user=user)
             assert refused.value.status_code == 403
+            expected_code = {"group_membership": "content_source_access_denied",
+                "revoked": "explicit_memory_source_revoked"}.get(change, "explicit_memory_browser_denied")
+            assert refused.value.code == expected_code
         result = await db.get(RuntimeResultObject, seed["result_id"])
         try:
             allowed = await validate_runtime_result_sources(db, principal, result)
-        except ContentInputReceiptError:
+        except ContentInputReceiptError as exc:
+            assert exc.code == ("explicit_memory_source_unverified" if change == "other_agent" else expected_code)
             allowed = False
         assert allowed is False
     calls = [_call("read_runtime_result", {"result_ref": seed["result_ref"]}, "r28a-memory-denied")]
@@ -604,6 +618,12 @@ async def test_published_memory_keeps_member_rules_and_invocation_binding(
 async def test_parent_reads_active_index_memory_not_returned_by_a_call(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool, reader,
 ):
+    _observe_memory_denials(monkeypatch)
+    seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool, extra=True)
+    await _read_memory_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, seed, reader)
+
+
+def _observe_memory_denials(monkeypatch):
     from app.services import explicit_memory_authority as authority
 
     validate = authority.validate_explicit_memory_dependency
@@ -621,45 +641,162 @@ async def test_parent_reads_active_index_memory_not_returned_by_a_call(
             raise
 
     monkeypatch.setattr(authority, "validate_explicit_memory_dependency", observe_refusal)
-    seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool, extra=True)
-    await _read_memory_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, seed, reader)
 
 
-@pytest.mark.parametrize("entry_count", [1, 30])
-async def test_index_source_check_statements_are_linear_with_four_memory_calls(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, entry_count,
+FOLLOWUP_ANSWER = "R28A_FOLLOWUP_ANSWER: apply the remembered checklist to the next release."
+
+
+async def _memory_followup_result(owner, app_factory, monkeypatch, tmp_path):
+    import app.runtime.invoker as invoker
+    from app.services.memory_service import build_memory_context
+    from app.services.runtime_notification_outbox import produce_terminal_task_completion_notification
+
+    seed = await _memory_hit_result(owner, app_factory, monkeypatch, tmp_path, None, extra=True)
+    initial_return = await _deliver_continuation(owner, app_factory, seed)
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs:
+        ScriptedLLMClient([{"content": "The initial colleague task is complete."}]))
+    await _execute(owner, initial_return, "r28a-before-followup")
+    send_id, _client = await _parent_turn(owner, seed, monkeypatch, [
+        {"tool_calls": [_call("send_agent_session_message", {"child_session_id": str(seed["child_session_id"]),
+            "message": "Use your remembered checklist for the next release."}, "r28a-send-followup")],
+            "finish_reason": "tool_calls"}, {"content": "The colleague is preparing its follow-up."},
+    ])
+    sent = json.loads((await _tool_results(owner, send_id))["r28a-send-followup"]["content"])
+    assert sent["ok"] is True and sent["status"] == "started", sent
+    followup_id = UUID(sent["run_id"])
+    async with owner() as db:
+        followup = await db.get(RuntimeTask, followup_id)
+        assert followup.task_type == "a2a_continuation"
+        assert followup.parent_session_id == followup.child_session_id == str(seed["child_session_id"])
+        assert (await db.get(ChatSession, seed["child_session_id"])).runtime_task_id == seed["child_id"]
+    client = ScriptedLLMClient([
+        {"tool_calls": [_call("load_memory", {"ids": [seed["memory_entry_id"]]}, "r28a-followup-load")],
+            "finish_reason": "tool_calls"}, {"content": FOLLOWUP_ANSWER},
+    ])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    original_memory_context = invoker.build_memory_context
+    monkeypatch.setattr(invoker, "build_memory_context", build_memory_context)
+    try:
+        await _execute(owner, followup_id, "r28a-followup-child")
+    finally:
+        monkeypatch.setattr(invoker, "build_memory_context", original_memory_context)
+    assert len(client.requests) == 2
+    assert all(content in json.dumps(client.requests[0]) for content in (HIT_MEMORY, UNRETURNED_MEMORY))
+    calls = await _tool_results(owner, followup_id)
+    assert len(calls) == 1 and HIT_MEMORY in calls["r28a-followup-load"]["content"]
+    async with owner() as db:
+        followup = await db.get(RuntimeTask, followup_id)
+        print("R28A_FOLLOWUP_TERMINAL", json.dumps({"task_type": followup.task_type, "status": followup.status,
+            "generation": followup.completion_outbox_generation, "attempts": followup.completion_outbox_attempt_count,
+            "error": followup.completion_outbox_last_error, "summary": followup.result_summary}))
+        assert followup.status == "completed", followup.result_summary
+        models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == followup_id)))
+        assert len(models) == 2
+        for model in models:
+            snapshot = model.model_request_snapshot_json
+            assert all(source in snapshot["input_bindings"]["dependencies"] for source in seed["memory_sources"])
+            assert UNRETURNED_MEMORY in json.dumps(snapshot["wire_request"])
+        # Drive the existing publisher after the real Session V2 terminal commit.
+        assert await produce_terminal_task_completion_notification(db, followup,
+            attempted_at=datetime.now(timezone.utc), reconciled=False) is not None
+        await db.commit()
+        notice = (await db.scalars(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.source_run_id == str(followup_id)))).one()
+        result = await db.get(RuntimeResultObject, notice.result_object_id)
+        assert result.source_kind == "a2a_continuation" and FOLLOWUP_ANSWER in bytes(result.payload_bytes).decode(result.encoding)
+        seed["child_id"], seed["result_ref"], seed["result_id"] = followup_id, notice.result_ref, result.id
+    return seed
+
+
+async def test_parent_reads_published_colleague_memory_followup(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    _observe_memory_denials(monkeypatch)
+    seed = await _memory_followup_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    await _read_memory_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, seed,
+        "check_async_task", answer=FOLLOWUP_ANSWER)
+
+
+async def test_colleague_memory_followup_refuses_another_users_private_memory(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    from app.models.organization_identity import ContentInputReceipt
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.runtime_result_sources import validate_runtime_result_sources
+
+    seed = await _memory_followup_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    async with owner_sessionmaker() as db:
+        receipt = await db.get(ContentInputReceipt, UUID(seed["extra_memory_source"]["source_id"]))
+        receipt.authority_json = {**receipt.authority_json, "owner_user_id": str(seed["other_user_id"])}
+        await db.commit()
+    principal = AgentRuntimePrincipal(agent_id=seed["agent_id"], requester_user_id=seed["user_id"],
+        session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]), purpose="interactive_session")
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        result = await db.get(RuntimeResultObject, seed["result_id"])
+        with pytest.raises(ContentInputReceiptError) as refused:
+            await validate_runtime_result_sources(db, principal, result)
+        assert refused.value.code == "explicit_memory_browser_denied"
+    run_id, client = await _parent_turn(owner_sessionmaker, seed, monkeypatch, [
+        {"tool_calls": [_call("read_runtime_result", {"result_ref": seed["result_ref"]}, "r28a-followup-denied"),
+            _call("check_async_task", _reader_arguments("check_async_task", seed["child_id"]), "r28a-followup-task")],
+            "finish_reason": "tool_calls"}, {"content": "The follow-up memory is unavailable."},
+    ])
+    results = await _tool_results(owner_sessionmaker, run_id)
+    direct = json.loads(results["r28a-followup-denied"]["content"])
+    assert direct["status"] == "source_access_denied" and direct["reason_code"] == "explicit_memory_browser_denied"
+    assert len(results) == 2 and len(client.requests) == 2
+    assert FOLLOWUP_ANSWER not in json.dumps(client.requests)
+    async with owner_sessionmaker() as db:
+        models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id)))
+        assert len(models) == 2
+        assert all(FOLLOWUP_ANSWER not in json.dumps(model.model_request_snapshot_json["wire_request"]) for model in models)
+
+
+async def test_index_source_check_statements_are_linear_in_entries_and_calls(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
 ):
     from collections import Counter
     from sqlalchemy import event
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.services.runtime_result_sources import validate_runtime_result_sources
 
-    seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
-        "load_memory", entry_count=entry_count, call_count=4)
-    principal = AgentRuntimePrincipal(agent_id=seed["agent_id"], requester_user_id=seed["user_id"],
-        session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]), purpose="interactive_session")
-    statements = []
+    measured = {}
+    for call_count in (1, 4):
+        for entry_count in (1, 30):
+            with monkeypatch.context() as patch:
+                seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, patch,
+                    tmp_path / f"entries-{entry_count}-calls-{call_count}", "load_memory",
+                    entry_count=entry_count, call_count=call_count)
+                principal = AgentRuntimePrincipal(agent_id=seed["agent_id"], requester_user_id=seed["user_id"],
+                    session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]), purpose="interactive_session")
+                statements = []
 
-    def count_statement(_connection, _cursor, statement, _parameters, _context, _many):
-        statements.append(statement)
+                def count_statement(_connection, _cursor, statement, _parameters, _context, _many):
+                    statements.append(statement)
 
-    async with app_user_sessionmaker() as db:
-        await pin_rls_tenant_context(db, seed["tenant_id"])
-        result = await db.get(RuntimeResultObject, seed["result_id"])
-        engine = db.bind.sync_engine
-        event.listen(engine, "before_cursor_execute", count_statement)
-        try:
-            assert await validate_runtime_result_sources(db, principal, result) is True
-        finally:
-            event.remove(engine, "before_cursor_execute", count_statement)
-    # Four invocation proofs and the shared source/member checkpoints fit in 100
-    # statements. Each entry adds carrier/session reads, with one extra statement
-    # of allowance for its existing member path; it never scans those four calls.
-    counts = Counter("memory_invocations" if "session_tool_invocations" in sql else
-        "memory_receipts" if "content_input_receipts" in sql else "other" for sql in statements)
-    print("R28A_INDEX_STATEMENTS", json.dumps({"entries": entry_count, "calls": 4,
-        "statements": len(statements), "kinds": counts}))
-    assert len(statements) <= 100 + 3 * entry_count
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    result = await db.get(RuntimeResultObject, seed["result_id"])
+                    engine = db.bind.sync_engine
+                    event.listen(engine, "before_cursor_execute", count_statement)
+                    try:
+                        assert await validate_runtime_result_sources(db, principal, result) is True
+                    finally:
+                        event.remove(engine, "before_cursor_execute", count_statement)
+                counts = Counter("memory_invocations" if "session_tool_invocations" in sql else
+                    "memory_receipts" if "content_input_receipts" in sql else "other" for sql in statements)
+                measured[entry_count, call_count] = len(statements)
+                print("R28A_INDEX_STATEMENTS", json.dumps({"entries": entry_count, "calls": call_count,
+                    "statements": len(statements), "kinds": counts}))
+                assert len(statements) <= 100 + 3 * entry_count
+    for call_count in (1, 4):
+        assert measured[30, call_count] - measured[1, call_count] <= 3 * 29, measured
+    # Invocation, terminal event, model, session and saved proof checks, plus
+    # their recipient checkpoints, have a fixed budget per additional call.
+    for entry_count in (1, 30):
+        assert measured[entry_count, 4] - measured[entry_count, 1] <= 24 * 3, measured
 
 
 @pytest.mark.parametrize("source_kind", ["explicit_memory", "session_tool_invocation"])
@@ -681,6 +818,16 @@ async def test_published_input_refuses_malformed_child_session(
                 SessionToolInvocation.run_id == task.id))).one()
             source = {"source_kind": source_kind, "source_id": str(invocation.id)}
         assert await _published_owned_delegation_input(db, source, bad_task) is False
+
+
+@pytest.mark.parametrize("missing", ["child_session_id", "source_id"])
+async def test_published_memory_input_refuses_missing_identity(missing):
+    from types import SimpleNamespace
+    from app.services.runtime_result_sources import _published_owned_delegation_input
+
+    task = SimpleNamespace(child_session_id=None if missing == "child_session_id" else str(uuid4()))
+    source = {"source_kind": "explicit_memory", "source_id": None if missing == "source_id" else str(uuid4())}
+    assert await _published_owned_delegation_input(None, source, task) is False
 
 
 class TeamMemoryDelegationRefused(AssertionError):
@@ -706,17 +853,22 @@ async def test_parent_reads_colleague_team_memory_search_hit(
         user = await db.get(User, seed["user_id"])
         await _validate_input_dependencies(db, seed["tenant_id"], [seed["team_source"]], user=user)
         result = await db.get(RuntimeResultObject, seed["result_id"])
+        refusal = None
         try:
             allowed = await validate_runtime_result_sources(db, principal, result)
         except ContentInputReceiptError as exc:
+            refusal = exc
             frames, tb = [], exc.__traceback__
             while tb is not None:
                 if tb.tb_frame.f_code.co_filename.endswith("team_memory_authority.py"):
                     frames.append(tb.tb_lineno)
                 tb = tb.tb_next
             print("R28A_TEAM_MEMORY_REFUSAL", json.dumps({"code": exc.code, "lines": frames}))
+            assert exc.code == "content_source_access_denied"
             assert 74 in frames
             allowed = False
+        else:
+            assert allowed is True
     calls = [_call("read_runtime_result", {"result_ref": seed["result_ref"]}, "r28a-team-result")]
     calls.extend(_call(reader, _reader_arguments(reader, seed["child_id"]), f"r28a-team-{reader}") for reader in READERS)
     run_id, client = await _parent_turn(owner_sessionmaker, seed, monkeypatch, [
@@ -725,6 +877,7 @@ async def test_parent_reads_colleague_team_memory_search_hit(
     results = await _tool_results(owner_sessionmaker, run_id)
     assert len(results) == 4
     if not allowed:
+        assert refusal is not None
         assert ANSWER not in json.dumps(client.requests)
         async with owner_sessionmaker() as db:
             models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id)))

@@ -234,10 +234,10 @@ async def _published_owned_delegation_input(
     kind, source_id = dependency["source_kind"], dependency["source_id"]
     from app.services.content_input_receipts import _input_row
     if kind == "explicit_memory":
-        from app.models.chat_session import ChatSession
         from app.services.content_input_receipts import _preflight_inputs
 
         try:
+            uuid.UUID(task.child_session_id)
             identity = uuid.UUID(source_id)
             binding = (_preflight_inputs(db) or {}).get(("memory_receipt_binding", identity))
             ref = binding.carrier_ref if binding is not None else await db.scalar(
@@ -247,12 +247,9 @@ async def _published_owned_delegation_input(
                     ContentInputReceipt.carrier_kind == "explicit_memory",
                 )
             )
-            if not ref or uuid.UUID(ref.split("\n", 1)[0]) != task.child_agent_id:
-                return False
-            child_session = await _input_row(db, ChatSession, uuid.UUID(task.child_session_id))
-        except ValueError:
+            return bool(ref) and uuid.UUID(ref.split("\n", 1)[0]) == task.child_agent_id
+        except (ValueError, TypeError):
             return False
-        return child_session is not None and child_session.session_kind == "delegation_run"
     if kind == "agent_directory_observation":
         from app.services.agent_directory_sources import _load
 

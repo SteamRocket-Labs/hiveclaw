@@ -151,7 +151,10 @@ async def renew_current_runtime_task_lease(*, lease_seconds: float) -> datetime 
             RuntimeTask.status == "running",
             RuntimeTask.claim_expires_at > now,
         )
-        await db.execute(select(RuntimeTask.id).where(*predicates).with_for_update())
+        # Renewal changes no referenced key. Source-span FK checks retain KEY
+        # SHARE during validation; NO KEY UPDATE still serializes renewers and
+        # task writers while remaining compatible with those references.
+        await db.execute(select(RuntimeTask.id).where(*predicates).with_for_update(key_share=True))
         # Re-evaluate expiry after a foreign row lock releases, not before waiting.
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=max(0.03, float(lease_seconds)))

@@ -911,9 +911,10 @@ async def prepare_model_request(
             return result.provider_request_id
         raise ModelRoundNeedsReconciliation("model_round_result_already_committed")
     assembly_plan = None
+    previous_result_id = None
     if int(continuation_index) == 0 and int(round_index) > 1:
-        previous_result = await db.scalar(
-            select(SessionModelResult)
+        previous_result_id = await db.scalar(
+            select(SessionModelResult.id)
             .join(
                 ChatTranscriptEvent,
                 ChatTranscriptEvent.id == SessionModelResult.round_committed_event_id,
@@ -929,17 +930,6 @@ async def prepare_model_request(
             .order_by(ChatTranscriptEvent.sequence.desc())
             .limit(1)
         )
-        if previous_result is not None:
-            from app.services.session_round_obligation import commit_next_round_plan
-
-            assembly_plan = await commit_next_round_plan(
-                db,
-                tenant_id=tenant_id,
-                session_id=session_id,
-                run_id=run_id,
-                source_result_id=previous_result.id,
-                next_round_id=round_id,
-            )
     if result is not None and result.state == "failed" and bool((result.seal_json or {}).get("retry_safe")):
         candidate_provider_request_id = f"hive:{run_id}:{request_lane}:attempt:{int(result.version) + 1}"
     elif result is not None:
@@ -974,6 +964,20 @@ async def prepare_model_request(
         messages=messages,
         wire_request=canonical_wire_request,
     )
+    # The transcript advisory still serializes round/control writers. Acquire
+    # the run row and plan's FK locks only after potentially slow source reads,
+    # so the independent lease renewer can update the running task meanwhile.
+    if previous_result_id is not None:
+        from app.services.session_round_obligation import commit_next_round_plan
+
+        assembly_plan = await commit_next_round_plan(
+            db,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            run_id=run_id,
+            source_result_id=previous_result_id,
+            next_round_id=round_id,
+        )
     snapshot = {
         "provider": provider,
         "model": model,

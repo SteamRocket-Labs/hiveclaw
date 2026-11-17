@@ -1045,7 +1045,14 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land39 (SP1, SP2b) versus land38: still 805 entries and 123 callsites, no new or
 # removed key, no new bypass scope, 1 changed hash: app/database.py (module; SP2b adds
 # jit=off to the asyncpg startup settings). SP1 changes no fingerprinted entry.
-RLS_BYPASS_SCOPES_SHA256 = "2a3209392933b2e1f82177b88fb0417908c8a8d46f51ddb91cc9325148f93dd7"
+# Land40 (X8, SP2c) versus land39: 807 entries (+2 new functions, no removed key) and
+# still 123 callsites, no new bypass scope. New: web_chat_runtime
+# find_stoppable_web_chat_handoff and session_control_input _cancel_target_is_active
+# (a completed parent with an outstanding colleague counts as stoppable). Changed:
+# web_chat_runtime (module), session_control_input (module,
+# settle_pending_controls_for_run, recover_stale_cancel_control_inputs_once).
+# SP2c changes no fingerprinted entry.
+RLS_BYPASS_SCOPES_SHA256 = "9db3ee8d9c8d545f8df83f5cdb0b2a4e50dfb85569c99be7dd97167302a7393c"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

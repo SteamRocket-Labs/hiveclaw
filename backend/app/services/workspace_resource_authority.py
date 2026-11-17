@@ -690,8 +690,6 @@ class WorkspaceAuthorityScope:
             return self.can_read(normalized)
         if not _is_workspace_path(normalized):
             return True
-        if self.operator_view and normalized in self.known_paths and normalized not in self.allowed_paths:
-            return False
         if action in self.collection_actions:
             return True
         return (normalized, action) in self.action_permissions or any(
@@ -987,7 +985,7 @@ async def authorize_workspace_path(
         if source_facts is None
         else source_facts[0]
     )
-    if manifest is not None and manifest.deleted_at is not None:
+    if action == "read" and path_exists and manifest is not None and manifest.deleted_at is not None:
         raise WorkspaceAuthorityError("workspace_resource_not_found", "The workspace resource was deleted.")
     root_session_id = await _canonical_root_session(
         db,
@@ -1251,8 +1249,6 @@ async def load_workspace_authority_scope(
     full_control_paths: set[str] = set()
     action_permissions: set[tuple[str, str]] = set()
     for manifest in manifests:
-        if manifest.deleted_at is not None:
-            continue
         try:
             decision = await authorize_resource_action(
                 db,
@@ -1269,16 +1265,17 @@ async def load_workspace_authority_scope(
             )
         except HTTPException:
             continue
-        if not operator_view:
+        if not operator_view and manifest.deleted_at is None:
             allowed.add(manifest.path)
             authority_sources.add(decision.authority_source)
         if decision.full_control:
-            full_control_paths.add(manifest.path)
+            if decision.authority_source in {"resource_owner", "root_session_owner"}:
+                full_control_paths.add(manifest.path)
             action_permissions.update((manifest.path, action) for action in _WORKSPACE_EFFECT_ACTIONS)
     grant_candidates = [
         manifest
         for manifest in manifests
-        if manifest.deleted_at is None and manifest.path not in full_control_paths and manifest.authority_state == OWNED_AUTHORITY_STATE
+        if manifest.path not in full_control_paths and manifest.authority_state == OWNED_AUTHORITY_STATE
     ]
     if grant_candidates:
         grants = await load_explicit_resource_grant_ids_by_action(

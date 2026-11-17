@@ -590,6 +590,10 @@ async def _validate_or_withhold_model_sources(
     # unbound data has no such proof, even when sent with the system role.
     unbound = [
         entry["message_index"] for entry in input_bindings["messages"] if entry.get("dependency_status") != "resolved"
+        and not (
+            isinstance(origin := getattr(messages[entry["message_index"]], "context_origin", None), ContextMessageOrigin)
+            and origin.kind == "selected_workspace_file" and origin.unbound == ("workspace_receipt_missing",)
+        )
     ]
     if unbound:
         permission_unbound = {
@@ -602,8 +606,9 @@ async def _validate_or_withhold_model_sources(
         for entry in input_bindings["messages"]:
             if entry["message_index"] in permission_unbound:
                 entry["code"] = "session_permission_frame_unbound"
-        input_bindings["status"] = "resolved"
-        input_bindings["dependency_coverage"]["complete"] = True
+        complete = all(entry.get("dependency_status") == "resolved" for entry in input_bindings["messages"])
+        input_bindings["status"] = "resolved" if complete else "incomplete"
+        input_bindings["dependency_coverage"]["complete"] = complete
     group_principal = await validate_shared_group_model_inputs(
         db,
         tenant_id=tenant_id,

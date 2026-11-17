@@ -846,11 +846,6 @@ async def _walk_input_dependencies(db, tenant_id, dependencies, *, scope, recipi
                 recipient,
                 source_key,
             )
-            point = scope.workspace_read
-            if point is not None and point.paths is not None:
-                # Attribute shared descendants even when the round's existing
-                # successful-source decision skips a repeated subtree.
-                point.paths.setdefault(reader_key, set()).add(point.current_path)
             if reader_key in scope.visiting:
                 # Re-enter a gray source once so its own active-chain check can classify
                 # the cycle; a second re-entry means no kind check fires on this cycle.
@@ -2748,7 +2743,7 @@ async def workspace_read_checkpoint(db, tenant_id):
         yield
         return
     point = SimpleNamespace(db=db, tenant_id=tenant_id, groups={}, observed=[], phase=object(),
-        verified=set(scope.verified), paths=None, current_path=None, omitted=None, node_boundary=None)
+        verified=set(scope.verified), node_boundary=None)
     scope.workspace_read = point
     try:
         yield
@@ -2778,7 +2773,7 @@ def defer_memory_after(db, tenant_id, dependency, recheck):
     group = SimpleNamespace(recipient=current_source_recipient(), project=_SOURCE_READER.get(),
         phase=scope.checkpoint[1])
     point.observed.append(SimpleNamespace(kind="explicit_memory", group=group, passed=True,
-        dependency=dependency, recheck=recheck, ancestors=tuple(scope.visiting) if point.paths is not None else ()))
+        dependency=dependency, recheck=recheck))
     return True
 
 
@@ -2903,9 +2898,6 @@ async def _recheck_workspace_checkpoint(point):
     for observation in point.observed:
         if not observation.passed:
             continue
-        affected = set().union(*(point.paths.get(key, ()) for key in observation.ancestors)) if point.paths is not None else set()
-        if affected and affected <= point.omitted:
-            continue
         group = observation.group
         recipient = _RECIPIENT_READ.set(group.recipient)
         project = _SOURCE_READER.set(group.project)
@@ -2928,11 +2920,7 @@ async def _recheck_workspace_checkpoint(point):
                 except ContentInputReceiptError as exc:
                     if exc.dependency is None:
                         exc.dependency = observation.dependency
-                    if point.omitted is None or not affected:
-                        raise
-                    point.omitted.update(affected)
-                    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-                    scope.verified = {key: value for key, value in scope.verified.items() if key in point.verified}
+                    raise
         finally:
             _SOURCE_READER.reset(project)
             _RECIPIENT_READ.reset(recipient)
@@ -2947,7 +2935,6 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
 async def _validate_workspace_node(db, tenant_id, dependency, *, user, runtime_request, active_receipts):
     from fastapi import HTTPException
     from app.models.workspace_resource import WorkspaceResourceManifest
-    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
     try:
         receipt_id = uuid.UUID(dependency["source_id"])
@@ -3006,7 +2993,7 @@ async def _validate_workspace_node(db, tenant_id, dependency, *, user, runtime_r
     if group is not None:
         point = _DISCLOSURE_SOURCE_VALIDATIONS.get().workspace_read
         observation = SimpleNamespace(kind="workspace_artifact", group=group, arguments=arguments, passed=False,
-            dependency=dependency, ancestors=tuple(_DISCLOSURE_SOURCE_VALIDATIONS.get().visiting) if point.paths is not None else ())
+            dependency=dependency)
         point.observed.append(observation)
     user = await _validate_workspace_live(db, tenant_id, **arguments)
     # A later write is not a source of the previously observed version.
@@ -3027,7 +3014,6 @@ async def _validate_workspace_live(db, tenant_id, dependency, *, user, runtime_r
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
     from fastapi import HTTPException
 
-    receipt_id = receipt.id
     if manifest is None or manifest.authority_state != "owned" or manifest.deleted_at is not None:
         raise ContentInputReceiptError(
             "content_source_access_denied", "The workspace source is unavailable or quarantined.", 403
@@ -3120,6 +3106,34 @@ async def _walk_workspace_receipt_inputs(db, receipt, *, user, runtime_request, 
     )
 
 
+async def _validate_workspace_tool_input(db, request, receipt, *, session=None):
+    """Only a member's own private copy can skip upstream source checks."""
+    from app.core.source_read_purpose import source_recipient_read
+    from app.models.chat_session import ChatSession
+
+    context, scope = request.context, request.context.workspace_authority_scope
+    session = session or (await db.get(ChatSession, uuid.UUID(str(context.session_id))) if context.session_id else None)
+    if (context.user_id is not None and not scope.operator_view
+        and receipt.carrier_ref.partition("\n")[2] in scope.full_control_paths
+        and session is not None and session.user_id == context.user_id and session.audience_kind != "group"):
+        return
+    tenant_id = uuid.UUID(str(context.tenant_id))
+    with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as frame:
+        from app.services.source_read_queries import transcript_event_columns
+
+        transcript_event_columns(frame)
+        await _preload_execution_sources(db, tenant_id, [{"source_kind": "workspace_artifact", "source_id": str(receipt.id)}])
+        principal, user = await _runtime_input_actor(db, tenant_id, request)
+        session = await runtime_actor_session(db, tenant_id, principal)
+        if session.user_id is None or session.audience_kind == "group":
+            await _validate_workspace_receipt_inputs(
+                db, receipt, runtime_request=request, active_receipts=frozenset({receipt.id})
+            )
+        else:
+            with source_recipient_read(session_id=session.id, user_id=user.id):
+                await validate_browser_input_dependencies(db, tenant_id, user, receipt.dependencies_json)
+
+
 async def authorize_workspace_execution_inputs(request):
     """Capture existing version facts for the already authorized workspace."""
     from dataclasses import replace
@@ -3127,6 +3141,7 @@ async def authorize_workspace_execution_inputs(request):
     from app.core.resource_authority import normalize_workspace_resource_path
     from app.services.session_tool_runtime import _sha256
     from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
+    from app.models.chat_session import ChatSession
     from sqlalchemy.exc import SQLAlchemyError
 
     context, scope = request.context, request.context.workspace_authority_scope
@@ -3154,14 +3169,14 @@ async def authorize_workspace_execution_inputs(request):
                 .execution_options(populate_existing=True)
             )} if paths else {}
             reads, omitted = [], set()
+            session = await db.get(ChatSession, uuid.UUID(str(context.session_id))) if context.session_id else None
             for path in sorted(paths):
                 receipt = receipts.get(workspace_artifact_ref(context.agent_id, path))
                 if receipt is None and path not in scope.full_control_paths:
                     continue
-                if context.user_id is None and receipt is not None:
+                if receipt is not None:
                     try:
-                        await _validate_workspace_receipt_inputs(db, receipt, runtime_request=request,
-                            active_receipts=frozenset({receipt.id}))
+                        await _validate_workspace_tool_input(db, request, receipt, session=session)
                     except ContentInputReceiptError:
                         omitted.add(path)
                         continue
@@ -3224,9 +3239,8 @@ async def authorize_workspace_receipt_read(request):
                     receipt = await latest_workspace_receipt(db, uuid.UUID(str(context.tenant_id)), context.agent_id, path)
                     if receipt is None and path not in scope.full_control_paths:
                         return None
-                    if context.user_id is None and receipt is not None:
-                        await _validate_workspace_receipt_inputs(db, receipt, runtime_request=request,
-                            active_receipts=frozenset({receipt.id}))
+                    if receipt is not None:
+                        await _validate_workspace_tool_input(db, request, receipt)
                     if office_read:
                         return None  # Keep the Office adapter's existing result/source contract.
                     observed = WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,

@@ -78,7 +78,7 @@ async def test_saved_file_is_checked_at_the_real_model_input_boundary(
         def unavailable(*_args):
             raise WorkspaceAuthorityError("workspace_storage_unavailable", "Snapshot storage is unavailable.")
 
-        n.monkeypatch.setattr("app.services.workspace_resource_authority.open_workspace_file", unavailable)
+        n.monkeypatch.setattr("app.services.artifact_continuation.open_workspace_file", unavailable)
     reference = {"type": "workspace_file_ref", "agent_id": str(n.agent), "path": path,
                  "human_saved_hash": saved_hash}
     if case in {"pdf_no_hash", "no_hash_changed"}:
@@ -95,19 +95,10 @@ async def test_saved_file_is_checked_at_the_real_model_input_boundary(
         reference["agent_id"] = str(uuid.uuid4())
     elif case == "escape":
         reference["path"] = "../workspace/d3-report.md"
-    elif case in {"deleted", "unreceipted_change"}:
-        import app.services.artifact_continuation as continuation
-
-        validate = continuation._validate_workspace_dependency
-
-        async def change_after_validation(*args, **kwargs):
-            await validate(*args, **kwargs)
-            if case == "deleted":
-                (n.root / path).unlink()
-            else:
-                (n.root / path).write_text("UNRECEIPTED_BYTES_MUST_NOT_REACH_MODEL")
-
-        n.monkeypatch.setattr(continuation, "_validate_workspace_dependency", change_after_validation)
+    elif case == "deleted":
+        (n.root / path).unlink()
+    elif case == "unreceipted_change":
+        (n.root / path).write_text("UNRECEIPTED_BYTES_MUST_NOT_REACH_MODEL")
     elif case == "symlink":
         (n.root / path).unlink()
         (n.root / path).symlink_to(n.target)
@@ -180,11 +171,11 @@ async def test_saved_file_is_checked_at_the_real_model_input_boundary(
     assert len(wire_text) < 70000
     changed_notice = "文件已不是你保存时的版本，本次未使用它。请重新打开确认后再继续，其他问题可以继续处理。"
     unreadable_notice = "这个文件目前无法读取，本次未使用它。你可以继续处理其他问题，或选择有权打开的文件。"
-    notice = changed_notice if case in {"changed", "forged_hash"} else unreadable_notice
+    notice = changed_notice if case in {"changed", "forged_hash", "unreceipted_change"} else unreadable_notice
     has_notice = not inline and not checked_by_tools and case not in {"pdf_no_hash", "no_hash_changed"}
     if has_notice:
         assert notice in wire_text
-        assert (changed_notice in wire_text) is (case in {"changed", "forged_hash"})
+        assert (changed_notice in wire_text) is (case in {"changed", "forged_hash", "unreceipted_change"})
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
         request_id = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent,
@@ -202,9 +193,9 @@ async def test_saved_file_is_checked_at_the_real_model_input_boundary(
             ChatTranscriptEvent.session_id == n.session, ChatTranscriptEvent.item_kind == "assistant_commentary")))
         if has_notice:
             assert notice in captured
-            assert (changed_notice in captured) is (case in {"changed", "forged_hash"})
+            assert (changed_notice in captured) is (case in {"changed", "forged_hash", "unreceipted_change"})
             assert any(notice in event.content for event in notices)
-            assert any(changed_notice in event.content for event in notices) is (case in {"changed", "forged_hash"})
+            assert any(changed_notice in event.content for event in notices) is (case in {"changed", "forged_hash", "unreceipted_change"})
         else:
             assert notices == []
         if inline or checked_by_tools:

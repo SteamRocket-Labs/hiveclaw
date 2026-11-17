@@ -9,7 +9,7 @@ import os
 import shutil
 import stat
 import uuid
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from datetime import datetime, timezone, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -1252,6 +1252,7 @@ async def create_chat_artifacts_for_message(
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
     from app.database import _RLS_TENANT_INFO_KEY, tenant_scoped_session
+    from app.core.source_read_purpose import source_recipient_read
 
     @asynccontextmanager
     async def source_validation_scope():
@@ -1269,7 +1270,7 @@ async def create_chat_artifacts_for_message(
     seen: set[tuple[str, str]] = set()
     session_uuid = uuid.UUID(str(session_id))
     runtime_uuid = uuid.UUID(str(runtime_task_id)) if runtime_task_id else None
-    authority_user = runtime_principal = authority_error = machine_scope = None
+    authority_user = runtime_principal = authority_error = machine_scope = authority_session = None
     from app.services.machine_runtime_authority import is_machine_runtime_actor
 
     if isinstance(db, AsyncSession):
@@ -1361,6 +1362,12 @@ async def create_chat_artifacts_for_message(
         "owned" if owner_user_id is not None or is_machine_runtime_actor(authority_user) else "quarantined"
     )
 
+    def publication_reader():
+        return source_recipient_read(session_id=session_uuid, user_id=owner_user_id) if (
+            authority_session is not None and authority_session.user_id is not None
+            and authority_session.audience_kind != "group" and source != "workspace_read"
+        ) else nullcontext()
+
     def record_source_error(path, exc):
         log_source_refusal(exc, operation="artifact_delivery")
         if publication_errors is not None:
@@ -1449,7 +1456,7 @@ async def create_chat_artifacts_for_message(
             if handled:
                 if native_artifact is not None:
                     try:
-                        with group_source_read(batch_inputs=True):
+                        with publication_reader(), group_source_read(batch_inputs=True):
                             async with source_validation_scope() as source_db:
                                 await validate_artifact_content_receipt(
                                     source_db,
@@ -1548,7 +1555,7 @@ async def create_chat_artifacts_for_message(
                 else None
             )
             try:
-                with group_source_read(batch_inputs=True):
+                with publication_reader(), group_source_read(batch_inputs=True):
                     async with source_validation_scope() as source_db:
                         source_receipt = receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None
                         if runtime_principal is not None:

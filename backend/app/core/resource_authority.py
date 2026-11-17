@@ -324,7 +324,14 @@ async def authorize_resource_action(
                     status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}
                 ) from exc
         try:
-            if action == "deliver" or runtime_principal is not None:
+            session = await db.get(ChatSession, artifact.session_id)
+            private_owner = (
+                session is not None and session.user_id == user.id and session.audience_kind != "group"
+                and (artifact.owner_user_id == user.id or await _root_session_owned_by_user(
+                    db, root_session_id=artifact.root_session_id or artifact.session_id,
+                    agent_id=agent_id, user_id=user.id))
+            )
+            if action == "deliver" or runtime_principal is not None or not private_owner:
                 async with tenant_scoped_session(agent.tenant_id) as source_db:
                     await validate_artifact_content_receipt(
                         source_db, agent.tenant_id, user, artifact, runtime_principal=runtime_principal
@@ -335,7 +342,7 @@ async def authorize_resource_action(
                 agent_id=agent_id,
                 path=artifact.path,
                 action="read",
-                path_exists=True,
+                path_exists=False,
                 allow_manager_override=allow_manager_override,
                 manager_override_reason=manager_override_reason,
                 agent_access=(agent, access_level),

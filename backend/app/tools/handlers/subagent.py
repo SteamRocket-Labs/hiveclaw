@@ -1233,7 +1233,11 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
                 message=message,
                 parent_session_id=request.context.session_id,
                 interrupt_requested=interrupt,
-                extra_metadata={"budget_run_id": inherited_budget_run_id} if inherited_budget_run_id else None,
+                extra_metadata={
+                    **({"budget_run_id": inherited_budget_run_id} if inherited_budget_run_id else {}),
+                    **({"root_runtime_task_id": request.context.runtime_task_id}
+                        if a2a_peer_agent_id and request.context.runtime_task_id else {}),
+                },
                 a2a_peer_agent_id=a2a_peer_agent_id,
             )
             await _settle_agent_session_message_budget(

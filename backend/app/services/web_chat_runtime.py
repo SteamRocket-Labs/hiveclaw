@@ -1916,7 +1916,8 @@ async def _settle_committed_round_token_usage(
 async def _stopped_by_self_or_delegation_ancestor(db: AsyncSession, task: RuntimeTask) -> bool:
     columns = (
         RuntimeTask.id,
-        case((RuntimeTask.task_type == "delegation", RuntimeTask.root_runtime_task_id)).label("parent_id"),
+        case((RuntimeTask.task_type.in_(("delegation", A2A_CONTINUATION_TASK_TYPE)),
+            RuntimeTask.root_runtime_task_id)).label("parent_id"),
         RuntimeTask.metadata_json["cancel_state"].astext.label("cancel_state"),
     )
     ancestors = (
@@ -3810,9 +3811,15 @@ async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
 
     tasks = {}
 
-    async def cancel_child(child_id, parent_id):
+    async def cancel_child(child_id, parent_id, task_type, session_id):
         try:
             result = await cancel_async_delegation(child_id.hex, parent_agent_id=parent_id, force=True)
+            if task_type == A2A_CONTINUATION_TASK_TYPE:
+                from app.services.runtime_control_bus import publish_web_chat_cancel
+
+                apply_remote_web_chat_cancel(child_id)
+                await publish_web_chat_cancel(run_id=child_id.hex, agent_id=str(parent_id),
+                    session_id=str(session_id), user_id=str(user_id))
             if result["status"] not in _TERMINAL_STATUSES:
                 logger.warning("[WebChatRun] child {} cancel did not terminate: status={}", child_id, result["status"])
         except Exception as exc:  # noqa: BLE001 - child failure must not change the parent receipt.
@@ -3827,7 +3834,7 @@ async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
                     .where(
                         RuntimeTask.root_runtime_task_id == run_uuid,
                         RuntimeTask.tenant_id == tenant_id,
-                        RuntimeTask.task_type == "delegation",
+                        RuntimeTask.task_type.in_(("delegation", A2A_CONTINUATION_TASK_TYPE)),
                     )
                     .cte("cancel_delegation_children", recursive=True)
                 )
@@ -3837,20 +3844,22 @@ async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
                         children,
                         RuntimeTask.root_runtime_task_id == children.c.id,
                     )
-                    .where(RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == "delegation")
+                    .where(RuntimeTask.tenant_id == tenant_id,
+                        RuntimeTask.task_type.in_(("delegation", A2A_CONTINUATION_TASK_TYPE)))
                 )
                 delegated = list(
                     (
                         await db.execute(
-                            select(RuntimeTask.id, RuntimeTask.parent_agent_id).where(
+                            select(RuntimeTask.id, RuntimeTask.parent_agent_id,
+                                RuntimeTask.task_type, RuntimeTask.parent_session_id).where(
                                 RuntimeTask.id.in_(select(children.c.id)),
                                 RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
                             )
                         )
                     ).all()
                 )
-            for child_id, parent_id in delegated:
-                tasks[asyncio.create_task(cancel_child(child_id, parent_id))] = child_id
+            for child_id, parent_id, task_type, session_id in delegated:
+                tasks[asyncio.create_task(cancel_child(child_id, parent_id, task_type, session_id))] = child_id
             if tasks:
                 await asyncio.wait(tasks)
         except Exception as exc:  # noqa: BLE001 - child lookup is best-effort too.

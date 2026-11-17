@@ -1599,6 +1599,7 @@ class RuntimeNotificationOutboxService:
         subagent_summaries: dict[uuid.UUID, str] = {}
 
         root_status = None
+        root_cancel_state = None
         already_read = False
         async with tenant_scoped_session(
             page.tenant_id,
@@ -1611,11 +1612,14 @@ class RuntimeNotificationOutboxService:
                     agent_id=page.parent_agent_id, session_id=page.parent_session_id, user_id=page.parent_user_id,
                     items=list(page.manifest.get("items") or []))
             if page.root_runtime_task_id is not None and page.delivery_mode == "parent_continuation":
-                root_status = await sequence_db.scalar(select(RuntimeTask.status).where(
+                root = (await sequence_db.execute(select(RuntimeTask.status,
+                    RuntimeTask.metadata_json["cancel_state"].astext).where(
                     RuntimeTask.id == page.root_runtime_task_id, RuntimeTask.tenant_id == page.tenant_id,
                     RuntimeTask.parent_agent_id == page.parent_agent_id,
                     RuntimeTask.parent_session_id == str(page.parent_session_id),
-                    RuntimeTask.root_user_id == page.parent_user_id))
+                    RuntimeTask.root_user_id == page.parent_user_id))).one_or_none()
+                if root is not None:
+                    root_status, root_cancel_state = root
             prior_pending_page = (
                 await sequence_db.execute(
                     select(RuntimeResultIntegrationPage.id)
@@ -1700,6 +1704,8 @@ class RuntimeNotificationOutboxService:
         budget_run_id: uuid.UUID | None = None
         continuation_denial = {"killed": "runtime_root_cancelled",
             "needs_reconciliation": "runtime_root_needs_reconciliation"}.get(root_status)
+        if root_cancel_state in {"cancelling", "cancelled"}:
+            continuation_denial = "runtime_root_cancelled"
         if page.delivery_mode == "parent_continuation" and not already_read and budget_run_ids and continuation_denial is None:
             try:
                 budget_run_id = _uuid(next(iter(budget_run_ids)), field="budget_run_id")

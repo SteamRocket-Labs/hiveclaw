@@ -1042,7 +1042,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # (module), session_round_obligation (module, current_run_fences locks and reads only
 # the fence columns) and session_tool_runtime (module, prepare_tool_invocation loads
 # only the columns it uses). X7h and R28a change no fingerprinted entry.
-RLS_BYPASS_SCOPES_SHA256 = "9766c57e14fcdd6a272a3da62013e89167cd1aa34932458e4e558ac613078c87"
+# Land39 (SP1, SP2b) versus land38: still 805 entries and 123 callsites, no new or
+# removed key, no new bypass scope, 1 changed hash: app/database.py (module; SP2b adds
+# jit=off to the asyncpg startup settings). SP1 changes no fingerprinted entry.
+RLS_BYPASS_SCOPES_SHA256 = "2a3209392933b2e1f82177b88fb0417908c8a8d46f51ddb91cc9325148f93dd7"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -279,6 +279,7 @@ async def test_colleague_workspace_source_reads_use_the_existing_member_path(
 
 HIT_MEMORY = "QUASARFACTTAG: clarify the goal; check the evidence; report the result."
 UNRETURNED_MEMORY = "ZIRCONFACTTAG: prepare a separate payroll checklist."
+TEAM_MEMORY = "QUASARFACTTAG: the team release cadence is weekly."
 
 
 async def _memory_group(n, owner, monkeypatch):
@@ -307,13 +308,42 @@ async def _memory_group(n, owner, monkeypatch):
     return SimpleNamespace(n=n, session=session.id, members=members, runs={}, rounds={})
 
 
-async def _memory_hit_result(owner, app_factory, monkeypatch, tmp_path, tool, *, group=False, extra=False):
+async def _team_memory(n, owner, app_factory, monkeypatch):
+    from app.api.memory import TeamMemoryUpsert, upsert_team_memory
+    from app.database import tenant_scoped_session
+    from app.models.agent_team import AgentTeam
+    from app.models.organization_identity import ContentInputReceipt
+    from app.models.user import User
+    from app.services.team_memory_runtime import source_dependency
+    from tests.api.test_memory_api import _review_team_memory_semantics
+
+    _review_team_memory_semantics.__wrapped__(monkeypatch)
+    team_id = uuid4()
+    workspace = f"agent_team:{team_id}"
+    async with owner() as db:
+        db.add(AgentTeam(id=team_id, tenant_id=n.tenant, lead_agent_id=n.agent,
+            parent_session_id=n.session, name="Colleague release team", created_by_user_id=n.user))
+        await db.commit()
+    async with tenant_scoped_session(n.tenant, session_factory=app_factory) as db:
+        user = await db.get(User, n.user)
+        saved = await upsert_team_memory(TeamMemoryUpsert(workspace_key=workspace, key="release",
+            title="Team release", content=TEAM_MEMORY), current_user=user, db=db)
+        assert saved["content"] == TEAM_MEMORY
+        await db.commit()
+        receipt = await db.scalar(select(ContentInputReceipt).where(ContentInputReceipt.tenant_id == n.tenant,
+            ContentInputReceipt.carrier_kind == "team_memory", ContentInputReceipt.carrier_ref == f"{workspace}\nrelease"))
+        assert receipt is not None
+        return source_dependency(receipt)
+
+
+async def _memory_hit_result(owner, app_factory, monkeypatch, tmp_path, tool, *, group=False, extra=False,
+    entry_count=1, call_count=1, team=False):
     from types import SimpleNamespace
     import app.runtime.invoker as invoker
     from app.agents import orchestrator
     from app.memory.write_gate import MemoryWriteDecision
     from app.models.organization_identity import ContentInputReceipt
-    from app.services import agent_tools, session_model_round
+    from app.services import agent_tools
     from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
     from app.services.explicit_memory_authority import source_dependency
     from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
@@ -352,20 +382,19 @@ async def _memory_hit_result(owner, app_factory, monkeypatch, tmp_path, tool, *,
         receipt = await db.get(ContentInputReceipt, uuid5(written.id, "explicit-memory-source"))
         seed["memory_source"] = source_dependency(receipt)
         seed["memory_entry_id"] = receipt.authority_json["entry_id"]
-    if extra:
+    seed["memory_sources"] = [seed["memory_source"]]
+    for index in range(max(entry_count, 2 if extra else 1) - 1):
+        content = UNRETURNED_MEMORY if index == 0 else f"Resident memory {index}: retain the release checklist."
         saved_extra, extra_call = await memory_call(n, app_factory, "save_memory",
-            {"content": UNRETURNED_MEMORY, "category": "project"}, command="Remember a separate payroll fact")
-        assert UNRETURNED_MEMORY in saved_extra, saved_extra
+            {"content": content, "category": "project"}, command=f"Remember this separate fact: {content}")
+        assert content in saved_extra, saved_extra
         async with owner() as db:
             extra_receipt = await db.get(ContentInputReceipt, uuid5(extra_call.id, "explicit-memory-source"))
-            extra_id = extra_receipt.authority_json["entry_id"]
-        retired_extra, _retirement = await memory_call(n, app_factory, "retire_memory",
-            {"memory_id": extra_id, "reason": "obsolete"}, command="Retire the separate payroll fact from future recall")
-        assert json.loads(retired_extra)["status"] == "completed", retired_extra
-        from app.services.explicit_memory_authority import latest_memory_receipt
-
-        async with owner() as db:
-            seed["extra_memory_source"] = source_dependency(await latest_memory_receipt(db, n.tenant, n.agent, extra_id))
+            seed["memory_sources"].append(source_dependency(extra_receipt))
+    if extra:
+        seed["extra_memory_source"] = seed["memory_sources"][1]
+    if team:
+        seed["team_source"] = await _team_memory(n, owner, app_factory, monkeypatch)
 
     parent_id, _ = await _parent_turn(owner, seed, monkeypatch, [
         {"tool_calls": [_call("delegate_to_agent", {"agent_name": "R22a colleague",
@@ -380,55 +409,57 @@ async def _memory_hit_result(owner, app_factory, monkeypatch, tmp_path, tool, *,
         task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
         seed["child_id"], seed["child_session_id"] = task.id, UUID(task.child_session_id)
         await db.commit()
-    if extra:
-        from app.kernel.engine import _context_message
-
-        prepare = session_model_round.prepare_model_request
-
-        async def add_separate_memory(db, **kwargs):
-            if kwargs["run_id"] == seed["child_id"] and kwargs["round_index"] == 1:
-                kwargs["messages"].append(_context_message(role="system", kind="dynamic_prompt",
-                    content=UNRETURNED_MEMORY, sources=[seed["extra_memory_source"]], unbound=()))
-                kwargs["wire_request"]["messages"].append({"role": "system", "content": UNRETURNED_MEMORY})
-            return await prepare(db, **kwargs)
-
-        monkeypatch.setattr(session_model_round, "prepare_model_request", add_separate_memory)
-    arguments = ({"query": "QUASARFACTTAG", "scope": "facts"} if tool == "search_memory"
-        else {"ids": [seed["memory_entry_id"]]})
-    child_client = ScriptedLLMClient([
-        {"tool_calls": [_call(tool, arguments, "r28a-hit-tool")], "finish_reason": "tool_calls"},
-        {"content": ANSWER},
-    ])
+    arguments = ({"query": "QUASARFACTTAG", "scope": "facts", **({"limit": 1} if extra else {})}
+        if tool == "search_memory" else {"ids": [seed["memory_entry_id"]]})
+    responses = ([{"tool_calls": [_call(tool, arguments, f"r28a-hit-tool-{index}")
+        for index in range(call_count)], "finish_reason": "tool_calls"}] if tool else [])
+    child_client = ScriptedLLMClient([*responses, {"content": ANSWER}])
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: child_client)
+    from app.services.memory_service import build_memory_context
+
+    original_memory_context = invoker.build_memory_context
+    monkeypatch.setattr(invoker, "build_memory_context", build_memory_context)
     token = set_runtime_task_fence(task_id=seed["child_id"], worker_id="r28a-hit-worker", claim_version=1)
     try:
         assert await orchestrator.dispatch_persisted_async_delegation(seed["child_id"].hex, wait_for_completion=True)
     finally:
         reset_runtime_task_fence(token)
+        monkeypatch.setattr(invoker, "build_memory_context", original_memory_context)
     calls = await _tool_results(owner, seed["child_id"])
-    assert HIT_MEMORY in calls["r28a-hit-tool"]["content"]
-    assert UNRETURNED_MEMORY not in calls["r28a-hit-tool"]["content"]
-    assert len(child_client.requests) == 2 and HIT_MEMORY in json.dumps(child_client.requests[1])
+    assert len(calls) == (call_count if tool else 0)
+    for index in range(call_count if tool else 0):
+        assert HIT_MEMORY in calls[f"r28a-hit-tool-{index}"]["content"]
+        assert UNRETURNED_MEMORY not in calls[f"r28a-hit-tool-{index}"]["content"]
+        if team:
+            assert TEAM_MEMORY in calls[f"r28a-hit-tool-{index}"]["content"]
+    assert len(child_client.requests) == (2 if tool else 1)
+    if tool:
+        assert HIT_MEMORY in json.dumps(child_client.requests[1])
     async with owner() as db:
         task = await db.get(RuntimeTask, seed["child_id"])
         session = await db.get(ChatSession, seed["child_session_id"])
         assert task.status == "completed" and task.result_summary == ANSWER
         assert session.session_kind == "delegation_run" and session.user_id == seed["user_id"]
-        invocation = (await db.scalars(select(SessionToolInvocation).where(
-            SessionToolInvocation.run_id == task.id))).one()
-        assert invocation.tool_name == tool and invocation.effect_state == "effect_committed"
-        proof = await db.get(InvocationSpan, uuid5(invocation.id, "explicit-memory-tool-result"))
-        assert proof.metadata_json["memory_result"]["sources"] == [seed["memory_source"]]
-        model = (await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == task.id)
-            .order_by(SessionModelResult.round_id.desc()))).first()
-        dependencies = model.model_request_snapshot_json["input_bindings"]["dependencies"]
-        assert seed["memory_source"] in dependencies
+        invocations = list(await db.scalars(select(SessionToolInvocation).where(
+            SessionToolInvocation.run_id == task.id)))
+        assert len(invocations) == (call_count if tool else 0)
+        for invocation in invocations:
+            assert invocation.tool_name == tool and invocation.effect_state == "effect_committed"
+            proof = await db.get(InvocationSpan, uuid5(invocation.id, "explicit-memory-tool-result"))
+            expected = [seed["memory_source"], *([seed["team_source"]] if team else [])]
+            assert proof.metadata_json["memory_result"]["sources"] == expected
+            if extra and tool == "search_memory":
+                assert invocation.effective_arguments_json["limit"] == 1
+        models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == task.id)
+            .order_by(SessionModelResult.round_id)))
+        for model in models:
+            dependencies = model.model_request_snapshot_json["input_bindings"]["dependencies"]
+            assert all(source in dependencies for source in seed["memory_sources"])
+        # The real resident index is already present before any memory tool runs.
+        assert HIT_MEMORY in json.dumps(child_client.requests[0])
         if extra:
-            assert seed["extra_memory_source"] in dependencies
-            first = (await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == task.id)
-                .order_by(SessionModelResult.round_id))).first()
             assert UNRETURNED_MEMORY in json.dumps(child_client.requests[0])
-            assert UNRETURNED_MEMORY in json.dumps(first.model_request_snapshot_json["wire_request"])
+            assert UNRETURNED_MEMORY in json.dumps(models[0].model_request_snapshot_json["wire_request"])
 
     processor = DirectInvocationTerminalBoundaryProcessor(session_factory=app_factory, data_root=seed["data_root"])
     drained = await RuntimeTerminalBoundaryOutboxService(session_factory=app_factory).drain_once(
@@ -447,9 +478,13 @@ async def _memory_hit_result(owner, app_factory, monkeypatch, tmp_path, tool, *,
 async def test_parent_continuation_reads_nonempty_colleague_memory(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool, reader,
 ):
+    seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool)
+    await _read_memory_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, seed, reader)
+
+
+async def _read_memory_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, seed, reader):
     import app.runtime.invoker as invoker
 
-    seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool)
     return_id = await _deliver_continuation(owner_sessionmaker, app_user_sessionmaker, seed)
     client = ScriptedLLMClient([
         {"tool_calls": [_call("read_runtime_result", {"result_ref": seed["result_ref"]}, "r28a-hit-result")],
@@ -476,8 +511,8 @@ async def test_parent_continuation_reads_nonempty_colleague_memory(
 
 
 @pytest.mark.parametrize("tool", ["search_memory", "load_memory"])
-@pytest.mark.parametrize("change", ["private_owner", "group_membership", "revoked", "receipt_hash",
-    "unreturned", "other_agent"])
+@pytest.mark.parametrize("change", ["private_owner", "private_owner_mixed", "group_membership", "revoked", "receipt_hash",
+    "receipt_authority", "other_agent"])
 async def test_published_memory_keeps_member_rules_and_invocation_binding(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool, change,
 ):
@@ -490,9 +525,19 @@ async def test_published_memory_keeps_member_rules_and_invocation_binding(
     from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
 
     seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool,
-        group=change == "group_membership", extra=change == "unreturned")
+        group=change == "group_membership", extra=change == "private_owner_mixed")
     source = seed.get("extra_memory_source", seed["memory_source"])
     if change == "group_membership":
+        from app.models.user import User
+
+        principal = AgentRuntimePrincipal(agent_id=seed["agent_id"], requester_user_id=seed["user_id"],
+            session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]), purpose="interactive_session")
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            user = await db.get(User, seed["user_id"])
+            await validate_browser_memory_dependency(db, seed["tenant_id"], source, user=user)
+            result = await db.get(RuntimeResultObject, seed["result_id"])
+            assert await validate_runtime_result_sources(db, principal, result) is True
         seed["memory_group"].members.clear()
     elif change == "revoked":
         retired, _call_row = await memory_call(seed["memory_context"], app_user_sessionmaker, "retire_memory",
@@ -501,8 +546,10 @@ async def test_published_memory_keeps_member_rules_and_invocation_binding(
     else:
         async with owner_sessionmaker() as db:
             receipt = await db.get(ContentInputReceipt, UUID(source["source_id"]))
-            if change == "private_owner":
+            if change in {"private_owner", "private_owner_mixed"}:
                 receipt.authority_json = {**receipt.authority_json, "owner_user_id": str(seed["other_user_id"])}
+            elif change == "receipt_authority":
+                receipt.authority_json = {**receipt.authority_json, "source_session_id": str(uuid4())}
             elif change == "receipt_hash":
                 receipt.content_sha256 = "0" * 64
             elif change == "other_agent":
@@ -526,7 +573,7 @@ async def test_published_memory_keeps_member_rules_and_invocation_binding(
         await pin_rls_tenant_context(db, seed["tenant_id"])
         user = await db.get(User, seed["user_id"])
         task = await db.get(RuntimeTask, seed["child_id"])
-        if change in {"unreturned", "other_agent"}:
+        if change == "other_agent":
             await validate_browser_memory_dependency(db, seed["tenant_id"], source, user=user)
             assert await _published_owned_delegation_input(db, source, task) is False
         else:
@@ -550,3 +597,138 @@ async def test_published_memory_keeps_member_rules_and_invocation_binding(
         models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id)))
         assert len(models) == 2
         assert all(ANSWER not in json.dumps(model.model_request_snapshot_json["wire_request"]) for model in models)
+
+
+@pytest.mark.parametrize("tool", ["load_memory", "search_memory", None], ids=["load_a", "search_limit_one", "index_only"])
+@pytest.mark.parametrize("reader", READERS)
+async def test_parent_reads_active_index_memory_not_returned_by_a_call(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool, reader,
+):
+    from app.services import explicit_memory_authority as authority
+
+    validate = authority.validate_explicit_memory_dependency
+
+    async def observe_refusal(*args, **kwargs):
+        try:
+            return await validate(*args, **kwargs)
+        except authority.ContentInputReceiptError as exc:
+            frames, tb = [], exc.__traceback__
+            while tb is not None:
+                if tb.tb_frame.f_code.co_filename.endswith("explicit_memory_authority.py"):
+                    frames.append(tb.tb_lineno)
+                tb = tb.tb_next
+            print("R28A_INDEX_REFUSAL", json.dumps({"code": exc.code, "lines": frames}))
+            raise
+
+    monkeypatch.setattr(authority, "validate_explicit_memory_dependency", observe_refusal)
+    seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool, extra=True)
+    await _read_memory_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, seed, reader)
+
+
+@pytest.mark.parametrize("entry_count", [1, 30])
+async def test_index_source_check_statements_are_linear_with_four_memory_calls(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, entry_count,
+):
+    from collections import Counter
+    from sqlalchemy import event
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.runtime_result_sources import validate_runtime_result_sources
+
+    seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        "load_memory", entry_count=entry_count, call_count=4)
+    principal = AgentRuntimePrincipal(agent_id=seed["agent_id"], requester_user_id=seed["user_id"],
+        session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]), purpose="interactive_session")
+    statements = []
+
+    def count_statement(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        result = await db.get(RuntimeResultObject, seed["result_id"])
+        engine = db.bind.sync_engine
+        event.listen(engine, "before_cursor_execute", count_statement)
+        try:
+            assert await validate_runtime_result_sources(db, principal, result) is True
+        finally:
+            event.remove(engine, "before_cursor_execute", count_statement)
+    # Four invocation proofs and the shared source/member checkpoints fit in 100
+    # statements. Each entry adds carrier/session reads, with one extra statement
+    # of allowance for its existing member path; it never scans those four calls.
+    counts = Counter("memory_invocations" if "session_tool_invocations" in sql else
+        "memory_receipts" if "content_input_receipts" in sql else "other" for sql in statements)
+    print("R28A_INDEX_STATEMENTS", json.dumps({"entries": entry_count, "calls": 4,
+        "statements": len(statements), "kinds": counts}))
+    assert len(statements) <= 100 + 3 * entry_count
+
+
+@pytest.mark.parametrize("source_kind", ["explicit_memory", "session_tool_invocation"])
+async def test_published_input_refuses_malformed_child_session(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, source_kind,
+):
+    from types import SimpleNamespace
+    from app.services.runtime_result_sources import _published_owned_delegation_input
+
+    seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, "load_memory")
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        task = await db.get(RuntimeTask, seed["child_id"])
+        bad_task = SimpleNamespace(id=task.id, tenant_id=task.tenant_id, child_agent_id=task.child_agent_id,
+            child_session_id="malformed-session-id")
+        source = seed["memory_source"]
+        if source_kind == "session_tool_invocation":
+            invocation = (await db.scalars(select(SessionToolInvocation).where(
+                SessionToolInvocation.run_id == task.id))).one()
+            source = {"source_kind": source_kind, "source_id": str(invocation.id)}
+        assert await _published_owned_delegation_input(db, source, bad_task) is False
+
+
+class TeamMemoryDelegationRefused(AssertionError):
+    pass
+
+
+@pytest.mark.xfail(strict=True, raises=TeamMemoryDelegationRefused,
+    reason="Agent-team memory still checks its child-owned source session with the parent's runtime principal.")
+async def test_parent_reads_colleague_team_memory_search_hit(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    from app.models.user import User
+    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.runtime_result_sources import validate_runtime_result_sources
+
+    seed = await _memory_hit_result(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        "search_memory", team=True)
+    principal = AgentRuntimePrincipal(agent_id=seed["agent_id"], requester_user_id=seed["user_id"],
+        session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]), purpose="interactive_session")
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        user = await db.get(User, seed["user_id"])
+        await _validate_input_dependencies(db, seed["tenant_id"], [seed["team_source"]], user=user)
+        result = await db.get(RuntimeResultObject, seed["result_id"])
+        try:
+            allowed = await validate_runtime_result_sources(db, principal, result)
+        except ContentInputReceiptError as exc:
+            frames, tb = [], exc.__traceback__
+            while tb is not None:
+                if tb.tb_frame.f_code.co_filename.endswith("team_memory_authority.py"):
+                    frames.append(tb.tb_lineno)
+                tb = tb.tb_next
+            print("R28A_TEAM_MEMORY_REFUSAL", json.dumps({"code": exc.code, "lines": frames}))
+            assert 74 in frames
+            allowed = False
+    calls = [_call("read_runtime_result", {"result_ref": seed["result_ref"]}, "r28a-team-result")]
+    calls.extend(_call(reader, _reader_arguments(reader, seed["child_id"]), f"r28a-team-{reader}") for reader in READERS)
+    run_id, client = await _parent_turn(owner_sessionmaker, seed, monkeypatch, [
+        {"tool_calls": calls, "finish_reason": "tool_calls"}, {"content": "The team source is unavailable."},
+    ])
+    results = await _tool_results(owner_sessionmaker, run_id)
+    assert len(results) == 4
+    if not allowed:
+        assert ANSWER not in json.dumps(client.requests)
+        async with owner_sessionmaker() as db:
+            models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id)))
+            assert len(models) == 2
+            assert all(ANSWER not in json.dumps(model.model_request_snapshot_json["wire_request"]) for model in models)
+        raise TeamMemoryDelegationRefused("The member can read the team hit; the parent's bound result read is refused.")
+    assert ANSWER in json.dumps(client.requests[1])

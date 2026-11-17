@@ -247,8 +247,9 @@ async def test_mixed_source_checks_use_one_transaction_per_event(
 ):
     from sqlalchemy import text
 
-    from app.models.session_v2 import SessionModelResult
+    from app.models.session_v2 import SessionModelResult, SessionTurnInput
     from app.services import content_input_receipts as receipts
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
     s = read_turn
@@ -258,6 +259,12 @@ async def test_mixed_source_checks_use_one_transaction_per_event(
         allowed_row = next(row for row in rows if row.item_kind == "human_input" and row.lifecycle == "accepted")
         revoked_row = next(row for row in rows if row.item_kind == "tool_result")
         incomplete_row = next(row for row in rows if row.item_kind == "assistant_text")
+        reader_runs = []
+        for row in (allowed_row, revoked_row):
+            run_id = row.run_id or (await db.get(SessionTurnInput, row.input_id)).target_run_id
+            task = await db.get(RuntimeTask, run_id)
+            assert task.task_type == "web_chat_turn"
+            reader_runs.append((str(task.id), task.root_user_id))
         model = await db.get(SessionModelResult, incomplete_row.result_id)
         snapshot = deepcopy(model.model_request_snapshot_json)
         snapshot["input_bindings"]["dependency_coverage"]["complete"] = False
@@ -283,7 +290,7 @@ async def test_mixed_source_checks_use_one_transaction_per_event(
     expected = t2._build_source_bundle(root=root, agent_id=s.n.agent, tenant_id=s.n.tenant,
         session_id=s.n.session, t0_segment_id=events[0].segment_id, package_id="mixed-source-checks",
         session_events=[allowed_event, platform_event])
-    transactions, outcomes = [], []
+    transactions, outcomes, readers = [], [], []
     validate, depth = receipts._validate_input_dependencies, 0
 
     async def observe(db, tenant, dependencies, **kwargs):
@@ -293,6 +300,7 @@ async def test_mixed_source_checks_use_one_transaction_per_event(
         depth += 1
         try:
             transactions.append(await db.scalar(text("SELECT txid_current()")))
+            readers.append(kwargs.get("runtime_request"))
             try:
                 result = await validate(db, tenant, dependencies, **kwargs)
             except receipts.ContentInputReceiptError as exc:
@@ -311,5 +319,7 @@ async def test_mixed_source_checks_use_one_transaction_per_event(
     assert kept == {allowed_event.event_id, platform_event.event_id}
     assert {event.event_id for event in events} - kept == {revoked_event.event_id, incomplete_event.event_id}
     assert outcomes == [("allowed", None), ("denied", 403)]
-    print(f"Mixed source outcomes: {outcomes}; validation transaction ids: {transactions}")
+    # Same reader as the single-transaction code built: the turn's requester, interactive, for that run.
+    assert readers == [AgentRuntimePrincipal(agent_id=s.n.agent, requester_user_id=user_id,
+        session_id=str(s.n.session), runtime_task_id=run_id) for run_id, user_id in reader_runs]
     assert len(set(transactions)) == len(transactions) == 2

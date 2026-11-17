@@ -2189,8 +2189,10 @@ function excludeMemberApprovalWait(cell: ThreadTimelineCell, messages: AgentChat
     && message.sessionPermissionRequest && !message.sessionItem.payload.enterprise_approval_id);
   if (!permissions.length) return cell;
   const startedAtMs = Date.parse(cell.timeline.startedAt || '');
+  // Live phase boundaries have no event timestamp; they cannot invalidate
+  // the approval clock sample carried by the run's timestamped events.
   const completedAtMs = cell.timeline.durationIsFinal ? Date.parse(cell.timeline.completedAt || '')
-    : Math.max(...runMessages.map(message => Date.parse(message.sessionItem?.terminalAt || message.timestamp || '')));
+    : Math.max(...runMessages.map(message => Date.parse(message.sessionItem?.terminalAt || message.timestamp || '')).filter(Number.isFinite));
   if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs)
     || (cell.timeline.durationIsFinal && cell.timeline.durationMs == null)) return cell;
   // Item reduction preserves the first occurrence, including control.accepted

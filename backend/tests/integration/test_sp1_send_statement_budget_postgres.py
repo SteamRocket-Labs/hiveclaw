@@ -410,6 +410,63 @@ async def test_charge_event_failure_rolls_back_all_counters(
             TokenUsageEvent.agent_id == seed["agent_id"])) == 1
 
 
+async def test_direct_user_usage_updates_tenant_user_and_append_only_event(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+):
+    from app.models.tenant import Tenant
+    from app.models.token_usage_event import TokenUsageEvent
+    from app.services import token_tracker
+    import app.database as database
+
+    now = datetime.now(timezone.utc)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="Direct usage", slug=tenant_id.hex,
+            tokens_used_today=3, tokens_used_month=4, tokens_used_total=5, tokens_reset_at=now))
+        db.add(User(id=user_id, tenant_id=tenant_id, username=user_id.hex,
+            email=f"{user_id.hex}@sp1.test", password_hash="fixture", display_name="Usage owner",
+            tokens_used_today=7, tokens_used_month=8, tokens_used_total=9, tokens_reset_at=now))
+        await db.commit()
+    monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
+    monkeypatch.setattr(token_tracker, "datetime", Clock)
+
+    await token_tracker.record_autonomous_llm_token_usage(
+        source="desktop_llm_proxy",
+        usage={"total_tokens": 12},
+        provider="openai",
+        model="gpt-test",
+        tenant_id=tenant_id,
+        user_id=user_id,
+        metadata={"request_id": "trace-1"},
+        raise_on_error=True,
+    )
+
+    # A new RLS session observes the committed counters and append-only event.
+    async with tenant_scoped_session(tenant_id, session_factory=app_user_sessionmaker) as db:
+        tenant = await db.get(Tenant, tenant_id)
+        user = await db.get(User, user_id)
+        assert tenant.tokens_used_today == 15
+        assert tenant.tokens_used_month == 16
+        assert tenant.tokens_used_total == 17
+        assert user.tokens_used_today == 19
+        assert user.tokens_used_month == 20
+        assert user.tokens_used_total == 21
+        events = (await db.scalars(select(TokenUsageEvent).where(
+            TokenUsageEvent.tenant_id == tenant_id))).all()
+        assert len(events) == 1
+        event = events[0]
+        assert event.tenant_id == tenant_id
+        assert event.user_id == user_id
+        assert event.source == "desktop_llm_proxy"
+        assert event.tokens == 12
+
+
 @pytest.mark.parametrize("reset_at, expected", [
     (None, (12, 16, 18)),
     (datetime(2026, 1, 2, tzinfo=timezone.utc), (12, 16, 18)),

@@ -269,8 +269,10 @@ async def test_send_statement_budget(member_request, owner_sessionmaker, app_use
         emit("send", trial, meter, status=response.status_code, committed_history=20,
             provider_history_answers=history_seen, provider_calls=len(provider.requests))
         assert history_seen == 20, history_seen
-        assert meter.points["provider"]["statements"] <= SEND_STATEMENT_CEILING, meter.points["provider"]
         assert "provider" in meter.points and "visible" in meter.points, list(meter.points)
+        # Send to the first provider request, including this fixture's pending
+        # historical settlement retries; this turn's charge happens later.
+        assert meter.points["provider"]["statements"] <= SEND_STATEMENT_CEILING, meter.points["provider"]
     finally:
         await runtime.web_chat_broker.disconnect(str(seed.agent_id), socket)
 
@@ -296,12 +298,20 @@ async def test_ten_concurrent_agent_charges(
     import asyncio
     from app.models.tenant import Tenant
     from app.models.token_usage_event import TokenUsageEvent
-    from app.services.token_tracker import record_token_usage
+    from app.services import token_tracker
     import app.database as database
 
     tenant_id = uuid.uuid4()
     users, agents = [uuid.uuid4() for _ in range(10)], [uuid.uuid4() for _ in range(10)]
     previous = datetime(2025, 12, 31, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(token_tracker, "datetime", Clock)
     async with owner_sessionmaker() as db:
         db.add(Tenant(id=tenant_id, name="Concurrent charges", slug=tenant_id.hex,
             tokens_used_today=20, tokens_used_month=30, tokens_used_total=100, tokens_reset_at=previous))
@@ -317,63 +327,35 @@ async def test_ten_concurrent_agent_charges(
         await db.commit()
     monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
     start = asyncio.Event()
-    finished = asyncio.Event()
-    observations = []
 
     async def charge(index):
         await start.wait()
-        return await record_token_usage(agents[index], index + 1, user_id=users[index], tenant_id=tenant_id,
+        return await token_tracker.record_token_usage(agents[index], index + 1, user_id=users[index], tenant_id=tenant_id,
             idempotency_key=f"sp1-{agents[index]}", raise_on_error=True)
 
-    async def observe(db):
-        # This task is outside the measured charge context. The only polling
-        # is the explicitly requested local PostgreSQL lock observation.
-        while not finished.is_set():
-            rows = (await db.execute(text("""
-                SELECT a.pid, a.wait_event_type, a.wait_event, l.locktype, l.mode,
-                       l.granted, l.relation::regclass::text AS relation
-                FROM pg_stat_activity a JOIN pg_locks l ON l.pid = a.pid
-                WHERE a.datname = current_database() AND a.pid <> pg_backend_pid()
-                  AND (NOT l.granted OR l.relation IN
-                       ('tenants'::regclass, 'users'::regclass, 'agents'::regclass))
-            """))).mappings().all()
-            observations.append([dict(row) for row in rows])
-            await db.commit()
-            await asyncio.sleep(0.001)
-
-    async with owner_sessionmaker() as observer:
-        await observer.execute(text("SELECT 1"))
-        watcher = asyncio.create_task(observe(observer))
-        meter = Meter()
-        try:
-            with meter.measure():
-                charges = [asyncio.create_task(charge(index)) for index in range(10)]
-                start.set()
-                outcomes = await asyncio.wait_for(asyncio.gather(*charges), timeout=20)
-                meter.mark("charges")
-        finally:
-            finished.set()
-            await watcher
+    meter = Meter()
+    with meter.measure():
+        charges = [asyncio.create_task(charge(index)) for index in range(10)]
+        start.set()
+        outcomes = await asyncio.wait_for(asyncio.gather(*charges), timeout=20)
+        meter.mark("charges")
     point = meter.points["charges"]
     summary = {"item": "concurrency", "trial": trial, "warmup": trial == 0,
-        **point, "samples": len(observations),
-        "peak_waiting_pids": max((len({r['pid'] for r in rows if r['wait_event_type'] == 'Lock'})
-            for rows in observations), default=0),
-        "ungranted_transactionid_sharelock": sum(r['locktype'] == 'transactionid'
-            and r['mode'] == 'ShareLock' and not r['granted'] for rows in observations for r in rows),
-        "tenant_tuple_lock_observations": sum(r['locktype'] == 'tuple' and r['relation'] == 'tenants'
-            for rows in observations for r in rows),
+        **point,
     }
     print("SP1_CONCURRENCY", json.dumps(summary), flush=True)
     assert outcomes == [True] * 10
     async with owner_sessionmaker() as db:
         tenant = await db.get(Tenant, tenant_id)
         assert (tenant.tokens_used_today, tenant.tokens_used_month, tenant.tokens_used_total) == (55, 55, 155)
+        assert tenant.tokens_reset_at == now
         for index, (agent_id, user_id) in enumerate(zip(agents, users, strict=True), 1):
             user = await db.get(User, user_id)
             agent = await db.get(Agent, agent_id)
             assert (user.tokens_used_today, user.tokens_used_month, user.tokens_used_total) == (index, index, 7 + index)
             assert (agent.tokens_used_today, agent.tokens_used_month, agent.tokens_used_total) == (index, index, 11 + index)
+            assert user.tokens_reset_at == now
+            assert agent.last_daily_reset == agent.last_monthly_reset == now
         assert await db.scalar(select(func.count()).select_from(TokenUsageEvent).where(
             TokenUsageEvent.tenant_id == tenant_id)) == 10
     assert point["statements"] <= 62, summary
@@ -452,3 +434,187 @@ async def test_atomic_charge_preserves_counter_reset_boundaries(
         for kind, key in ((Tenant, "tenant_id"), (User, "user_id"), (Agent, "agent_id")):
             row = await db.get(kind, seed[key])
             assert (row.tokens_used_today, row.tokens_used_month, row.tokens_used_total) == expected
+            now = Clock.now()
+            if kind is Agent:
+                expected_daily = now if reset_at is None or now.date() > reset_at.date() else reset_at
+                expected_monthly = now if reset_at is None or (now.year, now.month) != (reset_at.year, reset_at.month) else reset_at
+                assert row.last_daily_reset == expected_daily
+                assert row.last_monthly_reset == expected_monthly
+            else:
+                assert row.tokens_reset_at == now
+
+
+@pytest.mark.parametrize("with_user", [True, False], ids=["explicit_user", "owner_lookup"])
+async def test_keyed_charge_statement_budget(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, with_user,
+):
+    from app.services.token_tracker import record_token_usage
+    from tests.integration.test_web_chat_worker_restart_post_commit_accounting import _seed_offboarding_fixture
+    import app.database as database
+
+    seed = await _seed_offboarding_fixture(owner_sessionmaker)
+    monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
+    meter = Meter()
+    with meter.measure():
+        result = await record_token_usage(seed["agent_id"], 5, tenant_id=seed["tenant_id"],
+            user_id=seed["user_id"] if with_user else None,
+            idempotency_key="sp1-direct-budget", raise_on_error=True)
+        meter.mark("charge")
+    emit("direct_charge", int(with_user), meter, with_user=with_user)
+    assert result is True
+    # Business statements only; the tenant-scoping SET belongs to database.py.
+    business = meter.points["charge"]["modules"]["app/services/token_tracker.py"]["count"]
+    assert business <= (5 if with_user else 6), meter.points["charge"]
+
+
+@pytest.mark.parametrize("raise_on_error", [False, True])
+async def test_idempotent_replay_at_integer_limit_does_not_write(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, raise_on_error,
+):
+    from app.models.tenant import Tenant
+    from app.models.token_usage_event import TokenUsageEvent
+    from app.services.token_tracker import record_token_usage
+    from tests.integration.test_web_chat_worker_restart_post_commit_accounting import _seed_offboarding_fixture
+    import app.database as database
+
+    seed = await _seed_offboarding_fixture(owner_sessionmaker)
+    monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
+    args = dict(tenant_id=seed["tenant_id"], user_id=seed["user_id"], idempotency_key="sp1-limit-replay")
+    assert await record_token_usage(seed["agent_id"], 1, **args, raise_on_error=True) is True
+    async with owner_sessionmaker() as db:
+        (await db.get(Tenant, seed["tenant_id"])).tokens_used_total = 2147483647
+        await db.commit()
+
+    async def snapshot():
+        async with owner_sessionmaker() as db:
+            counters = []
+            for kind, key in ((Tenant, "tenant_id"), (User, "user_id"), (Agent, "agent_id")):
+                row = await db.get(kind, seed[key])
+                stamps = (row.last_daily_reset, row.last_monthly_reset) if kind is Agent else (row.tokens_reset_at,)
+                counters.append((row.tokens_used_today, row.tokens_used_month, row.tokens_used_total, *stamps))
+            events = (await db.execute(select(TokenUsageEvent.__table__).where(
+                TokenUsageEvent.agent_id == seed["agent_id"]))).mappings().all()
+            assert len(events) == 1
+            return counters, [dict(row) for row in events]
+
+    before = await snapshot()
+    writes = []
+
+    def after(_conn, cursor, statement, _params, _context, _many):
+        if statement.lstrip().upper().startswith(("UPDATE ", "INSERT ", "DELETE ")):
+            writes.append(cursor.rowcount)
+
+    event.listen(Engine, "after_cursor_execute", after)
+    try:
+        assert await record_token_usage(seed["agent_id"], 1, **args, raise_on_error=raise_on_error) is False
+    finally:
+        event.remove(Engine, "after_cursor_execute", after)
+    assert all(count == 0 for count in writes), writes
+    assert await snapshot() == before
+
+
+@pytest.mark.parametrize("before, after", [
+    (datetime(2026, 1, 30, 23, 59, 59, tzinfo=timezone.utc), datetime(2026, 1, 31, tzinfo=timezone.utc)),
+    (datetime(2026, 1, 31, 23, 59, 59, tzinfo=timezone.utc), datetime(2026, 2, 1, tzinfo=timezone.utc)),
+], ids=["midnight", "month_boundary"])
+async def test_waiting_charge_uses_clock_after_tenant_lock(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, before, after,
+):
+    import asyncio
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from app.models.tenant import Tenant
+    from app.models.token_usage_event import TokenUsageEvent
+    from app.services import token_tracker
+    from tests.integration.test_web_chat_worker_restart_post_commit_accounting import _seed_offboarding_fixture
+    import app.database as database
+
+    seed = await _seed_offboarding_fixture(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        for kind, key in ((Tenant, "tenant_id"), (User, "user_id"), (Agent, "agent_id")):
+            row = await db.get(kind, seed[key])
+            row.tokens_used_today = row.tokens_used_month = row.tokens_used_total = 0
+            if kind is Agent:
+                row.last_daily_reset = row.last_monthly_reset = before
+            else:
+                row.tokens_reset_at = before
+        await db.commit()
+
+    waiter_ready, admit_waiter = asyncio.Event(), asyncio.Event()
+    holder_ready, waiter_started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    holder = waiter = None
+    current = before
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return current
+
+    original_commit = AsyncSession.commit
+    original_execute, original_scalar = AsyncSession.execute, AsyncSession.scalar
+
+    async def pause_waiter(statement):
+        if asyncio.current_task() is waiter and "tenants" in str(statement):
+            waiter_ready.set()
+            await admit_waiter.wait()
+
+    async def execute(db, statement, *args, **kwargs):
+        await pause_waiter(statement)
+        return await original_execute(db, statement, *args, **kwargs)
+
+    async def scalar(db, statement, *args, **kwargs):
+        await pause_waiter(statement)
+        return await original_scalar(db, statement, *args, **kwargs)
+
+    async def commit(db):
+        if asyncio.current_task() is holder:
+            holder_ready.set()
+            await release.wait()
+        return await original_commit(db)
+
+    def executing(_conn, _cursor, statement, _params, _context, _many):
+        if asyncio.current_task() is waiter and "tenants" in statement:
+            # The holder already owns the real Tenant lock and cannot commit
+            # until this charge has reached its first Tenant statement.
+            waiter_started.set()
+
+    monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
+    monkeypatch.setattr(token_tracker, "datetime", Clock)
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    monkeypatch.setattr(AsyncSession, "execute", execute)
+    monkeypatch.setattr(AsyncSession, "scalar", scalar)
+    event.listen(Engine, "before_cursor_execute", executing)
+
+    async def charge(tokens, key):
+        return await token_tracker.record_token_usage(seed["agent_id"], tokens,
+            tenant_id=seed["tenant_id"], user_id=seed["user_id"], idempotency_key=key, raise_on_error=True)
+
+    try:
+        waiter = asyncio.create_task(charge(7, "sp1-boundary-waiter"))
+        await asyncio.wait_for(waiter_ready.wait(), timeout=20)
+        current = after
+        holder = asyncio.create_task(charge(11, "sp1-boundary-holder"))
+        await asyncio.wait_for(holder_ready.wait(), timeout=20)
+        admit_waiter.set()
+        await asyncio.wait_for(waiter_started.wait(), timeout=20)
+        release.set()
+        assert await asyncio.wait_for(asyncio.gather(holder, waiter), timeout=20) == [True, True]
+    finally:
+        event.remove(Engine, "before_cursor_execute", executing)
+        admit_waiter.set()
+        release.set()
+        for task in (holder, waiter):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in (holder, waiter) if task is not None), return_exceptions=True)
+
+    async with owner_sessionmaker() as db:
+        for kind, key in ((Tenant, "tenant_id"), (User, "user_id"), (Agent, "agent_id")):
+            row = await db.get(kind, seed[key])
+            assert (row.tokens_used_today, row.tokens_used_month, row.tokens_used_total) == (18, 18, 18)
+            if kind is Agent:
+                assert row.last_daily_reset == after
+                assert row.last_monthly_reset == (after if before.month != after.month else before)
+            else:
+                assert row.tokens_reset_at == after
+        assert await db.scalar(select(func.count()).select_from(TokenUsageEvent).where(
+            TokenUsageEvent.agent_id == seed["agent_id"])) == 2

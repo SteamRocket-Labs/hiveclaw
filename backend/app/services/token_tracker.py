@@ -280,33 +280,34 @@ async def record_token_usage(
         # the same tenant.
         tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tenant_id) as db:
-            now = datetime.now(timezone.utc)
             from sqlalchemy import update
 
-            # UPDATE takes the same NO KEY UPDATE row lock as the former
-            # SELECT FOR NO KEY UPDATE, but increments without a second trip.
+            # Serialize before reading the clock or doing counter arithmetic.
             # Keep Tenant -> User -> Agent, including the actual writes.
-            # A keyed duplicate rolls this tentative tenant increment back.
-            await db.execute(
-                update(Tenant).where(Tenant.id == tenant_id)
-                .values(**_charge_counter_values(Tenant, tokens=tokens, now=now))
+            locked_tenant_id = await db.scalar(
+                select(Tenant.id).where(Tenant.id == tenant_id).with_for_update(key_share=True)
             )
+            now = datetime.now(timezone.utc)
+            # UPDATE also takes NO KEY UPDATE only while SET touches no unique
+            # or key column; otherwise PostgreSQL takes FOR UPDATE.
+            tenant_charge = update(Tenant).where(Tenant.id == tenant_id)
             if idempotency_key:
-                # A separate statement AFTER acquiring the tenant row lock is
-                # essential: READ COMMITTED must see the previous holder's
-                # committed event, including a concurrent charge of this key.
-                already = await db.scalar(
-                    select(TokenUsageEvent.id)
-                    .where(
+                # This later statement gets a fresh READ COMMITTED snapshot of
+                # the previous holder's committed event. A duplicate matches
+                # no row, so it never writes or evaluates the counter values.
+                tenant_charge = tenant_charge.where(
+                    ~select(TokenUsageEvent.id).where(
                         TokenUsageEvent.tenant_id == tenant_id,
                         TokenUsageEvent.agent_id == agent_id,
                         TokenUsageEvent.details["idempotency_key"].astext == str(idempotency_key),
-                    )
-                    .limit(1)
+                    ).exists()
                 )
-                if already is not None:
-                    await db.rollback()
-                    return False
+            charged_tenant_id = await db.scalar(
+                tenant_charge.values(**_charge_counter_values(Tenant, tokens=tokens, now=now))
+                .returning(Tenant.id)
+            )
+            if idempotency_key and locked_tenant_id is not None and charged_tenant_id is None:
+                return False
 
             # Snapshot the charge principal before locking User then Agent.
             # An ownership transfer must not split counter and event identity.

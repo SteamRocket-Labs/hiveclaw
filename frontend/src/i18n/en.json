@@ -3020,11 +3020,15 @@
           "delegationMaterialsDenied": "The colleague could not use the materials needed for this task and did not continue.",
           "delegationMaterialsUnavailable": "The colleague could not read the materials needed for this task and did not continue.",
           "skillSaveStarted": "Saving a skill.",
-          "skillSaveDone": "Saved a skill.",
+          "skillSaveDone": "The skill save request returned a result.",
+          "skillSaveActivated": "Saved a skill.",
+          "skillSaveSubmitted": "Submitted the skill for review; it can be used after approval.",
           "skillSaveFailed": "The skill was not saved this time.",
           "skillSaveTimeout": "Saving the skill timed out.",
           "skillCheckStarted": "Checking whether the skill was saved.",
-          "skillCheckDone": "Checked whether the skill was saved.",
+          "skillCheckDone": "The skill request returned a result.",
+          "skillCheckStatus": "Checked whether the skill was saved.",
+          "skillCheckCancelled": "Cancelled this skill submission.",
           "skillCheckFailed": "Could not check whether the skill was saved.",
           "skillCheckTimeout": "Checking whether the skill was saved timed out."
         }

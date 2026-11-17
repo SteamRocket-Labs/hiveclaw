@@ -3020,11 +3020,15 @@
           "delegationMaterialsDenied": "同事无法使用这次任务需要的资料，没有继续。",
           "delegationMaterialsUnavailable": "同事暂时无法读取这次任务需要的资料，没有继续。",
           "skillSaveStarted": "正在保存技能。",
-          "skillSaveDone": "已保存技能。",
+          "skillSaveDone": "技能保存请求已返回结果。",
+          "skillSaveActivated": "已保存技能。",
+          "skillSaveSubmitted": "已提交技能，审核通过后才能使用。",
           "skillSaveFailed": "这次没有保存技能。",
           "skillSaveTimeout": "保存技能超时。",
           "skillCheckStarted": "正在检查技能保存情况。",
-          "skillCheckDone": "已检查技能保存情况。",
+          "skillCheckDone": "技能保存操作已返回结果。",
+          "skillCheckStatus": "已检查技能保存情况。",
+          "skillCheckCancelled": "已取消这次技能提交。",
           "skillCheckFailed": "这次没有检查技能保存情况。",
           "skillCheckTimeout": "检查技能保存情况超时。"
         }

@@ -279,10 +279,28 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
     if (skillKey && ['running', 'done', 'failed'].includes(step.status) && !stepIsUnconfirmed(step)) {
       const state = step.status === 'running' ? 'Started' : step.status === 'done' ? 'Done' : 'Failed';
       const fallback = skillKey === 'skillSave'
-        ? { Started: 'Saving a skill.', Done: 'Saved a skill.', Failed: 'The skill was not saved this time.' }
-        : { Started: 'Checking whether the skill was saved.', Done: 'Checked whether the skill was saved.', Failed: 'Could not check whether the skill was saved.' };
+        ? { Started: 'Saving a skill.', Done: 'The skill save request returned a result.', Failed: 'The skill was not saved this time.' }
+        : { Started: 'Checking whether the skill was saved.', Done: 'The skill request returned a result.', Failed: 'Could not check whether the skill was saved.' };
+      const details = step.details as { args?: Record<string, unknown>; result?: string } | undefined;
+      let result: Record<string, unknown> | undefined;
+      try { result = JSON.parse(details?.result || ''); } catch { /* Legacy submissions return prose, not typed outcomes. */ }
+      const args = details?.args;
+      const saved = result?.schema === 'hive.reviewed_skill_activation_result.v1'
+        && ['provisional', 'already_installed'].includes(String(result.status));
+      const cancelled = result?.schema === 'hive.skill_candidate_operation.v1' && result.status === 'cancelled';
+      const done = step.status === 'done' ? skillKey === 'skillSave'
+        ? saved || args?.reviewed_revision_id
+          ? t('agent.chat.toolResults.memberSummary.skillSaveActivated', 'Saved a skill.')
+          : args ? t('agent.chat.toolResults.memberSummary.skillSaveSubmitted', 'Submitted the skill for review; it can be used after approval.') : null
+        : cancelled || args?.action === 'cancel'
+          ? t('agent.chat.toolResults.memberSummary.skillCheckCancelled', 'Cancelled this skill submission.')
+          : args?.action === 'retry'
+            ? t('agent.chat.toolResults.memberSummary.skillSaveSubmitted', 'Submitted the skill for review; it can be used after approval.')
+            : args?.action === 'status' || result?.schema === 'hive.skill_candidate_operations.v1'
+              ? t('agent.chat.toolResults.memberSummary.skillCheckStatus', 'Checked whether the skill was saved.') : null
+        : null;
       return <p>{toolFailureForDisplay(step.details, t, step.status)
-        || t(`agent.chat.toolResults.memberSummary.${skillKey}${state}`, fallback[state])}</p>;
+        || done || t(`agent.chat.toolResults.memberSummary.${skillKey}${state}`, fallback[state])}</p>;
     }
     // X3: summarized tools show one plain sentence in place of the raw result
     // the model saw. There is deliberately no way to view the raw text here.

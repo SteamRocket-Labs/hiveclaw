@@ -56,7 +56,7 @@ it.each((['zh', 'en'] as const).flatMap(language => reasons.map(([code, chinese,
 it.each(['zh', 'en'] as const)('hides arbitrary backend user_message for unknown delegation failures (%s)', language => {
   locale.language = language;
   const message = getRuntimeEventMessage({ type: 'runtime_action_failed', status: 'failed', action_kind: 'a2a_delegation',
-    target_agent_name: 'Alice', error_code: 'future_reason', message: 'BACKEND PRIVATE PROSE' })!;
+    target_agent_name: 'Alice', reason: 'future_reason', message: 'BACKEND PRIVATE PROSE' })!;
   const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([message])} />);
   expand(container);
   expect(container.textContent).toContain(language === 'zh' ? '同事没有完成这项工作。' : 'The colleague did not finish this work.');
@@ -64,10 +64,10 @@ it.each(['zh', 'en'] as const)('hides arbitrary backend user_message for unknown
 });
 
 const tools = [
-  ['save_skill', ['保存技能', '正在保存技能。', '已保存技能。', '这次没有保存技能。', '保存技能超时。'],
-    ['Save skill', 'Saving a skill.', 'Saved a skill.', 'The skill was not saved this time.', 'Saving the skill timed out.']],
-  ['reconcile_skill_candidate', ['检查技能保存情况', '正在检查技能保存情况。', '已检查技能保存情况。', '这次没有检查技能保存情况。', '检查技能保存情况超时。'],
-    ['Check skill saving', 'Checking whether the skill was saved.', 'Checked whether the skill was saved.',
+  ['save_skill', ['保存技能', '正在保存技能。', '技能保存请求已返回结果。', '这次没有保存技能。', '保存技能超时。'],
+    ['Save skill', 'Saving a skill.', 'The skill save request returned a result.', 'The skill was not saved this time.', 'Saving the skill timed out.']],
+  ['reconcile_skill_candidate', ['检查技能保存情况', '正在检查技能保存情况。', '技能保存操作已返回结果。', '这次没有检查技能保存情况。', '检查技能保存情况超时。'],
+    ['Check skill saving', 'Checking whether the skill was saved.', 'The skill request returned a result.',
       'Could not check whether the skill was saved.', 'Checking whether the skill was saved timed out.']],
 ] as const;
 it.each((['zh', 'en'] as const).flatMap(language => tools.flatMap(([toolName, chinese, english]) =>

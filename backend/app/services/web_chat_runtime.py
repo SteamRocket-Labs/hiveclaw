@@ -3819,6 +3819,9 @@ async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
                     apply_remote_web_chat_cancel(child_id)
                     await publish_web_chat_cancel(run_id=child_id.hex, agent_id=str(parent_id),
                         session_id=str(session_id), user_id=str(user_id))
+            except Exception as exc:  # noqa: BLE001 - still check the delegation cancellation result.
+                logger.warning("[WebChatRun] child {} cancel signal unavailable: error_class={}",
+                    child_id, type(exc).__name__)
             finally:
                 result = await cancel_async_delegation(child_id.hex, parent_agent_id=parent_id, force=True)
             if result["status"] not in _TERMINAL_STATUSES:

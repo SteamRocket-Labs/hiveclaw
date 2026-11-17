@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import pytest
 from sqlalchemy import func, select
@@ -15,10 +15,12 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.models.runtime_result import RuntimeResultIntegrationPage
 from app.models.runtime_task import RuntimeTask
+from tests.integration import test_a4b_company_approval_resumption as approvals
 from tests.integration import test_r11c_colleague_lifecycle_postgres as colleagues
 from tests.integration import test_r23a_stop_ends_blocked_model_call as stopped
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+member_work = approvals.member_work
 
 
 @asynccontextmanager
@@ -432,3 +434,145 @@ async def test_result_delivery_leaves_another_familys_notice_unleased(
         assert foreign.attempt_count == 0
         await db.delete(foreign)
         await db.commit()
+
+
+@pytest.mark.parametrize("legacy_settlement", [False, True], ids=["first_and_replay", "legacy_replay"])
+async def test_successful_web_approval_return_counts_one_wake_on_delivery_and_replay(
+    member_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, legacy_settlement,
+):
+    from app.database import pin_rls_tenant_context
+    from app.models.agent import Agent
+    from app.models.audit import ApprovalRequest
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_budget import RuntimeBudgetEvent
+    from app.models.session_v2 import SessionTurnInput
+    from app.models.user import User
+    from app.services import runtime_notification_outbox as outbox
+    from app.services.execution_admission import ExecutionAdmission
+    from app.services.runtime_budget_failover import apply_runtime_budget_root_binding
+    from app.services.web_chat_runtime import _create_runtime_budget_root_run_for_chat
+
+    seed = member_work
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        binding = await _create_runtime_budget_root_run_for_chat(db=db,
+            agent=await db.get(Agent, seed["agent_id"]), user=await db.get(User, seed["member_id"]),
+            session=await db.get(ChatSession, seed["session_id"]), run_uuid=seed["run_id"],
+            source="web", profile="web_chat_turn", interactive=True)
+        assert binding.budget_run_id is not None
+        run = await db.get(RuntimeTask, seed["run_id"])
+        run.budget_run_id, run.budget_admission_status = binding.budget_run_id, "root"
+        run.metadata_json = apply_runtime_budget_root_binding(run.metadata_json, binding)
+        await db.commit()
+
+    async def no_wakeup(**_kwargs):
+        pass
+
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", no_wakeup)
+    model, run_id = await approvals._start_member_run(seed, app_user_sessionmaker, monkeypatch,
+        [approvals._call("write_file", approvals.TOOL_ARGUMENTS), {"content": "Finished after approval."}])
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeTask, run_id)
+        assert run.status == "suspended" and run.result_summary == "awaiting_company_approval"
+        ticket = await db.scalar(select(ApprovalRequest).where(ApprovalRequest.tenant_id == seed["tenant_id"]))
+    resolved = await approvals._resolve_as_owner(seed, app_user_sessionmaker, ticket.id)
+    assert await approvals._run_approval_execution(seed, app_user_sessionmaker, resolved.execution_task_id) == "succeeded"
+    assert (seed["agent_root"] / approvals.TOOL_ARGUMENTS["path"]).read_text() == approvals.TOOL_ARGUMENTS["content"]
+
+    service = outbox.RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
+    candidates, page_candidates = outbox.notification_claim_candidate_statement, outbox.notification_page_candidate_statement
+    with patch.object(outbox, "notification_claim_candidate_statement", lambda **kwargs:
+        candidates(**kwargs).where(RuntimeNotificationOutbox.tenant_id == seed["tenant_id"])), patch.object(
+        outbox, "notification_page_candidate_statement", lambda **kwargs:
+        page_candidates(**kwargs).where(RuntimeResultIntegrationPage.tenant_id == seed["tenant_id"])):
+        claimed = await service.claim_batch(worker_id="r29a-approval")
+    assert len(claimed) == 1 and claimed[0].source_kind == "approval"
+    pages = await service.prepare_integration_pages(worker_id="r29a-approval", claimed=claimed)
+    assert len(pages) == 1
+    page = pages[0]
+    key = f"runtime_result_page:{page.id}:continuation"
+
+    async def assert_one_wake(stage):
+        async with owner_sessionmaker() as db:
+            events = list(await db.scalars(select(RuntimeBudgetEvent).where(RuntimeBudgetEvent.reservation_key == key)))
+            amounts = {event.event_type: event.amounts_json["continuation_wakes"] for event in events}
+            print(f"R29A approval legacy={legacy_settlement} stage={stage} wake_budget={amounts}")
+            assert len(events) == 2 and amounts == {"reservation": 1, "settlement": 1}
+
+    real_settle = ExecutionAdmission.settle
+
+    async def round_one_settle(self, decision, **kwargs):
+        # Model a pre-upgrade consumer, using the real budget service to commit its one wake.
+        if decision.reservation.reservation_key == key:
+            kwargs["actual_continuation_wakes"] = 1
+        return await real_settle(self, decision, **kwargs)
+
+    with monkeypatch.context() as first_consumer:
+        if legacy_settlement:
+            first_consumer.setattr(ExecutionAdmission, "settle", round_one_settle)
+        receipt = await service._deliver_page(page)
+    assert receipt["consumer"] == "session_projection" and receipt["continuation_status"] == "delivered"
+    assert not receipt.get("continuation_denial")
+    async with owner_sessionmaker() as db:
+        assert (await db.get(RuntimeTask, run_id)).status == "resumable"
+        notice = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.causation_id == page.id,
+            ChatTranscriptEvent.event_type == "agent_task_notification"))
+        assert notice.metadata_json["continuation_status"] == "delivered"
+        assert not notice.metadata_json.get("continuation_denial")
+    await assert_one_wake("first_delivery")
+    again = await service._deliver_page(page)
+    assert again["ok"] and again["deduplicated"] and again["continuation_status"] == "delivered"
+    await assert_one_wake("redelivery")
+    assert await service._mark_page_delivered(page=page, worker_id="r29a-approval", receipt=again) == 1
+    async with owner_sessionmaker() as db:
+        returns = list(await db.scalars(select(SessionTurnInput).where(
+            SessionTurnInput.id == uuid5(page.id, "web-approval-return"),
+            SessionTurnInput.session_id == seed["session_id"], SessionTurnInput.target_run_id == run_id)))
+        assert len(returns) == 1
+    await approvals._drive_resumed_run(seed, app_user_sessionmaker)
+    async with owner_sessionmaker() as db:
+        assert (await db.get(RuntimeTask, run_id)).status == "completed"
+        assert await db.scalar(select(func.count()).select_from(RuntimeTask).where(
+            RuntimeTask.parent_session_id == str(seed["session_id"]), RuntimeTask.task_type == "web_chat_turn")) == 1
+    assert len(model.requests) == 2
+
+
+@pytest.mark.parametrize("cancel_status", ["killed", "pending"])
+async def test_web_cancel_publish_error_does_not_hide_the_delegation_cancel_result(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, cancel_status,
+):
+    from app.agents import orchestrator
+    from app.services import runtime_control_bus, web_chat_runtime
+
+    async with _family(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path) as family:
+        messages = []
+        real_logger, real_publish = web_chat_runtime.logger, runtime_control_bus.publish_web_chat_cancel
+
+        class ObservedLogger:
+            def __getattr__(self, name):
+                return getattr(real_logger, name)
+
+            def warning(self, message, *args, **kwargs):
+                if message.startswith("[WebChatRun] child") and args[0] == family.child.id:
+                    messages.append(message.format(*args))
+                return real_logger.warning(message, *args, **kwargs)
+
+        async def publish(**kwargs):
+            if kwargs["run_id"] == family.child.id.hex:
+                raise RuntimeError("Synthetic web cancel publication failure")
+            return await real_publish(**kwargs)
+
+        async def cancel(task_id, **_kwargs):
+            assert task_id == family.child.id.hex
+            return {"status": cancel_status}
+
+        monkeypatch.setattr(web_chat_runtime, "logger", ObservedLogger())
+        monkeypatch.setattr(runtime_control_bus, "publish_web_chat_cancel", publish)
+        monkeypatch.setattr(orchestrator, "cancel_async_delegation", cancel)
+        assert (await stopped._stop(owner_sessionmaker, family.seed))["accepted"] is True
+        print(f"R29A publish failure cancel_status={cancel_status} warnings={messages}")
+        assert any("cancel signal unavailable" in message for message in messages)
+        assert not any("cancel failed:" in message for message in messages)
+        assert any("cancel did not terminate: status=pending" in message for message in messages) is (cancel_status == "pending")
+        await asyncio.wait_for(family.provider.cancelled.wait(), timeout=5)
+        await asyncio.wait_for(asyncio.gather(*family.workers), timeout=20)

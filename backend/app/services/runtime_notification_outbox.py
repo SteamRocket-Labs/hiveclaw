@@ -1764,7 +1764,7 @@ class RuntimeNotificationOutboxService:
                 if admission is not None and admission_decision is not None:
                     await admission.settle(
                         admission_decision,
-                        actual_continuation_wakes=0 if (existing.metadata_json or {}).get("consumer") == "session_projection" else 1,
+                        actual_continuation_wakes=0 if (existing.metadata_json or {}).get("continuation_denial") else 1,
                         reason="runtime_result_page_already_delivered",
                     )
                 return {
@@ -1855,7 +1855,7 @@ class RuntimeNotificationOutboxService:
             if admission is not None and admission_decision is not None:
                 await admission.settle(
                     admission_decision,
-                    actual_continuation_wakes=0 if receipt.get("consumer") == "session_projection" else 1,
+                    actual_continuation_wakes=0 if receipt.get("continuation_denial") else 1,
                     reason="runtime_result_page_delivered",
                 )
             return {

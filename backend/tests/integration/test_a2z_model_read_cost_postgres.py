@@ -19,11 +19,19 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 @contextmanager
 def model_read_bytes():
+    """Sample an identical SELECT through public results without draining its cursor."""
     observations = []
+    sampling = False
 
     def after(_connection, cursor, sql, _params, _context, _many):
-        if sql.lstrip().startswith("SELECT") and "FROM session_model_results" in sql:
-            observations.append(sum(len(str(value).encode()) for row in cursor._rows for value in row if value is not None))
+        nonlocal sampling
+        if not sampling and sql.lstrip().startswith("SELECT") and "FROM session_model_results" in sql:
+            sampling = True
+            try:
+                rows = _connection.exec_driver_sql(sql, _params).all()
+                observations.append(sum(len(str(value).encode()) for row in rows for value in row if value is not None))
+            finally:
+                sampling = False
 
     event.listen(Engine, "after_cursor_execute", after)
     try:
@@ -56,16 +64,17 @@ async def test_prepare_tool_invocation_does_not_transfer_model_snapshot(
         assert sum(received) < 4096, received
 
 
-async def test_prepare_model_sources_do_not_hold_runtime_task_row_lock(
+async def test_prepare_takes_no_explicit_run_lock_before_source_reads(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 ):
+    """A span-free fixture isolates prepare's explicit lock; FK locks are tested separately."""
     seed = await _seed_waiting_batch(owner_sessionmaker)
     original = session_model_round._validate_or_withhold_model_sources
     lock_available = []
 
     async def inspect_lock(db, **kwargs):
-        # This is the long source-closure/byte-validation step on the real path.
-        # Another connection must be able to renew the run lease at this point.
+        # No context spans are captured here, so NOWAIT probes the explicit
+        # plan lock. Real source-span FK locks have a separate renewal test.
         async with app_user_sessionmaker() as other:
             await pin_rls_tenant_context(other, seed.tenant_id)
             try:
@@ -90,42 +99,53 @@ async def test_prepare_model_sources_do_not_hold_runtime_task_row_lock(
     assert lock_available == [True]
 
 
-async def test_bound_round_releases_run_before_saved_file_source_validation(
+async def test_saved_file_database_error_rolls_back_input_binding(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 ):
     from types import SimpleNamespace
+    from sqlalchemy import text
     from app.database import tenant_scoped_session
+    from app.models.session_v2 import SessionModelResult, SessionTurnInput
+    from app.runtime.hooks import HookResult
     from app.services import artifact_continuation
+    from app.services.session_human_input import queue_admitted_human_input
+    from app.services.session_input_admission import run_user_prompt_admission
     from app.services.web_chat_run_orchestrator import _bind_session_round_inputs
+    from tests.services.test_session_input_control_v2 import _accepted_input, _authority, _seed_session
 
-    seed = await _seed_waiting_batch(owner_sessionmaker)
-    async with owner_sessionmaker() as db:
-        (await db.get(RuntimeTask, seed.run_id)).status = "running"
+    tenant, user, agent, session, run = await _seed_session(owner_sessionmaker, active_run=True)
+
+    async def allow(**_kwargs):
+        return HookResult()
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant)
+        authority = await _authority(db, user_id=user, agent_id=agent, session_id=session)
+        receipt = await _accepted_input(db, authority=authority, session_id=session, run_id=run,
+            kind="steer_current_turn", content="Continue with the saved report.")
+        await run_user_prompt_admission(db, authority=authority, input_id=receipt.input_id,
+            worker_id="a2z-atomic-bind", hook_executor=allow)
+        await queue_admitted_human_input(db, authority=authority, input_id=receipt.input_id)
         await db.commit()
-    original = artifact_continuation.saved_file_context
-    lock_available = []
 
-    async def inspect_lock(db, **kwargs):
-        async with app_user_sessionmaker() as other:
-            await pin_rls_tenant_context(other, seed.tenant_id)
-            try:
-                row = await other.scalar(select(RuntimeTask.id).where(RuntimeTask.id == seed.run_id,
-                    RuntimeTask.tenant_id == seed.tenant_id).with_for_update(nowait=True))
-            except DBAPIError as exc:
-                assert getattr(exc.orig, "sqlstate", None) == "55P03"
-                lock_available.append(False)
-            else:
-                assert row == seed.run_id
-                lock_available.append(True)
-        return await original(db, **kwargs)
+    async def database_error(db, **_kwargs):
+        await db.execute(text("SELECT a2z_missing_saved_file_column"))
 
-    monkeypatch.setattr(artifact_continuation, "saved_file_context", inspect_lock)
-    state = SimpleNamespace(agent=SimpleNamespace(id=seed.agent_id, tenant_id=seed.tenant_id),
-        actor_user_id=seed.user_id, run_uuid=seed.run_id, session_id=str(seed.session_id),
-        metadata={"turn_id": seed.turn_id}, ports=SimpleNamespace(runtime=SimpleNamespace(
-            tenant_scoped_session=lambda tenant: tenant_scoped_session(tenant, session_factory=app_user_sessionmaker))))
-    await _bind_session_round_inputs(state, 2)
-    assert lock_available == [True]
+    monkeypatch.setattr(artifact_continuation, "saved_file_context", database_error)
+    state = SimpleNamespace(agent=SimpleNamespace(id=agent, tenant_id=tenant),
+        actor_user_id=user, run_uuid=run, session_id=str(session), metadata={"turn_id": f"turn-{run.hex}"},
+        ports=SimpleNamespace(runtime=SimpleNamespace(tenant_scoped_session=lambda tenant:
+            tenant_scoped_session(tenant, session_factory=app_user_sessionmaker))))
+    with pytest.raises(DBAPIError):
+        await _bind_session_round_inputs(state, 1)
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant)
+        row = await db.get(SessionTurnInput, receipt.input_id)
+        assert row.status == "queued"
+        assert row.bound_round_id is None
+        assert row.model_request_snapshot_ref is None
+        assert await db.scalar(select(SessionModelResult.id).where(
+            SessionModelResult.tenant_id == tenant, SessionModelResult.run_id == run)) is None
 
 
 async def test_next_round_reads_previous_identity_without_snapshot(
@@ -178,6 +198,40 @@ async def test_semantic_history_reads_seals_without_request_snapshots(
     assert history.messages
     assert received
     assert sum(received) < 4096, received
+
+
+async def test_history_read_does_not_leave_partial_models_for_same_session_get(
+    native_workspace, app_user_sessionmaker,
+):
+    from app.models.session_v2 import SessionModelResult
+    from app.services.session_semantic_history import load_session_semantic_history
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+
+    n = native_workspace
+    _, invocation = await memory_call(n, app_user_sessionmaker, "get_current_time", {})
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        identity, expected_hash = (await db.execute(select(SessionModelResult.id,
+            SessionModelResult.model_request_hash).where(SessionModelResult.tenant_id == n.tenant,
+            SessionModelResult.provider_request_id == invocation.provider_request_id))).one()
+        retained = []
+
+        def retain_model(_session, instance):
+            if isinstance(instance, SessionModelResult):
+                retained.append(instance)
+
+        # Other consumers can retain loaded entities. Keep any history loads
+        # alive so the weak identity map cannot hide this same-session case.
+        event.listen(db.sync_session, "loaded_as_persistent", retain_model)
+        try:
+            history = await load_session_semantic_history(db, tenant_id=n.tenant, agent_id=n.agent,
+                session_id=n.session)
+        finally:
+            event.remove(db.sync_session, "loaded_as_persistent", retain_model)
+        assert history.messages
+        result = await db.get(SessionModelResult, identity)
+        assert result is not None
+        assert result.model_request_hash == expected_hash
 
 
 async def test_lease_renewal_is_compatible_with_source_span_foreign_key_lock(

@@ -20,7 +20,6 @@ from typing import Any, Iterable
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import load_only
 
 from app.models.audit import ChatMessage
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -483,12 +482,12 @@ async def _committed_round_messages(
     result_rows = list(
         (
             await db.execute(
-                select(SessionModelResult).options(load_only(
+                select(
                     SessionModelResult.id, SessionModelResult.tenant_id, SessionModelResult.session_id,
                     SessionModelResult.run_id, SessionModelResult.provider_request_id, SessionModelResult.state,
                     SessionModelResult.reconciliation_owner, SessionModelResult.round_committed_event_id,
                     SessionModelResult.seal_json,
-                )).where(
+                ).where(
                     SessionModelResult.id.in_(set(committed_views)),
                     SessionModelResult.tenant_id == tenant_id,
                     or_(
@@ -501,7 +500,7 @@ async def _committed_round_messages(
                     ),
                 )
             )
-        ).scalars()
+        ).all()
     )
     results_by_id = {row.id: row for row in result_rows}
     if set(results_by_id) != set(committed_views):

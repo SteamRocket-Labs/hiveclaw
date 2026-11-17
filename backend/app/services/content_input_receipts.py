@@ -2322,13 +2322,37 @@ async def _resolve_session_input_source(
             if project_source_read_allowed(tenant_id, principal):
                 await _input_agent_access(db, requester, session.agent_id)
                 return
+            from sqlalchemy import func
+            from app.models.agent import Agent
+            from app.models.runtime_task import RuntimeTask
+
+            if session.session_kind == "delegation_run":
+                binding = (
+                    await db.execute(
+                        select(Agent, RuntimeTask)
+                        .join(RuntimeTask, RuntimeTask.child_agent_id == Agent.id)
+                        .where(
+                            RuntimeTask.tenant_id == tenant_id,
+                            RuntimeTask.task_type == "delegation",
+                            RuntimeTask.parent_agent_id == principal.agent_id,
+                            RuntimeTask.child_agent_id == session.agent_id,
+                            func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session.id.hex,
+                            RuntimeTask.root_user_id == requester.id,
+                            func.replace(func.lower(RuntimeTask.parent_session_id), "-", "")
+                            == uuid.UUID(str(principal.session_id)).hex,
+                            Agent.tenant_id == tenant_id,
+                            Agent.deleted_at.is_(None),
+                            Agent.deactivated_at.is_(None),
+                        )
+                    )
+                ).first()
+                if binding is not None:
+                    await _input_agent_access(db, requester, session.agent_id)
+                    return
             if not delegated_user_command:
                 raise ValueError("session_source_actor_mismatch")
             from datetime import datetime, timezone
-            from sqlalchemy import func
             from app.agents.delegation_token import DelegationToken, validate_delegation_token
-            from app.models.agent import Agent
-            from app.models.runtime_task import RuntimeTask
 
             context = runtime_request.context
             token = context.delegation_token

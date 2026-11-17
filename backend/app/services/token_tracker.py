@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
+from sqlalchemy import Date, case, cast, func, or_, select, update
 
 _DEFAULT_CHARS_PER_TOKEN = 3.5
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]")
@@ -128,29 +129,23 @@ def _coerce_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
         return None
 
 
-def _reset_user_or_tenant_counter(subject: Any, *, now: datetime) -> None:
-    reset_at = getattr(subject, "tokens_reset_at", None)
-    if reset_at is None:
-        subject.tokens_reset_at = now
-        return
-    if now.date() > reset_at.date():
-        subject.tokens_used_today = 0
-    if now.month != reset_at.month or now.year != reset_at.year:
-        subject.tokens_used_month = 0
-    subject.tokens_reset_at = now
-
-
-def _reset_agent_counter(agent: Any, *, now: datetime) -> None:
-    if agent.last_daily_reset is None:
-        agent.last_daily_reset = now
-    elif now.date() > agent.last_daily_reset.date():
-        agent.tokens_used_today = 0
-        agent.last_daily_reset = now
-    if agent.last_monthly_reset is None:
-        agent.last_monthly_reset = now
-    elif now.month != agent.last_monthly_reset.month or now.year != agent.last_monthly_reset.year:
-        agent.tokens_used_month = 0
-        agent.last_monthly_reset = now
+def _charge_counter_values(subject: Any, *, tokens: int, now: datetime, agent: bool = False) -> dict:
+    """Increment the locked row in SQL, preserving the existing UTC resets."""
+    daily_at = subject.last_daily_reset if agent else subject.tokens_reset_at
+    monthly_at = subject.last_monthly_reset if agent else subject.tokens_reset_at
+    day_changed = cast(func.timezone("UTC", daily_at), Date) < now.date()
+    month_changed = cast(func.date_trunc("month", func.timezone("UTC", monthly_at)), Date) != now.date().replace(day=1)
+    values = {
+        "tokens_used_today": case((day_changed, 0), else_=func.coalesce(subject.tokens_used_today, 0)) + tokens,
+        "tokens_used_month": case((month_changed, 0), else_=func.coalesce(subject.tokens_used_month, 0)) + tokens,
+        "tokens_used_total": func.coalesce(subject.tokens_used_total, 0) + tokens,
+    }
+    if agent:
+        values["last_daily_reset"] = case((or_(daily_at.is_(None), day_changed), now), else_=daily_at)
+        values["last_monthly_reset"] = case((or_(monthly_at.is_(None), month_changed), now), else_=monthly_at)
+    else:
+        values["tokens_reset_at"] = now
+    return values
 
 
 async def _record_token_usage_event(
@@ -173,36 +168,23 @@ async def _record_token_usage_event(
         from app.models.tenant import Tenant
         from app.models.token_usage_event import TokenUsageEvent
         from app.models.user import User
-        from sqlalchemy import select
-
         async with tenant_scoped_session(tenant_id) as db:
-            now = datetime.now(timezone.utc)
+            locked_tenant_id = None
             if tenant_id is not None:
-                tenant = (
-                    await db.execute(select(Tenant).where(Tenant.id == tenant_id).with_for_update(key_share=True))
-                ).scalar_one_or_none()
-                if tenant:
-                    _reset_user_or_tenant_counter(tenant, now=now)
-                    tenant.tokens_used_today = (tenant.tokens_used_today or 0) + tokens
-                    tenant.tokens_used_month = (tenant.tokens_used_month or 0) + tokens
-                    tenant.tokens_used_total = (tenant.tokens_used_total or 0) + tokens
+                locked_tenant_id = await db.scalar(
+                    select(Tenant.id).where(Tenant.id == tenant_id).with_for_update(key_share=True)
+                )
+            now = datetime.now(timezone.utc)
+            if locked_tenant_id is not None:
+                await db.execute(
+                    update(Tenant).where(Tenant.id == tenant_id)
+                    .values(**_charge_counter_values(Tenant, tokens=tokens, now=now))
+                )
             if user_id is not None:
-                user = (
-                    await db.execute(
-                        select(User)
-                        .where(
-                            User.id == user_id,
-                            User.tenant_id == tenant_id,
-                        )
-                        .with_for_update()
-                    )
-                ).scalar_one_or_none()
-                if user:
-                    _reset_user_or_tenant_counter(user, now=now)
-                    user.tokens_used_today = (user.tokens_used_today or 0) + tokens
-                    user.tokens_used_month = (user.tokens_used_month or 0) + tokens
-                    user.tokens_used_total = (user.tokens_used_total or 0) + tokens
-                    user.tokens_reset_at = now
+                await db.execute(
+                    update(User).where(User.id == user_id, User.tenant_id == tenant_id)
+                    .values(**_charge_counter_values(User, tokens=tokens, now=now))
+                )
             db.add(
                 TokenUsageEvent(
                     tenant_id=tenant_id,
@@ -263,7 +245,6 @@ async def record_token_usage(
         from app.models.token_usage_event import TokenUsageEvent
         from app.models.user import User
         from app.services.tenant_resolver import resolve_tenant_for_agent
-        from sqlalchemy import select
 
         # Independent session (avoids the caller's tx) with no tenant in scope:
         # under enforced RLS a bare session sees neither the agent nor user row,
@@ -272,124 +253,55 @@ async def record_token_usage(
         # the same tenant.
         tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tenant_id) as db:
+            # NO KEY UPDATE (key_share=True) avoids the restart loader's self-deadlock.
+            # Keep this lock separate so dedup sees the previous holder's commit.
+            locked_tenant_id = await db.scalar(
+                select(Tenant.id).where(Tenant.id == tenant_id).with_for_update(key_share=True)
+            )
+            if locked_tenant_id is None:
+                raise RuntimeError("Tenant row was not locked")
             now = datetime.now(timezone.utc)
-            # Serialize charges on the shared counter rows BEFORE any dedupe
-            # read: two concurrent callers of the SAME key (a stale worker and
-            # the reclaiming worker) or of DIFFERENT keys sharing these rows
-            # must never interleave read-modify-write counters or race the
-            # keyed existence check.
-            #
-            # Lock order is Tenant -> User -> Agent.  User offboarding locks
-            # the target User (FOR UPDATE) and then the user's Agent rows
-            # (FOR UPDATE, ``_lock_owned_agents``); tenant retirement locks
-            # Tenant first.  Ordering every counter row Tenant -> User ->
-            # Agent keeps ONE consistent global order with BOTH authenticated
-            # production paths — the inverse order (Agent before User) is a
-            # reachable ABBA deadlock whenever an admin offboards an employee
-            # whose Agent is mid-turn.
-            #
-            # The order is not only about the explicit ``with_for_update``
-            # calls: no row may be dirtied before its lock is held, because
-            # the session's autoflush would emit that row's UPDATE (and take
-            # its row lock) at the NEXT select — silently re-introducing the
-            # inverse order even when the explicit Agent lock is removed.
-            # All counter mutations below therefore happen only after every
-            # lock AND the dedupe read.  The strength is FOR NO KEY UPDATE:
-            # it still serializes concurrent charges against each other
-            # (mutual conflict) and against offboarding's FOR UPDATE, but
-            # remains compatible with the foreign-key KEY SHARE row locks
-            # any open transaction holds after inserting child rows — a
-            # full FOR UPDATE here deadlocks whenever a charge runs while
-            # the caller's own transaction (e.g. the restart loader) is
-            # still open, because that transaction awaits this charge's
-            # result on the same event loop.
-            tenant = (
-                await db.execute(select(Tenant).where(Tenant.id == tenant_id).with_for_update(key_share=True))
-            ).scalar_one_or_none()
-
-            # Resolve the owning user BEFORE taking the Agent lock: the User
-            # row must be locked first (order above).  This snapshot read
-            # mutates nothing, so autoflush cannot reorder it.  The snapshot
-            # owner is DELIBERATELY the charge principal for the whole
-            # transaction: an ownership transfer that commits mid-charge must
-            # not split the charge across principals (for example, debit the
-            # snapshot user's counter while writing the new owner's identity
-            # into the evidence event).  The User row is locked under exactly
-            # that principal.
-            resolved_user_id = user_id
-            if not resolved_user_id:
-                owner_snapshot = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
-                if owner_snapshot is not None:
-                    resolved_user_id = owner_snapshot.owner_user_id or owner_snapshot.creator_id
-
-            user = None
-            if resolved_user_id:
-                user = (
-                    await db.execute(
-                        select(User)
-                        .where(
-                            User.id == resolved_user_id,
-                            User.tenant_id == tenant_id,
-                        )
-                        .with_for_update(key_share=True)
-                    )
-                ).scalar_one_or_none()
-
-            # The locking Agent re-read refreshes the row state
-            # (``populate_existing``) so the counter read-modify-write below
-            # uses the values as of THIS lock, not a stale identity-map
-            # instance from the mutation-free snapshot above.
-            agent = (
-                await db.execute(
-                    select(Agent)
-                    .where(Agent.id == agent_id)
-                    .with_for_update(key_share=True)
-                    .execution_options(populate_existing=True)
-                )
-            ).scalar_one_or_none()
-
+            tenant_charge = update(Tenant).where(Tenant.id == tenant_id)
             if idempotency_key:
-                # Only after the counter rows are locked: the competing charge
-                # (if any) has either committed its evidence row — visible to
-                # this fresh READ COMMITTED snapshot — or not started, so the
-                # check-then-insert is a real fence, not a race window.
-                already = await db.scalar(
-                    select(TokenUsageEvent.id)
-                    .where(
+                # This later statement gets a fresh READ COMMITTED snapshot of
+                # the previous holder's committed event. A duplicate matches
+                # no row, so it never writes or evaluates the counter values.
+                tenant_charge = tenant_charge.where(
+                    ~select(TokenUsageEvent.id).where(
                         TokenUsageEvent.tenant_id == tenant_id,
                         TokenUsageEvent.agent_id == agent_id,
                         TokenUsageEvent.details["idempotency_key"].astext == str(idempotency_key),
-                    )
-                    .limit(1)
+                    ).exists()
                 )
-                if already is not None:
-                    await db.rollback()
-                    return False
-            if tenant:
-                _reset_user_or_tenant_counter(tenant, now=now)
-                tenant.tokens_used_today = (tenant.tokens_used_today or 0) + tokens
-                tenant.tokens_used_month = (tenant.tokens_used_month or 0) + tokens
-                tenant.tokens_used_total = (tenant.tokens_used_total or 0) + tokens
-            if agent:
-                _reset_agent_counter(agent, now=now)
-                agent.tokens_used_today = (agent.tokens_used_today or 0) + tokens
-                agent.tokens_used_month = (agent.tokens_used_month or 0) + tokens
-                agent.tokens_used_total = (agent.tokens_used_total or 0) + tokens
+            charged_tenant_id = await db.scalar(
+                tenant_charge.values(**_charge_counter_values(Tenant, tokens=tokens, now=now))
+                .returning(Tenant.id)
+            )
+            if idempotency_key and charged_tenant_id is None:
+                await db.rollback()
+                return False
 
-                # The evidence event carries the SAME principal that was
-                # locked and debited above (the snapshot owner) — never a
-                # mid-charge ownership transfer observed on the refreshed
-                # Agent row, which would split counter and evidence.
-                if not user_id:
-                    user_id = resolved_user_id
-
-            # User enforcement counters
-            if user:
-                _reset_user_or_tenant_counter(user, now=now)
-                user.tokens_used_today = (user.tokens_used_today or 0) + tokens
-                user.tokens_used_month = (user.tokens_used_month or 0) + tokens
-                user.tokens_used_total = (user.tokens_used_total or 0) + tokens
-                user.tokens_reset_at = now
+            # Snapshot the charge principal before locking User then Agent.
+            # An ownership transfer must not split counter and event identity.
+            resolved_user_id = user_id
+            if not resolved_user_id:
+                owner_snapshot = (
+                    await db.execute(select(Agent.owner_user_id, Agent.creator_id).where(Agent.id == agent_id))
+                ).one_or_none()
+                if owner_snapshot is not None:
+                    resolved_user_id = owner_snapshot.owner_user_id or owner_snapshot.creator_id
+            if resolved_user_id:
+                await db.execute(
+                    update(User).where(User.id == resolved_user_id, User.tenant_id == tenant_id)
+                    .values(**_charge_counter_values(User, tokens=tokens, now=now))
+                )
+            charged_agent_id = await db.scalar(
+                update(Agent).where(Agent.id == agent_id)
+                .values(**_charge_counter_values(Agent, tokens=tokens, now=now, agent=True))
+                .returning(Agent.id)
+            )
+            if charged_agent_id is not None and not user_id:
+                user_id = resolved_user_id
 
             event_details = dict(details or {})
             if idempotency_key:

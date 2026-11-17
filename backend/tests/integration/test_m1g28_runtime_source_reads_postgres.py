@@ -1,4 +1,4 @@
-"""Owned browser copies remain readable; runs recheck original source grants."""
+"""Owned working copies remain readable independently of their source history."""
 
 import hashlib
 import json
@@ -62,7 +62,7 @@ async def test_native_reader_reads_owned_body_without_manufacturing_a_receipt(
 
 
 @pytest.mark.parametrize("tool", ["read_file", "fs_read", "read_document", "fs_read_document"])
-async def test_owned_browser_keeps_working_copy_while_run_rechecks_source_grant(
+async def test_owned_working_copy_stays_readable_when_upstream_grant_changes(
     native_workspace, owner_sessionmaker, tool,  # noqa: F811
 ):
     from app.models.user import User
@@ -87,9 +87,8 @@ async def test_owned_browser_keeps_working_copy_while_run_rechecks_source_grant(
         await db.commit()
     browser = await n.client.get(f"/agents/{n.agent}/files/content", params={"path": path})
     assert browser.status_code == 200 and body in browser.text, browser.text
-    denied = await _read(n, tool, path)
-    # R10a read-time ruling: an unauthorized source never reaches the model
-    assert body not in denied and "content_source_access_denied" in denied, denied
+    read = await _read(n, tool, path)
+    assert body in read and "content_source_access_denied" not in read, read
     grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",
         resource_id=document.id, document_id=document.id, grantee_type="user", grantee_id=n.user,
         created_by_user_id=n.foreign, permission="read",  # R10a reader ruling: agent-only grants no longer admit a member read
@@ -102,9 +101,8 @@ async def test_owned_browser_keeps_working_copy_while_run_rechecks_source_grant(
     async with owner_sessionmaker() as db:
         (await db.get(KnowledgeGrant, grant.id)).revoked_at = datetime.now(timezone.utc)
         await db.commit()
-    denied = await _read(n, tool, path)
-    # R10a read-time ruling: after revocation the derived working copy does not re-enter a run
-    assert body not in denied and "content_source_access_denied" in denied, denied
+    read = await _read(n, tool, path)
+    assert body in read and "content_source_access_denied" not in read, read
     assert (n.root / path).read_text() == body
 
 

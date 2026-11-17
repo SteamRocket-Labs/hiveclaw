@@ -433,7 +433,7 @@ async def test_delivered_reads_batch_graph_and_ignore_later_history(
             assert measurements[size, 30, endpoint]["statements"] <= measurements[size, 30, endpoint]["live_checkpoints"] + 40, measurements
 
 
-async def test_every_read_rechecks_deep_leaves_and_reader(
+async def test_delivered_copy_keeps_its_reader_boundary_without_replaying_deep_leaves(
     graph, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 ):
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -487,13 +487,15 @@ async def test_every_read_rechecks_deep_leaves_and_reader(
             for endpoint in ("download", "content", "preview"):
                 response, _ = await _read(n, endpoint, monkeypatch)
                 print("R15E_LEAF", json.dumps({"kind": kind, "endpoint": endpoint,
-                    "status": response.status_code, "detail": response.json().get("detail")}), flush=True)
-                assert response.status_code == 403, response.text
-                detail = response.json()["detail"]
-                expected = {"explicit_memory": "explicit_memory_browser_denied",
-                    "workspace_artifact": "content_source_access_denied", "session_tool_invocation": "content_source_changed",
-                    "agent_platform_skill_file": "content_source_changed"}
-                assert detail == "No access to this agent" if kind == "reader" else detail["code"] == expected[kind]
+                    "status": response.status_code}), flush=True)
+                if kind == "reader":
+                    assert response.status_code == 403, response.text
+                    assert response.json()["detail"] == "No access to this agent"
+                elif endpoint == "preview":
+                    assert response.status_code == 400, response.text
+                else:
+                    assert response.status_code == 200, response.text
+                    assert (response.content if endpoint == "download" else response.json()["content"].encode()) == BODY.encode()
         finally:
             if kind == "reader":
                 app.dependency_overrides[get_current_user] = old_reader

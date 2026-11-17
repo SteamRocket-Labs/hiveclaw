@@ -1,8 +1,6 @@
-"""Unverifiable workspace history is withheld before it can taint a new report."""
+"""Working copies stay readable while publication keeps its source boundary."""
 
 import asyncio
-from collections import Counter
-from contextvars import ContextVar
 import json
 import uuid
 from types import SimpleNamespace
@@ -49,8 +47,8 @@ async def _unverifiable_history(db, *, tenant, agent, user, session, root):
     return path, dependency
 
 
-@pytest.mark.parametrize("continuation", ["original", "next_round_readback", "command_workspace", "office_dump"])
-async def test_web_report_withholds_tainted_history_and_delivers_new_csv_report(
+@pytest.mark.parametrize("continuation", ["original", "next_round_readback", "command_workspace"])
+async def test_web_report_uses_csv_without_replaying_unselected_history(
     owner_sessionmaker, monkeypatch, tmp_path, continuation,
 ):
     from fastapi import FastAPI
@@ -67,15 +65,14 @@ async def test_web_report_withholds_tainted_history_and_delivers_new_csv_report(
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.llm import LLMModel
     from app.models.runtime_task import RuntimeTask
-    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.models.session_v2 import SessionModelResult
     from app.models.user import User
     from app.runtime import invoker
-    from app.services import agent_context, agent_manager, agent_tools, content_input_receipts, learned_skill_sources, session_model_round
+    from app.services import agent_context, agent_manager, agent_tools
     from app.services.agent_manager import AgentManager
     from app.services.content_input_receipts import latest_workspace_receipt
     from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
     from app.services.secrets_provider import get_secrets_provider
-    from app.services.session_semantic_history import _event_payload
     from app.services.session_live_input import submit_live_human_input
     from app.services.web_chat_runtime import execute_web_chat_run
     from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient, _seed_run
@@ -142,60 +139,14 @@ async def test_web_report_withholds_tainted_history_and_delivers_new_csv_report(
     def call(name, identity, arguments):
         return {"id": identity, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
 
-    phase = ContextVar("r10a_validation_phase", default=None)
-    walks = Counter()
-    model_walks = Counter()
-    native_validate = content_input_receipts._validate_workspace_dependency
-    native_tool_input = content_input_receipts._validate_workspace_tool_input
-    native_model_source = learned_skill_sources._validate_model_source
-    native_read = content_input_receipts.authorize_workspace_receipt_read
-    native_round = session_model_round._validate_or_withhold_model_sources
-
-    async def count_validation(*args, **kwargs):
-        walks[phase.get()] += 1
-        return await native_validate(*args, **kwargs)
-
-    async def count_tool_input(*args, **kwargs):
-        walks[phase.get()] += 1
-        return await native_tool_input(*args, **kwargs)
-
-    async def count_model_source(*args, **kwargs):
-        model_walks[phase.get()] += 1
-        return await native_model_source(*args, **kwargs)
-
-    async def observe_read(request):
-        token = phase.set(request.arguments.get("path"))
-        try:
-            return await native_read(request)
-        finally:
-            phase.reset(token)
-
-    async def observe_round(*args, **kwargs):
-        token = phase.set("model_round")
-        try:
-            return await native_round(*args, **kwargs)
-        finally:
-            phase.reset(token)
-
-    monkeypatch.setattr(content_input_receipts, "_validate_workspace_dependency", count_validation)
-    monkeypatch.setattr(content_input_receipts, "_validate_workspace_tool_input", count_tool_input)
-    monkeypatch.setattr(learned_skill_sources, "_validate_model_source", count_model_source)
-    monkeypatch.setattr(content_input_receipts, "authorize_workspace_receipt_read", observe_read)
-    monkeypatch.setattr(session_model_round, "_validate_or_withhold_model_sources", observe_round)
     path, body = "workspace/sales-report.md", "# Sales report\nRows: 2\nTotal sales: 42\n"
     model_client = ScriptedLLMClient([
         {"tool_calls": [call("read_file", "new-csv", {"path": csv_path,
-            "original_attachment_id": uploaded.json()["original_attachment"]["id"]}),
-            call("read_file", "old-report", {"path": old_path})], "finish_reason": "tool_calls"},
+            "original_attachment_id": uploaded.json()["original_attachment"]["id"]})], "finish_reason": "tool_calls"},
         {"tool_calls": [call("write_file", "new-report", {"path": path, "content": body})],
             "finish_reason": "tool_calls"},
         {"content": f"The report is ready.\n\nDELIVERABLE: {path}", "finish_reason": "stop"},
     ])
-    if continuation == "office_dump":
-        # Office ignores unknown fields; they must not select the original-read
-        # exemption that only read_file/read_document/fs_read implement.
-        model_client.script[0]["tool_calls"][1] = call("office_document_dump", "old-report", {
-            "path": old_path, "original_attachment_id": "ignored-by-office"})
     readback = continuation == "next_round_readback"
     if readback:
         model_client.script.insert(2, {"tool_calls": [call("read_file", "report-readback", {"path": path})],
@@ -211,13 +162,13 @@ async def test_web_report_withholds_tainted_history_and_delivers_new_csv_report(
         async def execute_in_test_sandbox(command, *, work_dir, env, timeout, **_kwargs):
             assert work_dir.resolve() != (seed["agent_root"] / "workspace").resolve()
             assert (work_dir / "sales-report.md").read_bytes() == body.encode()
-            assert not (work_dir / "earlier-report.md").exists()
+            assert (work_dir / "earlier-report.md").is_file()
             process = await asyncio.create_subprocess_exec(*command, cwd=work_dir, env=env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
             assert process.returncode == 0 and stdout == body.encode() and stderr == b""
             print("R10A_COMMAND_WORKSPACE", json.dumps({"exit_code": process.returncode,
-                "report_bytes": len(stdout), "tainted_file_present": False}))
+                "report_bytes": len(stdout), "working_copy_present": True}))
             return CodeExecutionResult(stdout=stdout.decode(), stderr=stderr.decode(), exit_code=process.returncode,
                 evidence={"provider": "test_inherited_network_sandbox"})
 
@@ -241,21 +192,9 @@ async def test_web_report_withholds_tainted_history_and_delivers_new_csv_report(
             for row in events for part in (row.parts_json or []))
         assert not any("部分文件未能附在这条回复中" in (row.content or "") for row in events)
         models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])))
-        old_read = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == seed["run_id"],
-            SessionToolInvocation.provider_tool_use_id == "old-report"))
-        entries = [entry for row in models for entry in row.model_request_snapshot_json["input_bindings"]["messages"]
-            if entry.get("source_ref") == f"session-tool-result:{old_read.id}"]
-        # The rejected read returns the existing bound no-body result. Its bytes
-        # never enter a tool result, so later rounds need no workspace recheck.
-        assert entries and all(entry["status"] == "bound" for entry in entries)
-        old_event = await db.get(ChatTranscriptEvent, old_read.result_event_id)
-        old_payload = _event_payload(old_event)
-        assert "learned_model_source_unavailable" in old_payload["content"]
-        assert old_payload["metadata"]["native_read_denial_receipt"]["status"] == "verified"
         assert all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in models)
         assert all("COMPANY_SOURCE_MARKER" not in json.dumps(request) for request in model_client.requests)
         assert "Alpha,12" in json.dumps(model_client.requests[1])
-        assert "learned_model_source_unavailable" in json.dumps(model_client.requests[1])
         assert "有一项上下文暂时无法核实" not in json.dumps(model_client.requests, ensure_ascii=False)
         if readback:
             returned = next(message for message in model_client.requests[3]["messages"]
@@ -266,13 +205,6 @@ async def test_web_report_withholds_tainted_history_and_delivers_new_csv_report(
             returned = next(message for message in model_client.requests[3]["messages"]
                 if message.get("tool_call_id") == "report-command")
             assert body in returned["content"], returned
-        assert walks[old_path] == 3, walks
-        assert model_walks[old_path] == 1, model_walks
-        assert walks["model_round"] == 0, walks
-        print("R10A_READ_COST", json.dumps({"depth": 3, "receipt_validation_calls": walks[old_path],
-            "model_source_validation_calls": model_walks[old_path],
-            "total_source_validation_calls": walks[old_path] + model_walks[old_path],
-            "later_model_round_workspace_calls": walks["model_round"]}))
         receipt = await latest_workspace_receipt(db, seed["tenant_id"], seed["agent_id"], path)
         assert old_source not in receipt.dependencies_json
         artifact_id = artifacts[0].id
@@ -313,8 +245,8 @@ async def test_report_that_inherits_unverifiable_history_is_never_published(
     ("office_document_view", {}), ("office_document_query", {"selector": "paragraph"}),
     ("office_document_validate", {}), ("office_document_dump", {"original_attachment_id": "ignored-by-office"}),
 ])
-async def test_workspace_read_tools_withhold_the_unverifiable_file_body(
-    native_workspace, app_user_sessionmaker, tool, arguments,  # noqa: F811
+async def test_workspace_read_tools_keep_the_owned_working_copy_readable(
+    native_workspace, app_user_sessionmaker, monkeypatch, tool, arguments,  # noqa: F811
 ):
     n = native_workspace
     async with app_user_sessionmaker() as db:
@@ -322,9 +254,15 @@ async def test_workspace_read_tools_withhold_the_unverifiable_file_body(
         path, _source = await _unverifiable_history(db, tenant=n.tenant, agent=n.agent, user=n.user,
             session=n.session, root=n.root)
         await db.commit()
+    if tool.startswith("office_document_"):
+        from app.services.office_document_service import OfficeDocumentService
+
+        def adapter(_self, selected, **_kwargs):
+            return {"text": (n.root / selected).read_text()}
+
+        for method in ("run_view", "run_query", "run_validate", "run_dump"):
+            monkeypatch.setattr(OfficeDocumentService, method, adapter)
     result = await n.service.execute(tool, {"path": path, **arguments}, agent_id=n.agent, user_id=n.user,
         session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False)
-    assert "COMPANY_SOURCE_MARKER" not in str(result)
-    assert "learned_model_source_unavailable" in str(result), result
-    assert result.metadata["native_read_denial"] == {"kind": "workspace_source_read_denied", "path": path,
-        "http_status": 403, "reason_code": "learned_model_source_unavailable"}
+    assert "COMPANY_SOURCE_MARKER" in str(result), result
+    assert "learned_model_source_unavailable" not in str(result), result

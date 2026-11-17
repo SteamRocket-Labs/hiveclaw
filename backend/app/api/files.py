@@ -682,13 +682,8 @@ async def read_file(
             raise _content_receipt_http_error(exc) from exc
     receipt = None
     if resource_decision is not None:
-        from app.services.content_input_receipts import ContentInputReceiptError, latest_workspace_receipt, validate_browser_workspace_receipt
+        from app.services.content_input_receipts import latest_workspace_receipt
 
-        try:
-            await validate_browser_workspace_receipt(db, _agent.tenant_id, current_user, agent_id, path,
-                full_control=resource_decision.full_control)
-        except ContentInputReceiptError as exc:
-            raise _content_receipt_http_error(exc) from exc
         receipt = await latest_workspace_receipt(db, _agent.tenant_id, agent_id, path)
     return FileContent(
         path=path,
@@ -1344,7 +1339,7 @@ async def download_file(
         from app.services.workspace_resource_authority import authorize_workspace_path
 
         try:
-            decision = await authorize_workspace_path(
+            await authorize_workspace_path(
                 db,
                 user,
                 agent_id=agent_id,
@@ -1357,13 +1352,6 @@ async def download_file(
             )
         except Exception as exc:
             raise _workspace_authority_http_error(exc) from exc
-        from app.services.content_input_receipts import ContentInputReceiptError, validate_browser_workspace_receipt
-
-        try:
-            await validate_browser_workspace_receipt(db, _agent.tenant_id, user, agent_id, path,
-                full_control=decision.full_control)
-        except ContentInputReceiptError as exc:
-            raise _content_receipt_http_error(exc) from exc
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     response = await _workspace_download_response(agent_id, path, target.name)

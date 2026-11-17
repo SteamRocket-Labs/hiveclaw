@@ -151,16 +151,17 @@ async def test_delivered_report_reads_have_bounded_latency(
             "timings": timings, "queries": queries}), flush=True)
     assert outcomes == {"download": "ok", "content": "ok"}
 
-    # A fresh disclosure must still refuse a revoked original source.
+    # Revoking an upstream source does not revoke this member's delivered copy.
     async with owner_sessionmaker() as db:
         source = await db.scalar(select(WorkspaceResourceManifest).where(
             WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == csv_path))
         source.owner_user_id, source.root_session_id = n.foreign, None
         await db.commit()
     for endpoint in ("download", "content"):
-        denied = await asyncio.wait_for(n.client.get(
+        retained = await asyncio.wait_for(n.client.get(
             f"/agents/{n.agent}/files/artifacts/{artifact.id}/{endpoint}"), timeout=3)
-        assert denied.status_code == 403 and body not in denied.text, denied.text
+        assert retained.status_code == 200, retained.text
+        assert (retained.content if endpoint == "download" else retained.json()["content"].encode()) == body.encode()
 
 
 @pytest.mark.parametrize("starter", ["content", "download", "shared_check"])
@@ -212,43 +213,3 @@ async def test_workspace_history_read_has_bounded_statements(
         print("R7B_WORKSPACE_READ", json.dumps({"starter": starter, "seconds": time.monotonic() - started,
             "statements": statements}), flush=True)
     assert 0 < statements <= 600
-
-
-@pytest.mark.parametrize("endpoint", ["download", "content"])
-@pytest.mark.parametrize("revocation", ["foreign_owner", "quarantined"])
-async def test_artifact_read_observes_manifest_revocation_before_first_check(
-    report_history, owner_sessionmaker, monkeypatch, endpoint, revocation
-):
-    from app.models.organization_identity import ContentInputReceipt
-    from app.models.workspace_resource import WorkspaceResourceManifest
-    from app.services import content_input_receipts as receipts
-
-    h, committed = report_history, False
-    original = receipts._input_row
-
-    async def revoke_after_receipt_load(db, model, source_id, **kwargs):
-        nonlocal committed
-        row = await original(db, model, source_id, **kwargs)
-        if model is ContentInputReceipt and source_id == h.source_receipt_id and not committed:
-            assert row is not None
-            assert any(isinstance(item, ContentInputReceipt) and item.id == h.receipt.id
-                for item in db.identity_map.values()), "The artifact's pinned receipt must already be loaded"
-            async with owner_sessionmaker() as writer:
-                source = await writer.scalar(select(WorkspaceResourceManifest).where(
-                    WorkspaceResourceManifest.agent_id == h.n.agent, WorkspaceResourceManifest.path == h.csv_path))
-                if revocation == "foreign_owner":
-                    source.owner_user_id, source.root_session_id = h.n.foreign, None
-                else:
-                    source.authority_state = "quarantined"
-                await writer.commit()
-            committed = True
-        return row
-
-    monkeypatch.setattr(receipts, "_input_row", revoke_after_receipt_load)
-    response = await asyncio.wait_for(h.n.client.get(
-        f"/agents/{h.n.agent}/files/artifacts/{h.artifact.id}/{endpoint}"), timeout=3)
-    print("R7B_MID_READ_REVOKE", json.dumps({"endpoint": endpoint, "revocation": revocation,
-        "committed": committed, "status": response.status_code}), flush=True)
-    assert committed
-    assert response.status_code in {403, 409}, response.text
-    assert h.body not in response.text

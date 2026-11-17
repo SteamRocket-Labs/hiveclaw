@@ -207,7 +207,7 @@ async def test_revoked_document_cannot_leave_after_working_copy_read(native_work
 
 
 @pytest.mark.parametrize('revoked_member_grant', [False, True])
-async def test_agent_only_source_grant_cannot_admit_or_publish_member_working_copy(
+async def test_owned_copy_can_be_read_but_agent_grant_cannot_publish_it_to_the_member(
     native_workspace, owner_sessionmaker, revoked_member_grant,  # noqa: F811
 ):
     from datetime import datetime, timedelta, timezone
@@ -249,18 +249,16 @@ async def test_agent_only_source_grant_cannot_admit_or_publish_member_working_co
             await db.commit()
         context = ToolExecutionContext(agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant), workspace=n.root,
             session_id=str(n.session), runtime_task_id=str(n.run))
-        # The legacy grant is valid for its runtime reader, but cannot authorize the member's read or publication.
+        # Runtime source access remains separate from publication to the member.
         await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name='send_email', arguments={}, context=context),
             [{'source_kind': 'workspace_artifact', 'source_id': str(receipt.id), 'source_version': receipt.content_sha256}])
         await db.commit()
         result, sources, complete, _invocation = await _read_with_inventory(n, db, tool='read_file', path=path)
-        assert 'DERIVED_SOURCE_BODY' not in str(result), result
+        assert 'DERIVED_SOURCE_BODY' in str(result), result
         assert 'SOURCE_DOCUMENT' not in str(result), result
-        assert 'content_source_access_denied' in str(result), result
-        assert result.metadata['native_read_denial'] == {'kind': 'workspace_source_read_denied', 'path': path,
-            'http_status': 403, 'reason_code': 'content_source_access_denied'}
+        assert 'content_source_access_denied' not in str(result), result
         assert complete, 'NO_BODY_DENIAL_POISONED_INPUT_INVENTORY'
-        assert not any(row['source_kind'] in {'workspace_artifact', 'knowledge_document'} for row in sources), sources
+        assert any(row['source_kind'] == 'workspace_artifact' for row in sources), sources
         publication = SimpleNamespace(tenant=n.tenant, agent=n.agent, users=[n.user], sessions=[n.session],
             paths=[path], root=n.root)
         parts, errors = await publish_report(db, publication, 0)

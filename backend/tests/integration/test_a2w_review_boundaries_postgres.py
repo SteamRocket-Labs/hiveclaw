@@ -338,7 +338,7 @@ async def test_sibling_workspace_subtrees_share_one_walk_checkpoint(
     assert totals[0] == totals[1], totals
 
 
-async def test_execution_after_failure_omits_one_path(
+async def test_execution_capture_keeps_authorized_paths_without_source_replay(
     native_workspace, owner_sessionmaker, monkeypatch,  # noqa: F811
 ):
     from app.models.workspace_resource import WorkspaceResourceManifest
@@ -375,11 +375,11 @@ async def test_execution_after_failure_omits_one_path(
     request = _request(n, "execute_code", {"language": "python", "code": "print('ok')"}, paths)
     result = await sources.authorize_workspace_execution_inputs(request)
     assert result is None, result
-    assert request.context.workspace_authority_scope.allowed_paths == frozenset({paths[1]})
-    assert [row.path for row in request.context.workspace_authority_scope.input_reads] == [paths[1]]
-    assert len(calls) == 2
+    assert request.context.workspace_authority_scope.allowed_paths == frozenset(paths)
+    assert [row.path for row in request.context.workspace_authority_scope.input_reads] == paths
+    assert calls == []
 
-    # The shared child's cached walk must still identify every consuming path.
+    # A shared upstream source does not remove either authorized working copy.
     async with owner_sessionmaker() as db:
         manifest = await db.scalar(select(WorkspaceResourceManifest).where(
             WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == "workspace/source-0.md"))
@@ -392,9 +392,9 @@ async def test_execution_after_failure_omits_one_path(
     request = _request(n, "execute_code", {"language": "python", "code": "print('ok')"}, [*paths, "workspace/copy-c.md"])
     result = await sources.authorize_workspace_execution_inputs(request)
     assert result is None, result
-    assert request.context.workspace_authority_scope.allowed_paths == frozenset({paths[1]})
-    assert [row.path for row in request.context.workspace_authority_scope.input_reads] == [paths[1]]
-    assert len(calls) == 2
+    assert request.context.workspace_authority_scope.allowed_paths == frozenset([*paths, "workspace/copy-c.md"])
+    assert [row.path for row in request.context.workspace_authority_scope.input_reads] == [*paths, "workspace/copy-c.md"]
+    assert calls == []
 
 
 async def test_context_kind_is_part_of_a_malformed_binding_projection(

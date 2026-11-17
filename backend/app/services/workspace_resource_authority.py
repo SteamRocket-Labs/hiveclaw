@@ -690,6 +690,8 @@ class WorkspaceAuthorityScope:
             return self.can_read(normalized)
         if not _is_workspace_path(normalized):
             return True
+        if self.operator_view and normalized in self.known_paths and normalized not in self.allowed_paths:
+            return False
         if action in self.collection_actions:
             return True
         return (normalized, action) in self.action_permissions or any(
@@ -707,7 +709,8 @@ class WorkspaceAuthorityScope:
         if source_access is not None:
             return source_access
         if self.operator_view:
-            return True
+            normalized = normalize_workspace_resource_path(path)
+            return normalized not in self.known_paths or normalized in self.allowed_paths
         normalized = normalize_workspace_resource_path(path)
         if normalized == "memory/explicit" or normalized.startswith("memory/explicit/"):
             observed = self.input_read(normalized)
@@ -984,6 +987,8 @@ async def authorize_workspace_path(
         if source_facts is None
         else source_facts[0]
     )
+    if manifest is not None and manifest.deleted_at is not None:
+        raise WorkspaceAuthorityError("workspace_resource_not_found", "The workspace resource was deleted.")
     root_session_id = await _canonical_root_session(
         db,
         agent_id=agent_id,
@@ -1232,7 +1237,7 @@ async def load_workspace_authority_scope(
             agent_id=agent_id,
             user_id=user.id,
             root_session_id=canonical_root,
-            allowed_paths=frozenset(manifest.path for manifest in manifests),
+            allowed_paths=frozenset(manifest.path for manifest in manifests if manifest.deleted_at is None),
             operator_view=True,
             authority_source=collection_decision.authority_source,
             known_paths=frozenset(manifest.path for manifest in manifests),
@@ -1241,11 +1246,13 @@ async def load_workspace_authority_scope(
             learning_files=learning_files,
         )
 
-    allowed: set[str] = {manifest.path for manifest in manifests} if operator_view else set()
+    allowed: set[str] = {manifest.path for manifest in manifests if manifest.deleted_at is None} if operator_view else set()
     authority_sources: set[str] = set()
     full_control_paths: set[str] = set()
     action_permissions: set[tuple[str, str]] = set()
     for manifest in manifests:
+        if manifest.deleted_at is not None:
+            continue
         try:
             decision = await authorize_resource_action(
                 db,
@@ -1271,7 +1278,7 @@ async def load_workspace_authority_scope(
     grant_candidates = [
         manifest
         for manifest in manifests
-        if manifest.path not in full_control_paths and manifest.authority_state == OWNED_AUTHORITY_STATE
+        if manifest.deleted_at is None and manifest.path not in full_control_paths and manifest.authority_state == OWNED_AUTHORITY_STATE
     ]
     if grant_candidates:
         grants = await load_explicit_resource_grant_ids_by_action(

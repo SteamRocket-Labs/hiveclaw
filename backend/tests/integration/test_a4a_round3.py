@@ -224,8 +224,7 @@ async def test_bot_successor_keeps_document_until_approved_send(native_workspace
         later_n = SimpleNamespace(**{**vars(n), "session": later.id, "run": run.id})
         later_messages = await _admitted_write_messages(db, later_n, content="Email my report")
         later_read = await _step(later_n, db, "read_file", {"path": path}, later_messages, 1)
-        # R10a read-time ruling: after revocation the derived working copy does not re-enter a run
-        assert "PRIVATE_DOCUMENT_D" not in str(later_read.result) and "content_source_access_denied" in str(later_read.result)
+        assert "PRIVATE_DOCUMENT_D" in str(later_read.result) and "content_source_access_denied" not in str(later_read.result)
         # Keep the outward control in the writing session that already consumed D.
         from app.models.knowledge import KnowledgeGrant
         runtime_grant = await db.scalar(select(KnowledgeGrant).where(KnowledgeGrant.document_id == document.id,
@@ -432,8 +431,7 @@ async def test_incomplete_successor_remains_owned_but_cannot_leave(native_worksp
         readable = await n.client.get(f"/agents/{n.agent}/files/content", params={"path": path})
         assert readable.status_code == 200 and "PRIVATE_DOCUMENT_D" in readable.text
         read = await _step(n, db, "read_file", {"path": path}, messages, 3)
-        # R10a read-time ruling: an unverifiable source never reaches the model
-        assert "PRIVATE_DOCUMENT_D" not in str(read.result) and "learned_model_source_unavailable" in str(read.result)
+        assert "PRIVATE_DOCUMENT_D" in str(read.result) and "learned_model_source_unavailable" not in str(read.result)
         if route == "approved_send":
             from app.runtime.context_candidates import ContextMessageOrigin
             # Seed historical context with the actual working copy's receipt chain.

@@ -324,15 +324,11 @@ async def authorize_resource_action(
                     status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}
                 ) from exc
         try:
-            # Source inspection can write its own tenant audit. Finish that
-            # scoped transaction before path inspection takes the request's
-            # audit-chain lock; nested writers would wait on their own caller.
-            # Source readers still never inherit an ambient administrator bypass.
-            async with tenant_scoped_session(agent.tenant_id) as source_db:
-                await validate_artifact_content_receipt(
-                    source_db, agent.tenant_id, user, artifact, runtime_principal=runtime_principal
-                )
-            # A snapshot or a session owner cannot enlarge its source audience.
+            if action == "deliver" or runtime_principal is not None:
+                async with tenant_scoped_session(agent.tenant_id) as source_db:
+                    await validate_artifact_content_receipt(
+                        source_db, agent.tenant_id, user, artifact, runtime_principal=runtime_principal
+                    )
             await authorize_workspace_path(
                 db,
                 user,

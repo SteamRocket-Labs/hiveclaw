@@ -290,7 +290,7 @@ async def original_request_report(native_workspace, app_user_sessionmaker, owner
     )
 
 
-async def _assert_original_read_and_live_leaf_revocation(h, owner_sessionmaker):
+async def _assert_original_read_survives_upstream_revocation(h, owner_sessionmaker):
     from app.models.workspace_resource import WorkspaceResourceManifest
 
     responses = {
@@ -309,20 +309,21 @@ async def _assert_original_read_and_live_leaf_revocation(h, owner_sessionmaker):
         ).one()
         leaf.owner_user_id, leaf.root_session_id = h.n.foreign, None
         await db.commit()
-    denied_responses = {}
+    retained_responses = {}
     for endpoint in responses:
-        denied = await h.n.client.get(f"/agents/{h.n.agent}/files/artifacts/{h.artifact.id}/{endpoint}")
-        denied_responses[endpoint] = denied
-        print("R13E_ORIGINAL_REQUEST_REVOKED", endpoint, denied.status_code, flush=True)
-    # Run revocation checks even on the baseline where the earlier read fails closed.
+        retained = await h.n.client.get(f"/agents/{h.n.agent}/files/artifacts/{h.artifact.id}/{endpoint}")
+        retained_responses[endpoint] = retained
+        print("R13E_ORIGINAL_REQUEST_RETAINED", endpoint, retained.status_code, flush=True)
+    # Upstream changes leave the already published member snapshot readable.
     for endpoint, response in responses.items():
         assert response.status_code == 200, response.text
         assert (response.content if endpoint == "download" else response.json()["content"].encode()) == h.body.encode()
-    for denied in denied_responses.values():
-        assert denied.status_code == 403 and h.body not in denied.text, denied.text
+    for endpoint, retained in retained_responses.items():
+        assert retained.status_code == 200, retained.text
+        assert (retained.content if endpoint == "download" else retained.json()["content"].encode()) == h.body.encode()
 
 
-async def test_original_request_read_ignores_later_unrelated_history_failure_and_checks_live_leaf(
+async def test_original_request_read_ignores_later_unrelated_history_failure(
     original_request_report,
     app_user_sessionmaker,
     owner_sessionmaker,
@@ -347,10 +348,10 @@ async def test_original_request_read_ignores_later_unrelated_history_failure_and
         with pytest.raises(SessionSemanticHistoryUnavailable) as unavailable:
             await load_session_semantic_history(db, tenant_id=h.n.tenant, agent_id=h.n.agent, session_id=h.n.session)
         assert unavailable.value.code == "committed_model_seal_unavailable"
-    await _assert_original_read_and_live_leaf_revocation(h, owner_sessionmaker)
+    await _assert_original_read_survives_upstream_revocation(h, owner_sessionmaker)
 
 
-async def test_original_request_read_keeps_pre_revision_unbound_input_bytes_and_checks_live_leaf(
+async def test_original_request_read_keeps_pre_revision_unbound_input_bytes(
     original_request_report,
     app_user_sessionmaker,
     owner_sessionmaker,
@@ -380,7 +381,7 @@ async def test_original_request_read_keeps_pre_revision_unbound_input_bytes_and_
             "Use the revised reporting convention."
         )
         await db.commit()
-    await _assert_original_read_and_live_leaf_revocation(h, owner_sessionmaker)
+    await _assert_original_read_survives_upstream_revocation(h, owner_sessionmaker)
 
 
 async def test_external_witness_validates_with_nested_asyncpg_queries_while_stream_is_open(

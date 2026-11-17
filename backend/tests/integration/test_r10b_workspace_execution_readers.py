@@ -123,7 +123,7 @@ async def test_personal_execution_inputs_use_member_grant(
 
 
 @pytest.mark.parametrize("tool", ["run_command", "execute_code"])
-async def test_delegation_execution_excludes_unpublishable_chain_and_keeps_own_write(
+async def test_delegation_execution_keeps_owned_copies_and_own_write(
     native_workspace, owner_sessionmaker, monkeypatch, tool,  # noqa: F811
 ):
     n = native_workspace
@@ -134,16 +134,17 @@ async def test_delegation_execution_excludes_unpublishable_chain_and_keeps_own_w
         await _unverifiable_history(db, tenant=n.tenant, agent=n.agent, user=n.user,
             session=n.session, root=n.root)
         await db.commit()
-    executions = _local_process(monkeypatch, absent=("old-native-output.md", "intermediate-report.md", "earlier-report.md"),
-        present={"derived-source.md": "CHILD_OWN_WRITE"})
+    executions = _local_process(monkeypatch, present={"derived-source.md": "CHILD_OWN_WRITE",
+        **{path: "# Report\nCOMPANY_SOURCE_MARKER\n" for path in (
+            "old-native-output.md", "intermediate-report.md", "earlier-report.md")}})
     result = await _execute(n, tool, "workspace")
     assert len(executions) == 1, result
-    assert "derived-source.md" in str(result) and "earlier-report.md" not in str(result), result
+    assert "derived-source.md" in str(result) and "earlier-report.md" in str(result), result
     assert "CHILD_OWN_WRITE" in str(await _execute(n, "read_file", "workspace/derived-source.md"))
 
 
 @pytest.mark.parametrize("run_kind", ["web_chat_turn", "delegation"])
-async def test_depth_three_execution_preflight_is_batched_once(
+async def test_depth_three_owned_copy_does_not_replay_execution_sources(
     native_workspace, owner_sessionmaker, monkeypatch, run_kind,  # noqa: F811
 ):
     from app.services import content_input_receipts as receipts
@@ -195,9 +196,8 @@ async def test_depth_three_execution_preflight_is_batched_once(
     monkeypatch.setattr(learned_skill_sources, "_validate_model_source", model)
     monkeypatch.setattr(receipts, "authorize_workspace_execution_inputs", gate)
     result = await _execute(n, "grep_search", path)
-    assert "COMPANY_SOURCE_MARKER" not in str(result), result
-    # Validate the two upstream receipts, not the selected working copy's bytes.
-    assert calls == {"batch_preload": 1, "workspace_validation": 2, "model_validation": 1}, calls
+    assert "COMPANY_SOURCE_MARKER" in str(result), result
+    assert calls == {}, calls
     print("R10B_EXECUTION_COST", json.dumps({"task_type": run_kind, "depth": 3, **calls}))
 
 

@@ -345,7 +345,7 @@ async def test_platform_reader_keeps_live_owner_bypass(
     monkeypatch.setattr(files, "_load_download_user_from_jwt", lambda **_kwargs: live_platform_reader())
     response = await n.client.get(url)
     assert b"COMPANY_SOURCE_MARKER" not in response.content
-    assert response.status_code == 403, response.text
+    assert response.status_code == 401, response.text
     assert response.json()["detail"] == "User not found or inactive"
 
 

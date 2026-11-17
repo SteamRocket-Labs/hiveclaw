@@ -213,7 +213,7 @@ def _request(n, name, arguments, paths=None):
 
     paths = frozenset(paths or [n.path])
     scope = WorkspaceAuthorityScope(agent_id=n.agent, user_id=n.user, root_session_id=n.session,
-        allowed_paths=paths, full_control_paths=paths, operator_view=False, authority_source="fixture")
+        allowed_paths=paths, full_control_paths=paths, owner_paths=paths, operator_view=False, authority_source="fixture")
     return ToolExecutionRequest(tool_name=name, arguments=arguments, context=ToolExecutionContext(
         agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant), session_id=str(n.session),
         runtime_task_id=str(n.run), workspace=n.root / "workspace", workspace_authority_scope=scope))

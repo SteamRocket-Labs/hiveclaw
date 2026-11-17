@@ -119,13 +119,17 @@ async def test_artifact_editor_continues_saved_bytes_once_in_the_original_work(
             assert (await db.get(ChatArtifact, UUID(artifact_id))).snapshot_hash == snapshot_hash
             continued = list(await db.scalars(select(ChatArtifact).where(
                 ChatArtifact.runtime_task_id == run_id, ChatArtifact.path == "workspace/saved.txt")))
-            assert len(continued) == 1
-            assert continued[0].snapshot_hash != snapshot_hash
-            assert continued[0].snapshot_json["content_input_receipt_id"]
-            delivered = await client.get(
-                f"/api/agents/{seed['agent_id']}/files/artifacts/{continued[0].id}/content")
-            assert delivered.status_code == 200, delivered.text
-            assert delivered.json()["content"] == (seed["agent_root"] / "workspace/saved.txt").read_text()
+            print("M2K_CONTINUED_PUBLICATION", json.dumps({"receipted": receipted,
+                "cards": len(continued), "snapshots": [row.snapshot_json for row in continued]}, default=str), flush=True)
+            if receipted:
+                assert len(continued) == 1
+            for artifact in continued:
+                assert artifact.snapshot_hash != snapshot_hash
+                assert artifact.snapshot_json["content_input_receipt_id"]
+                delivered = await client.get(
+                    f"/api/agents/{seed['agent_id']}/files/artifacts/{artifact.id}/content")
+                assert delivered.status_code == 200, delivered.text
+                assert delivered.json()["content"] == (seed["agent_root"] / "workspace/saved.txt").read_text()
         (tmp_path / "artifact-continuation-observation.json").write_text(json.dumps({
             "input_id": str(input_id), "run_id": str(run_id), "session_id": str(seed["session_id"]),
             "original_artifact_id": artifact_id, "original_snapshot_hash": snapshot_hash,

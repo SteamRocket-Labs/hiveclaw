@@ -638,6 +638,7 @@ class WorkspaceAuthorityScope:
     authority_source: str
     known_paths: frozenset[str] = frozenset()
     full_control_paths: frozenset[str] = frozenset()
+    owner_paths: frozenset[str] = frozenset()
     action_permissions: frozenset[tuple[str, str]] = frozenset()
     collection_actions: frozenset[str] = frozenset()
     input_reads: tuple[WorkspaceInputRead, ...] = ()
@@ -1247,6 +1248,7 @@ async def load_workspace_authority_scope(
     allowed: set[str] = {manifest.path for manifest in manifests if manifest.deleted_at is None} if operator_view else set()
     authority_sources: set[str] = set()
     full_control_paths: set[str] = set()
+    owner_paths: set[str] = set()
     action_permissions: set[tuple[str, str]] = set()
     for manifest in manifests:
         try:
@@ -1269,8 +1271,9 @@ async def load_workspace_authority_scope(
             allowed.add(manifest.path)
             authority_sources.add(decision.authority_source)
         if decision.full_control:
+            full_control_paths.add(manifest.path)
             if decision.authority_source in {"resource_owner", "root_session_owner"}:
-                full_control_paths.add(manifest.path)
+                owner_paths.add(manifest.path)
             action_permissions.update((manifest.path, action) for action in _WORKSPACE_EFFECT_ACTIONS)
     grant_candidates = [
         manifest
@@ -1307,6 +1310,7 @@ async def load_workspace_authority_scope(
         ),
         known_paths=frozenset(manifest.path for manifest in manifests),
         full_control_paths=frozenset(full_control_paths),
+        owner_paths=frozenset(owner_paths),
         action_permissions=frozenset(action_permissions),
         collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS)
         if collection_decision and collection_decision.full_control

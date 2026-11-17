@@ -71,7 +71,9 @@ async def validate_permission_input_sources(db, *, authority, session, invocatio
         from app.services.personal_knowledge_access import AgentRuntimePrincipal
         from app.services.source_read_queries import transcript_event_columns
 
-        dependencies, _complete = _model_dependencies(model)
+        dependencies, complete = _model_dependencies(model)
+        if not complete:
+            raise ContentInputReceiptError('delegation_permission_sources_unavailable', 'Restore the committed tool input inventory.', 503)
         principal = AgentRuntimePrincipal(agent_id=authority.agent_id, requester_user_id=authority.principal_id,
             session_id=str(session.id), runtime_task_id=str(invocation.run_id))
         with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as scope:

@@ -1365,7 +1365,7 @@ async def create_chat_artifacts_for_message(
     def publication_reader():
         return source_recipient_read(session_id=session_uuid, user_id=owner_user_id) if (
             authority_session is not None and authority_session.user_id is not None
-            and authority_session.audience_kind != "group" and source != "workspace_read"
+            and authority_session.audience_kind != "group"
         ) else nullcontext()
 
     def record_source_error(path, exc):

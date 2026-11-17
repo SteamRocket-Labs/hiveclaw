@@ -274,6 +274,16 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
   const { t } = useTranslation();
   if (toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)) {
     const toolName = toolNameOf(step);
+    const skillKey = toolName === 'save_skill' ? 'skillSave'
+      : toolName === 'reconcile_skill_candidate' ? 'skillCheck' : null;
+    if (skillKey && ['running', 'done', 'failed'].includes(step.status) && !stepIsUnconfirmed(step)) {
+      const state = step.status === 'running' ? 'Started' : step.status === 'done' ? 'Done' : 'Failed';
+      const fallback = skillKey === 'skillSave'
+        ? { Started: 'Saving a skill.', Done: 'Saved a skill.', Failed: 'The skill was not saved this time.' }
+        : { Started: 'Checking whether the skill was saved.', Done: 'Checked whether the skill was saved.', Failed: 'Could not check whether the skill was saved.' };
+      return <p>{toolFailureForDisplay(step.details, t, step.status)
+        || t(`agent.chat.toolResults.memberSummary.${skillKey}${state}`, fallback[state])}</p>;
+    }
     // X3: summarized tools show one plain sentence in place of the raw result
     // the model saw. There is deliberately no way to view the raw text here.
     // An unknown kind falls through to a plain action/status sentence.

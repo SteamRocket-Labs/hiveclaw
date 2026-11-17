@@ -2677,6 +2677,7 @@
         "toolHistory": "工具调用历史",
         "system": {
           "delegationStarted": "已委派给 {{name}}，后台执行中。",
+          "delegationFailure": "{{name}}：{{reason}}",
           "approvalResultKept": "审批结果已保留，本次对话未继续。",
           "approvalResultReturned": "审批结果已返回。",
           "resultsReceived": "收到 {{count}} 项任务结果",
@@ -2749,6 +2750,8 @@
           "fetchWebPage": "读取网页",
           "checkTime": "查看时间",
           "loadSkill": "加载技能",
+          "saveSkill": "保存技能",
+          "checkSkillSaving": "检查技能保存情况",
           "browsePlaza": "浏览广场",
           "runCommand": "运行命令",
           "editDocument": "编辑文档",
@@ -3013,7 +3016,17 @@
           "webFetchFailedHost": "没有打开网页 {{host}}",
           "delegationStopped": "已停止，同事没有完成这项工作。",
           "delegationDone": "同事已完成这项工作。",
-          "delegationFailed": "同事没有完成这项工作。"
+          "delegationFailed": "同事没有完成这项工作。",
+          "delegationMaterialsDenied": "同事无法使用这次任务需要的资料，没有继续。",
+          "delegationMaterialsUnavailable": "同事暂时无法读取这次任务需要的资料，没有继续。",
+          "skillSaveStarted": "正在保存技能。",
+          "skillSaveDone": "已保存技能。",
+          "skillSaveFailed": "这次没有保存技能。",
+          "skillSaveTimeout": "保存技能超时。",
+          "skillCheckStarted": "正在检查技能保存情况。",
+          "skillCheckDone": "已检查技能保存情况。",
+          "skillCheckFailed": "这次没有检查技能保存情况。",
+          "skillCheckTimeout": "检查技能保存情况超时。"
         }
       },
       "workLedger": {

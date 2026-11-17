@@ -57,6 +57,14 @@ export function toolFailureForDisplay(details: unknown, t: TFunction, status: Ru
     return null;
   }
   const errorClass = String(error?.error_class);
+  const toolName = String(error.tool_name || record.toolName || '');
+  if (toolName === 'save_skill' || toolName === 'reconcile_skill_candidate') {
+    const saving = toolName === 'save_skill';
+    const timedOut = errorClass === 'timeout';
+    return t(`agent.chat.toolResults.memberSummary.${saving ? 'skillSave' : 'skillCheck'}${timedOut ? 'Timeout' : 'Failed'}`,
+      saving ? timedOut ? 'Saving the skill timed out.' : 'The skill was not saved this time.'
+        : timedOut ? 'Checking whether the skill was saved timed out.' : 'Could not check whether the skill was saved.');
+  }
   const fileRead = ['read_file', 'fs_read', 'read_document'].includes(String(error.tool_name || record.toolName));
   if (fileRead) {
     const refusal = fileReadFailureForDisplay(error.reason_code, t) || fileReadFailureForDisplay(errorClass, t);

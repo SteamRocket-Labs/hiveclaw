@@ -28,6 +28,19 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
   const metadata = event.metadata;
   const text = typeof step.details === 'string' ? step.details : step.summary || '';
   const display = (title: string, summary?: string): RunStepSnapshot => ({ ...step, title, titleIsLocalized: true, summary, details: summary });
+  const failureCode = metadata.error_code || metadata.terminal_reason || metadata.reason;
+  if (step.status === 'failed' && typeof failureCode === 'string'
+    && (metadata.action_kind === 'a2a_delegation' || event.type === 'child_session')) {
+    const sentence = failureCode === 'delegation_instruction_source_access_denied'
+      ? t('agent.chat.toolResults.memberSummary.delegationMaterialsDenied', 'The colleague could not use the materials needed for this task and did not continue.')
+      : failureCode === 'delegation_instruction_source_unavailable'
+        ? t('agent.chat.toolResults.memberSummary.delegationMaterialsUnavailable', 'The colleague could not read the materials needed for this task and did not continue.')
+        : t('agent.chat.toolResults.memberSummary.delegationFailed', 'The colleague did not finish this work.');
+    const name = metadata.target_agent_name || metadata.to_agent_name;
+    const summary = typeof name === 'string' && name.trim()
+      ? t('agent.chat.disclosure.system.delegationFailure', '{{name}}: {{reason}}', { name, reason: sentence }) : sentence;
+    return { ...step, summary, details: summary };
+  }
   const delegation = metadata.action_kind === 'a2a_delegation' || (event.type === 'child_session' && String(metadata.reason || '').startsWith('delegation_'));
   if (delegation && (['killed', 'cancelled'].includes(String(metadata.status))
     || (event.type === 'runtime_action_started' && ['completed', 'failed', 'error', 'blocked', 'skipped'].includes(String(metadata.status))))) {

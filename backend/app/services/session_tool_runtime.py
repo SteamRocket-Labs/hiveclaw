@@ -378,6 +378,9 @@ async def prepare_tool_invocation(
     await chat_transcript.lock_transcript_session(db, session_id=session_id)
     result = await db.scalar(
         select(SessionModelResult)
+        .options(load_only(SessionModelResult.id, SessionModelResult.tenant_id, SessionModelResult.session_id,
+            SessionModelResult.run_id, SessionModelResult.turn_id, SessionModelResult.round_id,
+            SessionModelResult.provider_request_id, SessionModelResult.state, SessionModelResult.model_request_hash))
         .where(
             SessionModelResult.tenant_id == tenant_id,
             SessionModelResult.session_id == session_id,

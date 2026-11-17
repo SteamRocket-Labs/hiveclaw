@@ -136,7 +136,9 @@ async def _terminal_boundary_dispatch_hold(
             RuntimeTerminalBoundaryOutbox.tenant_id == admission.tenant_id,
             RuntimeTerminalBoundaryOutbox.agent_id == agent.id,
             RuntimeTerminalBoundaryOutbox.session_id == str(session.id),
-            RuntimeTerminalBoundaryOutbox.status != "delivered",
+            # The status constraint defines these as every undelivered state.
+            # Positive keys use the existing tenant/status index.
+            RuntimeTerminalBoundaryOutbox.status.in_(("pending", "processing", "dead_letter")),
         )
         .order_by(RuntimeTerminalBoundaryOutbox.created_at, RuntimeTerminalBoundaryOutbox.id)
         .limit(1)

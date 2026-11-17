@@ -1239,6 +1239,9 @@ async def _bind_session_round_inputs(state: _WebChatRunState, round_index: int) 
             turn_id=_session_turn_id(state),
             round_index=round_index,
         )
+        # Input binding is already a durable round boundary. Release its run
+        # and FK locks before reading and validating retained file sources.
+        await db.commit()
         from app.services.artifact_continuation import saved_file_context
 
         selected, notices = await saved_file_context(

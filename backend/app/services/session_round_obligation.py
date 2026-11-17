@@ -23,6 +23,7 @@ from app.models.session_v2 import (
     SessionRoundObligation,
     SessionTurnInput,
 )
+from app.services.runtime_task_fence import assert_runtime_task_fence
 
 
 OBLIGATION_KINDS = frozenset({"tool_followup", "pending_input", "hook_retry", "compact_continue"})
@@ -217,11 +218,19 @@ async def current_run_fences(
     tenant_id: uuid.UUID,
     run_id: uuid.UUID,
 ) -> dict[str, int]:
-    task = await db.scalar(
-        select(RuntimeTask).where(RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id).with_for_update()
-    )
+    # Read the locked database values even when the caller retained an ORM
+    # task across source validation and another worker reclaimed it meanwhile.
+    task = (
+        await db.execute(
+            select(
+                RuntimeTask.id, RuntimeTask.metadata_json, RuntimeTask.claim_version,
+                RuntimeTask.claimed_by, RuntimeTask.status, RuntimeTask.claim_expires_at,
+            ).where(RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id).with_for_update()
+        )
+    ).one_or_none()
     if task is None:
         raise ValueError("runtime task not found for round fences")
+    assert_runtime_task_fence(task)
     metadata = dict(task.metadata_json or {})
     stored = dict(metadata.get("session_v2_generations") or {})
     mailbox_generation = int(

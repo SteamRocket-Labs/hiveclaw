@@ -2302,7 +2302,8 @@ function AgentChatSection({
                 goalModeRequested={goalModeRequested}
                 uploading={uploading}
                 uploadProgress={uploadProgress}
-                running={(isStreaming || isWaiting || hasUnfinishedRun)
+                running={(isStreaming || isWaiting || hasUnfinishedRun
+                  || threadTimelineModel.cells.some(cell => cell.kind === 'active_run' && cell.timeline.delegationInFlight))
                   && ['running', 'streaming', 'waiting'].includes(threadTimelineModel.header.status)}
                 onChange={onSetChatInput}
                 onPaste={onHandlePaste}

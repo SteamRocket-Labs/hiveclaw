@@ -1223,6 +1223,7 @@ def test_cancel_session_run_returns_durable_applying_receipt_and_ack_replay_does
     task = SimpleNamespace(
         id=run_id,
         task_type="web_chat",
+        status="running",
         parent_session_id=str(session_id),
         parent_agent_id=agent_id,
         metadata_json={},

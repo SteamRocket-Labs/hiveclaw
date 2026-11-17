@@ -1766,7 +1766,7 @@ async def _review_skill_with_llm(
         "<role>\n"
         "You are the independent Skill Referee. You do not write or patch the skill. "
         "You judge whether the Skill Writer's SKILL.md draft is a reusable, bounded "
-        "capability capsule rather than episodic memory, current task state, or a duplicate.\n"
+        "set of reusable task instructions rather than episodic memory, current task state, or a duplicate.\n"
         "</role>\n\n"
         "<rubric>\n"
         "Score every dimension 0-5 as evidence for your reasoning. Then make one holistic "

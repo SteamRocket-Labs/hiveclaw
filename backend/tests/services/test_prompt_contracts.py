@@ -172,16 +172,16 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     )
     assert "Use this to schedule future work" in tools["set_trigger"]
     assert "Do NOT create a trigger without a clear reason" in tools["set_trigger"]
-    assert "progressive-disclosure capability capsule" in tools["load_skill"]
+    assert "reusable task instructions, with details loaded when relevant" in tools["load_skill"]
     assert "workflow definitions, subagent definitions" in tools["load_skill"]
     assert "Executable components still run through their governed runtime" in tools["load_skill"]
     assert "Do NOT load a skill speculatively" in tools["load_skill"]
     assert "Do NOT use `run_command` to inspect platform or channel credential env vars" in tools["load_skill"]
     # T2+: "workflow" remains the engine's proper noun, but a skill may package
-    # a workflow/subagent reference as part of a progressive-disclosure
-    # capability capsule. Execution still belongs to the governed runtime.
+    # a workflow/subagent reference as part of reusable
+    # task instructions. Execution still belongs to the governed runtime.
     assert "Submit a reusable approach as a skill activation candidate" in tools["save_skill"]
-    assert "A skill is a progressive-disclosure capability capsule" in tools["save_skill"]
+    assert "A skill provides reusable task instructions, with details loaded when relevant" in tools["save_skill"]
     assert "workflow component" in tools["save_skill"]
     assert "governed runtime" in tools["save_skill"]
     assert "does not create an active skill directly" in tools["save_skill"]
@@ -300,7 +300,7 @@ def test_skill_catalog_footer_discourages_speculative_loading() -> None:
 
     rendered = registry.render_catalog()
 
-    assert "progressive-disclosure capability capsule" in rendered
+    assert "reusable task instructions for a kind of task, with details loaded when relevant" in rendered
     assert "can package references, templates, scripts, workflow definitions, and subagent definitions" in rendered
     assert "Executable components still run through their governed runtime" in rendered
     assert "Load only the skill that matches the current task" in rendered

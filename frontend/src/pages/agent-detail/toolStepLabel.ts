@@ -54,6 +54,8 @@ const MEMORY_AND_CREATION: Record<string, [string, string]> = {
   load_memory: ['loadMemory', 'Load memory'],
   update_memory: ['updateMemory', 'Update memory'],
   retire_memory: ['retireMemory', 'Forget memory'],
+  save_skill: ['saveSkill', 'Save skill'],
+  reconcile_skill_candidate: ['checkSkillSaving', 'Check skill saving'],
   create_digital_employee: ['createEmployee', 'Create a digital employee'],
   preview_agent_blueprint: ['previewEmployee', 'Preview a digital employee'],
 };

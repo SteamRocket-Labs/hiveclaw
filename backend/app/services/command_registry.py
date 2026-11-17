@@ -524,7 +524,7 @@ def build_default_command_registry(
         ),
         _command(
             "load_skill",
-            "Load a progressive disclosure skill capsule.",
+            "Load reusable task instructions for a skill.",
             category="skill",
             source="skill",
             execution_mode="tool",

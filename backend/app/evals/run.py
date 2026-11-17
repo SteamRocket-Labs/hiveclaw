@@ -159,7 +159,7 @@ def _internal_scenario_report(ablation: str) -> dict[str, Any]:
             "ready": evolution_ready,
             "score": task_report["scenarios"]["self_evolution"]["score"],
             "transcript": "task_eval:self_evolution",
-            "rubric": "save_skill only for repeated successful approaches with stable capability-capsule boundaries",
+            "rubric": "save_skill only for repeated successful approaches with stable reusable task instructions and component boundaries",
             "score_breakdown": {"task_ready": evolution_ready},
         },
         "long_context_after_compaction": {

@@ -373,6 +373,7 @@ async def websocket_chat(
                 db=db,
                 agent_id=agent_id,
                 session_id=active_session.id,
+                include_handoff=True,
             )
             ready = build_session_ready(
                 session_id=active_session.id,
@@ -556,6 +557,7 @@ async def websocket_chat(
                                 db=run_db,
                                 agent_id=agent_id,
                                 session_id=conv_id,
+                                include_handoff=True,
                             )
                             run_id = active_run.get("run_id") if active_run else None
                         if run_id:

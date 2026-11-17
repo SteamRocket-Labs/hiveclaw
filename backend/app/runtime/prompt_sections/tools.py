@@ -30,7 +30,7 @@ internet lookup; if those results are insufficient, use `advanced_web_search` be
 as `anysearch_search`, `exa_search`, `tavily_search`, or `firecrawl_search`. Use CORE `web_fetch` when you already have a specific URL; \
 if direct fetch is weak or blocked, use `advanced_web_fetch` before provider-specific overrides such as `firecrawl_fetch`, `tavily_extract`, \
 `exa_fetch`, `anysearch_extract`, or keyed `xcrawl_scrape`. Use `load_skill` only for a \
-skill's capability-capsule guidance, not to unlock tools.
+skill's reusable task guidance, not to unlock tools.
 - Direct callable tools first: when a visible CORE tool clearly satisfies the user's request, call it \
 directly before loading a broad skill. For example, if the user asks to search the web, call \
 `web_search`; if they ask to fetch a known URL, call `web_fetch`. Do not load a skill just because a \
@@ -38,8 +38,7 @@ broad skill exists for the same domain.
 - Call multiple tools in parallel when they are independent — don't serialize unnecessarily.
 - Break complex tasks into focused tool calls. Verify outcomes before proceeding.
 - Use `load_skill` only when you need a skill's method, component guidance, decision guide, examples, \
-or the user explicitly asks you to use that skill. A skill is a progressive-disclosure capability \
-capsule; loading it does not unlock tool schemas or execute packaged workflow/subagent/script components. \
+or the user explicitly asks you to use that skill. A skill provides reusable task instructions with details loaded when relevant; loading it does not unlock tool schemas or execute packaged workflow/subagent/script components. \
 Use `tool_search` for missing capabilities.
 - Use `save_skill` after a repeatable approach has succeeded repeatedly and the steps, decision rules, \
 and verification pattern are stable. A skill may package context plus workflow/subagent/script component \

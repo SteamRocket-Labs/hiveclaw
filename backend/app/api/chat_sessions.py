@@ -2149,7 +2149,7 @@ async def get_active_session_run(
         operator_view=operator_view is True,
         operator_reason=operator_reason,
     )
-    run = await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
+    run = await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id, include_handoff=True)
     if run is not None and getattr(session, "audience_kind", None) == "group":
         run = {key: run[key] for key in ("run_id", "turn_id", "status", "created_at", "started_at", "completed_at", "runtime_budget")
             if key in run}

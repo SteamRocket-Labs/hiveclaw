@@ -2655,7 +2655,8 @@ async def _load_web_chat_run_by_id(db: AsyncSession, run_id: uuid.UUID) -> Runti
     return result.scalar_one_or_none()
 
 
-async def _find_active_run(db: AsyncSession, *, agent_id: uuid.UUID, session_id: str | uuid.UUID) -> RuntimeTask | None:
+async def _find_active_run(db: AsyncSession, *, agent_id: uuid.UUID, session_id: str | uuid.UUID,
+    include_handoff: bool = False) -> RuntimeTask | None:
     result = await db.execute(
         select(RuntimeTask)
         .where(
@@ -2670,6 +2671,8 @@ async def _find_active_run(db: AsyncSession, *, agent_id: uuid.UUID, session_id:
     task = result.scalars().first()
     if task is not None and await _reconcile_terminal_transcript_ghost(db, task):
         return None
+    if task is None and include_handoff:
+        return await find_stoppable_web_chat_handoff(db, agent_id=agent_id, session_id=session_id)
     return task
 
 
@@ -2805,15 +2808,50 @@ async def get_active_web_chat_run(
     db: AsyncSession,
     agent_id: uuid.UUID,
     session_id: str | uuid.UUID,
+    include_handoff: bool = False,
 ) -> dict[str, Any] | None:
-    task = await _find_active_run(db, agent_id=agent_id, session_id=session_id)
+    task = await _find_active_run(db, agent_id=agent_id, session_id=session_id, include_handoff=include_handoff)
     if task is None:
         await _repair_latest_missing_model_terminal_event(
             db,
             agent_id=agent_id,
             session_id=session_id,
         )
-    return _runtime_task_to_run(task) if task else None
+    if task is None:
+        return None
+    payload = _runtime_task_to_run(task)
+    if task.status == "completed":
+        payload = {key: value for key, value in payload.items() if key not in {"result_summary", "terminal_reason"}}
+        payload.update(status="running", completed_at=None)
+    return payload
+
+
+def outstanding_web_chat_delegations(*, run_uuid: uuid.UUID, tenant_id: uuid.UUID):
+    children = select(RuntimeTask.id).where(
+        RuntimeTask.root_runtime_task_id == run_uuid, RuntimeTask.id != run_uuid,
+        RuntimeTask.tenant_id == tenant_id,
+        RuntimeTask.task_type.in_(("delegation", A2A_CONTINUATION_TASK_TYPE)),
+    ).cte("cancel_delegation_children", recursive=True)
+    children = children.union(select(RuntimeTask.id).join(children,
+        RuntimeTask.root_runtime_task_id == children.c.id).where(
+            RuntimeTask.tenant_id == tenant_id,
+            RuntimeTask.task_type.in_(("delegation", A2A_CONTINUATION_TASK_TYPE))))
+    return select(RuntimeTask).where(RuntimeTask.id.in_(select(children.c.id)),
+        RuntimeTask.status.in_(_ACTIVE_STATUSES))
+
+
+async def find_stoppable_web_chat_handoff(db: AsyncSession, *, agent_id: uuid.UUID,
+    session_id: str | uuid.UUID, run_id: uuid.UUID | None = None) -> RuntimeTask | None:
+    task = (await db.execute(select(RuntimeTask).where(
+        RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES), RuntimeTask.parent_agent_id == agent_id,
+        RuntimeTask.parent_session_id == str(session_id),
+    ).order_by(RuntimeTask.created_at.desc(), RuntimeTask.id.desc()).limit(1))).scalars().first()
+    if (task is None or task.status != "completed" or (run_id is not None and task.id != run_id)
+        or not str((task.metadata_json or {}).get("terminal_execution_fence_ref") or "").strip()
+        or (task.metadata_json or {}).get("cancel_state") == "cancelled"):
+        return None
+    pending = outstanding_web_chat_delegations(run_uuid=task.id, tenant_id=task.tenant_id)
+    return task if await db.scalar(select(pending.exists())) else None
 
 
 async def steer_active_web_chat_turn(
@@ -3833,36 +3871,9 @@ async def _cancel_web_chat_delegation_children(*, run_uuid, agent_id, user_id):
         try:
             tenant_id = await resolve_tenant_for_agent(_run_id(agent_id))
             async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
-                children = (
-                    select(RuntimeTask.id)
-                    .where(
-                        RuntimeTask.root_runtime_task_id == run_uuid,
-                        RuntimeTask.id != run_uuid,
-                        RuntimeTask.tenant_id == tenant_id,
-                        RuntimeTask.task_type.in_(("delegation", A2A_CONTINUATION_TASK_TYPE)),
-                    )
-                    .cte("cancel_delegation_children", recursive=True)
-                )
-                children = children.union(
-                    select(RuntimeTask.id)
-                    .join(
-                        children,
-                        RuntimeTask.root_runtime_task_id == children.c.id,
-                    )
-                    .where(RuntimeTask.tenant_id == tenant_id,
-                        RuntimeTask.task_type.in_(("delegation", A2A_CONTINUATION_TASK_TYPE)))
-                )
-                delegated = list(
-                    (
-                        await db.execute(
-                            select(RuntimeTask.id, RuntimeTask.parent_agent_id,
-                                RuntimeTask.task_type, RuntimeTask.parent_session_id).where(
-                                RuntimeTask.id.in_(select(children.c.id)),
-                                RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
-                            )
-                        )
-                    ).all()
-                )
+                delegated = [(child.id, child.parent_agent_id, child.task_type, child.parent_session_id)
+                    for child in (await db.scalars(outstanding_web_chat_delegations(
+                        run_uuid=run_uuid, tenant_id=tenant_id))).all()]
             for child_id, parent_id, task_type, session_id in delegated:
                 tasks[asyncio.create_task(cancel_child(child_id, parent_id, task_type, session_id))] = child_id
             if tasks:

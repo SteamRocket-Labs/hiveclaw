@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from tests.session_stub import ActiveTransactionSessionStub
 
@@ -18,6 +19,9 @@ class _FakeScalarResult:
 
     def scalars(self):
         return SimpleNamespace(all=lambda: self._value or [])
+
+    def all(self):
+        return self._value or []
 
 
 class _FakeSession(ActiveTransactionSessionStub):
@@ -36,12 +40,13 @@ class _FakeSession(ActiveTransactionSessionStub):
         return False
 
     async def execute(self, _query):
+        query_text = str(_query.compile(dialect=postgresql.dialect()))
         # RLS GUC statements (SET LOCAL app.current_tenant_id = ...) are emitted
         # by tenant_scoped_session / enter_rls_bypass before the business query.
         # They must not consume a result from the configured sequence.
-        if "app.current_tenant_id" in str(_query):
+        if "app.current_tenant_id" in query_text:
             return _FakeScalarResult(None)
-        self.queries.append(_query)
+        self.queries.append(query_text)
         if not self._execute_values:
             return _FakeScalarResult(None)
         return _FakeScalarResult(self._execute_values.pop(0))
@@ -578,8 +583,7 @@ async def test_heartbeat_tick_uses_platform_managed_cadence(monkeypatch):
         last_heartbeat_at=datetime.now(timezone.utc) - timedelta(minutes=121),  # > managed 120min cadence
         timezone="UTC",
     )
-    tenant = SimpleNamespace(id=tenant_id, timezone="UTC")
-    fake_session = _FakeSession([[agent], [tenant]])
+    fake_session = _FakeSession([[agent], []])
     triggered: list[uuid4] = []
 
     async def fake_write_audit_log(*_args, **_kwargs):
@@ -609,7 +613,7 @@ async def test_heartbeat_tick_uses_platform_managed_cadence(monkeypatch):
 
     await heartbeat._heartbeat_tick()
 
-    query_text = "\n".join(str(query) for query in fake_session.queries)
+    query_text = "\n".join(fake_session.queries)
     assert "where agents.heartbeat_enabled" not in query_text.lower()
     assert triggered == [agent_id]
 

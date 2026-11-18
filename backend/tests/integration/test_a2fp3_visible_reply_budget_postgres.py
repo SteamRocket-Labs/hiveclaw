@@ -83,12 +83,15 @@ def observe_visible_replies(monkeypatch, probe):
     return visible
 
 
-async def test_private_turn_visible_reply_budget(member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog):  # noqa: F811
+async def test_private_turn_visible_reply_budget(
+    member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog, drain_terminal_boundary_for_task,  # noqa: F811
+):
     probe = VolumeProbe()
     visible = observe_visible_replies(monkeypatch, probe)
     await measure_private_turn_volume(
         member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog,
         probe=probe, provider_type=MeasuredTransport, include_tool_turn=True,
+        drain_boundary_for_task=drain_terminal_boundary_for_task,
     )
 
     async with owner_sessionmaker() as db:
@@ -132,10 +135,10 @@ async def test_private_turn_visible_reply_budget(member_request, owner_sessionma
     assert not exceeded, exceeded
 
 
-
 @pytest.mark.parametrize("crash_before_write", [None, "context_observations", "hook_span"])
 async def test_private_reply_survives_loss_of_deferred_diagnostics(
     member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog, crash_before_write,  # noqa: F811
+    drain_terminal_boundary_for_task,
 ):
     from app.services import web_chat_run_orchestrator as orchestrator
     from app.services import web_chat_runtime as runtime
@@ -165,18 +168,19 @@ async def test_private_reply_survives_loss_of_deferred_diagnostics(
 
     monkeypatch.setattr(runtime, "_persist_context_observations", context_write)
     monkeypatch.setattr(orchestrator, "persist_invocation_observations", span_write)
+    options = dict(probe=probe, provider_type=MeasuredTransport, drain_boundary_for_task=drain_terminal_boundary_for_task)
     if crash_before_write:
         with pytest.raises(SimulatedWorkerCrash):
             await measure_private_turn_volume(
                 member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog,
-                probe=probe, provider_type=MeasuredTransport,
+                **options,
             )
         assert crash_before_write in reach
     else:
         # Verify the same early reply followed by both diagnostic commits.
         await measure_private_turn_volume(
             member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog,
-            probe=probe, provider_type=MeasuredTransport, volumes=("empty",),
+            volumes=("empty",), **options,
         )
         assert reach == {"context_observations", "hook_span"}
 

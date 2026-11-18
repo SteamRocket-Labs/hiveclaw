@@ -294,6 +294,7 @@ def watch_phases(monkeypatch, probe):
 async def measure_private_turn_volume(
     member_fixture, owner_sessionmaker, monkeypatch, tmp_path, caplog, *,
     probe=None, provider_type=HelloTransport, include_tool_turn=False, volumes=("empty", "lab"),
+    drain_boundary_for_task=None,
 ):
     from app.core.events import close_redis
     from app.runtime.hooks_setup import register_memory_hooks
@@ -375,8 +376,15 @@ async def measure_private_turn_volume(
                 timing, = [line for line in summaries(caplog) if line["run_id"] == str(run_id)]
                 assert timing["rounds"] == rounds and timing["instrumentation_errors"] == 0
                 probe.phases[f"{trial}-pre"].wall_ms = timing["pre_model_ms"]
-                counts = await worker.drain_web_terminal_boundary_outbox_once(worker_id="volume-boundary")
-                assert counts["delivered"] == 1, counts
+                if drain_boundary_for_task is None:
+                    counts = await worker.drain_web_terminal_boundary_outbox_once(worker_id="volume-boundary")
+                    assert counts["delivered"] == 1, counts
+                else:
+                    counts = await drain_boundary_for_task(
+                        worker.drain_web_terminal_boundary_outbox_once, task_id=run_id,
+                        worker_id="volume-boundary", session_factory=factory,
+                    )
+                    assert counts["target_delivered"] == 1, counts
                 await asyncio.gather(*tuple(_SUMMARY_PROJECTION_TASKS))
     finally:
         await close_redis()

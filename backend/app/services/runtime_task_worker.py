@@ -1113,10 +1113,13 @@ def _dispatch_claimed_task(task: RuntimeTask) -> bool:
 
         return _dispatch_async_runtime_task(task, execute_claimed_readiness_check(task.id), task_type="readiness_probe")
     if is_executable_chat_task_type(getattr(task, "task_type", None)):
+        tenant_id = getattr(task, "tenant_id", None)
+        scope = {"tenant_id": tenant_id, "session_id": getattr(task, "parent_session_id", None)} if tenant_id else {}
         return dispatch_web_chat_run(
             task.id,
             claim_version=int(getattr(task, "claim_version", 0) or 0),
             worker_id=str(getattr(task, "claimed_by", None) or "unknown"),
+            **scope,
         )
     if task.task_type == "workflow":
         return _dispatch_async_runtime_task(task, _execute_claimed_workflow_task(task.id), task_type="workflow")

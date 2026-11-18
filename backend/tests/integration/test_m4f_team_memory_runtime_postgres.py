@@ -197,23 +197,27 @@ async def test_group_recipient_inspection_is_not_a_private_source_grant_and_real
     assert still_inspected.status_code == 200
 
 
-async def test_next_provider_request_stops_after_team_membership_is_withdrawn(
+async def test_private_history_retains_team_memory_and_new_save_is_refused_after_withdrawal(
     readable_team_memory, app_user_sessionmaker, owner_sessionmaker,
 ):
+    from app.memory.explicit_overlay import load_explicit_overlay_entries
     from app.models.session_v2 import SessionModelResult, SessionToolInvocation
-    from tests.integration.source_withholding_helpers import assert_source_withheld
+    from app.tools.service import _extract_tool_error_payload
     from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
 
     s, workspace, _source = readable_team_memory
     n = s.n
-    loaded, _invocation = await memory_call(n, app_user_sessionmaker, "load_memory",
+    loaded, read = await memory_call(n, app_user_sessionmaker, "load_memory",
         {"ids": [f"team_memory:{workspace}:report"]}, user=n.foreign, session=s.second_session, run=s.second_run)
     assert "TEAM_PROJECT_RELEASE_MARKER" in loaded, loaded
     await leave_team(owner_sessionmaker, workspace, n.foreign)
+    entries = load_explicit_overlay_entries(n.root.parent, n.agent)
     saved, invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"content": "Remember a note derived from the team's release cadence", "category": "project"},
         user=n.foreign, session=s.second_session, run=s.second_run, include_history=True)
-    assert "Saved memory [project] (capabilities):" in saved and "TEAM_PROJECT_RELEASE_MARKER" not in saved
+    assert _extract_tool_error_payload(saved)["reason_code"] == "team_memory_workspace_denied", saved
+    assert "TEAM_PROJECT_RELEASE_MARKER" not in saved, saved
+    assert load_explicit_overlay_entries(n.root.parent, n.agent) == entries
     denied = str(await n.service.execute("load_memory", {"ids": [f"team_memory:{workspace}:report"]},
         agent_id=n.agent, user_id=n.foreign, session_id=str(s.second_session), runtime_task_id=str(s.second_run),
         emit_runtime_hooks=False))
@@ -221,10 +225,14 @@ async def test_next_provider_request_stops_after_team_membership_is_withdrawn(
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         rows = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == s.second_run)))
         assert len(rows) == 2, rows
-        later = [row for row in rows if row.provider_request_id == invocation.provider_request_id]
-        assert_source_withheld(later, content="TEAM_PROJECT_RELEASE_MARKER", code="team_memory_workspace_denied")
-        assert all(ref["source_kind"] != "team_memory" for row in later
-            for ref in row.model_request_snapshot_json["input_bindings"]["dependencies"])
+        later = next(row for row in rows if row.provider_request_id == invocation.provider_request_id)
+        snapshot = later.model_request_snapshot_json
+        # owner 11-13 / 11-18 A: the admitted result stays in the private history.
+        entry = next(item for item in snapshot["input_bindings"]["messages"]
+            if item["source_ref"] == f"session-tool-result:{read.id}")
+        assert entry["status"] == "bound" and any(ref["source_kind"] == "team_memory" for ref in entry["dependencies"])
+        assert snapshot["wire_request"]["messages"][entry["message_index"]]["content"] == loaded
+        assert await db.get(ContentInputReceipt, uuid5(invocation.id, "explicit-memory-source")) is None
         assert set(await db.scalars(select(SessionToolInvocation.tool_name).where(
             SessionToolInvocation.run_id == s.second_run))) == {"load_memory", "save_memory"}
 

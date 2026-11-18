@@ -40,14 +40,20 @@ def collect_invocation_observations(*, tenant_id: uuid.UUID, run_id: uuid.UUID, 
 async def persist_invocation_observations(rows: list[dict[str, Any]], *, tenant_id: uuid.UUID) -> None:
     from app.database import tenant_scoped_session
 
+    started = time.perf_counter()
     try:
         async with asyncio.timeout(INVOCATION_SPAN_PERSIST_TIMEOUT_SECONDS):
             async with tenant_scoped_session(tenant_id) as db:
                 for row in rows:
                     await record_invocation_span(db, **row)
     except Exception as exc:
+        status = "persist_timeout" if isinstance(exc, TimeoutError) else "persist_error"
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        for row in rows:
+            _record_span_metric(
+                span_type=row["span_type"], status=status, duration_ms=elapsed_ms, metadata=row["metadata"],
+            )
         logger.warning("[InvocationTrace] failed to persist %d invocation observations: %s", len(rows), type(exc).__name__)
-
 
 
 def current_invocation_id() -> str | None:
@@ -269,6 +275,7 @@ async def record_invocation_span(
     error: str | None = None,
     started_at: datetime | None = None,
     ended_at: datetime | None = None,
+    created_at: datetime | None = None,
 ):
     """Persist one invocation span into the tenant-scoped query surface."""
     from app.models.invocation_span import InvocationSpan
@@ -327,6 +334,7 @@ async def record_invocation_span(
         status=str(status or "ok")[:30],
         started_at=started_at or datetime.now(UTC),
         ended_at=ended_at,
+        created_at=created_at,
         duration_ms=max(0.0, float(duration_ms or 0.0)),
         usage=dict(usage) if isinstance(usage, dict) else None,
         evidence_refs=evidence_refs,
@@ -425,8 +433,8 @@ async def persist_invocation_span(
             or (span_type == "hook" and name in {"hook.setup", "hook.session_start", "hook.instructions_loaded"})
         )
     ):
-        # Preserve the original observation time, rather than the batch write time.
-        row["started_at"] = datetime.now(UTC)
+        # Readers order hook receipts by created_at, including unbatched hooks.
+        row["started_at"] = row["created_at"] = datetime.now(UTC)
         batch[2].append(row)
         return
 

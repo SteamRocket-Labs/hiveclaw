@@ -354,3 +354,61 @@ async def test_caller_span_preserves_the_stricter_parent_statement_budget(owner_
         await db.rollback()
     async with owner_sessionmaker() as db:
         assert (await db.scalar(select(InvocationSpan.id).where(InvocationSpan.tenant_id == tenant_id))) is None
+
+
+async def test_batched_hook_receipts_keep_observation_order(owner_sessionmaker, app_user_sessionmaker, monkeypatch):
+    from app import database
+    from app.api.hooks import _read_recent_hook_receipts
+    from app.models.agent import Agent
+    from app.models.user import User
+    from app.services import invocation_trace as trace
+
+    tenant_id, agent_id, run_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await _seed_tenant(owner_sessionmaker, tenant_id)
+    await _seed_runtime_task(owner_sessionmaker, tenant_id, run_id)
+    async with owner_sessionmaker() as db:
+        user = User(
+            tenant_id=tenant_id, username=agent_id.hex, email=f"{agent_id.hex}@fixture.test",
+            password_hash="x", display_name="Hook receipt owner",
+        )
+        db.add(user)
+        await db.flush()
+        db.add(Agent(id=agent_id, tenant_id=tenant_id, creator_id=user.id, owner_user_id=user.id, name="Hook receipt agent"))
+        await db.commit()
+    monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
+
+    rows = []
+    with trace.collect_invocation_observations(tenant_id=tenant_id, run_id=run_id, rows=rows):
+        for event in ("setup", "session_start", "instructions_loaded", "stop"):
+            await trace.persist_invocation_span(
+                tenant_id=tenant_id, trace_id="hook-order", span_id=event, span_type="hook",
+                name=f"hook.{event}", parent_span_id=None, parent_trace_id=None, status="ok",
+                duration_ms=0.0, agent_id=agent_id, user_id=None, runtime_task_id=run_id,
+                session_id=None, request_id=None,
+            )
+    await trace.persist_invocation_observations(rows, tenant_id=tenant_id)
+
+    async with database.tenant_scoped_session(tenant_id) as db:
+        receipts = await _read_recent_hook_receipts(db, agent_id=agent_id)
+    assert [receipt["event"] for receipt in receipts] == ["stop", "instructions_loaded", "session_start", "setup"]
+    assert [receipt["created_at"] for receipt in receipts[1:]] == [
+        row["started_at"].isoformat() for row in reversed(rows)
+    ]
+
+
+@pytest.mark.parametrize("error, status", [(TimeoutError, "persist_timeout"), (RuntimeError, "persist_error")])
+async def test_failed_observation_batch_records_each_lost_span(app_user_sessionmaker, monkeypatch, error, status):
+    from app import database
+    from app.services import invocation_trace as trace
+
+    async def fail_write(_db, **_row):
+        raise error
+
+    monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
+    monkeypatch.setattr(trace, "record_invocation_span", fail_write)
+    metrics = []
+    monkeypatch.setattr(trace, "_record_span_metric", lambda **metric: metrics.append(metric))
+
+    rows = [{"span_type": span_type, "metadata": {}} for span_type in ("hook", "invocation")]
+    await trace.persist_invocation_observations(rows, tenant_id=uuid.uuid4())
+    assert [(metric["span_type"], metric["status"]) for metric in metrics] == [("hook", status), ("invocation", status)]

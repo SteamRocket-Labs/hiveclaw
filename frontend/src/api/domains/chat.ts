@@ -7,6 +7,14 @@ import type { RequestOptions } from '../core/request';
 import type { ChatMessage } from '../../types';
 import type { ThreadItem } from './threadItems.generated';
 
+export interface SidebarConversation {
+  agent_id: string;
+  session_id: string;
+  last_message_at: string | null;
+  preview: string | null;
+  state: 'running' | 'waiting' | 'failed' | null;
+}
+
 export interface OriginalReferenceStatus {
   reference_id: string;
   state: 'active' | 'withdrawn';
@@ -359,6 +367,7 @@ export const chatApi = {
       `/chat/attachments/${encodeURIComponent(refId)}/draft?expected_content_sha256=${encodeURIComponent(digest)}`),
 
   /** Session management */
+  listSidebarConversations: (options?: RequestOptions) => get<SidebarConversation[]>('/agents/sessions/sidebar', options),
   listSessions: (agentId: string, scope: 'mine' | 'groups' | 'all' = 'mine', options?: SessionOperatorOptions) => {
     const params = new URLSearchParams({ scope });
     // PDEC-013: a scoped business administrator lists `scope=all` as a normal

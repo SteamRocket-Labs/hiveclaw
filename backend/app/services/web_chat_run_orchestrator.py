@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -25,6 +26,7 @@ from app.models.runtime_task import RuntimeTask
 from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase
 from app.services.llm_client import LLMError
 from app.services.llm_error_policy import is_runtime_persistence_error
+from app.services.invocation_trace import collect_invocation_observations, persist_invocation_observations
 from app.services.runtime_budget_failover import runtime_budget_model_notice, runtime_budget_payload
 from app.services.session_semantic_history import SessionSemanticHistoryUnavailable
 
@@ -146,6 +148,7 @@ class _WebChatRunState:
     cancel_event: asyncio.Event
     run_key: str
     broadcast_token: Any
+    observations: list[dict[str, Any]] = field(default_factory=list)
     streamed_chunks: list[str] = field(default_factory=list)
     thinking_content: list[str] = field(default_factory=list)
     stream_batcher: Any | None = None
@@ -204,6 +207,8 @@ async def run_web_chat_task(
         await _handle_web_chat_failure(state, exc)
     finally:
         await _cleanup_web_chat_run(state)
+        if state.observations:
+            await persist_invocation_observations(state.observations, tenant_id=state.agent.tenant_id)
 
 
 async def _run_web_chat_stages(state: _WebChatRunState) -> None:
@@ -217,7 +222,15 @@ async def _run_web_chat_stages(state: _WebChatRunState) -> None:
     if await _consume_resumed_plan_submission(state, callbacks):
         return
     pending_suffix = await _prepare_pending_suffix(state)
-    result = await _invoke_model(state, callbacks, pending_suffix)
+    observation_scope = (
+        collect_invocation_observations(
+            tenant_id=state.agent.tenant_id, run_id=state.run_uuid, rows=state.observations,
+        )
+        if getattr(state.runtime_task, "_private_web_turn", None) is not None
+        else nullcontext()
+    )
+    with observation_scope:
+        result = await _invoke_model(state, callbacks, pending_suffix)
     if state.provider_reconciliation is not None:
         state.terminal_phase_hint = RuntimePhase.FAILED
         await _handle_provider_reconciliation_required(state, state.provider_reconciliation)
@@ -1904,28 +1917,25 @@ async def _record_canonical_terminal_artifact_selection(
     declared_paths = state.ports.artifacts.declared_paths(response)
     rejected_paths = state.ports.artifacts.rejected_paths(state.runtime_session_context, response)
     session_id = uuid.UUID(str(state.session_id))
+    readable_paths = [path for path in declared_paths if _is_user_visible_terminal_artifact_path(path)]
     async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
-        task = await db.scalar(
-            select(RuntimeTask)
-            .where(
-                RuntimeTask.id == state.run_uuid,
-                RuntimeTask.tenant_id == state.agent.tenant_id,
-                RuntimeTask.parent_agent_id == state.agent.id,
-                RuntimeTask.parent_session_id == str(session_id),
+        task_query = select(RuntimeTask).where(
+            RuntimeTask.id == state.run_uuid,
+            RuntimeTask.tenant_id == state.agent.tenant_id,
+            RuntimeTask.parent_agent_id == state.agent.id,
+            RuntimeTask.parent_session_id == str(session_id),
+        ).with_for_update()
+        selection_task = None
+        read_parts = []
+        if readable_paths or selected_paths:
+            selection_task = await db.scalar(task_query)
+            if selection_task is None:
+                raise TerminalOutcomeNeedsReconciliation("canonical terminal artifact selection has no RuntimeTask")
+            db.expunge(selection_task)
+            await db.commit()
+            read_parts = await materialize_declared_read_artifacts(
+                db, task=selection_task, model_result_id=terminal_result_id, paths=readable_paths,
             )
-            .with_for_update()
-        )
-        if task is None:
-            raise TerminalOutcomeNeedsReconciliation("canonical terminal artifact selection has no RuntimeTask")
-        selection_task = task
-        db.expunge(selection_task)
-        await db.commit()
-        read_parts = await materialize_declared_read_artifacts(
-            db,
-            task=selection_task,
-            model_result_id=terminal_result_id,
-            paths=[path for path in declared_paths if _is_user_visible_terminal_artifact_path(path)],
-        )
         read_paths = [part["path"] for part in read_parts]
         selected_paths = list(dict.fromkeys([*selected_paths, *read_paths]))
         rejected_paths = [path for path in rejected_paths if path not in read_paths]
@@ -1939,10 +1949,12 @@ async def _record_canonical_terminal_artifact_selection(
                 ChatArtifact.authority_state == "owned",
                 ChatArtifact.path.in_(selected_paths),
             )
-            if task.root_user_id is not None:
-                artifact_statement = artifact_statement.where(ChatArtifact.owner_user_id == task.root_user_id)
+            if selection_task.root_user_id is not None:
+                artifact_statement = artifact_statement.where(ChatArtifact.owner_user_id == selection_task.root_user_id)
             try:
-                root_session_id = uuid.UUID(str(task.root_session_id)) if task.root_session_id else session_id
+                root_session_id = (
+                    uuid.UUID(str(selection_task.root_session_id)) if selection_task.root_session_id else session_id
+                )
             except (TypeError, ValueError, AttributeError):
                 root_session_id = session_id
             artifact_statement = artifact_statement.where(ChatArtifact.root_session_id == root_session_id)
@@ -1965,17 +1977,12 @@ async def _record_canonical_terminal_artifact_selection(
             if _is_user_visible_terminal_artifact_path(path) and path not in newest_by_path
         ]
         artifact_parts = [artifact_part_from_model(row) for row in selected]
-        task = await db.scalar(
-            select(RuntimeTask)
-            .where(RuntimeTask.id == state.run_uuid)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
+        task = await db.scalar(task_query.execution_options(populate_existing=True))
         if task is None:
             raise TerminalOutcomeNeedsReconciliation("canonical terminal artifact selection has no RuntimeTask")
         assert_runtime_task_fence(task)
         metadata = dict(task.metadata_json or {})
-        if "artifact_read_publication_errors" in (selection_task.metadata_json or {}):
+        if selection_task is not None and "artifact_read_publication_errors" in (selection_task.metadata_json or {}):
             metadata["artifact_read_publication_errors"] = selection_task.metadata_json[
                 "artifact_read_publication_errors"
             ]

@@ -7,6 +7,7 @@ import json
 import logging
 import time
 import uuid
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +22,32 @@ from app.config import get_settings
 _invocation_id: ContextVar[str | None] = ContextVar("hive_invocation_id", default=None)
 logger = logging.getLogger(__name__)
 INVOCATION_SPAN_PERSIST_TIMEOUT_SECONDS = 2.0
+
+_observation_batch: ContextVar[tuple[uuid.UUID, uuid.UUID, list[dict[str, Any]]] | None] = ContextVar(
+    "invocation_observation_batch", default=None,
+)
+
+
+@contextmanager
+def collect_invocation_observations(*, tenant_id: uuid.UUID, run_id: uuid.UUID, rows: list[dict[str, Any]]):
+    token = _observation_batch.set((tenant_id, run_id, rows))
+    try:
+        yield
+    finally:
+        _observation_batch.reset(token)
+
+
+async def persist_invocation_observations(rows: list[dict[str, Any]], *, tenant_id: uuid.UUID) -> None:
+    from app.database import tenant_scoped_session
+
+    try:
+        async with asyncio.timeout(INVOCATION_SPAN_PERSIST_TIMEOUT_SECONDS):
+            async with tenant_scoped_session(tenant_id) as db:
+                for row in rows:
+                    await record_invocation_span(db, **row)
+    except Exception as exc:
+        logger.warning("[InvocationTrace] failed to persist %d invocation observations: %s", len(rows), type(exc).__name__)
+
 
 
 def current_invocation_id() -> str | None:
@@ -368,30 +395,43 @@ async def persist_invocation_span(
     clean_metadata = dict(metadata or {})
     started = time.perf_counter()
 
-    async def _write(target_db: AsyncSession) -> None:
-        await record_invocation_span(
-            target_db,
-            tenant_id=coerced_tenant_id,
-            trace_id=trace_id,
-            span_id=span_id,
-            parent_span_id=parent_span_id,
-            parent_trace_id=parent_trace_id,
-            span_type=span_type,
-            name=name,
-            status=status,
-            duration_ms=duration_ms,
-            agent_id=_coerce_uuid(agent_id),
-            user_id=_coerce_uuid(user_id),
-            runtime_task_id=_coerce_uuid(runtime_task_id),
-            session_id=session_id,
-            request_id=_coerce_uuid(request_id),
-            execution_identity_type=execution_identity_type,
-            execution_identity_id=execution_identity_id,
-            execution_identity_label=execution_identity_label,
-            metadata=clean_metadata,
-            usage=usage,
-            error=error,
+    row = dict(
+        tenant_id=coerced_tenant_id,
+        trace_id=trace_id,
+        span_id=span_id,
+        parent_span_id=parent_span_id,
+        parent_trace_id=parent_trace_id,
+        span_type=span_type,
+        name=name,
+        status=status,
+        duration_ms=duration_ms,
+        agent_id=_coerce_uuid(agent_id),
+        user_id=_coerce_uuid(user_id),
+        runtime_task_id=_coerce_uuid(runtime_task_id),
+        session_id=session_id,
+        request_id=_coerce_uuid(request_id),
+        execution_identity_type=execution_identity_type,
+        execution_identity_id=execution_identity_id,
+        execution_identity_label=execution_identity_label,
+        metadata=clean_metadata,
+        usage=usage,
+        error=error,
+    )
+    batch = _observation_batch.get()
+    if (
+        db is None and batch is not None and (row["tenant_id"], row["runtime_task_id"]) == batch[:2]
+        and (
+            span_type in {"generation", "invocation"}
+            or (span_type == "hook" and name in {"hook.setup", "hook.session_start", "hook.instructions_loaded"})
         )
+    ):
+        # Preserve the original observation time, rather than the batch write time.
+        row["started_at"] = datetime.now(UTC)
+        batch[2].append(row)
+        return
+
+    async def _write(target_db: AsyncSession) -> None:
+        await record_invocation_span(target_db, **row)
 
     try:
         if db is not None:

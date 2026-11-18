@@ -137,6 +137,7 @@ async def test_persisted_messages_contain_no_plan_reminder_text():
 @pytest.mark.asyncio
 async def test_persisted_messages_contain_no_ledger_or_pressure_reminder_text():
     from app.kernel.contracts import InvocationRequest
+    from app.runtime.prompts.runtime_reminders import WORK_LEDGER_REMINDER
 
     persist_sink: list = []
     # 14 tool rounds: enough for the ledger reminder (idle 10) AND the
@@ -187,8 +188,9 @@ async def test_persisted_messages_contain_no_ledger_or_pressure_reminder_text():
     )
 
     assert persist_sink == []
+    assert any(WORK_LEDGER_REMINDER == m.content for call in client.calls for m in call["messages"])
     texts = _response_texts(result)
-    assert not any("gentle reminder" in t for t in texts), "ledger reminder leaked into persist"
+    assert not any(WORK_LEDGER_REMINDER in t for t in texts), "ledger reminder leaked into persist"
     assert not any("Current Work Ledger snapshot" in t for t in texts), "legacy ledger snapshot leaked into persist"
     assert not any("Recorded Work Ledger snapshot" in t for t in texts), "ledger snapshot leaked into persist"
     assert not any("tool rounds used" in t for t in texts), "round-pressure warning leaked into persist"

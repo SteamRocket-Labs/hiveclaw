@@ -113,8 +113,8 @@ class TestExecutingActionsSection:
 
     def test_conversational_mode_allows_local_reads_without_confirmation(self) -> None:
         out = build_executing_actions_section(invocation_scope="conversation")
-        assert "purely local reads" in out
-        assert "do NOT need" in out
+        assert "For local reads needed by the request" in out
+        assert "you do not need confirmation" in out
 
     def test_autonomous_mode_instructs_report_on_blocked_gate(self) -> None:
         for mode in ("task", "heartbeat"):
@@ -218,11 +218,13 @@ class TestExecutingActionsPR28Deepening:
 
     def test_verification_has_decision_matrix_table(self) -> None:
         out = build_executing_actions_section(invocation_scope="conversation")
-        assert "| Action | Pre-check tool | Why |" in out
+        matrix = out.split("<verification>", 1)[1].split("</verification>", 1)[0]
+        assert "| Action | Pre-check tool | Why |" in matrix
         # Specific rows
-        assert "Overwrite a file" in out
-        assert "Create a trigger" in out
-        assert "Mark a task complete" in out
+        assert "Overwrite a file" in matrix
+        assert "| Create a trigger / wake policy | `list_triggers` | Avoid duplicate schedules and orphan wake policies |" in matrix
+        assert "Mark a task complete" in matrix
+        assert "When the current request calls for recurring or deferred work, `set_trigger`" in out
 
     def test_legacy_markdown_headers_preserved(self) -> None:
         # The prompt_eval contract + test_prompt_sections expect these.

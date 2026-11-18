@@ -22,6 +22,7 @@ no-stacking behaviour through the fake-client call log.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -160,7 +161,7 @@ def test_ledger_cooldown_between_injections():
     assert ledger_rounds[1] - ledger_rounds[0] >= 10
 
 
-def test_ledger_reminder_is_gentle_and_includes_current_snapshot():
+def test_ledger_reminder_limits_guidance_to_current_request_and_includes_snapshot():
     """T-G2: ledger reminder is a low-frequency nudge with current persisted state."""
     scheduler = _scheduler()
     ctx = _ledger_ctx()
@@ -182,8 +183,8 @@ def test_ledger_reminder_is_gentle_and_includes_current_snapshot():
     text = next(t for t in fired[10] if "track_todo" in t)
     lowered = text.lower()
     assert snapshot_calls == 1
-    assert "gentle reminder" in lowered
-    assert "ignore it if it does not apply" in lowered
+    assert "for this request's multi-step work" in lowered
+    assert "if the current request needs earlier work" in lowered
     assert "do not mention this reminder to the user" in lowered
     assert "Recorded Work Ledger snapshot" in text
     assert "#todo-1 [in_progress] Collect Q3 revenue figures" in text
@@ -399,7 +400,7 @@ class _ToolLoopClient:
         return None
 
 
-def _kernel(client, persist_sink: list | None = None, max_rounds: int = 6):
+def _kernel(client, persist_sink: list | None = None, max_rounds: int = 6, *, execute_tool=None, tool_names=("read_file",)):
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
     def _persist(**kwargs):
@@ -416,12 +417,13 @@ def _kernel(client, persist_sink: list | None = None, max_rounds: int = 6):
             get_tools=lambda *_a, **_k: [
                 {
                     "type": "function",
-                    "function": {"name": "read_file", "description": "read", "parameters": {"type": "object"}},
+                    "function": {"name": name, "description": name, "parameters": {"type": "object"}},
                 }
+                for name in tool_names
             ],
             maybe_compress_messages=lambda messages, **kwargs: messages,
             create_client=lambda _model: client,
-            execute_tool=lambda *_a, **_k: "file content",
+            execute_tool=execute_tool or (lambda *_a, **_k: "file content"),
             persist_memory=_persist,
             record_token_usage=lambda *a, **k: None,
             get_max_tokens=lambda provider, model, override=None: 2048,
@@ -566,6 +568,68 @@ async def test_kernel_ledger_reminder_reads_persisted_session_snapshot(tmp_path,
     ]
     assert reminder_messages, "ledger reminder never carried the persisted snapshot"
     assert any("[in_progress] Collect Q3 revenue figures" in text for text in reminder_messages)
+
+
+@pytest.mark.asyncio
+async def test_ledger_reminder_keeps_this_requests_todo_in_later_rounds(tmp_path, monkeypatch):
+    from app.kernel.contracts import InvocationRequest
+    from app.tools.handlers.work_ledger import track_todo
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    monkeypatch.setattr(
+        "app.services.agent_work_ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+    agent_id, user_id = uuid4(), uuid4()
+    session = _ledger_ctx()
+    session.session_id = "same-request-ledger"
+    title = "Verify the current export totals"
+
+    class TodoClient(_ToolLoopClient):
+        async def stream(self, **kwargs):
+            if self.calls:
+                return await super().stream(**kwargs)
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                content="", reasoning_content=None, usage={"total_tokens": 10},
+                tool_calls=[{
+                    "id": "current-todo", "type": "function", "function": {
+                        "name": "track_todo",
+                        "arguments": json.dumps({"action": "add", "title": title, "status": "in_progress"}),
+                    },
+                }],
+            )
+
+    async def execute_tool(tool_name, arguments, *_args, **_kwargs):
+        if tool_name != "track_todo":
+            return "file content"
+        return await track_todo(ToolExecutionRequest(
+            tool_name, arguments,
+            ToolExecutionContext(
+                agent_id=agent_id, user_id=user_id, tenant_id=None, workspace=tmp_path,
+                session_id=session.session_id,
+            ),
+        ))
+
+    client = TodoClient(tool_rounds=11, distinct_args=True)
+    kernel = _kernel(client, max_rounds=20, execute_tool=execute_tool, tool_names=("track_todo", "read_file"))
+    result = await kernel.handle(InvocationRequest(
+        model=_model(), messages=[{"role": "user", "content": "整理这三份文件并写周报"}],
+        agent_name="Agent", role_description="desc", agent_id=agent_id, user_id=user_id,
+        memory_session_id=session.session_id, session_context=session, member_authored_turn=True,
+    ))
+
+    assert result.content == "done"
+    assert len(client.calls) == 13
+    assert any(
+        "track_todo" in (message.content or "")
+        for call in client.calls[1:] for message in call["messages"]
+        if message.role == "system" and "This is an internal system reminder." in (message.content or "")
+    )
+    assert any(
+        f"[in_progress] {title}" in (message.content or "")
+        for call in client.calls[1:] for message in call["messages"]
+        if message.role == "system" and "Recorded Work Ledger snapshot" in (message.content or "")
+    )
 
 
 def test_queued_reminder_source_label_cannot_claim_complete_origin():

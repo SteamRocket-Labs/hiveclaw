@@ -229,7 +229,7 @@ async def test_unverified_t2_reference_read_delivers_complete_body(
     assert "Inspect complete authorized files" not in first
     assert "OLD_UNVERIFIED_T2_BODY" not in first
     if profile == "skeleton":
-        assert "### Current Memory State" not in first
+        assert "### Background Memory" not in first
         assert "(no memory loaded)" not in first
     locate = [m for m in client.requests[1]["messages"] if m.get("tool_call_id") == "locate-t2"]
     assert len(locate) == 1 and str(s["previous"]) in locate[0]["content"], locate

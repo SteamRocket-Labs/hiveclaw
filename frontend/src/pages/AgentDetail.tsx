@@ -23,7 +23,6 @@ import {
     isTranscriptOnlySession,
     isUnfinishedSessionRun,
     markActiveRunTerminalInRegistry, normalizeSessionRunId,
-    mergePendingUserMessages,
     filterSessionsForAgent,
     hasLocalSessionRuntimeState,
     normalizeRuntimeEventMessage,
@@ -57,6 +56,7 @@ import { buildPlanModeScopeKey, nextPlanModeRequestedForScope } from './agent-de
 import { latestTranscriptSequence, retrySessionRead } from './agent-detail/chatTransportRecovery';
 import {
     createSessionMessageStore,
+    createPendingUserMessageActions,
     useSessionMessages,
     type ChatMessagesUpdater,
 } from './agent-detail/sessionMessageStore';
@@ -474,30 +474,6 @@ function AgentDetailInner() {
 
     const sessionPhaseOf = (key: SessionRuntimeKey): RuntimePhase =>
         sessionUiStateRef.current[key]?.phase ?? 'idle';
-
-    const mergePendingForSession = (key: SessionRuntimeKey, messages: AgentChatMessage[]): AgentChatMessage[] => {
-        const merged = mergePendingUserMessages(messages, pendingUserMessagesRef.current[key] || []);
-        if (merged.pending.length > 0) {
-            pendingUserMessagesRef.current[key] = merged.pending;
-        } else {
-            delete pendingUserMessagesRef.current[key];
-        }
-        return merged.messages;
-    };
-
-    const appendOptimisticUserMessage = (
-        key: SessionRuntimeKey, sessionId: string, messageInput: AgentChatMessage,
-    ) => {
-        const message = parseChatMsg(messageInput);
-        setChatMessagesAfterQueuedForSession(sessionId, prev => {
-            pendingUserMessagesRef.current[key] = [
-                ...(pendingUserMessagesRef.current[key] || []),
-                { message, anchorMessageCount: prev.length,
-                    anchorMessageId: prev.at(-1)?.id || prev.at(-1)?.messageId || prev.at(-1)?.transcriptEventId || undefined },
-            ];
-            return mergePendingForSession(key, prev);
-        });
-    };
 
     const isTerminalTranscriptToolMessage = (message: AgentChatMessage | undefined) => {
         if (!message || message.role !== 'tool_call') return false;
@@ -1478,6 +1454,10 @@ function AgentDetailInner() {
     const { uploading, uploadProgress, uploadAbortRef, attachedFiles, setAttachedFiles,
         fileInputRef, handleChatFile, handlePaste } = useChatAttachments(id, t,
             (message, type) => showToast(message, type));
+    const composerDraftRef = useRef({ text: chatInput, files: attachedFiles });
+    if (composerDraftRef.current.text !== chatInput || composerDraftRef.current.files !== attachedFiles) {
+        composerDraftRef.current = { text: chatInput, files: attachedFiles };
+    }
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
     // RuntimePhase for the ACTIVE session (§3 seam 1). isWaiting/isStreaming are
@@ -1585,7 +1565,9 @@ function AgentDetailInner() {
         if (msg.role !== 'user') return msg;
         return parseUserAttachment(msg, id);
     };
-
+    const { mergePendingForSession, appendOptimisticUserMessage, updateOptimisticUserMessage } = createPendingUserMessageActions(
+        pendingUserMessagesRef, setChatMessagesAfterQueuedForSession, parseChatMsg,
+    );
 
     useOperatorAuthorityCacheLifecycle({
         activeSession,
@@ -2022,12 +2004,13 @@ function AgentDetailInner() {
         let refused = false;
         let retryable = true;
         let queued = false;
-        const updateSend = (patch: Partial<AgentChatMessage>) => {
-            pendingUserMessagesRef.current[sendKey] = (pendingUserMessagesRef.current[sendKey] || []).map(item =>
-                item.message.id === acceptedInputId ? { ...item, message: { ...item.message, ...patch } } : item);
-            setChatMessagesAfterQueuedForSession(sendSessionId, prev => mergePendingForSession(sendKey, prev.map(message =>
-                message.id === acceptedInputId ? { ...message, ...patch } : message)));
-        };
+        const updateSend = (patch: Partial<AgentChatMessage>) => updateOptimisticUserMessage(sendKey, sendSessionId, acceptedInputId, patch);
+        const clearedDraft = { text: '', files: [] as typeof attachedFiles };
+        if (composerDraftRef.current.text === chatInput && composerDraftRef.current.files === attachedFiles) {
+            composerDraftRef.current = clearedDraft;
+            setChatInput('');
+            setAttachedFiles(clearedDraft.files);
+        }
         if (!goalModeRequested) {
             if (!activeRunStateRef.current[sendKey]?.runId) setTransportNotice(null);
             if (retryMessageId) {
@@ -2126,14 +2109,17 @@ function AgentDetailInner() {
                 imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
                 timestamp: new Date().toISOString(),
             });
-            setChatInput(current => current === chatInput ? '' : current);
-            setAttachedFiles(current => current === attachedFiles ? [] : current);
             setPlanModeRequested(false);
             setGoalModeRequested(false);
             applySubmittedRun(activeRuntimeKey, started.run);
             invalidateSessionRuntimeQueries(id, runSessionId);
             return true;
         } catch (err: any) {
+            if (activeSessionIdRef.current === sendSessionId && stillOriginalSubject() && composerDraftRef.current === clearedDraft) {
+                composerDraftRef.current = { text: chatInput, files: attachedFiles };
+                setChatInput(chatInput);
+                setAttachedFiles(attachedFiles);
+            }
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             if (goalModeRequested) {
                 setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'run_start_failed' })]);
@@ -2177,6 +2163,13 @@ function AgentDetailInner() {
         }
         const acceptedInputId = options?.inputId || globalThis.crypto.randomUUID();
         const displayContent = options?.displayContent || userMsg;
+        let runSessionId = String(activeSession.id);
+        let activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
+        setChatMessagesSessionId(runSessionId);
+        appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {
+            role: 'user', id: acceptedInputId, content: displayContent,
+            timestamp: new Date().toISOString(), sendState: 'sending',
+        });
         try {
             const input = {
                 content: userMsg,
@@ -2190,27 +2183,26 @@ function AgentDetailInner() {
                 ? { session: activeSession, run: await chatApi.startSessionRun(id, expectedSessionId, input) }
                 : await startRunForActiveSession(input);
             if (!started?.session?.id) return;
-            if (!stillOriginalWork()) return;
-            const runSessionId = String(started.session.id);
-            const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
-            if (!activeRunStateRef.current[activeRuntimeKey]?.runId) {
-                syncActivePhase('queued');
-                setSessionPhase(activeRuntimeKey, 'queued');
+            if (String(started.session.id) !== runSessionId) {
+                const nextKey = buildSessionRuntimeKey(id, String(started.session.id));
+                pendingUserMessagesRef.current[nextKey] = pendingUserMessagesRef.current[activeRuntimeKey] || [];
+                delete pendingUserMessagesRef.current[activeRuntimeKey];
+                runSessionId = String(started.session.id);
+                activeRuntimeKey = nextKey;
             }
+            const issue = 'admission_state' in started.run ? submittedSessionInputIssue(started.run) : null;
+            if (issue === 'refused') throw new Error(t('agent.chat.sendRefused', 'Not sent: this message could not be accepted.'));
+            updateOptimisticUserMessage(activeRuntimeKey, runSessionId, acceptedInputId, { sendState: issue === 'queued' ? 'queued' : undefined, sendError: undefined });
+            if (!stillOriginalWork()) return;
             setTransportNotice(null);
             setChatMessagesSessionId(runSessionId);
-            appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {
-                role: 'user',
-                id: acceptedInputId,
-                content: displayContent,
-                timestamp: new Date().toISOString(),
-            });
             applySubmittedRun(activeRuntimeKey, started.run);
             invalidateSessionRuntimeQueries(id, runSessionId);
         } catch (err: any) {
+            updateOptimisticUserMessage(activeRuntimeKey, runSessionId, acceptedInputId, {
+                sendState: 'failed', sendError: t('agent.chat.sendFailed', 'Message not sent. Try again.'),
+            });
             if (!stillOriginalWork()) throw err;
-            setIsWaiting(false);
-            setIsStreaming(false);
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             const unconfirmed = Boolean(expectedSessionId && !(err instanceof ApiError && err.status >= 400
                 && err.status < 500 && err.status !== 408));
@@ -2231,13 +2223,24 @@ function AgentDetailInner() {
         const previous = questionAnswerRequests.current.get(key);
         const attempt = previous?.text === text ? previous : { text, inputId: globalThis.crypto.randomUUID() };
         questionAnswerRequests.current.set(key, attempt);
-        const response = await chatApi.answerQuestion(agentId, sessionId, itemId, text, attempt.inputId);
-        invalidateSessionRuntimeQueries(agentId, sessionId);
-        if (response.admission_state !== 'admitted' || ['rejected', 'needs_reconciliation', 'cancelled'].includes(response.status)) {
-            throw new Error(response.reason_code || response.dispatch?.reason_code || t('agent.clarification.notApplied', 'The answer is stored but could not be applied. Retry or review this work.'));
+        const runtimeKey = buildSessionRuntimeKey(agentId, sessionId);
+        appendOptimisticUserMessage(runtimeKey, sessionId, { role: 'user', id: attempt.inputId, content: text,
+            timestamp: new Date().toISOString(), sendState: 'sending' });
+        try {
+            const response = await chatApi.answerQuestion(agentId, sessionId, itemId, text, attempt.inputId);
+            invalidateSessionRuntimeQueries(agentId, sessionId);
+            if (response.admission_state !== 'admitted' || ['rejected', 'needs_reconciliation', 'cancelled'].includes(response.status)) {
+                throw new Error(response.reason_code || response.dispatch?.reason_code || t('agent.clarification.notApplied', 'The answer is stored but could not be applied. Retry or review this work.'));
+            }
+            updateOptimisticUserMessage(runtimeKey, sessionId, attempt.inputId, { sendState: undefined, sendError: undefined });
+            if (activeSessionIdRef.current === sessionId) await selectSession(activeSession);
+            return response;
+        } catch (err) {
+            updateOptimisticUserMessage(runtimeKey, sessionId, attempt.inputId, {
+                sendState: 'failed', sendError: t('agent.chat.sendFailed', 'Message not sent. Try again.'),
+            });
+            throw err;
         }
-        if (activeSessionIdRef.current === sessionId) await selectSession(activeSession);
-        return response;
     };
 
     const resolveSessionPermission = async (

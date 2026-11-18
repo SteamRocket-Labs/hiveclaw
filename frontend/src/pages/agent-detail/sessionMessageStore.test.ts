@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createSessionMessageStore,
+  createPendingUserMessageActions,
   type SessionMessageFrameScheduler,
 } from './sessionMessageStore';
-import type { AgentChatMessage } from './chatRuntime';
+import type { AgentChatMessage, PendingUserMessage } from './chatRuntime';
 
 function message(id: string, content = id): AgentChatMessage {
   return { id, role: 'assistant', content };
@@ -33,6 +34,22 @@ function createManualScheduler(): SessionMessageFrameScheduler & { runNext: () =
 }
 
 describe('session message store', () => {
+  it('X9a.1 retries one input without duplicating it or replacing its durable display', () => {
+    const store = createSessionMessageStore(createManualScheduler());
+    const pending = { current: {} as Record<string, PendingUserMessage[]> };
+    const actions = createPendingUserMessageActions(pending, store.updateAfterQueued, message => message);
+    store.updateAfterQueued('work', () => [{ id: 'input', role: 'user', content: 'Use [REDACTED_SECRET]' }]);
+    const input: AgentChatMessage = { id: 'input', role: 'user', content: 'Use original credential', sendState: 'sending' };
+    actions.appendOptimisticUserMessage('bot:work', 'work', input);
+    actions.updateOptimisticUserMessage('bot:work', 'work', 'input', { sendState: 'failed' });
+    actions.appendOptimisticUserMessage('bot:work', 'work', input);
+    expect(store.getSnapshot('work')).toEqual([expect.objectContaining({ id: 'input', content: 'Use [REDACTED_SECRET]', sendState: 'sending' })]);
+    expect(pending.current['bot:work']).toHaveLength(1);
+    actions.updateOptimisticUserMessage('bot:work', 'work', 'input', { sendState: undefined });
+    expect(store.getSnapshot('work')[0].sendState).toBeUndefined();
+    expect(pending.current['bot:work']).toBeUndefined();
+  });
+
   it('coalesces multiple active-session updates into one frame notification', () => {
     const scheduler = createManualScheduler();
     const store = createSessionMessageStore(scheduler);

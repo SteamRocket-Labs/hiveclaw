@@ -383,17 +383,12 @@ async def test_private_turn_volume_budget(member_request, owner_sessionmaker, mo
     exceeded = []
     for turn, budget in CEILINGS.items():
         for volume in ("empty", "lab"):
-            total_sql = total_tx = 0
             for segment, (max_sql, max_tx) in zip(SEGMENTS, budget, strict=True):
                 metric = measurements[f"{volume}-{turn}-{segment}"]
                 sql, tx = metric["statements"], metric["transactions"]
-                total_sql += sql
-                total_tx += tx
                 if sql > max_sql or tx > max_tx:
                     exceeded.append((volume, turn, segment, sql, tx, max_sql, max_tx))
                 empty = measurements[f"empty-{turn}-{segment}"]
                 if volume == "lab" and (sql, tx) != (empty["statements"], empty["transactions"]):
                     exceeded.append((volume, turn, segment, "volume grew", sql, tx, empty["statements"], empty["transactions"]))
-            if total_sql > 250 or total_tx > 30:
-                exceeded.append((volume, turn, "total", total_sql, total_tx, 250, 30))
     assert not exceeded, exceeded

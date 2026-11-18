@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from app.config import get_settings
+from app.core.request_timing import timed_phase
 from app.core.execution_context import A2AToolAuthorityFrame, ExecutionPrincipal
 from app.database import async_session, tenant_scoped_session
 from app.kernel import (
@@ -697,6 +698,7 @@ def _apply_cache_hints(
     return apply_cache_hints(api_messages, provider, invocation_scope=invocation_scope)
 
 
+@timed_phase("prompt_build")
 async def _build_system_prompt(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
@@ -791,6 +793,7 @@ def _resolve_context_budget(request: AgentInvocationRequest) -> ContextBudget:
     return budget_profile
 
 
+@timed_phase("memory_context")
 async def _resolve_memory_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,

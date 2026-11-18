@@ -11,6 +11,7 @@ from typing import Any, Callable
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.core.request_timing import mark_run_terminal
 from app.kernel.contracts import (
     ExecutionAuthorityUnavailable,
     ExecutionIdentityRef,
@@ -1831,6 +1832,7 @@ async def _commit_canonical_terminal_outcome(
             )
             await db.commit()
         terminal_event_id = committed_outcome.terminal_event_id
+        mark_run_terminal()
         return {
             "schema": "hive.response_commit.v1",
             "committed": True,

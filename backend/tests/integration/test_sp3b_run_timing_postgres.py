@@ -1,0 +1,314 @@
+"""Per-run timing on the native member/worker path, without provider network."""
+
+import asyncio
+import hashlib
+import json
+import logging
+import sys
+import time
+import uuid
+from contextlib import contextmanager
+
+import pytest
+from greenlet import getcurrent
+from sqlalchemy import event, text
+from sqlalchemy.engine import Engine
+
+from app.core import request_timing as timing_module
+from app.models.runtime_task import RuntimeTask
+from tests.integration.test_a2p_member_request_cost_postgres import member_request  # noqa: F401, F811
+from tests.integration.test_sp1_send_statement_budget_postgres import claim, configure, execute
+from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient
+
+pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@contextmanager
+def observed_sql():
+    sample = {"statements": 0, "transactions": 0, "origins": set()}
+
+    def before(_conn, _cursor, statement, _parameters, _context, _many):
+        sample["statements"] += 1
+        current, frame, origin = getcurrent(), sys._getframe(), "unknown"
+        while current is not None:
+            while frame is not None:
+                module = frame.f_globals.get("__name__", "")
+                if module.startswith("app.") and module != timing_module.__name__:
+                    origin = f"{module}:{frame.f_code.co_name}:{frame.f_lineno}"
+                    break
+                frame = frame.f_back
+            if origin != "unknown":
+                break
+            current = current.parent
+            frame = current.gr_frame if current is not None else None
+        sql_hash = hashlib.md5(statement.encode("utf-8")[:1023].decode("utf-8", errors="ignore").encode("utf-8")).hexdigest()[:12]
+        sample["origins"].add((sql_hash, origin))
+
+    def begin(*_args):
+        sample["transactions"] += 1
+
+    event.listen(Engine, "before_cursor_execute", before)
+    event.listen(Engine, "begin", begin)
+    try:
+        yield sample
+    finally:
+        event.remove(Engine, "before_cursor_execute", before)
+        event.remove(Engine, "begin", begin)
+
+
+def summaries(caplog):
+    return [json.loads(record.getMessage().removeprefix("run_timing "))
+        for record in caplog.records if record.getMessage().startswith("run_timing ")]
+
+
+@pytest.fixture
+async def scenario(member_request, owner_sessionmaker, monkeypatch, tmp_path):  # noqa: F811
+    from app.services import agent_tools
+
+    seed, _client, _sample, factory = member_request
+    seed, client = await configure(member_request, owner_sessionmaker, factory, monkeypatch, tmp_path)
+
+    async def start():
+        response = await client.post(f"/api/agents/{seed.agent_id}/sessions/runs", json={
+            "content": "SP3b private message sentinel", "input_id": str(uuid.uuid4())})
+        assert response.status_code == 201, response.text
+        run = uuid.UUID(response.json()["run"]["run_id"])
+        await claim(seed, run, owner_sessionmaker)
+        # This scenario exercises collection itself, even when earlier tests
+        # warmed the process-wide collection and core-schema caches.
+        monkeypatch.setattr(agent_tools, "_COLLECTED_TOOLS", None)
+        monkeypatch.setattr(agent_tools, "_always_core_tools", None)
+        return run
+
+    return seed, factory, start
+
+
+async def test_scripted_run_has_one_content_free_partitioned_summary(
+    scenario, owner_sessionmaker, monkeypatch, caplog,
+):
+    import app.runtime.invoker as invoker
+    from app.services import agent_tools
+
+    seed, factory, start = scenario
+    # Earlier tests can leave the process-wide registry warm. Exercise that
+    # state before the fixture establishes the cold collection scenario.
+    assert agent_tools._get_collected_tools().openai_tools
+    agent_tools._get_always_core_tools()
+    agent_tools._get_feishu_tools()
+    agent_tools._get_hr_tools()
+    from app.tools import governance, registry
+    for names in (registry.READ_ONLY_TOOL_NAMES, registry.PARALLEL_SAFE_TOOL_NAMES,
+        governance.SAFE_TOOLS, governance.SENSITIVE_TOOLS):
+        tuple(names)
+    registry.result_char_limit_for_tool("get_current_time")
+    from app.services.governance_capability_taxonomy import taxonomy_policy_capability_group_names_for_tool
+    taxonomy_policy_capability_group_names_for_tool("send_feishu_message")
+    run = await start()
+
+    class Provider(ScriptedLLMClient):
+        async def stream(self, **kwargs):
+            # The scripted transport has no HTTP boundary; expose its send/end
+            # through the same measurement used by the native HTTP transports.
+            with timing_module.provider_request_timing():
+                await asyncio.sleep(0.02)
+                return await super().stream(**kwargs)
+
+    provider = Provider([
+        {"tool_calls": [{"id": "sp3b-clock", "type": "function", "function": {
+            "name": "get_current_time", "arguments": '{"timezone":"UTC"}'}}]},
+        {"content": "SP3b private answer sentinel", "stream_text": "SP3b private answer sentinel"},
+    ])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
+    caplog.set_level(logging.INFO, logger="app.core.request_timing")
+    with observed_sql() as observed:
+        started = time.perf_counter()
+        await execute(run)
+        wall_ms = (time.perf_counter() - started) * 1000
+    async with owner_sessionmaker() as db:
+        assert (await db.get(RuntimeTask, run)).status == "completed"
+    lines = summaries(caplog)
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["run_id"] == str(run) and line["task_type"] == "web_chat_turn"
+    assert line["rounds"] == len(provider.requests) == 2
+    assert line["db_statements"] == observed["statements"]
+    assert line["transactions"] == observed["transactions"]
+    partition = sum(line[name] for name in (
+        "pre_model_ms", "model_ms", "between_rounds_ms", "post_model_ms"))
+    assert abs(partition - wall_ms) <= wall_ms * 0.05
+    assert line["model_ms"] >= 35 and line["between_rounds_ms"] > 0
+    assert line["db_ms"] > 0 and line["rows"] > 0
+    assert 0 < len(line["statements"]) <= 10
+    assert 0 < len(line["gaps"]) <= 10
+    for entries in (line["statements"], line["gaps"], line["phases"]):
+        assert [entry["ms"] for entry in entries] == sorted(
+            (entry["ms"] for entry in entries), reverse=True)
+    assert {span["name"] for span in line["phases"]} == {
+        "tool_collection", "prompt_build", "memory_context", "model_input_source_validation", "hook_dispatch"}
+    numeric = {"wall_ms", "cleanup_ms", "pre_model_ms", "model_ms", "between_rounds_ms", "post_model_ms",
+        "rounds", "db_statements", "db_ms", "transactions", "rows", "instrumentation_errors"}
+    assert set(line) == numeric | {"run_id", "task_type", "statements", "gaps", "phases"}
+    assert all(isinstance(line[key], (int, float)) for key in numeric)
+    known_frames = {frame for _hash, frame in observed["origins"]}
+    for entry in line["statements"]:
+        assert set(entry) == {"hash", "frame", "ms"}
+        assert (entry["hash"], entry["frame"]) in observed["origins"]
+    for entry in line["gaps"]:
+        assert set(entry) == {"from", "to", "ms"}
+        assert entry["from"] in known_frames and entry["to"] in known_frames
+    assert all(set(entry) == {"name", "ms"} for entry in line["phases"])
+    # Independently verified source identifiers are authorized log fields;
+    # names such as get_agent_timezone are not copies of tool arguments.
+    content_fields = {**line,
+        "statements": [{**entry, "frame": ""} for entry in line["statements"]],
+        "gaps": [{**entry, "from": "", "to": ""} for entry in line["gaps"]]}
+    serialized = json.dumps(content_fields)
+    for forbidden in ("SELECT", "INSERT", "current_tenant", "private message", "private answer", "timezone"):
+        assert forbidden not in serialized
+    assert all(entry["frame"].startswith("app.") for entry in line["statements"])
+    print("SP3B_RUN", json.dumps(line), "WALL_MS", round(wall_ms, 3), flush=True)
+
+
+async def test_instrumentation_failure_does_not_change_run_completion(
+    scenario, owner_sessionmaker, monkeypatch, caplog,
+):
+    import app.runtime.invoker as invoker
+
+    _seed, _factory, start = scenario
+    run = await start()
+    provider = ScriptedLLMClient([{"content": "The local result is ready."}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("instrumentation private error sentinel")
+
+    monkeypatch.setattr(timing_module, "_application_frame", broken, raising=False)
+    caplog.set_level(logging.INFO, logger="app.core.request_timing")
+    await execute(run)
+    async with owner_sessionmaker() as db:
+        assert (await db.get(RuntimeTask, run)).status == "completed"
+    lines = summaries(caplog)
+    assert len(lines) == 1 and lines[0]["instrumentation_errors"] > 0
+    assert "private error" not in json.dumps(lines)
+    assert timing_module.request_timing.get() is None
+
+
+async def test_driver_hash_transaction_gaps_and_bounded_top_ten(app_user_engine, caplog):
+    sql = "SELECT 42 AS sp3b_known, '" + "a" * 993 + "界" * 20 + "' AS label"
+    expected = hashlib.md5(sql.encode("utf-8")[:1023].decode("utf-8", errors="ignore").encode("utf-8")).hexdigest()[:12]
+    caplog.set_level(logging.INFO, logger="app.core.request_timing")
+    with timing_module.run_timing_scope(uuid.uuid4()):
+        with observed_sql() as observed:
+            async with app_user_engine.connect() as conn:
+                for _ in range(12):
+                    await conn.execute(text(sql))
+                await asyncio.sleep(0.025)
+                await conn.execute(text(sql))
+                await conn.commit()
+                # A larger idle interval outside a transaction must be excluded.
+                await asyncio.sleep(0.07)
+                await conn.execute(text(sql))
+                await conn.rollback()
+    line, = summaries(caplog)
+    assert line["db_statements"] == observed["statements"] == 14
+    assert line["transactions"] == observed["transactions"] == 2
+    assert len(line["statements"]) == len(line["gaps"]) == 10
+    assert {entry["hash"] for entry in line["statements"]} == {expected}
+    assert 20 <= line["gaps"][0]["ms"] < 65
+    assert all(entry["from"] and entry["to"] for entry in line["gaps"])
+    assert line["rounds"] == 0 and line["model_ms"] == line["post_model_ms"] == 0
+    assert sql not in json.dumps(line)
+
+    caplog.clear()
+    with timing_module.run_timing_scope(uuid.uuid4()):
+        async with app_user_engine.connect() as conn:
+            async with conn.stream(text("SELECT 42")) as result:
+                assert await result.all() == [(42,)]
+    unknown, = summaries(caplog)
+    assert unknown["rows"] is None
+
+
+@pytest.mark.parametrize("provider,stream", [
+    ("openai", False), ("openai", True), ("anthropic", True), ("gemini", True),
+])
+async def test_native_provider_request_boundaries(provider, stream, monkeypatch, caplog):
+    import httpx
+    from app.services.llm_client import (
+        AnthropicClient, GeminiClient, LLMMessage, OpenAICompatibleClient, create_llm_client,
+    )
+
+    async def respond(request):
+        await asyncio.sleep(0.025)
+        if not stream:
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+        if provider == "anthropic":
+            payload = ('event: content_block_delta\ndata: {"type":"content_block_delta","index":0,'
+                '"delta":{"type":"text_delta","text":"ok"}}\n\n'
+                'event: message_stop\ndata: {"type":"message_stop"}\n\n')
+        elif provider == "gemini":
+            payload = 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'
+        else:
+            payload = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+        class Body(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield payload.encode()
+
+        return httpx.Response(200, stream=Body(), headers={"content-type": "text/event-stream"})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    client = create_llm_client(provider=provider, api_key="synthetic-local-only", model="local-reference")
+    leaf = getattr(client, "_inner", client)
+    assert isinstance(leaf, {"openai": OpenAICompatibleClient, "anthropic": AnthropicClient, "gemini": GeminiClient}[provider])
+    monkeypatch.setattr(leaf, "_client", http)
+    caplog.set_level(logging.INFO, logger="app.core.request_timing")
+    try:
+        with timing_module.run_timing_scope(uuid.uuid4()):
+            await asyncio.sleep(0.015)
+            call = client.stream if stream else client.complete
+            response = await call(messages=[LLMMessage(role="user", content="private transport sentinel")], max_tokens=128)
+            assert response.content == "ok"
+            timing_module.mark_run_terminal()
+            # Post-turn maintenance can use the same client after the run's
+            # terminal commit; it must not become another run round.
+            maintenance = await call(messages=[LLMMessage(role="user", content="private maintenance sentinel")], max_tokens=128)
+            assert maintenance.content == "ok"
+    finally:
+        await client.close()
+        await http.aclose()
+    line, = summaries(caplog)
+    assert line["rounds"] == 1
+    assert line["pre_model_ms"] >= 10 and line["model_ms"] >= 20
+    assert line["post_model_ms"] >= 0 and line["cleanup_ms"] >= 20
+    assert "private transport" not in json.dumps(line)
+
+
+async def test_provider_observer_setup_failure_is_non_fatal(monkeypatch, caplog):
+    import httpx
+    from app.services.llm_client import create_llm_client, LLMMessage
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+
+    async def respond(_request):
+        return httpx.Response(200, stream=Body())
+
+    def broken(*_args):
+        raise RuntimeError("private observer initialization sentinel")
+
+    monkeypatch.setattr(timing_module, "_TimedProviderBody", broken, raising=False)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    client = create_llm_client(provider="openai", api_key="local-only", model="local-reference")
+    monkeypatch.setattr(getattr(client, "_inner", client), "_client", http)
+    caplog.set_level(logging.INFO, logger="app.core.request_timing")
+    try:
+        with timing_module.run_timing_scope(uuid.uuid4()):
+            response = await client.stream(messages=[LLMMessage(role="user", content="hello")], _http_max_attempts=1)
+    finally:
+        await client.close()
+        await http.aclose()
+    assert response.content == "ok"
+    line, = summaries(caplog)
+    assert line["instrumentation_errors"] == 1
+    assert line["rounds"] == 1
+    assert "private observer" not in json.dumps(line)

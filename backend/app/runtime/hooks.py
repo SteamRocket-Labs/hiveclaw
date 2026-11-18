@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Awaitable, Callable, Literal
 
+from app.core.request_timing import timed_phase
 from app.runtime.ccplus_contracts import HookLifecycleV1
 
 logger = logging.getLogger(__name__)
@@ -1639,6 +1640,7 @@ class HookRegistry:
 hook_registry = HookRegistry()
 
 
+@timed_phase("hook_dispatch")
 async def emit_hook(
     event: HookEvent,
     *,

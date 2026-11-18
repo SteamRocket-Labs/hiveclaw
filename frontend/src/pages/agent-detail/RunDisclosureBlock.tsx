@@ -677,10 +677,6 @@ export default function RunDisclosureBlock({
   viewerOwnsSession?: boolean;
 }) {
   const { t } = useTranslation();
-  // X2 r2 D: a mid-load block with unknown totals renders nothing — no
-  // status, count or clock — until the page that completes its turn arrives,
-  // so its first rendered status is its final status.
-  if (timeline.statusUnknown) return null;
   const running = timeline.status === 'running';
   const resultsKept = timeline.status === 'done' && !timeline.answerMessageId && timeline.steps.some(isKeptResultStep);
   const runDuration = useRunDuration(timeline, presentationKey);
@@ -696,6 +692,10 @@ export default function RunDisclosureBlock({
       previousTimeline.current = { id: timeline.id, status: timeline.status };
     }
   }, [opensForAttention, timeline.id, timeline.status]);
+
+  // Keep hooks stable while history loads; unknown totals render nothing
+  // until the persisted state and duration can be shown on the first frame.
+  if (timeline.statusUnknown) return null;
 
   // X2 r2 E: the block's run is done, but one of its delegated tasks still
   // has a colleague working for this reader. The header shows the existing

@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import en from '../../i18n/en.json';
 import zh from '../../i18n/zh.json';
@@ -14,10 +15,12 @@ import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } fr
 import { buildThreadTimeline, type ThreadTimelineModel } from '../session-workbench/timelineModel';
 
 const locale = vi.hoisted(() => ({ language: 'zh' as 'zh' | 'en' }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({
-  t: (key: string, fallback?: string, values?: Record<string, unknown>) =>
-    translateFromCatalog(locale.language === 'zh' ? zh : en, key, fallback, values),
-}) }));
+vi.mock('react-i18next', () => ({ useTranslation: () => {
+  // The real translation hook has state; preserve its hook-count behavior.
+  useState(null);
+  return { t: (key: string, fallback?: string, values?: Record<string, unknown>) =>
+    translateFromCatalog(locale.language === 'zh' ? zh : en, key, fallback, values) };
+} }));
 vi.mock('i18next', () => ({ default: { t: (key: string, fallback?: string, values?: Record<string, unknown>) =>
   translateFromCatalog(locale.language === 'zh' ? zh : en, key, fallback, values) } }));
 afterEach(() => { cleanup(); vi.useRealTimers(); locale.language = 'zh'; localStorage.clear(); sessionStorage.clear(); });
@@ -46,12 +49,17 @@ function mount(timeline: ThreadTimelineModel, owns = false, roster = [{ id: 'col
   const client = new QueryClient();
   localStorage.setItem('current_tenant_id', 'tenant');
   client.setQueryData(['agents', 'tenant'], roster);
-  const view = render(<QueryClientProvider client={client}><MemoryRouter>{timeline.cells.map(cell => cell.kind === 'active_run'
+  const content = (current: ThreadTimelineModel) => <QueryClientProvider client={client}><MemoryRouter>{current.cells.map(cell => cell.kind === 'active_run'
     ? <RunDisclosureBlock key={cell.id} timeline={cell.timeline} viewerOwnsSession={owns} />
     : cell.kind === 'assistant_final' ? <p key={cell.id}>{cell.message.content}</p> : null
-  )}</MemoryRouter></QueryClientProvider>);
-  for (let pass = 0; pass < 3; pass++) for (const button of view.container.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]')) fireEvent.click(button);
-  return { ...view, dispose: () => { view.unmount(); client.clear(); } };
+  )}</MemoryRouter></QueryClientProvider>;
+  const view = render(content(timeline));
+  const expand = () => {
+    for (let pass = 0; pass < 3; pass++) for (const button of view.container.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]')) fireEvent.click(button);
+  };
+  expand();
+  return { ...view, update: (next: ThreadTimelineModel) => { view.rerender(content(next)); expand(); },
+    dispose: () => { view.unmount(); client.clear(); } };
 }
 const rowTexts = (container: HTMLElement) => [...container.querySelectorAll('.run-step, .run-tool-history-item')].map(row => row.textContent);
 function failDelegation(events: Event[]) {
@@ -210,11 +218,11 @@ it.each(['zh', 'en'] as const)('X9b-6: %s first rendered finished block uses its
   expect([...first.container.querySelectorAll('[data-testid="run-disclosure-block"]')]
     .filter(block => block.getAttribute('data-status') === 'failed')).toHaveLength(0);
   expect(first.container.querySelector('[data-testid="run-disclosure-block"][data-status="blocked"]')).toBeNull();
-  first.dispose();
   const persisted = buildThreadTimeline({ ...base, sessionWorkbench: { runtime_tasks: [{ id: child,
     status: 'failed', started_at: startedAt, completed_at: endedAt },
     { id: 'continuation', status: 'completed', started_at: questionStart, completed_at: questionEnd }] } as never });
-  const saved = mount(persisted);
+  first.update(persisted);
+  const saved = first;
   const block = [...saved.container.querySelectorAll('[data-testid="run-disclosure-block"]')]
     .find(block => block.getAttribute('data-status') === 'failed');
   expect(block?.textContent).toContain(language === 'zh' ? '10 分 7 秒' : '10m 7s');

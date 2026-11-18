@@ -160,10 +160,7 @@ class PrivateWebTurn:
     credential_boundary: ExactSecretBoundary = field(repr=False)
     tools: AgentToolConfiguration
     access_level: str
-
-    @property
-    def requester_name(self) -> str | None:
-        return self.requester.display_name or self.requester.username
+    timezone: str
 
 
 @dataclass(slots=True)
@@ -686,7 +683,8 @@ async def resolve_private_web_turn(db, *, task: RuntimeTask, agent: Agent, reque
     """Read the turn configuration after the run bootstrap commits."""
     from app.core.permissions import _agent_access_for_live_row, reject_non_executing_agent_access
 
-    tenant_active = await db.scalar(select(Tenant.is_active).where(Tenant.id == agent.tenant_id))
+    tenant = (await db.execute(select(Tenant.is_active, Tenant.timezone).where(Tenant.id == agent.tenant_id))).first()
+    tenant_active = tenant.is_active if tenant is not None else None
     config = await _read_runtime_config(db, agent, tenant_active=tenant_active)
     if config.tenant_resolution_error or config.executor_unavailable:
         return None
@@ -709,12 +707,18 @@ async def resolve_private_web_turn(db, *, task: RuntimeTask, agent: Agent, reque
         await db.rollback()
         return None
     tools = await load_agent_tool_configuration(db, authorized_agent)
-    return PrivateWebTurn(authorized_agent, requester, config, boundary, tools, access)
+    timezone = agent.timezone or (tenant.timezone if tenant is not None else None) or "UTC"
+    return PrivateWebTurn(authorized_agent, requester, config, boundary, tools, access, timezone)
 
 
-async def _resolve_current_user_name(user_id: uuid.UUID | None, tenant_id: uuid.UUID | None = None) -> str | None:
+async def _resolve_current_user_name(
+    user_id: uuid.UUID | None, tenant_id: uuid.UUID | None = None, *, private_web_turn: PrivateWebTurn | None = None,
+) -> str | None:
     if not user_id:
         return None
+    if (private_web_turn is not None and user_id == private_web_turn.requester.id
+        and tenant_id in {None, private_web_turn.agent.tenant_id}):
+        return private_web_turn.requester.display_name or private_web_turn.requester.username
 
     try:
         known_tenant = tenant_id is not None
@@ -877,10 +881,8 @@ async def _resolve_memory_context(
         _memory_sig = inspect.signature(build_memory_context).parameters
         current_user_name = None
         if request.user_id and ("current_user_id" in _memory_sig or "current_user_name" in _memory_sig):
-            current_user_name = (
-                private_web_turn.requester_name if private_web_turn else
-                await _resolve_current_user_name(request.user_id, tenant_id)
-            )
+            current_user_name = await _resolve_current_user_name(request.user_id, tenant_id,
+                **({"private_web_turn": private_web_turn} if private_web_turn else {}))
         if "current_user_id" in _memory_sig:
             _memory_kwargs["current_user_id"] = request.user_id
         if "current_user_name" in _memory_sig:
@@ -1102,10 +1104,8 @@ async def _resolve_runtime_metadata_context(
         return ""
 
     budget_profile = _resolve_context_budget(request)
-    current_user_name = (
-        private_web_turn.requester_name if private_web_turn else
-        await _resolve_current_user_name(request.user_id, tenant_id) if request.user_id else None
-    )
+    current_user_name = await _resolve_current_user_name(request.user_id, tenant_id,
+        **({"private_web_turn": private_web_turn} if private_web_turn else {}))
     metadata = _session_metadata(request.session_context)
     _runtime_kwargs = {"current_user_name": current_user_name}
     _runtime_sig = inspect.signature(build_agent_runtime_context).parameters
@@ -1124,6 +1124,10 @@ async def _resolve_runtime_metadata_context(
         _runtime_kwargs["budget_profile"] = budget_profile
     if "tenant_id" in _runtime_sig:
         _runtime_kwargs["tenant_id"] = tenant_id
+    if private_web_turn is not None and (request.agent_id, tenant_id) == (
+        private_web_turn.agent.id, private_web_turn.agent.tenant_id,
+    ) and "agent_timezone" in _runtime_sig:
+        _runtime_kwargs["agent_timezone"] = private_web_turn.timezone
     if "session_id" in _runtime_sig and request.session_context is not None:
         _runtime_kwargs["session_id"] = request.session_context.session_id
     if "runtime_principal" in _runtime_sig:
@@ -1736,7 +1740,8 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
     return AgentKernel(
         KernelDependencies(
             resolve_runtime_config=resolve_runtime_config,
-            resolve_current_user_name=(lambda _user_id: private_web_turn.requester_name) if private_web_turn else _resolve_current_user_name,
+            resolve_current_user_name=partial(_resolve_current_user_name, private_web_turn=private_web_turn)
+            if private_web_turn else _resolve_current_user_name,
             build_system_prompt=_kernel_build_system_prompt,
             resolve_memory_context=_kernel_resolve_memory_context,
             resolve_runtime_metadata_context=_kernel_resolve_runtime_metadata_context,

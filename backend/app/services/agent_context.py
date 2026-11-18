@@ -304,12 +304,14 @@ async def _build_runtime_metadata_sections(
     runtime_facts: dict[str, str] | None = None,
     source_refs: list[dict[str, str]] | None = None,
     runtime_principal=None,
+    tenant_id: uuid.UUID | str | None = None,
+    agent_timezone: str | None = None,
 ) -> list[str]:
     parts: list[str] = []
 
     from app.services.timezone_utils import get_agent_timezone, now_in_timezone
 
-    agent_tz_name = await get_agent_timezone(agent_id)
+    agent_tz_name = agent_timezone if agent_timezone is not None else await get_agent_timezone(agent_id)
     if runtime_facts is not None:
         runtime_facts["timezone"] = agent_tz_name
     if source_unbound is not None:
@@ -335,7 +337,7 @@ async def _build_runtime_metadata_sections(
         # RLS 阶段2b: agent_triggers now bears a USING-only policy. Pin the GUC
         # to the agent's tenant so this read survives the non-owner role; a bare
         # session would fail closed and silently drop the triggers section.
-        _trigger_tenant_id = await resolve_tenant_for_agent(agent_id)
+        _trigger_tenant_id = tenant_id if agent_timezone is not None else await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(_trigger_tenant_id) as db:
             result = await db.execute(
                 sa_select(AgentTrigger).where(
@@ -617,6 +619,7 @@ async def build_agent_runtime_context(
     runtime_facts: dict[str, str] | None = None,
     source_refs: list[dict[str, str]] | None = None,
     runtime_principal=None,
+    agent_timezone: str | None = None,
 ) -> str:
     """Build volatile runtime context that should be refreshed every round."""
     triggers_budget = budget_profile.runtime_triggers_budget_chars if budget_profile else 3000
@@ -626,6 +629,7 @@ async def build_agent_runtime_context(
         triggers_budget_chars=triggers_budget,
         source_unbound=source_unbound,
         runtime_facts=runtime_facts, source_refs=source_refs, runtime_principal=runtime_principal,
+        tenant_id=tenant_id, agent_timezone=agent_timezone,
     )
     try:
         team_context = await build_prompt_facing_team_context(

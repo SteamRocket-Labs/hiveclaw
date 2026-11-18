@@ -312,14 +312,18 @@ async def _dispatch_context(
     admission = await db.get(SessionInputAdmission, admission_id)
     if admission is None:
         raise RuntimeError("input_dispatch_admission_missing")
-    row = await db.get(SessionTurnInput, admission.input_id)
-    command = await db.get(SessionCommand, admission.command_id)
-    session = await db.get(ChatSession, admission.session_id)
+    rows = (await db.execute(
+        select(SessionTurnInput, SessionCommand, ChatSession)
+        .select_from(SessionTurnInput)
+        .join(SessionCommand, SessionCommand.id == admission.command_id)
+        .join(ChatSession, ChatSession.id == admission.session_id)
+        .where(SessionTurnInput.id == admission.input_id)
+    )).one_or_none()
+    if rows is None:
+        raise RuntimeError("input_dispatch_authority_chain_broken")
+    row, command, session = rows
     if (
-        row is None
-        or command is None
-        or session is None
-        or row.command_id != command.id
+        row.command_id != command.id
         or row.revision != admission.input_revision
         or admission.state != "admitted"
         or command.principal_id is None
@@ -578,7 +582,9 @@ async def _execution_denial_receipt(
     from app.core.permissions import check_agent_access, reject_non_executing_agent_access
 
     try:
-        _loaded, access_level = await check_agent_access(db, actor, agent.id)
+        access_level = authority.agent_access_level
+        if access_level is None:
+            _loaded, access_level = await check_agent_access(db, actor, agent.id)
         reject_non_executing_agent_access(access_level)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
@@ -1063,7 +1069,9 @@ async def dispatch_admitted_input_fast_path(
         await db.commit()
         await _dispatch_claimed_admissions(db, [admission_id], ingress_inventory=ingress_inventory)
 
-    current = await db.get(SessionInputAdmission, admission_id, populate_existing=True)
+    # The claim and acknowledgement in this session update the same identity.
+    # A caller that did not claim must read the other dispatcher's durable state.
+    current = await db.get(SessionInputAdmission, admission_id, populate_existing=admission is None)
     if current is None:
         raise ValueError("input_admission_not_found")
     return InputDispatchOutcome(

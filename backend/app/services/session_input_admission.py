@@ -133,22 +133,29 @@ async def _locked_admission(
     *,
     authority: AuthenticatedSessionAuthority,
     input_id: uuid.UUID,
-) -> tuple[SessionInputAdmission, SessionTurnInput]:
+) -> tuple[SessionInputAdmission, SessionTurnInput, SessionCommand]:
     await lock_transcript_session(db, session_id=authority.session_id)
-    input_row = await db.get(SessionTurnInput, input_id)
-    if input_row is None or input_row.tenant_id != authority.tenant_id or input_row.session_id != authority.session_id:
-        raise ValueError("input_admission_not_found")
-    admission = await current_input_admission(
-        db,
-        input_id=input_id,
-        input_revision=input_row.revision,
-        for_update=True,
+    result = await db.execute(
+        select(SessionInputAdmission, SessionTurnInput, SessionCommand)
+        .join(
+            SessionTurnInput,
+            (SessionTurnInput.id == SessionInputAdmission.input_id)
+            & (SessionTurnInput.revision == SessionInputAdmission.input_revision),
+        )
+        .outerjoin(SessionCommand, SessionCommand.id == SessionInputAdmission.command_id)
+        .where(
+            SessionTurnInput.id == input_id,
+            SessionTurnInput.tenant_id == authority.tenant_id,
+            SessionTurnInput.session_id == authority.session_id,
+        )
+        .with_for_update(of=SessionInputAdmission)
     )
-    if admission is None:
+    row = result.one_or_none()
+    if row is None:
         raise ValueError("input_admission_not_found")
-    if input_row is None or input_row.command_id != admission.command_id:
+    admission, input_row, command = row
+    if input_row.command_id != admission.command_id:
         raise RuntimeError("input_admission_authority_mismatch")
-    command = await db.get(SessionCommand, admission.command_id)
     if (
         command is None
         or command.principal_id != authority.principal_id
@@ -156,7 +163,7 @@ async def _locked_admission(
         or command.tenant_id != authority.tenant_id
     ):
         raise ValueError("input_admission_principal_mismatch")
-    return admission, input_row
+    return admission, input_row, command
 
 
 async def claim_user_prompt_admission(
@@ -176,7 +183,7 @@ async def claim_user_prompt_admission(
     """
 
     input_uuid = input_id if isinstance(input_id, uuid.UUID) else uuid.UUID(str(input_id))
-    admission, input_row = await _locked_admission(db, authority=authority, input_id=input_uuid)
+    admission, input_row, _command = await _locked_admission(db, authority=authority, input_id=input_uuid)
     now = datetime.now(timezone.utc)
     if admission.state != "admission_pending":
         return AdmissionClaim(admission.id, input_uuid, admission.hook_run_id, admission.state, False)
@@ -321,7 +328,7 @@ async def commit_user_prompt_hook_result(
     """Persist the immutable Hook terminal result before admission settlement."""
 
     input_uuid = input_id if isinstance(input_id, uuid.UUID) else uuid.UUID(str(input_id))
-    admission, input_row = await _locked_admission(db, authority=authority, input_id=input_uuid)
+    admission, input_row, _command = await _locked_admission(db, authority=authority, input_id=input_uuid)
     if admission.state == "hook_result_committed":
         return AdmissionOutcome(admission.id, input_uuid, admission.hook_run_id, admission.state)
     if admission.state not in {"hook_running"}:
@@ -429,16 +436,12 @@ async def settle_user_prompt_admission(
     """Apply a saved Hook result exactly once; this path never re-runs a Hook."""
 
     input_uuid = input_id if isinstance(input_id, uuid.UUID) else uuid.UUID(str(input_id))
-    admission, input_row = await _locked_admission(db, authority=authority, input_id=input_uuid)
+    admission, input_row, command = await _locked_admission(db, authority=authority, input_id=input_uuid)
     if admission.state in {"admitted", "rejected", "cancelled", "needs_reconciliation"}:
         return AdmissionOutcome(admission.id, input_uuid, admission.hook_run_id, admission.state)
     if admission.state != "hook_result_committed":
         raise ValueError("input_admission_result_not_committed")
     hook_lifecycle, hook_payload = await _terminal_hook_payload(db, admission=admission)
-    command = await db.get(SessionCommand, admission.command_id)
-    if command is None:
-        raise RuntimeError("input command missing during admission settlement")
-
     if hook_lifecycle == "blocked":
         target_state = "rejected"
         input_lifecycle = "rejected"
@@ -766,6 +769,7 @@ async def run_user_prompt_admission(
         await db.commit()
         input_row = await db.get(SessionTurnInput, input_uuid)
         assert input_row is not None
+        independent_result_commit = True
         try:
             from app.services.execution_environments import command_environment_context
             from app.services.session_input_environment import admission_command_frame
@@ -774,6 +778,14 @@ async def run_user_prompt_admission(
                 db, authority=authority, input_row=input_row, claim=claim, worker_id=worker_id
             )
             with command_environment_context(frame):
+                from app.runtime.hooks import hook_registry
+
+                # A result from an observed external handler needs its own
+                # checkpoint. An empty dispatch can settle with that result.
+                independent_result_commit = (
+                    hook_executor is not _default_user_prompt_hook_executor
+                    or hook_registry.handler_count(HookEvent.USER_PROMPT_SUBMIT) != 0
+                )
                 result = await hook_executor(
                     hook_run_id=str(claim.hook_run_id),
                     agent_id=authority.agent_id,
@@ -802,10 +814,10 @@ async def run_user_prompt_admission(
             worker_id=worker_id,
             result=result,
         )
-        # Immutable result is authoritative before settlement/Turn admission.
-        await db.commit()
+        if independent_result_commit:
+            await db.commit()
     elif claim.state == "hook_running":
-        admission, input_row = await _locked_admission(db, authority=authority, input_id=input_uuid)
+        admission, input_row, _command = await _locked_admission(db, authority=authority, input_id=input_uuid)
         now = datetime.now(timezone.utc)
         if admission.lease_expires_at is None or admission.lease_expires_at > now:
             return AdmissionOutcome(admission.id, input_uuid, admission.hook_run_id, admission.state)

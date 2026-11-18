@@ -11,7 +11,7 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload
 
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -104,6 +104,7 @@ class AuthenticatedSessionAuthority:
     action: str
     _seal: object = field(repr=False, compare=False)
     machine_credential_id: uuid.UUID | None = None
+    agent_access_level: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self._seal is not _AUTHORITY_SEAL:
@@ -389,6 +390,7 @@ async def resolve_session_mutation_authority(
         authority_source=decision.authority_source,
         action=decision.action,
         _seal=_AUTHORITY_SEAL,
+        agent_access_level=decision.access_level,
     )
 
 
@@ -826,7 +828,7 @@ async def resolve_session_command_authority(
         raise RuntimeError("session_command_authority_chain_broken")
     agent = await db.scalar(
         select(Agent)
-        .options(selectinload(Agent.owner), selectinload(Agent.creator))
+        .options(joinedload(Agent.owner), joinedload(Agent.creator))
         .where(Agent.id == session.agent_id)
     )
     if agent is None or agent.tenant_id != command.tenant_id:
@@ -1606,23 +1608,19 @@ async def accept_human_input(
             raise RuntimeError("accepted command is missing its canonical event")
         return _receipt_from_input(command, row, accepted_sequence=accepted_event.sequence, replayed=True)
 
-    existing_input = await db.get(SessionTurnInput, input_id)
-    if existing_input is not None:
+    input_exists = select(SessionTurnInput.id).where(SessionTurnInput.id == input_id).exists()
+    max_ordinal, existing_input = (await db.execute(
+        select(func.coalesce(func.max(SessionTurnInput.queue_ordinal), 0), input_exists)
+        .where(SessionTurnInput.session_id == session_uuid)
+    )).one()
+    if existing_input:
         raise ValueError("input_id already belongs to another command")
     from app.services.original_input_refs import bind_original_input_refs
 
     await bind_original_input_refs(
         db, authority=authority, command=command, input_id=input_id, revision=1, parts=content_parts
     )
-    max_ordinal = int(
-        await db.scalar(
-            select(func.coalesce(func.max(SessionTurnInput.queue_ordinal), 0)).where(
-                SessionTurnInput.session_id == session_uuid
-            )
-        )
-        or 0
-    )
-    queue_ordinal = max_ordinal + 1
+    queue_ordinal = int(max_ordinal) + 1
     priority = _PRIORITY_BY_INTENT[kind]
     target_run_id = _uuid_or_none(intent.get("expected_run_id"))
     row = SessionTurnInput(

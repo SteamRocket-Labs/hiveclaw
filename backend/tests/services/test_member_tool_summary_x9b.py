@@ -16,11 +16,13 @@ def test_colleague_end_page_without_body_uses_existing_found_flag(status):
     assert page is not None
     row = _native_row("read_runtime_result", json.dumps(page))
     before = copy.deepcopy(row.metadata_json)
-    operator = _operator_payload(row)
+    # Native operator payloads on 67128870 are the exact persisted V2 payload.
+    expected_operator_bytes = json.dumps(before["v2_payload"], ensure_ascii=False, sort_keys=True)
+    assert json.dumps(_operator_payload(row), ensure_ascii=False, sort_keys=True) == expected_operator_bytes
     member = _user_payload(row)
     assert member["member_summary"] == {"kind": "runtime_result", "state": "done", "found": False}
     assert member["result"] == member["content"] == ""
-    assert _operator_payload(row) == operator
+    assert json.dumps(_operator_payload(row), ensure_ascii=False, sort_keys=True) == expected_operator_bytes
     assert row.metadata_json == before
 
 

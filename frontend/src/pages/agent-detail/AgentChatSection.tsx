@@ -984,7 +984,7 @@ function AgentChatSection({
       throw error;
     }
   }, [onOperatorAuthorityDenied, operatorView]);
-  const { data: sessionWorkbenchData, refetch: refetchSessionWorkbench } = useQuery({
+  const { data: sessionWorkbenchData, isLoading: sessionWorkbenchLoading, refetch: refetchSessionWorkbench } = useQuery({
     queryKey: ['chat-session-workbench', effectiveAgentId, activeSessionId, sessionAuthorityMode, ...operatorReasonQueryKey],
     queryFn: () => guardOperatorRead(
       ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
@@ -1795,6 +1795,7 @@ function AgentChatSection({
       runtimeSummary,
       sessionIndex,
       sessionWorkbench,
+      sessionWorkbenchLoading,
       branchLineage,
       isWaiting,
       isStreaming,
@@ -1815,6 +1816,7 @@ function AgentChatSection({
       runtimeSummary,
       sessionIndex,
       sessionWorkbench,
+      sessionWorkbenchLoading,
       visibleTimeline,
     ],
   );

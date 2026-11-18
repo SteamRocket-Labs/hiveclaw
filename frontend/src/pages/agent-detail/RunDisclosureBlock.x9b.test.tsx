@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import en from '../../i18n/en.json';
 import zh from '../../i18n/zh.json';
 import { translateFromCatalog } from '../../test/i18nMock';
 import rows from '../../test/fixtures/x3dRun19Rows.json';
 import RunDisclosureBlock from './RunDisclosureBlock';
+import { StructuredToolResultBody } from './StructuredToolResult';
+import type { RunTimelineSnapshot } from './chatDisclosureReducer';
 import { type AgentChatMessage, type ChatTranscriptEventPayload } from './chatRuntime';
 import { hydrateSessionTranscriptEvents } from './sessionEventConsumer';
 import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } from './sessionTranscriptApplier';
@@ -63,7 +65,9 @@ function mount(timeline: ThreadTimelineModel, owns = false, roster = [{ id: 'col
   localStorage.setItem('current_tenant_id', 'tenant');
   client.setQueryData(['agents', 'tenant'], roster);
   const content = (current: ThreadTimelineModel) => <QueryClientProvider client={client}><MemoryRouter>{current.cells.map(cell => cell.kind === 'active_run'
-    ? <RunDisclosureBlock key={cell.id} timeline={cell.timeline} viewerOwnsSession={owns} />
+    ? <div key={cell.id}><RunDisclosureBlock timeline={cell.timeline} viewerOwnsSession={owns} />
+      {cell.sourceMessages.filter(({ message }) => message.toolMeta?.kind === 'user_clarification').map(({ message }) =>
+        <StructuredToolResultBody key={message.id} toolName={message.toolName} toolMeta={message.toolMeta} />)}</div>
     : cell.kind === 'assistant_final' ? <p key={cell.id}>{cell.message.content}</p> : null
   )}</MemoryRouter></QueryClientProvider>;
   const view = render(content(timeline));
@@ -111,16 +115,54 @@ function failDelegation(events: Event[]) {
 }
 
 it.each(['live', 'reload'] as const)('X9b-2: %s waiting and failed rows link through the same private roster', mode => {
+  const agentId = rows.delegation[9].payload.metadata!.to_agent!;
+  const child = rows.delegation[9].payload.metadata!.child_session_id!;
   for (const failed of [false, true]) {
     const events = structuredClone(rows.delegation) as Event[];
     if (!failed) events.splice(7);
     else failDelegation(events);
     for (const owns of [false, true]) for (const listed of [false, true]) {
-      const view = mount(model(events, mode), owns, listed ? [{ id: 'colleague', name: '销售同事' }] : []);
-      expect(Boolean(view.container.querySelector('a[href^="/agents/colleague/sessions/"]')),
-        `${failed ? 'failed' : 'waiting'}, owns=${owns}, listed=${listed}`).toBe(owns && listed);
+      const view = mount(model(events, mode), owns, listed ? [{ id: agentId, name: '销售同事' }] : []);
+      expect(Boolean(view.container.querySelector(`a[href="/agents/${agentId}/sessions/${child}"]`)),
+        `${failed ? 'failed' : 'waiting'}, owns=${owns}, listed=${listed}`).toBe(failed && owns && listed);
       view.dispose();
     }
+  }
+});
+
+it.each(['live', 'reload'] as const)('X9b-r3-1: %s never resolves a colleague by name or outside the roster', mode => {
+  const events = structuredClone(rows.delegation) as Event[];
+  failDelegation(events);
+  const collision = mount(model(events, mode), true, [{ id: 'wrong-agent', name: '销售同事' }]);
+  expect(collision.container.querySelector('a[href^="/agents/"]')).toBeNull();
+  collision.dispose();
+  const absent = mount(model(events, mode), true, []);
+  expect(absent.container.querySelector('a[href^="/agents/"]')).toBeNull();
+  absent.dispose();
+});
+
+it.each(['direct', 'same-child'] as const)('X9b-r3-1: %s uses the stored id with normalized child identity', path => {
+  const agentId = 'b74e6b54-24c0-51dd-886b-4a5488ca3cdf';
+  const child = '960cc32e-2cb0-5b3d-837b-e6a5646f04de';
+  const compact = child.replaceAll('-', '');
+  const step = { id: 'started', kind: 'event' as const, title: 'Colleague', status: 'blocked' as const,
+    visibility: 'visible' as const, details: 'Working', systemEvent: { type: 'runtime_action_started',
+      metadata: { action_kind: 'a2a_delegation', child_session_id: compact, target_agent_name: '销售同事',
+        ...(path === 'direct' ? { to_agent: agentId.replaceAll('-', '') } : {}) } } };
+  const saved = { ...step, id: 'stored', presentation: 'external' as const,
+    systemEvent: { type: 'child_session', metadata: { to_agent: agentId, child_session_id: child } } };
+  const timeline: ThreadTimelineModel = { header: { title: '', status: 'running', modelLabel: null }, cells: [{
+    kind: 'active_run', id: 'block', sourceMessages: [], timeline: { id: 'block', status: 'blocked',
+      steps: path === 'direct' ? [step] : [step, saved] },
+  }] };
+  const view = mount(timeline, true, [{ id: agentId, name: 'Renamed colleague' }]);
+  expect(view.container.querySelector('.run-step a')?.getAttribute('href')).toBe(`/agents/${agentId}/sessions/${child}`);
+  view.dispose();
+  if (path === 'same-child') {
+    saved.systemEvent.metadata.child_session_id = 'unrelated-child';
+    const unrelated = mount(timeline, true, [{ id: agentId, name: '销售同事' }]);
+    expect(unrelated.container.querySelector('a')).toBeNull();
+    unrelated.dispose();
   }
 });
 
@@ -178,29 +220,53 @@ it('X9b-5: ask_user_question never adds a transient generic row or changes the s
   const call = structuredClone(rows.delegation[2]) as Event;
   const start = Date.parse(events[0].occurred_at);
   const at = (seconds: number) => new Date(start + seconds * 1000).toISOString();
+  events.push({ ...structuredClone(call), event_id: 'earlier-read', item_id: 'earlier-read', invocation_id: 'earlier-read',
+    sequence: 3, occurred_at: at(31), persisted_at: at(31), lifecycle: 'completed', kind: 'tool_call.completed',
+    payload_schema: 'hive.session.payload.tool_call.completed.v2', payload: { tool_name: 'read_file', outcome: 'success' } });
+  call.sequence = 4;
   call.occurred_at = call.persisted_at = at(32);
   call.payload.tool_name = 'ask_user_question'; events.push(call);
-  const completed = { ...structuredClone(call), event_id: 'question-completed', sequence: 4,
+  const completed = { ...structuredClone(call), event_id: 'question-completed', sequence: 5,
     lifecycle: 'completed', kind: 'tool_call.completed', payload_schema: 'hive.session.payload.tool_call.completed.v2',
     occurred_at: at(39), persisted_at: at(39), payload: { outcome: 'success' } };
   const result = structuredClone(rows.delegation[5]) as Event;
-  result.sequence = 5; result.occurred_at = result.persisted_at = at(39);
+  result.sequence = 6; result.occurred_at = result.persisted_at = at(39);
   result.payload = { tool_name: 'ask_user_question', content: JSON.stringify({
-    type: 'user_clarification', blocking: true, questions: [{ header: 'Scope', question: 'Which scope?', options: [] }],
+    status: 'awaiting_user_clarification', blocking: true, questions: [{ header: 'Scope', question: 'Which scope?', options: [] }],
   }) };
   vi.useFakeTimers();
-  vi.setSystemTime(new Date(start + 39_000));
+  vi.setSystemTime(new Date(start + 32_000));
   for (const mode of ['live', 'reload'] as const) {
+    vi.setSystemTime(new Date(start + 32_000));
     const before = mount(model(events, mode, { isWaiting: true }));
     expect(before.container.textContent).not.toContain('处理请求');
     const count = before.container.querySelector('.run-disclosure-count')?.textContent;
-    const duration = before.container.querySelector('.run-disclosure-duration')?.textContent;
+    expect(count).toBe('1 个步骤');
+    expect(before.container.querySelector('.run-disclosure-duration')?.textContent).toBe('32 秒');
+    act(() => { vi.advanceTimersByTime(7_000); });
+    expect(before.container.querySelector('.run-disclosure-duration')?.textContent).toBe('39 秒');
+    before.update(model([...events, completed, result], mode, { isWaiting: true }));
+    expect(before.container.querySelector('.run-disclosure-count')?.textContent).toBe(count);
+    expect(before.container.querySelector('.run-disclosure-duration')?.textContent).toBe('39 秒');
+    expect(before.container.querySelector('.ask-question-card')?.textContent).toContain('Which scope?');
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(before.container.querySelector('.run-disclosure-duration')?.textContent).toBe('39 秒');
     before.dispose();
-    const after = mount(model([...events, completed, result], mode, { isWaiting: true }));
-    expect(after.container.querySelector('.run-disclosure-count')?.textContent).toBe(count);
-    expect(after.container.querySelector('.run-disclosure-duration')?.textContent).toBe(duration);
-    after.dispose();
   }
+});
+
+it.each(['failed', 'cancelled'] as const)('X9b-r3-4: a %s question without a card remains visible', status => {
+  const events = structuredClone(rows.delegation.slice(0, 3)) as Event[];
+  events[2].payload.tool_name = 'ask_user_question';
+  const completed = { ...structuredClone(events[2]), event_id: 'question-ended', sequence: 4,
+    lifecycle: status, kind: `tool_call.${status}`, payload_schema: `hive.session.payload.tool_call.${status}.v2`,
+    payload: { outcome: status === 'failed' ? 'failed' : 'cancelled' } };
+  const view = mount(model([...events, completed], 'reload'));
+  expect(rowTexts(view.container)).toHaveLength(1);
+  expect(view.container.querySelector('.run-step [role="img"], .run-tool-history-item [role="img"]')?.getAttribute('aria-label'))
+    .toBe(status === 'failed' ? '未完成' : '已停止');
+  expect(view.container.querySelector('.ask-question-card')).toBeNull();
+  view.dispose();
 });
 
 it.each(['live', 'reload'] as const)('X9b-7: %s applies the matching approval event to its waiting tool row', mode => {
@@ -244,12 +310,12 @@ it.each(['zh', 'en'] as const)('X9b-6: %s first rendered finished block uses its
   Object.assign(result, { event_id: 'question-result', item_id: 'question-result', sequence: 13,
     invocation_id: 'question', parent_item_id: call.item_id, occurred_at: questionEnd, persisted_at: questionEnd });
   result.scope.run_id = 'continuation'; result.payload = { tool_name: 'ask_user_question', content: JSON.stringify({
-    type: 'user_clarification', blocking: true, questions: [{ header: 'Scope', question: 'Which scope?', options: [] }],
+    status: 'awaiting_user_clarification', blocking: true, questions: [{ header: 'Scope', question: 'Which scope?', options: [] }],
   }) };
   events.push(call, result);
   const messages = project(events, 'reload');
   const base = { messages, activeSession: { id: 'session' } as never, isWaiting: false, isStreaming: false };
-  const pending = buildThreadTimeline({ ...base, sessionWorkbench: null });
+  const pending = buildThreadTimeline({ ...base, sessionWorkbench: null, sessionWorkbenchLoading: true });
   const first = mount(pending);
   expect([...first.container.querySelectorAll('[data-testid="run-disclosure-block"]')]
     .filter(block => block.getAttribute('data-status') === 'failed')).toHaveLength(0);
@@ -265,4 +331,55 @@ it.each(['zh', 'en'] as const)('X9b-6: %s first rendered finished block uses its
   expect([...saved.container.querySelectorAll('[data-status="done"]')]
     .some(block => block.textContent?.includes(language === 'zh' ? '40 秒' : '40s'))).toBe(true);
   saved.dispose();
+});
+
+it('X9b-r3-3: the first committed disclosure state is seeded from the saved status', () => {
+  const frames: Array<string | null | undefined> = [];
+  const timeline = model(structuredClone(rows.delegation) as Event[], 'reload').cells
+    .find(cell => cell.kind === 'active_run')!;
+  if (timeline.kind !== 'active_run') throw new Error('Missing run');
+  function Frame({ run }: { run: RunTimelineSnapshot }) {
+    useLayoutEffect(() => { frames.push(document.querySelector('.run-disclosure-header')?.getAttribute('aria-expanded')); });
+    return <RunDisclosureBlock timeline={run} />;
+  }
+  const view = render(<Frame run={{ ...timeline.timeline, status: 'blocked', statusUnknown: true }} />);
+  expect(view.container.querySelector('[data-testid="run-disclosure-block"]')).toBeNull();
+  view.rerender(<Frame run={{ ...timeline.timeline, status: 'done', statusUnknown: false, durationMs: 40_000, durationIsFinal: true }} />);
+  expect(frames).toEqual([undefined, 'false']);
+  expect(view.container.querySelector('.run-disclosure-duration')?.textContent).toBe('40 秒');
+  view.unmount();
+});
+
+it('X9b-r3-5: a longer guessed clock cannot inflate the first saved duration', () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-11-13T18:00:00Z'));
+  const timeline = model(structuredClone(rows.delegation) as Event[], 'reload').cells.find(cell => cell.kind === 'active_run')!;
+  if (timeline.kind !== 'active_run') throw new Error('Missing run');
+  const view = render(<RunDisclosureBlock presentationKey="saved-run" timeline={{ ...timeline.timeline,
+    status: 'running', startedAt: '2026-11-13T16:00:00Z', statusUnknown: true }} />);
+  expect(view.container.textContent).toBe('');
+  view.rerender(<RunDisclosureBlock presentationKey="saved-run" timeline={{ ...timeline.timeline,
+    status: 'done', statusUnknown: false, delegationInFlight: false, durationIsFinal: true, durationMs: 40_000 }} />);
+  expect(view.container.querySelector('.run-disclosure-duration')?.textContent).toBe('40 秒');
+  view.unmount();
+});
+
+it.each(['disabled', 'failed'] as const)('X9b-r3-2: a %s workbench query renders historical blocks', async state => {
+  const client = new QueryClient();
+  const fetch = vi.fn().mockRejectedValue(new Error('Workbench unavailable'));
+  let queryStatus = '';
+  function HistoricalBlocks() {
+    const query = useQuery({ queryKey: ['workbench'], queryFn: fetch, enabled: state !== 'disabled', retry: false });
+    queryStatus = query.status;
+    const timeline = model(structuredClone(rows.delegation) as Event[], 'reload', {
+      sessionWorkbench: query.data ?? null, sessionWorkbenchLoading: query.isLoading,
+    });
+    return timeline.cells.map(cell => cell.kind === 'active_run'
+      ? <RunDisclosureBlock key={cell.id} timeline={cell.timeline} /> : null);
+  }
+  const view = render(<QueryClientProvider client={client}><HistoricalBlocks /></QueryClientProvider>);
+  await waitFor(() => expect(queryStatus).toBe(state === 'failed' ? 'error' : 'pending'));
+  expect(view.container.querySelectorAll('[data-testid="run-disclosure-block"]')).toHaveLength(2);
+  expect(fetch).toHaveBeenCalledTimes(state === 'failed' ? 1 : 0);
+  view.unmount(); client.clear();
 });

@@ -85,6 +85,7 @@ export interface BuildThreadTimelineInput {
   runtimeSummary?: ChatRuntimeSummary | null;
   sessionIndex?: SessionIndex | null;
   sessionWorkbench?: SessionWorkbench | null;
+  sessionWorkbenchLoading?: boolean;
   branchLineage?: Array<{ id: unknown; parent_session_id?: unknown }> | null;
   isWaiting: boolean;
   isStreaming: boolean;
@@ -2398,6 +2399,7 @@ function threadTimelineInputSignature(input: BuildThreadTimelineInput): string {
     runtimeSummary: input.runtimeSummary,
     sessionIndex: input.sessionIndex,
     sessionWorkbench: input.sessionWorkbench,
+    sessionWorkbenchLoading: input.sessionWorkbenchLoading,
     branchLineage: input.branchLineage,
     isWaiting: input.isWaiting,
     isStreaming: input.isStreaming,
@@ -2479,7 +2481,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     coalesceProcessCellsByUserTurn(buildCells(input.messages, delegationReceiptExpected), input.messages, delegationReceiptExpected),
     input.messages,
     null, null, input.sessionWorkbench?.runtime_tasks, sessionRunId,
-    input.sessionWorkbench === null && !input.isWaiting && !input.isStreaming && !input.activeRunStatus,
+    Boolean(input.sessionWorkbenchLoading) && !input.isWaiting && !input.isStreaming && !input.activeRunStatus,
   );
   const latestUserIndex = latestUserMessageIndex(input.messages);
   const latestTurnAnswered = hasAssistantAnswerAfterLatestUser(input.messages);

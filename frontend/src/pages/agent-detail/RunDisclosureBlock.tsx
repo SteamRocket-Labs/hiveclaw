@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { QueryClientContext, useQueryClient } from '@tanstack/react-query';
 import { runtimeStatusLabel } from './runtimeStatus';
+import { normalizeSessionRunId } from './chatRuntime';
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
@@ -231,24 +232,22 @@ function StepIcon({ kind, running, status, unconfirmed, colleagueWaiting }: { ki
  * when the colleague already sits in the member's own authority-filtered
  * roster cache (X1-r3 ruling 1): owning the session does not prove the
  * member can open this colleague. Without a cached roster there is nothing
- * to gate on, so no link; no new request is made. Started/action events carry
- * only a name; resolve it uniquely inside that same roster. */
+ * to gate on, so no link; no new request is made. Names cannot identify a
+ * colleague; the stored agent and child session ids own the route. */
 function ColleagueConversationLink({ metadata }: { metadata: Record<string, unknown> }) {
   const { t } = useTranslation();
-  const agentId = typeof metadata.to_agent === 'string' ? metadata.to_agent : '';
-  const sessionId = typeof metadata.child_session_id === 'string' ? metadata.child_session_id : '';
+  const agentId = normalizeSessionRunId(typeof metadata.to_agent === 'string' ? metadata.to_agent : '');
+  const sessionId = normalizeSessionRunId(typeof metadata.child_session_id === 'string' ? metadata.child_session_id : '');
   // Render hosts without a provider (static projections) have no known cache.
   const queryClient = React.useContext(QueryClientContext) as ReturnType<typeof useQueryClient> | null;
   const tenantId = localStorage.getItem('current_tenant_id')
     || useAuthStore.getState().user?.tenant_id
     || '';
-  const listed = queryClient?.getQueryData<Array<{ id: string; name?: string }>>(['agents', tenantId]) || [];
-  const matches = listed.filter(agent => agentId ? agent.id === agentId
-    : typeof metadata.target_agent_name === 'string' && agent.name === metadata.target_agent_name);
-  if (!sessionId || matches.length !== 1) return null;
+  const listed = queryClient?.getQueryData<Array<{ id: string }>>(['agents', tenantId]) || [];
+  if (!agentId || !sessionId || !listed.some(agent => normalizeSessionRunId(agent.id) === agentId)) return null;
   return (
     <p className="run-colleague-link">
-      <Link to={`/agents/${matches[0].id}/sessions/${sessionId}`}>{t('agent.chat.disclosure.openColleagueConversation', 'Open this colleague\'s conversation')}</Link>
+      <Link to={`/agents/${agentId}/sessions/${sessionId}`}>{t('agent.chat.disclosure.openColleagueConversation', 'Open this colleague\'s conversation')}</Link>
     </p>
   );
 }
@@ -667,7 +666,12 @@ function stoppedDelegationCandidate(step: RunStepSnapshot): { task: string; rank
   return null;
 }
 
-export default function RunDisclosureBlock({
+export default function RunDisclosureBlock(props: React.ComponentProps<typeof RunDisclosureBlockInner>) {
+  if (props.timeline.statusUnknown) return null;
+  return <RunDisclosureBlockInner {...props} />;
+}
+
+function RunDisclosureBlockInner({
   timeline,
   presentationKey = null,
   viewerOwnsSession = false,
@@ -693,10 +697,6 @@ export default function RunDisclosureBlock({
     }
   }, [opensForAttention, timeline.id, timeline.status]);
 
-  // Keep hooks stable while history loads; unknown totals render nothing
-  // until the persisted state and duration can be shown on the first frame.
-  if (timeline.statusUnknown) return null;
-
   // X2 r2 E: the block's run is done, but one of its delegated tasks still
   // has a colleague working for this reader. The header shows the existing
   // running label with the block's typed duration — presentation only; the
@@ -717,7 +717,12 @@ export default function RunDisclosureBlock({
   // else the first cancelled runtime action receipt. Every other row the
   // rewrite collapsed onto the same 「已停止…」 sentence folds into it.
   const stoppedDelegationOwner = new Map<string, { id: string; rank: number }>();
+  const colleagueBySession = new Map<string, string>();
   for (const step of timeline.steps) {
+    const metadata = step.systemEvent?.metadata;
+    if (typeof metadata?.to_agent === 'string' && metadata.to_agent && typeof metadata.child_session_id === 'string') {
+      colleagueBySession.set(normalizeSessionRunId(metadata.child_session_id), metadata.to_agent);
+    }
     const candidate = stoppedDelegationCandidate(step);
     if (!candidate) continue;
     const existing = stoppedDelegationOwner.get(candidate.task);
@@ -744,7 +749,13 @@ export default function RunDisclosureBlock({
           && other.details === `${source.metadata.target_agent_name} 的委派任务失败：${step.details}`;
       });
     })
-    .map((step) => presentSystemStep(step, t))
+    .map((step) => {
+      const event = step.systemEvent;
+      const sessionId = event?.metadata.child_session_id;
+      const agentId = typeof sessionId === 'string' ? colleagueBySession.get(normalizeSessionRunId(sessionId)) : undefined;
+      return presentSystemStep(event && !event.metadata.to_agent && agentId
+        ? { ...step, systemEvent: { ...event, metadata: { ...event.metadata, to_agent: agentId } } } : step, t);
+    })
     .filter((step) => {
       // A started notification the terminal rewrite collapsed onto the
       // stopped sentence folds into the owner row.

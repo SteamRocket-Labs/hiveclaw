@@ -5361,41 +5361,96 @@ async def _persist_runtime_event(
     data: dict[str, Any],
     external_principal_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
-    from app.services.session_event_contract import serialize_session_event
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
     tenant_id = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tenant_id) as db:
-        event_type = _runtime_event_storage_type(data)
         event_session = await db.get(ChatSession, uuid.UUID(str(session_id)))
         if event_session is None or event_session.tenant_id != tenant_id or event_session.agent_id != agent_id:
             raise ValueError("runtime_event_session_unavailable")
-        event_payload = build_session_native_event(data) if event_type in SESSION_NATIVE_EVENT_TYPES else data
-        event_parts = [event_payload["part"]] if isinstance(event_payload.get("part"), dict) else None
-        event_metadata = {
-            "source": "web_chat_runtime",
-            "runtime_event_type": event_type,
-            **{key: value for key, value in data.items() if value is not None},
-        }
-        result = await append_session_event(
-            db=db,
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            session_id=session_id,
-            run_id=data.get("runtime_task_id") or data.get("run_id"),
-            actor_type="system",
-            event_type=event_type,
-            role="system",
-            listed_surface=event_session.listed_surface,
-            user_id=user_id,
-            external_principal_id=external_principal_id,
-            content=json.dumps(data, ensure_ascii=False),
-            source="web_chat_runtime",
-            parts=event_parts,
-            metadata=event_metadata,
-        )
+        envelope = await _append_runtime_event(db, event_session, data, user_id, external_principal_id)
         await db.commit()
-        return serialize_session_event(result.transcript_event, audience="user")
+        return envelope
+
+
+async def _persist_context_observations(
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_id: str,
+    run_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+    observations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    from app.models.session_v2 import SessionRunOutcome
+    from app.services.runtime_task_fence import current_runtime_task_fence
+
+    session_uuid = uuid.UUID(session_id)
+    async with tenant_scoped_session(tenant_id) as db:
+        task = await _lock_runtime_task_for_session_mutation(
+            db, run_uuid=run_id, tenant_id=tenant_id, agent_id=agent_id, session_id=session_uuid,
+        )
+        if task is None:
+            return []
+        fence = current_runtime_task_fence()
+        if fence is not None and task.id == fence.task_id and task.claim_version != fence.claim_version:
+            # The terminal commit advances the version and releases the claim.
+            # Its sealed eligibility must still identify this worker's claim.
+            outcome_ref = (task.metadata_json or {}).get("session_v2_outcome") or {}
+            outcome_id = _uuid_or_none(outcome_ref.get("outcome_id"))
+            if task.status != "completed" or task.claim_version != fence.claim_version + 1 or outcome_id is None:
+                return []
+            outcome = await db.get(SessionRunOutcome, outcome_id)
+            if (
+                outcome is None
+                or outcome.tenant_id != tenant_id
+                or outcome.session_id != session_uuid
+                or outcome.run_id != run_id
+                or outcome.state != "terminal_committed"
+                or (outcome.seal_json or {}).get("eligibility", {}).get("task_claim_version") != fence.claim_version
+            ):
+                return []
+        session = await db.get(ChatSession, session_uuid)
+        if session is None or session.tenant_id != tenant_id or session.agent_id != agent_id:
+            raise ValueError("runtime_event_session_unavailable")
+        return [await _append_runtime_event(db, session, event, user_id, None) for event in observations]
+
+
+async def _append_runtime_event(
+    db: AsyncSession,
+    session: ChatSession,
+    data: dict[str, Any],
+    user_id: uuid.UUID | None,
+    external_principal_id: uuid.UUID | None,
+) -> dict[str, Any]:
+    from app.services.session_event_contract import serialize_session_event
+
+    event_type = _runtime_event_storage_type(data)
+    event_payload = build_session_native_event(data) if event_type in SESSION_NATIVE_EVENT_TYPES else data
+    event_parts = [event_payload["part"]] if isinstance(event_payload.get("part"), dict) else None
+    event_metadata = {
+        "source": "web_chat_runtime",
+        "runtime_event_type": event_type,
+        **{key: value for key, value in data.items() if value is not None},
+    }
+    result = await append_session_event(
+        db=db,
+        agent_id=session.agent_id,
+        tenant_id=session.tenant_id,
+        session_id=str(session.id),
+        run_id=data.get("runtime_task_id") or data.get("run_id"),
+        actor_type="system",
+        event_type=event_type,
+        role="system",
+        listed_surface=session.listed_surface,
+        user_id=user_id,
+        external_principal_id=external_principal_id,
+        content=json.dumps(data, ensure_ascii=False),
+        source="web_chat_runtime",
+        parts=event_parts,
+        metadata=event_metadata,
+    )
+    return serialize_session_event(result.transcript_event, audience="user")
 
 
 def _runtime_event_storage_type(data: dict[str, Any]) -> str:
@@ -6413,6 +6468,7 @@ def _web_chat_run_ports(*, tenant_id: uuid.UUID | None = None) -> Any:
             stream_retry_tombstone=STREAM_RETRY_TOMBSTONE,
             stream_batcher_type=_WebChatStreamMicroBatcher,
             terminal_signal_type=_TerminalToolCardSignal,
+            persist_context_observations=_persist_context_observations,
         ),
         terminal=WebChatTerminalPorts(
             finalize_with_assistant=_finalize_web_chat_run_with_assistant,

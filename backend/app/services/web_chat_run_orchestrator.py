@@ -31,6 +31,9 @@ from app.services.runtime_budget_failover import runtime_budget_model_notice, ru
 from app.services.session_semantic_history import SessionSemanticHistoryUnavailable
 
 
+_POST_REPLY_CONTEXT_EVENTS = {"model_route", "context_window_status", "compaction_skipped"}
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeExceptionFailure:
     terminal_reason: str
@@ -90,6 +93,7 @@ class WebChatEventPorts:
     stream_retry_tombstone: str
     stream_batcher_type: Any
     terminal_signal_type: Any
+    persist_context_observations: Callable[..., Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +153,7 @@ class _WebChatRunState:
     run_key: str
     broadcast_token: Any
     observations: list[dict[str, Any]] = field(default_factory=list)
+    context_observations: list[dict[str, Any]] = field(default_factory=list)
     streamed_chunks: list[str] = field(default_factory=list)
     thinking_content: list[str] = field(default_factory=list)
     stream_batcher: Any | None = None
@@ -207,6 +212,7 @@ async def run_web_chat_task(
         await _handle_web_chat_failure(state, exc)
     finally:
         await _cleanup_web_chat_run(state)
+        await _flush_context_observations(state)
         if state.observations:
             await persist_invocation_observations(state.observations, tenant_id=state.agent.tenant_id)
 
@@ -590,6 +596,15 @@ class _WebChatCallbacks:
         event_type = str(data.get("type") or data.get("event_type") or "")
         await _transition_for_runtime_event(state, event_type, data)
         await self.flush()
+        if (
+            data.get("type") == "session_context"
+            and data.get("event_type") in _POST_REPLY_CONTEXT_EVENTS
+            and getattr(getattr(state, "runtime_task", None), "_private_web_turn", None) is not None
+            and state.active_provider_request_id is None
+            and events.persist_context_observations is not None
+        ):
+            state.context_observations.append(data)
+            return
         if events.should_persist_runtime_event(data):
             committed = await events.persist_runtime_event(
                 agent_id=state.agent.id,
@@ -907,14 +922,20 @@ async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
     suffix = ""
     source_refs, source_unbound = [], []
     try:
-        async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
-            suffix = await state.ports.context.claim_pending_reply_suffix(
-                db,
-                agent_id=state.agent.id,
-                session_id=state.session_id,
-            )
-        if suffix:
-            source_unbound.append("pending_reply_sources_unbound")
+        from app.services.pending_reply_service import sender_identity_from_session
+
+        if (
+            getattr(getattr(state, "runtime_task", None), "_private_web_turn", None) is None
+            or sender_identity_from_session(state.session)
+        ):
+            async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+                suffix = await state.ports.context.claim_pending_reply_suffix(
+                    db,
+                    agent_id=state.agent.id,
+                    session_id=state.session_id,
+                )
+            if suffix:
+                source_unbound.append("pending_reply_sources_unbound")
     except Exception as exc:
         source_unbound.append("pending_reply_sources_unavailable")
         state.ports.runtime.logger.warning("[WebChatRun] Pending reply injection failed (non-fatal): {}", exc)
@@ -1501,6 +1522,26 @@ async def _commit_session_model_response(state: _WebChatRunState, **payload: Any
                 exc,
             )
     return seal
+
+
+async def _flush_context_observations(state: _WebChatRunState) -> None:
+    if not state.context_observations:
+        return
+    events = state.ports.events
+    pending, state.context_observations = state.context_observations, []
+    try:
+        envelopes = await events.persist_context_observations(
+            tenant_id=state.agent.tenant_id,
+            agent_id=state.agent.id,
+            session_id=state.session_id,
+            run_id=state.run_uuid,
+            user_id=state.actor_user_id,
+            observations=pending,
+        )
+        for envelope in envelopes:
+            await events.broadcast(state.agent.id, state.session_id, envelope)
+    except Exception as exc:
+        state.ports.runtime.logger.warning("[WebChatRun] Could not persist context observations: {}", exc)
 
 
 async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -> str | None:

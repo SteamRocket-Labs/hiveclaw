@@ -102,7 +102,7 @@ async def prepare_skill_input_capture(request):
     await load_skill_input_snapshot(capture, context.tenant_id, runtime_request=request)
 
 
-async def load_skill_input_snapshot(capture, tenant_id, *, runtime_request=None):
+async def load_skill_input_snapshot(capture, tenant_id, *, runtime_request=None, include_candidates=True):
     from app.database import tenant_scoped_session
 
     try:
@@ -128,7 +128,8 @@ async def load_skill_input_snapshot(capture, tenant_id, *, runtime_request=None)
             from app.services.learned_skill_sources import learning_file_access
 
             _roots, learning_files = await learning_file_access(
-                db, tenant_id=tenant_id, agent_id=capture.agent_id, request=runtime_request
+                db, tenant_id=tenant_id, agent_id=capture.agent_id, request=runtime_request,
+                include_candidates=include_candidates,
             )
             visible_learning = {(path, revision, digest) for path, revision, digest in learning_files}
             for row in rows:

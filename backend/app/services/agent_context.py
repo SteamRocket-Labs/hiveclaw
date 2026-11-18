@@ -168,6 +168,12 @@ def _strip_primary_heading(content: str) -> str:
     return content
 
 
+def skill_catalog_instructions(agent_id, session_id):
+    loader = WorkspaceSkillLoader()
+    roots = {(base / str(agent_id)).resolve() for base in (TOOL_WORKSPACE, PERSISTENT_DATA)}
+    return {root: loader.discover_instructions(root, session_id=session_id) for root in roots}
+
+
 def _load_skills_index(
     agent_id: uuid.UUID,
     *,
@@ -179,6 +185,7 @@ def _load_skills_index(
     ranking_manifest: list[dict] | None = None,
     source_observer=None,
     source_authorizer=None,
+    instructions=None,
 ) -> str:
     """Load skill index (name + description) from skills/ directory.
 
@@ -194,8 +201,15 @@ def _load_skills_index(
     registry = SkillRegistry()
     loaded_skills = []
 
-    for ws_root in [TOOL_WORKSPACE / str(agent_id), PERSISTENT_DATA / str(agent_id)]:
-        loaded_skills.extend(loader.load_from_workspace(ws_root, session_id=session_id, source_authorizer=source_authorizer))
+    parsed_by_root = {}
+    for base in (TOOL_WORKSPACE, PERSISTENT_DATA):
+        ws_root = (base / str(agent_id)).resolve()
+        if ws_root not in parsed_by_root:
+            parsed_by_root[ws_root] = loader.load_from_workspace(
+                ws_root, session_id=session_id, source_authorizer=source_authorizer,
+                instructions=instructions.get(ws_root) if instructions is not None else None,
+            )
+        loaded_skills.extend(parsed_by_root[ws_root])
 
     rank_workspace = PERSISTENT_DATA / str(agent_id)
     if not rank_workspace.exists():
@@ -250,6 +264,7 @@ def build_skill_catalog_section_for_agent(
     ranking_manifest: list[dict] | None = None,
     source_observer=None,
     source_authorizer=None,
+    instructions=None,
 ) -> str:
     """Render the ## Skills catalog section for an agent's workspace.
 
@@ -275,6 +290,7 @@ def build_skill_catalog_section_for_agent(
         ranking_manifest=ranking_manifest,
         source_observer=source_observer,
         source_authorizer=source_authorizer,
+        instructions=instructions,
     )
     return build_skills_catalog_section(skills_text, budget_chars=skill_budget)
 
@@ -288,12 +304,14 @@ async def _build_runtime_metadata_sections(
     runtime_facts: dict[str, str] | None = None,
     source_refs: list[dict[str, str]] | None = None,
     runtime_principal=None,
+    tenant_id: uuid.UUID | str | None = None,
+    agent_timezone: str | None = None,
 ) -> list[str]:
     parts: list[str] = []
 
     from app.services.timezone_utils import get_agent_timezone, now_in_timezone
 
-    agent_tz_name = await get_agent_timezone(agent_id)
+    agent_tz_name = agent_timezone if agent_timezone is not None else await get_agent_timezone(agent_id)
     if runtime_facts is not None:
         runtime_facts["timezone"] = agent_tz_name
     if source_unbound is not None:
@@ -319,7 +337,7 @@ async def _build_runtime_metadata_sections(
         # RLS 阶段2b: agent_triggers now bears a USING-only policy. Pin the GUC
         # to the agent's tenant so this read survives the non-owner role; a bare
         # session would fail closed and silently drop the triggers section.
-        _trigger_tenant_id = await resolve_tenant_for_agent(agent_id)
+        _trigger_tenant_id = tenant_id if agent_timezone is not None else await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(_trigger_tenant_id) as db:
             result = await db.execute(
                 sa_select(AgentTrigger).where(
@@ -601,6 +619,7 @@ async def build_agent_runtime_context(
     runtime_facts: dict[str, str] | None = None,
     source_refs: list[dict[str, str]] | None = None,
     runtime_principal=None,
+    agent_timezone: str | None = None,
 ) -> str:
     """Build volatile runtime context that should be refreshed every round."""
     triggers_budget = budget_profile.runtime_triggers_budget_chars if budget_profile else 3000
@@ -610,6 +629,7 @@ async def build_agent_runtime_context(
         triggers_budget_chars=triggers_budget,
         source_unbound=source_unbound,
         runtime_facts=runtime_facts, source_refs=source_refs, runtime_principal=runtime_principal,
+        tenant_id=tenant_id, agent_timezone=agent_timezone,
     )
     try:
         team_context = await build_prompt_facing_team_context(

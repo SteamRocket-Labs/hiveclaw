@@ -25,7 +25,6 @@ from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.tenant import Tenant
 from app.models.tenant_setting import TenantSetting
-from app.models.user import User
 from app.services.conversation_summarizer import estimate_tokens
 
 logger = logging.getLogger(__name__)
@@ -71,6 +70,7 @@ async def build_memory_context(
     current_user_id: uuid.UUID | str | None = None,
     current_user_name: str | None = None,
     return_result: bool = False,
+    verified_agent: Agent | None = None,
 ) -> str | MemoryContextResult:
     """Build the resident memory context for any runtime entrypoint.
 
@@ -87,6 +87,7 @@ async def build_memory_context(
         runtime_task_id=runtime_task_id,
         current_user_id=current_user_id,
         current_user_name=current_user_name,
+        verified_agent=verified_agent,
     )
     return result if return_result else result.content
 
@@ -99,6 +100,7 @@ async def _build_memory_context_result(
     runtime_task_id: str | None,
     current_user_id: uuid.UUID | str | None,
     current_user_name: str | None,
+    verified_agent: Agent | None,
 ) -> MemoryContextResult:
     try:
         settings = get_settings()
@@ -115,8 +117,10 @@ async def _build_memory_context_result(
             external_effects_available=False,
             error_class=type(exc).__name__,
         )
+    # A private Web turn already checked this exact agent and tenant before invoking.
+    verified = verified_agent is not None and (verified_agent.id, verified_agent.tenant_id) == (agent_id, tenant_id)
     try:
-        accountability = await _resolve_accountability_context(
+        accountability = _ACCOUNTABILITY_RESOLVED if verified else await _resolve_accountability_context(
             agent_id=agent_id,
             tenant_id=tenant_id,
             current_user_id=current_user_id,
@@ -218,8 +222,9 @@ async def _build_memory_context_result(
         principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=uuid.UUID(str(current_user_id)),
             session_id=str(session_id), runtime_task_id=runtime_task_id, purpose="interactive_session")
         issues = []
+        entries = load_explicit_overlay_entries(data_root, agent_id)
         authorized = await authorized_explicit_entries(tenant_id=tenant_id, agent_id=agent_id, request=principal,
-            entries=load_explicit_overlay_entries(data_root, agent_id), issue_observer=issues)
+            entries=entries, issue_observer=issues) if entries or not verified else []
         if issues:
             degraded_components.append("explicit_memory_source_authority")
             # A4c in the prompt: only the requester's own entries (issues that

@@ -36,13 +36,34 @@ class WorkspaceSkillLoader:
     def __init__(self, parser: SkillParser | None = None) -> None:
         self.parser = parser or SkillParser()
 
-    def load_from_workspace(self, workspace: Path, *, session_id: object | None = None, source_authorizer=None) -> list[ParsedSkill]:
-        skills: list[ParsedSkill] = []
+    def load_from_workspace(self, workspace: Path, *, session_id: object | None = None, source_authorizer=None,
+                            instructions: list[tuple[str, tuple[Path, ...]]] | None = None) -> list[ParsedSkill]:
         workspace_root = workspace.resolve()
-        for skills_dir in self._discover_skill_dirs(workspace_root, session_id=session_id):
-            skills.extend(self._load_from_skills_dir(workspace_root, skills_dir, source_authorizer=source_authorizer))
-
+        if instructions is None:
+            instructions = self.discover_instructions(workspace_root, session_id=session_id)
+        skills: list[ParsedSkill] = []
+        for name, candidates in instructions:
+            for path in candidates:
+                resolved = path.resolve()
+                if not resolved.is_relative_to(workspace_root):
+                    continue
+                if source_authorizer is not None and not source_authorizer(path):
+                    continue
+                relative = resolved.relative_to(workspace_root).as_posix()
+                if is_skill_runtime_loadable(workspace_root, relative):
+                    parsed = self._parse_file(path, relative_path=relative, default_name=name)
+                    if parsed is not None:
+                        skills.append(parsed)
+                    break
         return skills
+
+    def discover_instructions(self, workspace: Path, *, session_id: object | None = None) -> list[tuple[str, tuple[Path, ...]]]:
+        """Enumerate instruction paths so the catalog can authorize only the files it reads."""
+        workspace_root = workspace.resolve()
+        instructions = []
+        for skills_dir in self._discover_skill_dirs(workspace_root, session_id=session_id):
+            instructions.extend(self._instruction_candidates(workspace_root, skills_dir))
+        return instructions
 
     def list_resources(self, workspace: Path, skill_name: str) -> tuple[str, ...]:
         """List auxiliary files for a folder-based skill.
@@ -134,7 +155,7 @@ class WorkspaceSkillLoader:
             return ()
 
         discovered: list[Path] = []
-        seen: set[Path] = set()
+        seen_paths: set[str] = set()
         session_key = str(session_id).strip() if session_id is not None else ""
 
         def allowed_session_path(path: Path) -> bool:
@@ -152,40 +173,37 @@ class WorkspaceSkillLoader:
                 return
             resolved = path.resolve()
             if (
-                resolved in seen
+                os.fspath(resolved) in seen_paths
                 or not self._is_inside_workspace(resolved, workspace_root)
                 or not allowed_session_path(resolved)
             ):
                 return
-            seen.add(resolved)
+            seen_paths.add(os.fspath(resolved))
             discovered.append(resolved)
 
         add_candidate(workspace_root / _SKILLS_DIR_NAME)
-        for root, dirs, _files in os.walk(workspace_root, followlinks=False):
-            root_path = Path(root)
-            if root_path.resolve() in seen:
-                dirs[:] = []
+        stack = [(os.fspath(workspace_root), False, False)]
+        while stack:
+            directory, session_tree, session_parent = stack.pop()
+            if directory in seen_paths:
                 continue
-            pruned_dirs: list[str] = []
-            for dirname in sorted(dirs):
-                if dirname in _DISCOVERY_PRUNE_DIRS:
-                    continue
-                candidate = root_path / dirname
-                try:
-                    candidate_parts = candidate.resolve().relative_to(workspace_root).parts
-                except ValueError:
-                    continue
-                if _SESSION_EXTENSIONS_DIR_NAME in candidate_parts:
-                    index = candidate_parts.index(_SESSION_EXTENSIONS_DIR_NAME)
-                    if not session_key:
-                        continue
-                    if len(candidate_parts) > index + 1 and candidate_parts[index + 1] != session_key:
-                        continue
-                if dirname == _SKILLS_DIR_NAME:
-                    add_candidate(candidate)
-                    continue
-                pruned_dirs.append(dirname)
-            dirs[:] = pruned_dirs
+            try:
+                with os.scandir(directory) as children:
+                    directories = sorted((entry for entry in children if entry.name not in _DISCOVERY_PRUNE_DIRS and (
+                        entry.is_dir(follow_symlinks=False) or entry.name == _SKILLS_DIR_NAME
+                    )), key=lambda entry: entry.name)
+            except OSError:
+                continue
+            # Keep the legacy order: register sibling skill directories before descending.
+            nested = []
+            for entry in directories:
+                if entry.name == _SKILLS_DIR_NAME:
+                    add_candidate(Path(entry.path))
+                elif not session_parent or entry.name == session_key:
+                    scoped = not session_tree and entry.name == _SESSION_EXTENSIONS_DIR_NAME
+                    if not scoped or session_key:
+                        nested.append((entry.path, session_tree or scoped, scoped))
+            stack.extend(reversed(nested))
 
         return tuple(discovered)
 
@@ -197,11 +215,10 @@ class WorkspaceSkillLoader:
         except (OSError, ValueError, WorkspaceAuthorityError):
             return None
 
-    def _load_from_skills_dir(self, workspace_root: Path, skills_dir: Path, *, source_authorizer=None) -> list[ParsedSkill]:
+    def _instruction_candidates(self, workspace_root: Path, skills_dir: Path):
         if not skills_dir.exists():
-            return []
+            return
 
-        skills: list[ParsedSkill] = []
         for entry in sorted(skills_dir.iterdir()):
             if entry.name.startswith("."):
                 continue
@@ -215,31 +232,14 @@ class WorkspaceSkillLoader:
                     candidates = [next((path for path in candidates if get_skill_evolution_entry(
                         workspace_root, path.resolve().relative_to(workspace_root).as_posix()
                     ) is not None), candidates[0])]
-                for skill_file in candidates:
-                    if source_authorizer is None or source_authorizer(skill_file):
-                        if not is_skill_runtime_loadable(
-                            workspace_root, skill_file.resolve().relative_to(workspace_root).as_posix()
-                        ):
-                            continue
-                        parsed = self._parse_file(skill_file, relative_path=skill_file.resolve().relative_to(workspace_root).as_posix(),
-                            default_name=entry.name)
-                        if parsed is not None:
-                            skills.append(parsed)
-                        break
+                if candidates:
+                    yield entry.name, tuple(candidates)
             elif (
                 entry.is_file()
                 and entry.suffix == ".md"
                 and self._is_inside_workspace(entry.resolve(), workspace_root)
-                and (source_authorizer is None or source_authorizer(entry))
-                and is_skill_runtime_loadable(
-                    workspace_root,
-                    entry.resolve().relative_to(workspace_root).as_posix(),
-                )
             ):
-                parsed = self._parse_file(entry, relative_path=entry.resolve().relative_to(workspace_root).as_posix(), default_name=entry.stem)
-                if parsed is not None:
-                    skills.append(parsed)
-        return skills
+                yield entry.stem, (entry,)
 
     @staticmethod
     def _is_inside_workspace(path: Path, workspace_root: Path) -> bool:

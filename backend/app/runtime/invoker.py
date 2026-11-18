@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import uuid
+from contextlib import AsyncExitStack
 from functools import partial
 
 from app.runtime.message_presentation import apply_vision_transform as _apply_vision_transform
@@ -158,10 +159,8 @@ class PrivateWebTurn:
     config: RuntimeConfig
     credential_boundary: ExactSecretBoundary = field(repr=False)
     tools: AgentToolConfiguration
-
-    @property
-    def requester_name(self) -> str | None:
-        return self.requester.display_name or self.requester.username
+    access_level: str
+    timezone: str
 
 
 @dataclass(slots=True)
@@ -684,7 +683,8 @@ async def resolve_private_web_turn(db, *, task: RuntimeTask, agent: Agent, reque
     """Read the turn configuration after the run bootstrap commits."""
     from app.core.permissions import _agent_access_for_live_row, reject_non_executing_agent_access
 
-    tenant_active = await db.scalar(select(Tenant.is_active).where(Tenant.id == agent.tenant_id))
+    tenant = (await db.execute(select(Tenant.is_active, Tenant.timezone).where(Tenant.id == agent.tenant_id))).first()
+    tenant_active = tenant.is_active if tenant is not None else None
     config = await _read_runtime_config(db, agent, tenant_active=tenant_active)
     if config.tenant_resolution_error or config.executor_unavailable:
         return None
@@ -707,12 +707,18 @@ async def resolve_private_web_turn(db, *, task: RuntimeTask, agent: Agent, reque
         await db.rollback()
         return None
     tools = await load_agent_tool_configuration(db, authorized_agent)
-    return PrivateWebTurn(authorized_agent, requester, config, boundary, tools)
+    timezone = agent.timezone or (tenant.timezone if tenant is not None else None) or "UTC"
+    return PrivateWebTurn(authorized_agent, requester, config, boundary, tools, access, timezone)
 
 
-async def _resolve_current_user_name(user_id: uuid.UUID | None, tenant_id: uuid.UUID | None = None) -> str | None:
+async def _resolve_current_user_name(
+    user_id: uuid.UUID | None, tenant_id: uuid.UUID | None = None, *, private_web_turn: PrivateWebTurn | None = None,
+) -> str | None:
     if not user_id:
         return None
+    if (private_web_turn is not None and user_id == private_web_turn.requester.id
+        and tenant_id in {None, private_web_turn.agent.tenant_id}):
+        return private_web_turn.requester.display_name or private_web_turn.requester.username
 
     try:
         known_tenant = tenant_id is not None
@@ -875,10 +881,8 @@ async def _resolve_memory_context(
         _memory_sig = inspect.signature(build_memory_context).parameters
         current_user_name = None
         if request.user_id and ("current_user_id" in _memory_sig or "current_user_name" in _memory_sig):
-            current_user_name = (
-                private_web_turn.requester_name if private_web_turn else
-                await _resolve_current_user_name(request.user_id, tenant_id)
-            )
+            current_user_name = await _resolve_current_user_name(request.user_id, tenant_id,
+                private_web_turn=private_web_turn)
         if "current_user_id" in _memory_sig:
             _memory_kwargs["current_user_id"] = request.user_id
         if "current_user_name" in _memory_sig:
@@ -887,6 +891,9 @@ async def _resolve_memory_context(
             _memory_kwargs["return_result"] = True
         if "runtime_task_id" in _memory_sig:
             _memory_kwargs["runtime_task_id"] = turn_metadata.get("runtime_task_id") or turn_metadata.get("task_id")
+        if (private_web_turn is not None and request.user_id == private_web_turn.requester.id
+            and "verified_agent" in _memory_sig):
+            _memory_kwargs["verified_agent"] = private_web_turn.agent
         memory_clock = asyncio.get_running_loop()
         memory_started_at = memory_clock.time()
         memory_value = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)
@@ -1097,10 +1104,7 @@ async def _resolve_runtime_metadata_context(
         return ""
 
     budget_profile = _resolve_context_budget(request)
-    current_user_name = (
-        private_web_turn.requester_name if private_web_turn else
-        await _resolve_current_user_name(request.user_id, tenant_id) if request.user_id else None
-    )
+    current_user_name = await _resolve_current_user_name(request.user_id, tenant_id, private_web_turn=private_web_turn)
     metadata = _session_metadata(request.session_context)
     _runtime_kwargs = {"current_user_name": current_user_name}
     _runtime_sig = inspect.signature(build_agent_runtime_context).parameters
@@ -1119,6 +1123,10 @@ async def _resolve_runtime_metadata_context(
         _runtime_kwargs["budget_profile"] = budget_profile
     if "tenant_id" in _runtime_sig:
         _runtime_kwargs["tenant_id"] = tenant_id
+    if private_web_turn is not None and (request.agent_id, tenant_id) == (
+        private_web_turn.agent.id, private_web_turn.agent.tenant_id,
+    ) and "agent_timezone" in _runtime_sig:
+        _runtime_kwargs["agent_timezone"] = private_web_turn.timezone
     if "session_id" in _runtime_sig and request.session_context is not None:
         _runtime_kwargs["session_id"] = request.session_context.session_id
     if "runtime_principal" in _runtime_sig:
@@ -1731,7 +1739,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
     return AgentKernel(
         KernelDependencies(
             resolve_runtime_config=resolve_runtime_config,
-            resolve_current_user_name=(lambda _user_id: private_web_turn.requester_name) if private_web_turn else _resolve_current_user_name,
+            resolve_current_user_name=partial(_resolve_current_user_name, private_web_turn=private_web_turn),
             build_system_prompt=_kernel_build_system_prompt,
             resolve_memory_context=_kernel_resolve_memory_context,
             resolve_runtime_metadata_context=_kernel_resolve_runtime_metadata_context,
@@ -1931,75 +1939,105 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
     from app.services.workspace_resource_authority import load_workspace_authority_scope
     from app.runtime.context import ensure_runtime_assembly_state
 
-    root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    data_root = Path(get_settings().AGENT_DATA_DIR)
+    root = (data_root / str(agent_id)).resolve()
+    tool_root = (agent_context.TOOL_WORKSPACE / str(agent_id)).resolve()
+    turn = request.private_web_turn
+    if turn is not None and (agent_id, request.tenant_id, request.user_id) != (
+        turn.agent.id, turn.agent.tenant_id, turn.requester.id,
+    ):
+        turn = None
     capture = SkillInputCapture(agent_id)
     scope = None
-    if request.user_id is not None and request.tenant_id is not None:
-        try:
-            async with tenant_scoped_session(request.tenant_id) as db:
-                user = (request.private_web_turn.requester if request.private_web_turn else
-                        await db.get(User, request.user_id, populate_existing=True))
-                if user is not None and user.is_active:
-                    identity = request.execution_identity or get_execution_identity()
-                    autonomous = getattr(identity, "identity_type", None) == "agent_bot"
-                    delegation_id = getattr(request.delegation_token, "delegation_id", None)
-                    principal = AgentRuntimePrincipal(
-                        agent_id=agent_id,
-                        requester_user_id=user.id,
-                        session_id=str(kwargs.get("session_id")) if kwargs.get("session_id") else None,
-                        runtime_task_id=(
-                            (getattr(request.session_context, "metadata", None) or {}).get("runtime_task_id")
-                            or (getattr(request.session_context, "metadata", None) or {}).get("task_id")
-                        ),
-                        purpose="autonomous_agent"
-                        if autonomous
-                        else "a2a_delegation"
-                        if delegation_id
-                        else "interactive_session",
-                        autonomous=autonomous,
-                        delegation_id=str(delegation_id) if delegation_id else None,
-                    )
-                    scope = await load_workspace_authority_scope(
-                        db,
-                        user,
-                        agent_id=agent_id,
-                        session_id=uuid.UUID(principal.session_id) if principal.session_id else None,
-                        runtime_principal=principal,
-                    )
-        except Exception:
-            capture.unbound.append("skill_catalog_authority_unavailable")
-
-    def allowed(path):
-        path = path.resolve()
-        for candidate in (root, agent_context.TOOL_WORKSPACE / str(agent_id)):
+    async with AsyncExitStack() as stack:
+        if turn is not None:
+            await stack.enter_async_context(async_agent_workspace_lock(agent_id, data_root=data_root))
+        instructions = agent_context.skill_catalog_instructions(agent_id, kwargs.get("session_id")) if turn else None
+        manifest_paths = None
+        include_candidates = True
+        if instructions is not None:
+            manifest_paths = set()
+            include_candidates = False
+            for view, groups in instructions.items():
+                for _name, paths in groups:
+                    for path in paths:
+                        target = path.resolve()
+                        if target.is_relative_to(root / "workspace"):
+                            manifest_paths.add(target.relative_to(root).as_posix())
+                        if target.is_relative_to(root / "evolution") or target.is_relative_to(view / "evolution"):
+                            include_candidates = True
+        if request.user_id is not None and request.tenant_id is not None:
             try:
-                relative = path.relative_to(candidate.resolve()).as_posix()
+                async with tenant_scoped_session(request.tenant_id) as db:
+                    user = (turn.requester if turn else
+                            await db.get(User, request.user_id, populate_existing=True))
+                    if user is not None and user.is_active:
+                        identity = request.execution_identity or get_execution_identity()
+                        autonomous = getattr(identity, "identity_type", None) == "agent_bot"
+                        delegation_id = getattr(request.delegation_token, "delegation_id", None)
+                        principal = AgentRuntimePrincipal(
+                            agent_id=agent_id,
+                            requester_user_id=user.id,
+                            session_id=str(kwargs.get("session_id")) if kwargs.get("session_id") else None,
+                            runtime_task_id=(
+                                (getattr(request.session_context, "metadata", None) or {}).get("runtime_task_id")
+                                or (getattr(request.session_context, "metadata", None) or {}).get("task_id")
+                            ),
+                            purpose="autonomous_agent"
+                            if autonomous
+                            else "a2a_delegation"
+                            if delegation_id
+                            else "interactive_session",
+                            autonomous=autonomous,
+                            delegation_id=str(delegation_id) if delegation_id else None,
+                        )
+                        scope = await load_workspace_authority_scope(
+                            db,
+                            user,
+                            agent_id=agent_id,
+                            session_id=uuid.UUID(principal.session_id) if principal.session_id else None,
+                            runtime_principal=principal,
+                            agent_access=(turn.agent, turn.access_level) if turn else None,
+                            manifest_paths=manifest_paths,
+                            include_learning_candidates=include_candidates,
+                        )
+            except Exception:
+                capture.unbound.append("skill_catalog_authority_unavailable")
+
+        def allowed(path):
+            path = path.resolve()
+            for candidate in (root, tool_root):
+                try:
+                    relative = path.relative_to(candidate).as_posix()
+                except ValueError:
+                    continue
+                if relative.startswith("workspace/"):
+                    return candidate == root and scope is not None and scope.can_read(relative)
+                from app.services.learned_skill_sources import managed_learning_path
+
+                return scope.can_read(relative) if scope is not None else not managed_learning_path(relative)
+            return False
+
+        def observed(skill):
+            try:
+                relative = skill.file_path.resolve().relative_to(root).as_posix()
             except ValueError:
-                continue
-            if relative.startswith("workspace/"):
-                return candidate.resolve() == root.resolve() and scope is not None and scope.can_read(relative)
-            from app.services.learned_skill_sources import managed_learning_path
+                capture.unbound.append("skill_catalog_workspace_unverified")
+                return
+            capture.observe_file(relative, skill.source_sha256)
 
-            return scope.can_read(relative) if scope is not None else not managed_learning_path(relative)
-        return False
-
-    def observed(skill):
-        try:
-            relative = skill.file_path.resolve().relative_to(root.resolve()).as_posix()
-        except ValueError:
-            capture.unbound.append("skill_catalog_workspace_unverified")
-            return
-        capture.observe_file(relative, skill.source_sha256)
-
-    async with async_agent_workspace_lock(agent_id, data_root=root.parent):
+        if turn is None:
+            await stack.enter_async_context(async_agent_workspace_lock(agent_id, data_root=data_root))
         await load_skill_input_snapshot(
-            capture, request.tenant_id, runtime_request=principal if scope is not None else None
+            capture, request.tenant_id, runtime_request=principal if scope is not None else None,
+            include_candidates=include_candidates,
         )
         catalog = build_skill_catalog_section_for_agent(
-            agent_id, **kwargs, source_observer=observed, source_authorizer=allowed
+            agent_id, **kwargs, source_observer=observed, source_authorizer=allowed, instructions=instructions,
         )
+    snapshot = capture.snapshot()
     ensure_runtime_assembly_state(request.session_context).record_context_sources(
-        agent_id=agent_id, content=catalog, sources=capture.snapshot()["sources"], unbound=capture.snapshot()["unbound"]
+        agent_id=agent_id, content=catalog, sources=snapshot["sources"], unbound=snapshot["unbound"],
     )
     return catalog
 

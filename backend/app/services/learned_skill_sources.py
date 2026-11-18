@@ -851,7 +851,7 @@ async def validate_learned_installation(db, row, *, tenant_id, agent_id, request
         raise ContentInputReceiptError("learned_skill_source_denied", "The learned Skill requires its current source audience and inputs.", 403) from exc
 
 
-async def learning_file_access(db, *, tenant_id, agent_id, request=None, user=None):
+async def learning_file_access(db, *, tenant_id, agent_id, request=None, user=None, include_candidates=True):
     """Return exact protected roots and authorized bytes for the real source reader."""
     from app.config import get_settings
     from app.services.skill_evolution_registry import STATE_ROLLED_BACK, load_skill_evolution_registry
@@ -891,8 +891,10 @@ async def learning_file_access(db, *, tenant_id, agent_id, request=None, user=No
             allowed.update({path: (str(row.id), digest) for path, digest in row.content["files"].items()})
         except ContentInputReceiptError:
             continue
-    candidates = list(await db.scalars(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
-        ConfigRevision.entity_type == CANDIDATE_ENTITY, ConfigRevision.content["agent_id"].astext == str(agent_id))))
+    candidates = ()
+    if include_candidates:
+        candidates = list(await db.scalars(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
+            ConfigRevision.entity_type == CANDIDATE_ENTITY, ConfigRevision.content["agent_id"].astext == str(agent_id))))
     if candidates:
         roots.update({"evolution/evolution_ledger.jsonl", "evolution/skill_candidates.md", "evolution/skill_review.md",
             "evolution/skill_usage.jsonl", "evolution/skill_usage.json", "evolution/skill_registry.json",

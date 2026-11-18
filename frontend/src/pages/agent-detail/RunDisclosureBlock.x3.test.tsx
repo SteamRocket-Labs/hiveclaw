@@ -88,7 +88,7 @@ describe.each([['zh', 'zh'] as const, ['en', 'en'] as const])('member tool summa
     expect(text).not.toContain('runtime-result');
   });
 
-  it('a web search step and a capability lookup step render their sentences', () => {
+  it('renders a web search sentence and omits a capability lookup', () => {
     locale.language = language;
     const search = stepText({
       id: 'search', kind: 'search', title: 'Search web', status: 'done', visibility: 'visible',
@@ -97,14 +97,16 @@ describe.each([['zh', 'zh'] as const, ['en', 'en'] as const])('member tool summa
         memberSummary: { kind: 'web_search', state: 'done' } },
     });
     expect(search).toContain(language === 'zh' ? '搜索了网页' : 'Searched the web');
-    const lookup = stepText({
-      id: 'lookup', kind: 'tool', title: 'Loading tools', status: 'done', visibility: 'visible',
-      summary: '',
-      details: { toolName: 'tool_search', args: { query: 'wiki' }, result: '', rawResult: '',
-        memberSummary: { kind: 'capability_lookup', state: 'done' } },
-    });
-    expect(lookup).toContain(language === 'zh' ? '查找了可用的能力' : 'Looked up available capabilities');
-    expect(lookup).not.toContain('mcp_server_id');
+    const lookup = buildRunTimelineFromMessages([{
+      id: 'lookup', role: 'tool_call', content: '', toolName: 'tool_search', toolStatus: 'done',
+      toolArgs: { query: 'wiki' }, toolMemberSummary: { kind: 'capability_lookup', state: 'done' },
+    }]);
+    const { container } = render(<RunDisclosureBlock timeline={lookup} />);
+    const header = container.querySelector('button.run-disclosure-header');
+    if (header) fireEvent.click(header);
+    expand(container);
+    expect(container.querySelector('.run-tool-history-item, [data-testid="run-disclosure-step"]')).toBeNull();
+    expect(container.textContent).not.toContain('mcp_server_id');
   });
 });
 

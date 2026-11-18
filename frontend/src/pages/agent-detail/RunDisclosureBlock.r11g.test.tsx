@@ -157,7 +157,7 @@ it('keeps dates, ratios and URLs in raw results internal (X3b item 2)', () => {
   expect(container.textContent).not.toContain('https://');
 });
 
-it('names the recorded generic step and readiness event with everyday words', () => {
+it('names the personal knowledge search and omits the tool readiness event', () => {
   const timeline = buildRunTimelineFromMessages([
     { id: 'unknown', role: 'tool_call', toolName: 'search_personal_kb', content: '', toolResult: '{"ok":true}', toolStatus: 'done' },
     { id: 'ready', role: 'event', eventType: 'tool_group_activation', content: 'Activated MCP runtime tool group.' },
@@ -165,7 +165,7 @@ it('names the recorded generic step and readiness event with everyday words', ()
   const { container } = render(<RunDisclosureBlock timeline={timeline} />);
   expand(container);
   expect(container.textContent).toContain('查找个人资料');
-  expect(container.textContent).toContain('准备所需功能');
+  expect(container.textContent).not.toContain('准备所需功能');
   expect(container.textContent).not.toMatch(/已调用工具|工具已就绪|MCP/);
   expect(container.querySelector('.run-tool-history-title')?.textContent).not.toBe('工具');
 });

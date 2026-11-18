@@ -185,12 +185,14 @@ it('cannot add a step by completing an existing empty progress call after stop',
   expect(runs(model)[0].timeline.steps).toHaveLength(0);
 });
 
-it('still counts compatibility activity belonging to a newly started run', () => {
+it('counts the member activity belonging to a newly started run with a tool activation', () => {
   const model = build([user(), event(2, 'run', 'queued', 0), work(3, 1), event(4, 'run', 'cancelled', 2),
-    user(5, 3), event(6, 'run', 'queued', 4, 'run-2'), compatibility(7, 5, 'tool_group_activation')],
+    user(5, 3), event(6, 'run', 'queued', 4, 'run-2'), compatibility(7, 5, 'tool_group_activation'),
+    compatibility(8, 6, 'workflow_step')],
   { isWaiting: true, runtimePhase: 'thinking', activeRunId: 'run-2', activeRunStatus: 'running' });
   expect(runs(model).map(cell => [cell.runId, cell.timeline.status, cell.timeline.steps.length]))
     .toEqual([['run-1', 'cancelled', 1], ['run-2', 'running', 1]]);
+  expect(runs(model)[1].timeline.steps.map(step => step.systemEvent?.type)).toEqual(['workflow_step']);
 });
 
 it('does not hide a counted text step when a zero-copy final arrives after terminal', () => {

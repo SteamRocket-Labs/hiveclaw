@@ -2239,6 +2239,7 @@ function applyCanonicalRunTerminalEvidence(
   activeRunStatus?: string | null,
   runtimeTasks: Record<string, unknown>[] = [],
   sessionRunId?: string | null,
+  runtimeEvidencePending = false,
 ): ThreadTimelineCell[] {
   const firstUserCell = cells.findIndex(cell => cell.kind === 'user_turn');
   const firstSequence = messages.reduce((first, message) => Math.min(first,
@@ -2306,6 +2307,12 @@ function applyCanonicalRunTerminalEvidence(
     const liveStatus = activeRunStatus && activeRunId && isSameSessionRunId(runId, activeRunId)
       ? activeRunStatus : null;
     const task = runtimeTasks.find(task => isSameSessionRunId(readString(task, ['runtime_task_id', 'id'], ''), runId));
+    // Historical compatibility rows have no saved run span. Reuse the
+    // existing unknown presentation until the workbench's persisted task
+    // arrives, rather than first painting an inferred status and duration.
+    if (!terminal && !task && runtimeEvidencePending && cell.timeline.completedAt) return {
+      ...cell, timeline: { ...cell.timeline, statusUnknown: true },
+    };
     const observedStatus = readString(task ?? {}, ['status'], '') || liveStatus;
     const canonicalStatus = terminal?.status || (approvalStatus === 'running'
       ? runtimeStatusKey(acceptedPermissionStatus(observedStatus))
@@ -2472,6 +2479,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     coalesceProcessCellsByUserTurn(buildCells(input.messages, delegationReceiptExpected), input.messages, delegationReceiptExpected),
     input.messages,
     null, null, input.sessionWorkbench?.runtime_tasks, sessionRunId,
+    input.sessionWorkbench === null && !input.isWaiting && !input.isStreaming && !input.activeRunStatus,
   );
   const latestUserIndex = latestUserMessageIndex(input.messages);
   const latestTurnAnswered = hasAssistantAnswerAfterLatestUser(input.messages);

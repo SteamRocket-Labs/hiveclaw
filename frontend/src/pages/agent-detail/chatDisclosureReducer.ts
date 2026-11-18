@@ -279,7 +279,7 @@ export function getToolStepPresentation(
   message: AgentChatMessage,
   status: RunStepStatus,
 ): RunStepPresentation {
-  if (isDedicatedToolCardMessage(message)) return 'external';
+  if (isDedicatedToolCardMessage(message) || message.toolName === 'ask_user_question') return 'external';
   if (status === 'failed' || status === 'blocked' || status === 'cancelled') return 'surface';
   const name = String(message.toolName || '').trim().toLowerCase();
   // CC/FreeCode and Codex consume successful task mutations through their

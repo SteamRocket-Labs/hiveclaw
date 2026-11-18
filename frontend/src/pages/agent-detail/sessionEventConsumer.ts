@@ -12,6 +12,7 @@ import {
   type TranscriptReplayState,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
+import { isAssistantAnswer } from './chatDisclosureReducer';
 import { memberHost, memberToolSummaryFromRecord, memberSummaryWithArgs } from './memberToolSummary';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
@@ -595,6 +596,9 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
   );
   const toolResultByCall = new Map<string, SessionItemV2>();
   const questionsByInvocation = new Map<string, SessionItemV2>();
+  const allowedPermissions = items.filter(item => item.kind === 'control_input'
+    && ['accepted', 'applied'].includes(item.lifecycle) && item.payload.kind === 'permission_response'
+    && ['allow_once', 'allow_session'].includes(String(item.payload.decision)));
   Object.values(store.items).filter((item) => item.kind === 'user_question').forEach((item) => {
     const source = item.invocationId || (typeof item.payload.legacy_event_id === 'string' ? `legacy:${item.payload.legacy_event_id}` : null);
     if (source && (questionsByInvocation.get(source)?.last_sequence || 0) < item.last_sequence) questionsByInvocation.set(source, item);
@@ -610,7 +614,12 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
       || !beforeRunTerminal(item)
       || !((item.parentItemId && toolCallIds.has(item.parentItemId))
         || (item.invocationId && toolCallInvocations.has(item.invocationId))))
-    .map((item) => projectCanonicalItem(item, store, toolResultByCall, questionsByInvocation))
+    .map((item) => {
+      const allowed = item.kind === 'tool_call' && item.lifecycle === 'waiting' && allowedPermissions.some(control =>
+        control.payload.permission_item_id === item.payload.permission_item_id
+        && 'run_id' in control.scope && 'run_id' in item.scope && isSameSessionRunId(control.scope.run_id, item.scope.run_id));
+      return projectCanonicalItem(allowed ? { ...item, lifecycle: 'progress' } : item, store, toolResultByCall, questionsByInvocation);
+    })
     .filter((message): message is AgentChatMessage => message !== null));
 }
 
@@ -707,10 +716,13 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
         && sequenceOf(message, messageIndex) === terminalSequence
         && (!task || key(metadataOf(message).runtime_task_id || metadataOf(message).task_id) === task)
         && ['runtime_action_completed', 'runtime_action_failed', 'child_session'].includes(message.eventType || ''));
-      if (terminalIndex < 0 || movedTerminals.has(terminalIndex)) return;
-      // Keep the folded row at its start without changing terminal evidence.
+      if (terminalIndex < 0 || movedTerminals.has(terminalIndex)) return false;
+      // Keep the landed start-position pairing unless it would move a later
+      // result ahead of the parent's already-delivered answer.
+      if (messages.slice(index + 1, terminalIndex).some(isAssistantAnswer)) return true;
       terminalAtStart.set(index, messages[terminalIndex]);
       movedTerminals.add(terminalIndex);
+      return true;
     };
     const orderedStarts = starts.sort((a, b) => a.sequence - b.sequence);
     for (const start of orderedStarts) {
@@ -718,8 +730,7 @@ function projectMemberDelegationStates(messages: AgentChatMessage[]): AgentChatM
       const task = key(metadata.runtime_task_id || metadata.task_id);
       const sequence = sessionTerminals.get(task);
       if (sequence == null || sequence <= start.sequence || pairedTasks.has(task)) continue;
-      foldStart(start.index, sequence, task);
-      if (!terminalAtStart.has(start.index)) {
+      if (!foldStart(start.index, sequence, task)) {
         foldedStarts.delete(start.index);
         continue;
       }

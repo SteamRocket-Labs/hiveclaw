@@ -1761,6 +1761,11 @@ def _member_summary_projection(
         result_obj=result_obj,
     )
     summary: dict[str, Any] = {"kind": kind, "state": state}
+    if kind == "runtime_result" and result_obj:
+        from app.services.runtime_display_status import DELEGATED_TASK_RUNNING_MESSAGE, is_delegation_failure_result_page
+
+        if is_delegation_failure_result_page(result_obj) and result_obj["result"] != DELEGATED_TASK_RUNNING_MESSAGE:
+            summary["found"] = False
     if tool_name.startswith("search_") and typed_status in {"empty", "ok", "partial"} and state != "not_done":
         if _status_text(payload.get("outcome")) != "unknown":
             summary.update(state="done", found=typed_status != "empty")

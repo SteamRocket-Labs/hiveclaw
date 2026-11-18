@@ -231,8 +231,8 @@ function StepIcon({ kind, running, status, unconfirmed, colleagueWaiting }: { ki
  * when the colleague already sits in the member's own authority-filtered
  * roster cache (X1-r3 ruling 1): owning the session does not prove the
  * member can open this colleague. Without a cached roster there is nothing
- * to gate on, so no link; no new request is made. The link reads the raw
- * replayed event's to_agent, which was always present. */
+ * to gate on, so no link; no new request is made. Started/action events carry
+ * only a name; resolve it uniquely inside that same roster. */
 function ColleagueConversationLink({ metadata }: { metadata: Record<string, unknown> }) {
   const { t } = useTranslation();
   const agentId = typeof metadata.to_agent === 'string' ? metadata.to_agent : '';
@@ -242,11 +242,13 @@ function ColleagueConversationLink({ metadata }: { metadata: Record<string, unkn
   const tenantId = localStorage.getItem('current_tenant_id')
     || useAuthStore.getState().user?.tenant_id
     || '';
-  const listed = queryClient?.getQueryData<Array<{ id: string }>>(['agents', tenantId]) || [];
-  if (!agentId || !sessionId || !listed.some((agent) => agent.id === agentId)) return null;
+  const listed = queryClient?.getQueryData<Array<{ id: string; name?: string }>>(['agents', tenantId]) || [];
+  const matches = listed.filter(agent => agentId ? agent.id === agentId
+    : typeof metadata.target_agent_name === 'string' && agent.name === metadata.target_agent_name);
+  if (!sessionId || matches.length !== 1) return null;
   return (
     <p className="run-colleague-link">
-      <Link to={`/agents/${agentId}/sessions/${sessionId}`}>{t('agent.chat.disclosure.openColleagueConversation', 'Open this colleague\'s conversation')}</Link>
+      <Link to={`/agents/${matches[0].id}/sessions/${sessionId}`}>{t('agent.chat.disclosure.openColleagueConversation', 'Open this colleague\'s conversation')}</Link>
     </p>
   );
 }
@@ -371,9 +373,9 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
   const detailText = typeof step.details === 'string' ? step.details : '';
   if (detailText.includes('[REDACTED_SECRET]')) return <pre className="run-detail-pre"><PastedCredentialText content={detailText} /></pre>;
   // The child session exists for an unfinished delegation too (failed,
-  // cancelled, contract mismatch), so both titles may carry the link
+  // cancelled, contract mismatch), so all delegation rows may carry the link
   // (X1-r3 ruling 1); the roster gate above still decides reachability.
-  const colleagueLink = ['Delegation result', 'Delegation unfinished'].includes(step.title)
+  const colleagueLink = (step.systemEvent?.type === 'child_session' || step.systemEvent?.metadata.action_kind === 'a2a_delegation')
     && step.systemEvent && viewerOwnsSession
     ? <ColleagueConversationLink metadata={step.systemEvent.metadata} /> : null;
   if (detailText) return <>{<MarkdownRenderer content={detailText} />}{colleagueLink}</>;

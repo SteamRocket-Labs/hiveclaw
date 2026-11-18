@@ -162,16 +162,24 @@ async def test_scripted_run_has_one_content_free_partitioned_summary(
         "tool_collection", "prompt_build", "memory_context", "hook_dispatch",
         "skill_catalog", "secret_boundary"}
     numeric = {"wall_ms", "cleanup_ms", "pre_model_ms", "model_ms", "between_rounds_ms", "post_model_ms",
-        "rounds", "db_statements", "db_ms", "pool_ms", "transactions", "instrumentation_errors"}
+        "rounds", "db_statements", "db_ms", "pool_ms", "transactions", "instrumentation_errors",
+        "cpu_ms", "pre_model_cpu_ms", "post_model_cpu_ms"}
     assert set(line) == numeric | {"run_id", "task_type", "statements", "gaps", "phases"}
     assert all(isinstance(line[key], (int, float)) for key in numeric)
+    assert 0 < line["cpu_ms"] <= line["wall_ms"] + line["cleanup_ms"] + 5
+    assert 0 < line["pre_model_cpu_ms"] <= line["pre_model_ms"] + 5
+    assert 0 < line["post_model_cpu_ms"] <= line["post_model_ms"] + 5
     for entry in line["statements"]:
         assert set(entry) == {"hash", "frame", "ms"}
         assert entry["hash"] in observed["hashes"]
     for entry in line["gaps"]:
         assert set(entry) == {"from", "to", "ms"}
         assert entry["from"].startswith("app.") and entry["to"].startswith("app.")
-    assert all(set(entry) == {"name", "ms", "n"} and entry["n"] >= 1 for entry in line["phases"])
+    phase_numeric = {"ms", "n", "statements", "transactions", "db_ms", "pool_ms", "cpu_ms"}
+    assert all(set(entry) == {"name"} | phase_numeric and entry["n"] >= 1 for entry in line["phases"])
+    for entry in line["phases"]:
+        assert all(isinstance(entry[key], (int, float)) for key in phase_numeric)
+        assert 0 <= entry["cpu_ms"] <= entry["ms"] + 5
     # Independently verified source identifiers are authorized log fields;
     # names such as get_agent_timezone are not copies of tool arguments.
     content_fields = {**line,
@@ -232,6 +240,8 @@ async def test_driver_hash_transaction_gaps_and_bounded_top_ten(app_user_engine,
     assert 20 <= line["gaps"][0]["ms"] < 65
     assert all(entry["from"] and entry["to"] for entry in line["gaps"])
     assert line["rounds"] == 0 and line["model_ms"] == line["post_model_ms"] == 0
+    assert line["cpu_ms"] == line["pre_model_cpu_ms"] > 0
+    assert line["post_model_cpu_ms"] == 0
     assert sql not in json.dumps(line)
 
     caplog.clear()
@@ -304,6 +314,35 @@ async def test_pool_wait_and_repeated_phase_count(timing_engine, caplog):  # noq
     assert line["pool_ms"] >= 50
     span, = line["phases"]
     assert span["name"] == "tool_collection" and span["n"] == 2 and span["ms"] >= 2
+    assert span["statements"] == span["transactions"] == 0
+    assert span["db_ms"] == span["pool_ms"] == 0
+
+
+async def test_phase_counters_include_nested_and_repeated_queries(timing_engine, caplog):  # noqa: F811
+    @timing_module.timed_phase("memory_context")
+    async def read():
+        async with timing_engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+            await conn.execute(text("SELECT 2"))
+
+    @timing_module.timed_phase("prompt_build")
+    async def build():
+        await read()
+        await read()
+
+    caplog.set_level(logging.INFO, logger="app.core.request_timing")
+    with timing_module.run_timing_scope(uuid.uuid4()):
+        await build()
+    line, = summaries(caplog)
+    phases = {entry["name"]: entry for entry in line["phases"]}
+    assert phases["prompt_build"]["n"] == 1
+    assert phases["memory_context"]["n"] == 2
+    for entry in phases.values():
+        assert entry["statements"] == line["db_statements"] == 4
+        assert entry["transactions"] == line["transactions"] == 2
+        assert entry["db_ms"] == line["db_ms"] > 0
+        assert entry["pool_ms"] == line["pool_ms"] > 0
+        assert 0 < entry["cpu_ms"] <= entry["ms"] + 5
 
 
 @pytest.mark.parametrize("provider,stream", [

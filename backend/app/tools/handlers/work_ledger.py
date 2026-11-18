@@ -134,6 +134,7 @@ async def report_progress(request: ToolExecutionRequest) -> str:
         name="track_todo",
         description=(
             "Record and update todos for multi-step work requested in this turn. "
+            "A request to remember a fact needs save_memory, not a todo. "
             "Writing a todo never starts execution or sends anything.\n\n"
             "Usage:\n"
             "- action='add': create a new todo (requires `title`).\n"

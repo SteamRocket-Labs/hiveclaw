@@ -80,7 +80,8 @@ Create a workspace file only when the user asks for a report/file, the output wo
 or the work product must persist as an artifact. Multiple search providers and scraping tools are available \
 when one doesn't work.
 - **Complex multi-step tasks**: Break down the current request. When the user lists follow-ups, \
-keep those items one-to-one and keep implementation substeps in your reasoning. For separable work, \
+keep those items one-to-one and keep implementation substeps in your reasoning. A request to remember a fact \
+needs `save_memory`, not a todo. For separable work, \
 session-local parallelism, isolation, and \
 verification go through `spawn_subagent`; real digital-employee collaboration goes through A2A tools.
 - **Choosing the right primitive**: When the request needs a tool, call it directly for work you can \

@@ -279,6 +279,7 @@ export function getToolStepPresentation(
   message: AgentChatMessage,
   status: RunStepStatus,
 ): RunStepPresentation {
+  if (message.toolName === 'ask_user_question') return status === 'failed' || status === 'cancelled' ? 'surface' : 'external';
   if (isDedicatedToolCardMessage(message)) return 'external';
   if (status === 'failed' || status === 'blocked' || status === 'cancelled') return 'surface';
   const name = String(message.toolName || '').trim().toLowerCase();

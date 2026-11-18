@@ -154,6 +154,7 @@ export function memberToolSummarySentence(summary: MemberToolSummary, t: TFuncti
   const extra = (key: string, fallback: string, values?: Record<string, unknown>) => t(`agent.chat.toolResults.memberSummary.${key}`, fallback, values);
   if (summary.state === 'unknown') return t('agent.chat.disclosure.resultUnconfirmed', 'The outcome is unconfirmed.');
   if (summary.kind === 'runtime_result') {
+    if (summary.found === false) return t('agent.chat.disclosure.system.colleagueNoResult', 'The colleague ended without returning a result.');
     return summary.state === 'done' ? t('agent.chat.disclosure.resultReturned', 'Result returned')
       : t('agent.chat.disclosure.resultReadFailed', "Couldn't read the result this time.");
   }

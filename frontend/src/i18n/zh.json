@@ -2697,7 +2697,8 @@
           "filesUpdated_one": "已更新 {{count}} 个文件",
           "filesUpdated_other": "已更新 {{count}} 个文件",
           "colleagueEnded": "同事任务已结束",
-          "noResultKept": "没有可供查看的结果；本次对话未继续。"
+          "noResultKept": "没有可供查看的结果；本次对话未继续。",
+          "colleagueNoResult": "同事已结束，没有返回结果。"
         },
         "failure": {
           "readMissing": "没有找到要读取的文件。",

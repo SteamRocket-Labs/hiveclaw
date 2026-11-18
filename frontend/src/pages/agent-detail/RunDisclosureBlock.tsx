@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { QueryClientContext, useQueryClient } from '@tanstack/react-query';
 import { runtimeStatusLabel } from './runtimeStatus';
+import { normalizeSessionRunId } from './chatRuntime';
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
@@ -231,19 +232,19 @@ function StepIcon({ kind, running, status, unconfirmed, colleagueWaiting }: { ki
  * when the colleague already sits in the member's own authority-filtered
  * roster cache (X1-r3 ruling 1): owning the session does not prove the
  * member can open this colleague. Without a cached roster there is nothing
- * to gate on, so no link; no new request is made. The link reads the raw
- * replayed event's to_agent, which was always present. */
+ * to gate on, so no link; no new request is made. Names cannot identify a
+ * colleague; the stored agent and child session ids own the route. */
 function ColleagueConversationLink({ metadata }: { metadata: Record<string, unknown> }) {
   const { t } = useTranslation();
-  const agentId = typeof metadata.to_agent === 'string' ? metadata.to_agent : '';
-  const sessionId = typeof metadata.child_session_id === 'string' ? metadata.child_session_id : '';
+  const agentId = normalizeSessionRunId(typeof metadata.to_agent === 'string' ? metadata.to_agent : '');
+  const sessionId = normalizeSessionRunId(typeof metadata.child_session_id === 'string' ? metadata.child_session_id : '');
   // Render hosts without a provider (static projections) have no known cache.
   const queryClient = React.useContext(QueryClientContext) as ReturnType<typeof useQueryClient> | null;
   const tenantId = localStorage.getItem('current_tenant_id')
     || useAuthStore.getState().user?.tenant_id
     || '';
   const listed = queryClient?.getQueryData<Array<{ id: string }>>(['agents', tenantId]) || [];
-  if (!agentId || !sessionId || !listed.some((agent) => agent.id === agentId)) return null;
+  if (!agentId || !sessionId || !listed.some(agent => normalizeSessionRunId(agent.id) === agentId)) return null;
   return (
     <p className="run-colleague-link">
       <Link to={`/agents/${agentId}/sessions/${sessionId}`}>{t('agent.chat.disclosure.openColleagueConversation', 'Open this colleague\'s conversation')}</Link>
@@ -371,9 +372,9 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
   const detailText = typeof step.details === 'string' ? step.details : '';
   if (detailText.includes('[REDACTED_SECRET]')) return <pre className="run-detail-pre"><PastedCredentialText content={detailText} /></pre>;
   // The child session exists for an unfinished delegation too (failed,
-  // cancelled, contract mismatch), so both titles may carry the link
+  // cancelled, contract mismatch), so all delegation rows may carry the link
   // (X1-r3 ruling 1); the roster gate above still decides reachability.
-  const colleagueLink = ['Delegation result', 'Delegation unfinished'].includes(step.title)
+  const colleagueLink = (step.systemEvent?.type === 'child_session' || step.systemEvent?.metadata.action_kind === 'a2a_delegation')
     && step.systemEvent && viewerOwnsSession
     ? <ColleagueConversationLink metadata={step.systemEvent.metadata} /> : null;
   if (detailText) return <>{<MarkdownRenderer content={detailText} />}{colleagueLink}</>;
@@ -665,7 +666,12 @@ function stoppedDelegationCandidate(step: RunStepSnapshot): { task: string; rank
   return null;
 }
 
-export default function RunDisclosureBlock({
+export default function RunDisclosureBlock(props: React.ComponentProps<typeof RunDisclosureBlockInner>) {
+  if (props.timeline.statusUnknown) return null;
+  return <RunDisclosureBlockInner {...props} />;
+}
+
+function RunDisclosureBlockInner({
   timeline,
   presentationKey = null,
   viewerOwnsSession = false,
@@ -675,10 +681,6 @@ export default function RunDisclosureBlock({
   viewerOwnsSession?: boolean;
 }) {
   const { t } = useTranslation();
-  // X2 r2 D: a mid-load block with unknown totals renders nothing — no
-  // status, count or clock — until the page that completes its turn arrives,
-  // so its first rendered status is its final status.
-  if (timeline.statusUnknown) return null;
   const running = timeline.status === 'running';
   const resultsKept = timeline.status === 'done' && !timeline.answerMessageId && timeline.steps.some(isKeptResultStep);
   const runDuration = useRunDuration(timeline, presentationKey);
@@ -715,7 +717,12 @@ export default function RunDisclosureBlock({
   // else the first cancelled runtime action receipt. Every other row the
   // rewrite collapsed onto the same 「已停止…」 sentence folds into it.
   const stoppedDelegationOwner = new Map<string, { id: string; rank: number }>();
+  const colleagueBySession = new Map<string, string>();
   for (const step of timeline.steps) {
+    const metadata = step.systemEvent?.metadata;
+    if (typeof metadata?.to_agent === 'string' && metadata.to_agent && typeof metadata.child_session_id === 'string') {
+      colleagueBySession.set(normalizeSessionRunId(metadata.child_session_id), metadata.to_agent);
+    }
     const candidate = stoppedDelegationCandidate(step);
     if (!candidate) continue;
     const existing = stoppedDelegationOwner.get(candidate.task);
@@ -742,7 +749,13 @@ export default function RunDisclosureBlock({
           && other.details === `${source.metadata.target_agent_name} 的委派任务失败：${step.details}`;
       });
     })
-    .map((step) => presentSystemStep(step, t))
+    .map((step) => {
+      const event = step.systemEvent;
+      const sessionId = event?.metadata.child_session_id;
+      const agentId = typeof sessionId === 'string' ? colleagueBySession.get(normalizeSessionRunId(sessionId)) : undefined;
+      return presentSystemStep(event && !event.metadata.to_agent && agentId
+        ? { ...step, systemEvent: { ...event, metadata: { ...event.metadata, to_agent: agentId } } } : step, t);
+    })
     .filter((step) => {
       // A started notification the terminal rewrite collapsed onto the
       // stopped sentence folds into the owner row.

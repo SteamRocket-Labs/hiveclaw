@@ -2697,7 +2697,8 @@
           "filesUpdated_one": "Updated {{count}} file",
           "filesUpdated_other": "Updated {{count}} files",
           "colleagueEnded": "The colleague task has ended",
-          "noResultKept": "There is no result to view; this conversation did not continue."
+          "noResultKept": "There is no result to view; this conversation did not continue.",
+          "colleagueNoResult": "The colleague ended without returning a result."
         },
         "failure": {
           "readMissing": "The file to read was not found.",

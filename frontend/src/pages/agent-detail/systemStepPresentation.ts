@@ -115,7 +115,9 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
   ) && /^\d+ runtime result\(s\) ready in integration epoch \d+ \(terminal=\d+\/expected=\d+\)\.(?: Parent continuation denied: .+)?$/.test(text)) {
     const count = metadata.item_count;
     const stopped = ['denied', 'needs_reconciliation'].includes(String(metadata.continuation_status));
-    const title = stopped && !hasKeptResult(metadata)
+    const noResult = metadata.has_kept_result === false && !stopped;
+    const title = noResult ? t('agent.chat.disclosure.system.colleagueNoResult', 'The colleague ended without returning a result.')
+      : stopped && !hasKeptResult(metadata)
       ? t('agent.chat.disclosure.system.colleagueEnded', 'The colleague task has ended')
       : typeof count === 'number' && Number.isInteger(count) && count >= 0
       ? t('agent.chat.disclosure.system.resultsReceived', 'Received {{count}} task results', { count })

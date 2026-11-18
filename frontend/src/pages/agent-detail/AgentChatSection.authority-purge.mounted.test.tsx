@@ -18,6 +18,7 @@ const noticeLocale = vi.hoisted(() => ({ language: 'en' }));
 const harness = vi.hoisted(() => ({
   ledger: undefined as RuntimeWorkLedgerView | undefined,
   activeRun: undefined as { id: string; status: string } | undefined,
+  workbenchState: 'saved' as 'saved' | 'loading' | 'error',
   ledgerQuery: undefined as { refetchInterval?: number | false } | undefined,
   readArtifact: vi.fn(),
   downloadArtifact: vi.fn(),
@@ -56,6 +57,8 @@ vi.mock('@tanstack/react-query', () => ({
       return { data: harness.ledger, isLoading: false, refetch: vi.fn() };
     }
     if (queryKey[0] === 'chat-session-workbench') {
+      if (harness.workbenchState !== 'saved') return { data: undefined,
+        isLoading: harness.workbenchState === 'loading', isError: harness.workbenchState === 'error', refetch: vi.fn() };
       return {
         data: {
           schema: 'session_workbench.v1',
@@ -561,6 +564,40 @@ function noticeProps() {
       is_current_user_session: true, operator_view: false },
     historyMsgs: [], chatMessagesSessionId: 'original-work' };
 }
+
+it('X9b-r3-2: historical blocks render when the workbench query fails', () => {
+  const base = noticeProps();
+  harness.workbenchState = 'error';
+  const messages: AgentChatMessage[] = [{ id: 'input', role: 'user', content: 'Read the file', timestamp: '2026-11-07T00:00:00Z' },
+    { id: 'call', role: 'tool_call', content: '', toolName: 'read_file', toolStatus: 'done',
+      toolResult: 'Saved file', eventRuntimeTaskId: 'historical-run', timestamp: '2026-11-07T00:00:01Z' }];
+  try {
+    const view = render(<AgentChatSection {...base} activeRunId={null} activeRunStatus={null}
+      chatMessages={messages} historyMsgs={messages} />);
+    expect(view.container.querySelector('[data-testid="run-disclosure-block"]')).not.toBeNull();
+  } finally {
+    harness.workbenchState = 'saved';
+  }
+});
+
+it('X9b-r3-2: a failed workbench query releases blocks hidden during loading', () => {
+  const base = noticeProps();
+  const messages: AgentChatMessage[] = [{ id: 'input', role: 'user', content: 'Read the file', timestamp: '2026-11-07T00:00:00Z' },
+    { id: 'call', role: 'tool_call', content: '', toolName: 'read_file', toolStatus: 'done', toolResult: 'Saved file',
+      eventRuntimeTaskId: 'historical-run', timestamp: '2026-11-07T00:00:01Z' }];
+  const content = <AgentChatSection {...base} activeRunId={null} activeRunStatus={null} chatMessages={messages} />;
+  harness.workbenchState = 'loading';
+  try {
+    const view = render(content);
+    expect(view.container.querySelector('[data-testid="run-disclosure-block"]')).toBeNull();
+    harness.workbenchState = 'error';
+    view.rerender(<AgentChatSection {...base} activeSession={{ ...base.activeSession }}
+      activeRunId={null} activeRunStatus={null} chatMessages={messages} />);
+    expect(view.container.querySelector('[data-testid="run-disclosure-block"]')).not.toBeNull();
+  } finally {
+    harness.workbenchState = 'saved';
+  }
+});
 
 it('uses the settled transcript status for the todo after the active run clears', () => {
   harness.ledger = {

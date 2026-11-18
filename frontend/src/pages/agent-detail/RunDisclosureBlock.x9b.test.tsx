@@ -12,6 +12,7 @@ import RunDisclosureBlock from './RunDisclosureBlock';
 import { type AgentChatMessage, type ChatTranscriptEventPayload } from './chatRuntime';
 import { hydrateSessionTranscriptEvents } from './sessionEventConsumer';
 import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } from './sessionTranscriptApplier';
+import { projectSessionSocketEvent, type SessionSocketProjectionDependencies } from './sessionSocketEventProjector';
 import { buildThreadTimeline, type ThreadTimelineModel } from '../session-workbench/timelineModel';
 
 const locale = vi.hoisted(() => ({ language: 'zh' as 'zh' | 'en' }));
@@ -25,7 +26,7 @@ vi.mock('i18next', () => ({ default: { t: (key: string, fallback?: string, value
   translateFromCatalog(locale.language === 'zh' ? zh : en, key, fallback, values) } }));
 afterEach(() => { cleanup(); vi.useRealTimers(); locale.language = 'zh'; localStorage.clear(); sessionStorage.clear(); });
 type Event = Record<string, any>;
-function project(events: Event[], mode: 'live' | 'reload'): AgentChatMessage[] {
+function project(events: Event[], mode: 'live' | 'reload', onFrame?: (messages: AgentChatMessage[], index: number) => void): AgentChatMessage[] {
   const wire = events as unknown as ChatTranscriptEventPayload[];
   if (mode === 'reload') return hydrateSessionTranscriptEvents(wire, 0).messages;
   let messages: AgentChatMessage[] = [];
@@ -38,7 +39,19 @@ function project(events: Event[], mode: 'live' | 'reload'): AgentChatMessage[] {
     setChatMessagesAfterQueued: (_session, update) => { messages = update(messages); },
     setActivePhase: vi.fn(), setIsWaiting: vi.fn(), setIsStreaming: vi.fn(), parseChatMsg: message => message,
   };
-  for (const event of wire) applyTranscriptToSessionRuntime(deps, 'agent', 'session', event, true);
+  const socket: SessionSocketProjectionDependencies = {
+    ...deps, applyTranscriptToSession: (agent, session, event, active) => applyTranscriptToSessionRuntime(deps, agent, session, event, active),
+    activeRunIdOf: deps.getActiveRunId, selectSession: vi.fn(), fetchMySessions: vi.fn(),
+    setSessionPhase: vi.fn(), sessionPhaseOf: () => 'idle', syncActivePhase: vi.fn(), setActiveRunState: vi.fn(),
+    invalidateSessionRuntimeQueries: vi.fn(), reconcileSessionTranscript: vi.fn(), shouldInvalidateToolCall: () => false,
+    normalizeToolCallMessage: message => message, setTransportNotice: vi.fn(), setCreatedAgentId: vi.fn(),
+    setAgentExpired: vi.fn(), invalidateQuery: vi.fn(),
+  };
+  wire.forEach((event, index) => {
+    projectSessionSocketEvent({ data: event, agentId: 'agent', sessionId: 'session', key: 'agent:session',
+      session: { id: 'session' }, isActiveRuntime: true, closeSessionSocket: vi.fn(), failAuthentication: vi.fn() }, socket);
+    onFrame?.(messages, index);
+  });
   return messages;
 }
 function model(events: Event[], mode: 'live' | 'reload', extra = {}): ThreadTimelineModel {
@@ -62,6 +75,29 @@ function mount(timeline: ThreadTimelineModel, owns = false, roster = [{ id: 'col
     dispose: () => { view.unmount(); client.clear(); } };
 }
 const rowTexts = (container: HTMLElement) => [...container.querySelectorAll('.run-step, .run-tool-history-item')].map(row => row.textContent);
+
+it.each(['zh', 'en'] as const)('X9b-r2-2: %s pushes late end notices into the same stopped rows as reload', language => {
+  locale.language = language;
+  const events = structuredClone(rows.stopped) as Event[];
+  project(events, 'live', (messages, index) => {
+    if (index < 8) return;
+    const timeline = buildThreadTimeline({ messages, activeSession: { id: 'session' } as never, isWaiting: false, isStreaming: false });
+    const live = mount(timeline);
+    const reload = mount(model(events.slice(0, index + 1), 'reload'));
+    const snapshot = (container: HTMLElement) => ({ rows: rowTexts(container),
+      counts: [...container.querySelectorAll('.run-disclosure-count')].map(node => node.textContent) });
+    expect(snapshot(live.container)).toEqual(snapshot(reload.container));
+    expect(live.container.querySelectorAll('[data-testid="run-disclosure-block"]')).toHaveLength(1);
+    if (index === events.length - 1) {
+      expect(messages.some(message => message.eventType === 'agent_task_notification')).toBe(true);
+      expect(live.container.textContent).toContain(language === 'zh' ? '同事任务已结束' : 'The colleague task has ended');
+      expect(rowTexts(live.container)).toHaveLength(3);
+      const sentence = language === 'zh' ? '已停止，同事没有完成这项工作。' : 'Stopped; the colleague did not finish this work.';
+      expect(live.container.textContent?.split(sentence)).toHaveLength(2);
+    }
+    live.dispose(); reload.dispose();
+  });
+});
 function failDelegation(events: Event[]) {
   for (const event of events) {
     for (const item of event.payload.metadata?.result_manifest?.items || []) item.terminal_status = 'failed';

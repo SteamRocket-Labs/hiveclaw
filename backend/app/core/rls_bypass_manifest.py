@@ -1064,7 +1064,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # session_permission_runtime; authorize_resource_action,
 # authorize_workspace_path, _canonical_root_session,
 # create_chat_artifacts_for_message, complete_tool_invocation.
-RLS_BYPASS_SCOPES_SHA256 = "c14324b98fee1336bd24e71b1a95177e8f9af771bbadae05a8eb7634f6d33467"
+# Land44 (SP4a) versus land44 RL1: 808 entries and 123 callsites unchanged;
+# only the module source hash of session_model_round changes (private rounds
+# withhold and order without replaying sources). No new key or bypass scope.
+RLS_BYPASS_SCOPES_SHA256 = "adebd253520474b7470d7a90a8fd8f3dd2db94b87babc00bafe24f0920bf7a4d"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

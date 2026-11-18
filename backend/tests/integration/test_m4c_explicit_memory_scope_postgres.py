@@ -528,9 +528,15 @@ async def test_memory_derived_file_is_consumable_by_owner_and_scoped_admin_but_n
     retired, _invocation = await memory_call(n, app_user_sessionmaker, "retire_memory",
         {"memory_id": s.entry_id, "reason": "privacy"})
     assert json.loads(retired)["status"] == "completed", retired
-    for browser_id in (n.user, n.foreign):
-        withdrawn = await n.client.get(url, params={"operator_view": True, "operator_reason": "Inspect withdrawn release note"})
-        assert withdrawn.status_code == 403 and "ORCHID_PRIVATE_MARKER" not in withdrawn.text, withdrawn.text
+    # owner 11-17/18 decision A (RL1): the member's own derived file follows
+    # ownership; retiring the memory blocks the memory itself, not the owner's
+    # own copy. Administrator inspection keeps the source check.
+    browser_id = n.user
+    kept = await n.client.get(url, params={"operator_view": True, "operator_reason": "Inspect withdrawn release note"})
+    assert kept.status_code == 200 and "ORCHID_PRIVATE_MARKER" in kept.text, kept.text
+    browser_id = n.foreign
+    withdrawn = await n.client.get(url, params={"operator_view": True, "operator_reason": "Inspect withdrawn release note"})
+    assert withdrawn.status_code == 403 and "ORCHID_PRIVATE_MARKER" not in withdrawn.text, withdrawn.text
 
 
 @pytest.mark.parametrize("surface", ["entry_write", "mixed_read", "journal_read", "journal_write"])

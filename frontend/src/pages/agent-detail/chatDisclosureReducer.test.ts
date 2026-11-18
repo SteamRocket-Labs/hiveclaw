@@ -546,7 +546,7 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.summary).toEqual({ files: 0, searches: 1, commands: 0 });
   });
 
-  it('summarizes tool discovery without exposing raw select queries', () => {
+  it('omits tool discovery and its selector query from member steps', () => {
     const timeline = buildRunTimelineFromMessages([
       {
         role: 'tool_call',
@@ -557,14 +557,7 @@ describe('chatDisclosureReducer', () => {
       },
     ]);
 
-    expect(timeline.steps[0]).toMatchObject({
-      kind: 'tool',
-      title: 'Loading tools',
-      // B2: discovery steps carry no summary; the selector query stays inside
-      // the collapsed step details.
-      summary: '',
-    });
-    expect(timeline.steps[0].summary).not.toContain('select:start_workflow');
+    expect(timeline.steps).toEqual([]);
   });
 
   it('preserves backend step ids, tool call ids, and duration metadata', () => {
@@ -651,7 +644,6 @@ describe('chatDisclosureReducer', () => {
     const timeline = buildRunTimelineFromMessages(messages);
 
     expect(timeline.steps.map((step) => [step.title, step.presentation])).toEqual([
-      ['Loading tools', 'tool_history'],
       ['Read file', 'tool_history'],
       ['Search files', 'tool_history'],
       ['Search web', 'tool_history'],
@@ -826,7 +818,6 @@ describe('chatDisclosureReducer', () => {
 
     expect(timeline.steps.map((step) => [step.kind, step.presentation])).toEqual([
       ['compaction', 'process'],
-      ['tool', 'tool_history'],
       ['a2a', 'surface'],
       ['artifact', 'surface'],
       ['permission', 'external'],

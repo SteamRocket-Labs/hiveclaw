@@ -204,6 +204,59 @@ export function timelineFor(messages: AgentChatMessage[], activeRunStatus: strin
   return buildThreadTimeline({ messages, activeSession: activeSession as never, isWaiting: false, isStreaming: false, activeRunStatus });
 }
 
+function plazaDiscoveryEvents(): ChatTranscriptEventPayload[] {
+  return [
+    userInput(1, '看看广场', '2026-11-18T09:21:34Z'),
+    runLifecycle(2, 'run-x2', 'queued', '2026-11-18T09:21:35Z'),
+    runLifecycle(3, 'run-x2', 'running', '2026-11-18T09:21:36Z'),
+    ...toolCallPair(4, 'run-x2', 'tool_search', { query: 'select:plaza_get_new_posts' }, {
+      member_summary: { kind: 'capability_lookup', state: 'done' },
+    }, '2026-11-18T09:21:37Z'),
+    compatibilityEnvelope(6, 'deferred_tools_delta', 'Discovered deferred tools: plaza_get_new_posts',
+      { runtime_task_id: 'run-x2', trigger_tool: 'tool_search' }, '2026-11-18T09:21:38Z'),
+  ];
+}
+
+const discoveryProjections = [['live', 0], ['reload', 1]] as const;
+
+it.each(discoveryProjections)('SP4d: counts and shows only the plaza read (%s)', (_path, projection) => {
+  const events = [
+    ...plazaDiscoveryEvents(),
+    ...toolCallPair(7, 'run-x2', 'plaza_get_new_posts', { limit: 5 }, {}, '2026-11-18T09:21:39Z'),
+    runLifecycle(9, 'run-x2', 'completed', '2026-11-18T09:21:40Z'),
+  ];
+  const model = timelineFor(projectBoth(events)[projection]);
+  const [run] = model.cells.filter(cell => cell.kind === 'active_run');
+  expect(run?.timeline.status).toBe('done');
+  const { container, getByTestId } = renderBlock(run.timeline);
+  (getByTestId('run-disclosure-tool-group') as HTMLDetailsElement).open = true;
+
+  expect.soft(container.querySelector('.run-disclosure-count')?.textContent).toBe('1 个步骤');
+  expect.soft(container.querySelector('.run-tool-group-label')?.textContent).toBe('本次操作：浏览广场');
+  expect.soft([...container.querySelectorAll('.run-tool-history-title, .run-step-title')]
+    .map(row => row.textContent)).toEqual(['浏览广场']);
+});
+
+it.each(discoveryProjections)('SP4d: a discovery-only run has no count, summary or rows (%s)', (_path, projection) => {
+  const events = plazaDiscoveryEvents();
+  const model = timelineFor(projectBoth(events)[projection], 'running');
+  const [run] = model.cells.filter(cell => cell.kind === 'active_run');
+  expect(run?.timeline.status).toBe('running');
+  const { container, getByTestId } = renderBlock(run.timeline);
+  expect(getByTestId('run-disclosure-block').getAttribute('data-status')).toBe('running');
+
+  expect.soft(container.querySelector('.run-disclosure-count')).toBeNull();
+  expect.soft(container.querySelector('.run-tool-group-label, .run-disclosure-summary')).toBeNull();
+  const empty = timelineFor(projectBoth(events.slice(0, 3))[projection], 'running');
+  const [emptyRun] = empty.cells.filter(cell => cell.kind === 'active_run');
+  const emptyView = renderBlock(emptyRun.timeline);
+  expect.soft(renderedRowTitles(container)).toEqual(renderedRowTitles(emptyView.container));
+
+  const completed = [...events, runLifecycle(7, 'run-x2', 'completed', '2026-11-18T09:21:39Z')];
+  const settled = timelineFor(projectBoth(completed)[projection]);
+  expect.soft(settled.cells.filter(cell => cell.kind === 'active_run')).toHaveLength(0);
+});
+
 // ---------------------------------------------------------------------------
 // A. One count: the header count equals the rows a member can expand, live and
 // after reload, and a block with nothing to expand shows no count.
@@ -234,7 +287,7 @@ it('x2a: the step count equals the expandable rows, live and after reload (run 1
     expect(match, `header must state a step count for ${rows.length} rows: ${header}`).toBeTruthy();
     // Every counted step is a row the member can expand.
     expect(rows.length).toBe(Number(match![1]));
-    expect(rows.some(row => row.includes('准备所需功能'))).toBe(true);
+    expect(rows.some(row => row.includes('准备所需功能'))).toBe(false);
     unmount();
   }
 });

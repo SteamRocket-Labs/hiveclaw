@@ -1646,7 +1646,7 @@ async def record_session_actor_identity(
     }
     version = _hash(payload)
     source_id = uuid.uuid5(session.id, f"session-actor:{version}")
-    await db.execute(
+    captured = await db.scalar(
         insert(InvocationSpan)
         .values(
             id=source_id,
@@ -1665,8 +1665,10 @@ async def record_session_actor_identity(
             metadata_json={"session_actor_identity": payload},
         )
         .on_conflict_do_nothing(index_elements=["id"])
+        .returning(InvocationSpan)
     )
-    captured = await db.get(InvocationSpan, source_id, populate_existing=True)
+    if captured is None:
+        captured = await db.get(InvocationSpan, source_id, populate_existing=True)
     if (
         captured is None
         or captured.tenant_id != tenant_id

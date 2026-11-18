@@ -1,10 +1,39 @@
 from __future__ import annotations
 
 import json
+import sys
 
 from uuid import uuid4
 
 import pytest
+
+
+def test_discover_skill_dirs_walks_past_the_recursion_limit(tmp_path):
+    from app.skills.loader import WorkspaceSkillLoader
+
+    workspace = tmp_path.resolve()
+    recursion_limit = 200
+    skills = workspace.joinpath(*("a" for _ in range(recursion_limit + 20)), "skills")
+    skills.mkdir(parents=True)
+
+    previous_limit = sys.getrecursionlimit()
+    try:
+        sys.setrecursionlimit(recursion_limit)
+        discovered = WorkspaceSkillLoader()._discover_skill_dirs(workspace)
+    finally:
+        sys.setrecursionlimit(previous_limit)
+
+    assert discovered == (skills,)
+
+
+def test_discover_skill_dirs_prunes_root_when_skills_aliases_it(tmp_path):
+    from app.skills.loader import WorkspaceSkillLoader
+
+    workspace = tmp_path.resolve()
+    (workspace / "skills").symlink_to(".", target_is_directory=True)
+    (workspace / "a" / "skills").mkdir(parents=True)
+
+    assert WorkspaceSkillLoader()._discover_skill_dirs(workspace) == (workspace,)
 
 
 def test_load_skill_reads_folder_and_flat_file(tmp_path):

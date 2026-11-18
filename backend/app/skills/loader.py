@@ -181,14 +181,19 @@ class WorkspaceSkillLoader:
             seen_paths.add(os.fspath(resolved))
             discovered.append(resolved)
 
-        def visit(directory: str, *, session_tree: bool = False, session_parent: bool = False) -> None:
+        add_candidate(workspace_root / _SKILLS_DIR_NAME)
+        stack = [(os.fspath(workspace_root), False, False)]
+        while stack:
+            directory, session_tree, session_parent = stack.pop()
+            if directory in seen_paths:
+                continue
             try:
                 with os.scandir(directory) as children:
                     directories = sorted((entry for entry in children if entry.name not in _DISCOVERY_PRUNE_DIRS and (
                         entry.is_dir(follow_symlinks=False) or entry.name == _SKILLS_DIR_NAME
                     )), key=lambda entry: entry.name)
             except OSError:
-                return
+                continue
             # Keep the legacy order: register sibling skill directories before descending.
             nested = []
             for entry in directories:
@@ -198,12 +203,7 @@ class WorkspaceSkillLoader:
                     scoped = not session_tree and entry.name == _SESSION_EXTENSIONS_DIR_NAME
                     if not scoped or session_key:
                         nested.append((entry.path, session_tree or scoped, scoped))
-            for path, session_tree, session_parent in nested:
-                if path not in seen_paths:
-                    visit(path, session_tree=session_tree, session_parent=session_parent)
-
-        add_candidate(workspace_root / _SKILLS_DIR_NAME)
-        visit(os.fspath(workspace_root))
+            stack.extend(reversed(nested))
 
         return tuple(discovered)
 

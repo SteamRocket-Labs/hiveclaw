@@ -88,7 +88,7 @@ async def test_resolve_runtime_metadata_context_routes_runtime_hints(monkeypatch
         calls.append(("runtime", current_user_name))
         return "RUNTIME_HINTS"
 
-    async def fake_resolve_current_user_name(_user_id, _tenant_id=None):
+    async def fake_resolve_current_user_name(_user_id, _tenant_id=None, *, private_web_turn=None):
         return "Example Owner"
 
     monkeypatch.setattr(invoker, "build_agent_runtime_context", fake_build_agent_runtime_context)
@@ -120,7 +120,7 @@ async def test_resolve_memory_context_passes_current_user_to_memory(monkeypatch)
     user_id = uuid4()
     captured = {}
 
-    async def fake_resolve_current_user_name(_user_id, _tenant_id=None):
+    async def fake_resolve_current_user_name(_user_id, _tenant_id=None, *, private_web_turn=None):
         assert _user_id == user_id
         return "Bob"
 

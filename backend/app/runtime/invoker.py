@@ -882,7 +882,7 @@ async def _resolve_memory_context(
         current_user_name = None
         if request.user_id and ("current_user_id" in _memory_sig or "current_user_name" in _memory_sig):
             current_user_name = await _resolve_current_user_name(request.user_id, tenant_id,
-                **({"private_web_turn": private_web_turn} if private_web_turn else {}))
+                private_web_turn=private_web_turn)
         if "current_user_id" in _memory_sig:
             _memory_kwargs["current_user_id"] = request.user_id
         if "current_user_name" in _memory_sig:
@@ -1104,8 +1104,7 @@ async def _resolve_runtime_metadata_context(
         return ""
 
     budget_profile = _resolve_context_budget(request)
-    current_user_name = await _resolve_current_user_name(request.user_id, tenant_id,
-        **({"private_web_turn": private_web_turn} if private_web_turn else {}))
+    current_user_name = await _resolve_current_user_name(request.user_id, tenant_id, private_web_turn=private_web_turn)
     metadata = _session_metadata(request.session_context)
     _runtime_kwargs = {"current_user_name": current_user_name}
     _runtime_sig = inspect.signature(build_agent_runtime_context).parameters
@@ -1740,8 +1739,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
     return AgentKernel(
         KernelDependencies(
             resolve_runtime_config=resolve_runtime_config,
-            resolve_current_user_name=partial(_resolve_current_user_name, private_web_turn=private_web_turn)
-            if private_web_turn else _resolve_current_user_name,
+            resolve_current_user_name=partial(_resolve_current_user_name, private_web_turn=private_web_turn),
             build_system_prompt=_kernel_build_system_prompt,
             resolve_memory_context=_kernel_resolve_memory_context,
             resolve_runtime_metadata_context=_kernel_resolve_runtime_metadata_context,

@@ -2132,11 +2132,27 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             )
             await db.commit()
     if office_denial_case:
+        from app.core.resource_authority import workspace_resource_id
+        from app.models.security_audit import ResourcePermission
+        from app.models.user import User
+        from app.models.workspace_resource import WorkspaceResourceManifest
         from tests.integration.test_r10a_workspace_source_admission import _unverifiable_history
 
         async with owner_sessionmaker() as db:
             denied_office_path, _ = await _unverifiable_history(db, tenant=seed["tenant_id"], agent=receiver,
                 user=seed["user_id"], session=UUID(request.session_id), root=seed["data_root"] / str(receiver))
+            # owner 11-18 decision A: Office denial covers a granted copy owned by another member.
+            other_owner = uuid4()
+            db.add(User(id=other_owner, tenant_id=seed["tenant_id"], username=other_owner.hex,
+                email=f"{other_owner.hex}@fixture.test", password_hash="fixture", display_name="Colleague", role="member"))
+            await db.flush()
+            manifest = await db.scalar(select(WorkspaceResourceManifest).where(
+                WorkspaceResourceManifest.agent_id == receiver,
+                WorkspaceResourceManifest.path == denied_office_path))
+            manifest.owner_user_id, manifest.root_session_id = other_owner, None
+            db.add(ResourcePermission(tenant_id=seed["tenant_id"], principal_type="user",
+                principal_id=seed["user_id"], resource_type="workspace_file",
+                resource_id=workspace_resource_id(receiver, denied_office_path), actions=["read"], conditions={}))
             await db.commit()
     if colleague_source_case:
         import asyncio
@@ -4043,8 +4059,11 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     ToolExecutionRequest(tool_name="send_email", arguments={}, context=observed["context"]),
                     receipt.dependencies_json)
             assert denied.value.code == "content_source_unavailable"
-            assert await db.scalar(select(ChatArtifact.id).where(
-                ChatArtifact.runtime_task_id == task_id, ChatArtifact.path == report_path)) is None
+            # owner 11-18 decision A: the child keeps a private card even though its output cannot leave.
+            artifact = await db.scalar(select(ChatArtifact).where(
+                ChatArtifact.runtime_task_id == task_id, ChatArtifact.path == report_path))
+            assert artifact is not None and artifact.owner_user_id == seed["user_id"]
+            assert artifact.session_id == UUID(request.session_id)
             return
         assert (receipt is not None) is parent_complete, (observed.get("status"), errors)
         if glob_case:
@@ -4768,7 +4787,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         monkeypatch.setattr(runtime_result_sources, "_validate_input_dependencies", observe_member_read)
     delivered = await read_return()
     if colleague_source_case:
-        assert member_reads and all(recipient == (str(seed["session_id"]), str(seed["user_id"])) and not inspection
+        assert member_reads and all(recipient == (str(seed["session_id"]), str(seed["user_id"]), False) and not inspection
             for recipient, inspection in member_reads), member_reads
     if office_denial_case:
         denied_message = next(message for message in client.requests[1]["messages"]
@@ -6058,7 +6077,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     if parent_model_case:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
             stale_review = await browser.get(f"/agents/{seed['agent_id']}/files/artifacts/{parent_artifact_id}/content")
-            assert stale_review.status_code == 403 and "DELEGATED_REPORT" not in stale_review.text
+            # owner 11-18 decision A: the parent's own card survives loss of the original result.
+            assert stale_review.status_code == 200, stale_review.text
+            assert "DELEGATED_REPORT" in stale_review.json()["content"]
         if namespace_return_case:
             assert len(parent_client.requests) == 6
         elif parent_missing_file_case:

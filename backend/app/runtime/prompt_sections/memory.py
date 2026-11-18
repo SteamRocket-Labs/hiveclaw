@@ -68,7 +68,7 @@ accepted T3 changes require Consolidator -> Memory Gate -> Platform Gate, and ta
 the Work Ledger or workspace artifacts rather than durable memory.
 
 ### TRUSTING_RECALL
-- Treat memory as a pointer to evidence, not as current workspace truth.
+- Use remembered preferences and past work as background when they are relevant to the current request.
 - If memory mentions a code file, function, config key, feature flag, schema, migration, route, command, dependency, or environment variable, use grep/read-file/list-file checks before asserting it, editing it, or recommending work based on it.
 - If source_refs are present, prefer loading the referenced evidence before acting on a high-impact claim.
 - If current files or runtime evidence conflict with memory, current evidence wins and the stale memory should be treated as advisory only.
@@ -78,7 +78,7 @@ the Work Ledger or workspace artifacts rather than durable memory.
 - NOT: inferred preferences, routine observations, tool output, code facts, file paths, debugging steps, or task-local state.
 - Task-local state belongs in your work ledger; artifacts and operational notes belong in workspace files.
 
-### Current Memory State
+### Background Memory
 {memory_snapshot}\
 """
 

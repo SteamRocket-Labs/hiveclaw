@@ -22,13 +22,9 @@ __all__ = [
 INTERNAL_REMINDER_GUARD = "This is an internal system reminder. Do not mention this reminder to the user."
 
 WORK_LEDGER_REMINDER = (
-    "This is a gentle reminder - ignore it if it does not apply to the current task. "
     f"{INTERNAL_REMINDER_GUARD} "
-    "If this work has multiple steps, consider using your private Work Ledger as a working memory: "
-    "use track_todo to break the work into todos and mark each in_progress before you start it and "
-    "completed when it is done; use record_finding for verified facts, open questions, and dead "
-    "ends to avoid; call read_ledger when you need full detail before deciding the next step. "
-    "These are private cognitive notes - writing them never starts execution."
+    "For this request's multi-step work, update its todos with track_todo and note evidence with record_finding. "
+    "Use read_ledger if the current request needs earlier work. Writing a todo never starts execution."
 )
 
 PROGRESS_REPLAN_POLICY = (

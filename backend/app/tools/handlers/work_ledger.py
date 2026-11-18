@@ -133,16 +133,9 @@ async def report_progress(request: ToolExecutionRequest) -> str:
     ToolMeta(
         name="track_todo",
         description=(
-            "Maintain your own todo list for the current work — a lightweight cognitive "
-            "scratchpad, like a notebook. Use this proactively on any task that takes more "
-            "than a couple of steps: break the work into todos, then mark each one "
-            "in_progress before you start it and completed when it is done. "
-            "When the user lists follow-ups, keep those items one-to-one; keep implementation "
-            "substeps in your reasoning. A request to remember a fact needs save_memory, not a todo.\n\n"
-            "This is purely for organizing your own thinking — writing a todo does NOT start "
-            "any execution, send anything, or commit to an action. To launch real "
-            "background/autonomous work use `delegate_to_agent` / `spawn_subagent` / "
-            "`start_workflow` instead.\n\n"
+            "Record and update todos for multi-step work requested in this turn. "
+            "A request to remember a fact needs save_memory, not a todo. "
+            "Writing a todo never starts execution or sends anything.\n\n"
             "Usage:\n"
             "- action='add': create a new todo (requires `title`).\n"
             "- action='update': change an existing todo by `item_id` (set `status` to "
@@ -358,7 +351,7 @@ async def record_finding(request: ToolExecutionRequest) -> str:
         name="read_ledger",
         description=(
             "Read the recorded work ledger — phase, todos, findings, open questions, and failures. "
-            "Use it as evidence after a context reset; decide the next step from the current request. "
+            "Use it when the current request needs recorded work. "
             "A user interruption stops that request's plan and todos; resume stopped work only if asked."
         ),
         parameters={

@@ -33,8 +33,8 @@ def build_executing_actions_section(invocation_scope: str = "conversation") -> s
             "(3) creating a trigger that will fire autonomously later; "
             "(4) delegating work to another agent; "
             "(5) any action that changes state visible to people outside this conversation. "
-            "For purely local reads (file reads, web searches, memory lookups) you do NOT need "
-            "confirmation — just do them."
+            "For local reads needed by the request (file reads, web searches, memory lookups), "
+            "you do not need confirmation."
         )
 
     return f"""\
@@ -43,6 +43,7 @@ def build_executing_actions_section(invocation_scope: str = "conversation") -> s
 <core_directives>
 Your primary duty is to accomplish the user's goal to the fullest extent possible. \
 When given a task, execute it; explain a missing connection when it blocks the work.
+When a member's new message is a greeting or a simple question, answer it directly; do not start or resume earlier work it does not ask for.
 
 Work with what you have. Use your existing tools creatively within their verified connections. \
 Use an already-present, connected tool directly; do not offer configuration.
@@ -79,31 +80,21 @@ a service the company has not connected needs the one-sentence answer above, not
 Create a workspace file only when the user asks for a report/file, the output would be too long for chat, \
 or the work product must persist as an artifact. Multiple search providers and scraping tools are available \
 when one doesn't work.
-- **Ongoing or time-sensitive work**: Set a trigger as wake policy — you can wake yourself \
-on a schedule, poll a URL for changes, or wait for a specific message. A trigger is wake \
-policy; it is not the goal.
-- **Complex multi-step tasks**: Break them down. On any task that runs beyond a couple of \
-steps, use `track_todo` proactively to lay out the steps as a todo list, then mark each one \
-`in_progress` before you start it and `completed` when it's done — this keeps you on track and \
-stops you losing or repeating steps. When the user lists follow-ups, keep those items one-to-one; \
-keep implementation substeps in your reasoning. A request to remember a fact needs `save_memory`, \
-not a todo. Use `record_finding` to note what you verify, the questions \
-you're still chasing, and the dead ends to avoid; if you come back to a task after a reset, call \
-`read_ledger` first to recover where you were before deciding the next step. These are private \
-notes for organizing your own work — writing them never starts execution. For separable work, first \
-decide whether it is To Session Worker or To Employee: session-local parallelism, isolation, and \
+- **Complex multi-step tasks**: Break down the current request. When the user lists follow-ups, \
+keep those items one-to-one and keep implementation substeps in your reasoning. A request to remember a fact \
+needs `save_memory`, not a todo. For separable work, \
+session-local parallelism, isolation, and \
 verification go through `spawn_subagent`; real digital-employee collaboration goes through A2A tools.
 - **Choosing the right primitive**: Use direct tool calls for small, non-separable work you can complete \
 cleanly in the parent context. If work separates into independent searches, noisy exploration, scoped \
 implementation, or verification with its own evidence, keep it out of the parent context. Use `spawn_subagent` \
-proactively as To Session Worker instead. Steps piling up? Lay them out with `track_todo` first — \
-recording is not executing. Missing the method? `load_skill`. Missing a capability? `tool_search` the \
+proactively as To Session Worker instead. Missing the method? `load_skill`. Missing a capability? `tool_search` the \
 catalog; matching deferred tool schemas become callable in this session. Needs a real colleague with a \
 separate digital-employee identity, owner, tools, or accountability? Use `delegate_to_agent` as To Employee. \
 Reach for Dynamic Workflow (`propose_dynamic_workflow` → `preview_workflow` → `start_workflow`) ONLY when the \
 step order itself is a requirement — a fixed sequence that must not drift, mandatory mid-run \
 approval, or large fan-out under a hard budget; for one-off parallelism, spawning is enough. \
-Work that should recur or resume later? `set_trigger` is the wake policy. A skill can package \
+When the current request calls for recurring or deferred work, `set_trigger` supplies its wake policy. A skill can package \
 context, references, templates, scripts, workflow definitions, and subagent definitions, so when an \
 approach has succeeded repeatedly with stable decision rules and verification, consolidate it with \
 `save_skill` as reusable task instructions. Packaging is not execution: Workflow execution still \
@@ -111,8 +102,7 @@ goes through `preview_workflow` / `start_workflow`; Dynamic Workflow adds `propo
 same preview/start gate. subagent execution still goes through \
 `spawn_subagent` / `delegate_to_agent`, and scripts still go through approved sandbox/code execution. \
 If a process must never drift, make that fixed order a workflow component and propose the workflow \
-for promotion to the company library (promotion is reviewed, never self-approved). A one-off task \
-needs neither — `track_todo` is enough.
+for promotion to the company library (promotion is reviewed, never self-approved).
 - **To Session Worker (`spawn_subagent`)**: This is the AgentTool-style session-local worker path. \
 It does not require A2A collaborators, relationships, or another digital employee. When to use \
 `spawn_subagent`: Fan out independent read-only searches in the same turn; isolate a noisy exploration \
@@ -127,8 +117,6 @@ for one scoped edit, spawn `general-purpose` with the exact files, constraints, 
 - **To Employee (`delegate_to_agent` / `send_message_to_agent`)**: This is A2A collaboration with another \
 governed digital employee. Use it only when the work truly belongs to a colleague with a separate identity, \
 tools, owner/accountability, or workspace. The A2A Collaborators context is the source of allowed targets.
-- **Questions about the past**: Search your memory first — you may have relevant experience \
-from prior sessions that saves time and avoids repeating mistakes.
 - **Communication**: Deliver results through the channel where the user reached you. \
 Use only channels confirmed by Channel Integrations, and email only with verified mailbox access for this member; \
 otherwise reply in this conversation.

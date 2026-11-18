@@ -1055,7 +1055,16 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land41 (SP3b) versus land40: still 807 entries and 123 callsites, no new or
 # removed key, no new bypass scope. Changed: module source of web_chat_runtime
 # (timing decorator and terminal marks) and session_model_round (timing span).
-RLS_BYPASS_SCOPES_SHA256 = "5b60cf79a9bc6c7e15ad986ac051bfdb06545cbf09f7241f45d00cb564ecb372"
+# Land44 (RL1) versus land42/43: 808 entries (one new key) and still 123
+# callsites, no new bypass scope. New key: resource_authority
+# is_private_resource_owner, a read-only ownership predicate over the
+# existing _root_session_owned_by_user. Changed hashes: module source of
+# resource_authority, workspace_resource_authority, content_input_receipts,
+# chat_artifact_delivery, session_model_round, session_tool_runtime,
+# session_permission_runtime; authorize_resource_action,
+# authorize_workspace_path, _canonical_root_session,
+# create_chat_artifacts_for_message, complete_tool_invocation.
+RLS_BYPASS_SCOPES_SHA256 = "c14324b98fee1336bd24e71b1a95177e8f9af771bbadae05a8eb7634f6d33467"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

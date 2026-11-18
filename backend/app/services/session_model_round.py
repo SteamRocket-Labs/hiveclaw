@@ -576,6 +576,10 @@ def _withhold_unbound_model_inputs(messages, wire_request, input_bindings):
     # unbound data has no such proof, even when sent with the system role.
     unbound = [
         entry["message_index"] for entry in input_bindings["messages"] if entry.get("dependency_status") != "resolved"
+        and not (
+            isinstance(origin := getattr(messages[entry["message_index"]], "context_origin", None), ContextMessageOrigin)
+            and origin.kind == "selected_workspace_file" and origin.unbound == ("workspace_receipt_missing",)
+        )
     ]
     if unbound:
         permission_unbound = {
@@ -588,8 +592,9 @@ def _withhold_unbound_model_inputs(messages, wire_request, input_bindings):
         for entry in input_bindings["messages"]:
             if entry["message_index"] in permission_unbound:
                 entry["code"] = "session_permission_frame_unbound"
-        input_bindings["status"] = "resolved"
-        input_bindings["dependency_coverage"]["complete"] = True
+        complete = all(entry.get("dependency_status") == "resolved" for entry in input_bindings["messages"])
+        input_bindings["status"] = "resolved" if complete else "incomplete"
+        input_bindings["dependency_coverage"]["complete"] = complete
 
 
 @timed_phase("model_input_source_validation")

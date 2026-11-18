@@ -182,8 +182,10 @@ async def publish_report(db, n, index, *, paths=None):
 async def test_failed_authorization_statement_preserves_other_file_card(owner_sessionmaker, monkeypatch, tmp_path):
     from app.config import get_settings
     from app.core import permissions
+    from app.core.resource_authority import workspace_resource_id
     from app.models.agent import Agent
     from app.models.chat_artifact import ChatArtifact
+    from app.models.security_audit import ResourcePermission
     from app.models.user import User
 
     tenant, user, agent, session = await _seed(owner_sessionmaker)
@@ -221,13 +223,17 @@ async def test_failed_authorization_statement_preserves_other_file_card(owner_se
             "source_id": str(foreign.id),
             "source_version": foreign.content_sha256,
         }
+        # owner 11-18 decision A: use a granted file to exercise publication source validation.
+        db.add(ResourcePermission(tenant_id=tenant, principal_type="user", principal_id=user,
+            resource_type="workspace_file", resource_id=workspace_resource_id(agent, paths[0]),
+            actions=["read"], conditions={}))
         for path in paths:
             await stage_report(
                 db,
                 tenant=tenant,
                 agent=agent,
-                user=user,
-                session=session,
+                user=foreign_user if path == paths[0] else user,
+                session=None if path == paths[0] else session,
                 root=root,
                 path=path,
                 dependencies=[dependency] if path == paths[0] else [],
@@ -259,6 +265,7 @@ async def test_failed_authorization_statement_preserves_other_file_card(owner_se
 @pytest.fixture
 async def knowledge_reports(owner_sessionmaker, monkeypatch, tmp_path):
     from app.config import get_settings
+    from app.core.resource_authority import workspace_resource_id
     from app.models.agent import AgentPermission
     from app.models.chat_session import ChatSession
     from app.models.security_audit import ResourcePermission
@@ -327,12 +334,16 @@ async def knowledge_reports(owner_sessionmaker, monkeypatch, tmp_path):
             )
             assert result.status == "ok", result.as_dict()
             assert "COMPANY_SOURCE_MARKER" in result.as_json()
+            # owner 11-18 decision A: publications read the other member's granted report.
+            db.add(ResourcePermission(tenant_id=tenant, principal_type="user", principal_id=reader,
+                resource_type="workspace_file", resource_id=workspace_resource_id(agent, n.paths[index]),
+                actions=["read"], conditions={}))
             await stage_report(
                 db,
                 tenant=tenant,
                 agent=agent,
-                user=reader,
-                session=n.sessions[index],
+                user=n.users[1 - index],
+                session=n.sessions[1 - index],
                 root=n.root,
                 path=n.paths[index],
                 dependencies=[

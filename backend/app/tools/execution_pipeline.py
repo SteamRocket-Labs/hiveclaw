@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -1001,14 +1003,13 @@ async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
 
 
 async def _execute_tool(state: _ToolExecutionState) -> Any:
-    from app.tools.registry import tool_execution_policy
+    from app.tools.registry import needs_outward_source_check, tool_execution_policy
 
     request, ports, service = state.request, state.ports, state.service
-    timeout_seconds = tool_execution_policy(request.tool_name).timeout_seconds
+    policy = tool_execution_policy(request.tool_name)
+    timeout_seconds = policy.timeout_seconds
     await ports.renew_runtime_lease()
     if state.runtime_context.runtime_task_id:
-        import uuid
-
         from app.database import tenant_scoped_session
         from app.kernel.contracts import ExecutionAuthorityUnavailable
         from app.services.team_task_context import revalidate_tool_sources
@@ -1059,8 +1060,6 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
         getattr(getattr(state.runtime_context, "execution_identity", None), "identity_type", None) == "agent_bot"
         and state.runtime_context.runtime_task_id
     ):
-        import uuid
-
         from fastapi import HTTPException
         from app.kernel.contracts import ExecutionAuthorityUnavailable
         from app.database import tenant_scoped_session
@@ -1121,21 +1120,9 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
                 actionable_hint="Restore the schedule authority or revise its declared tool scope.",
                 extra={"outcome": "denied", "reason_code": reason},
             )
-    if request.pre_effect_callback is not None:
-        # Governance/preflight and the worker lease are already valid. The
-        # callback is the durable authority fence; its failure must propagate
-        # before executor entry, not be rewritten as an executor failure.
-        await ports.maybe_await(
-            request.pre_effect_callback(
-                {
-                    "tool_call_id": state.tool_call_id,
-                    "tool_name": request.tool_name,
-                    "arguments": dict(state.arguments),
-                    "decision_id": (request.trace_metadata_sink or {}).get("decision_id"),
-                    "idempotency_key": (request.trace_metadata_sink or {}).get("idempotency_key"),
-                }
-            )
-        )
+    blocked = await _before_tool_effect(state, outward=needs_outward_source_check(request.tool_name, policy=policy))
+    if blocked is not None:
+        return blocked
     try:
         _record_lifecycle(state, "executing")
         result = await ports.asyncio.wait_for(
@@ -1167,6 +1154,62 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
         return await _handle_execution_failure(state, timeout_seconds=timeout_seconds)
     except Exception as exc:
         return await _handle_execution_failure(state, exception=exc)
+
+
+async def _before_tool_effect(state: _ToolExecutionState, *, outward: bool) -> str | None:
+    from app.services.execution_environments import current_command_frame
+    from app.services.permission_command_environment import PermissionCommandBinding
+    from app.tools.registry import OUTWARD_WORKSPACE_PATH_ARGUMENTS, is_read_only_tool
+
+    request, ports, context = state.request, state.ports, state.runtime_context
+    payload = {
+        "tool_call_id": state.tool_call_id,
+        "tool_name": request.tool_name,
+        "arguments": dict(state.arguments),
+        "decision_id": (request.trace_metadata_sink or {}).get("decision_id"),
+        "idempotency_key": (request.trace_metadata_sink or {}).get("idempotency_key"),
+    }
+    binding = getattr(current_command_frame(), "source_binding", None)
+    session_approval = isinstance(binding, PermissionCommandBinding) and request.pre_effect_callback is not None and (
+        binding.tool_call_id == state.tool_call_id and context.runtime_task_id is not None
+        and binding.run_id == uuid.UUID(str(context.runtime_task_id))
+    )
+    # Keep the original executor authority check when resuming a delegated write.
+    delegated_write = session_approval and context.authority_frame_required and not is_read_only_tool(request.tool_name)
+    path_argument = OUTWARD_WORKSPACE_PATH_ARGUMENTS.get(request.tool_name)
+    outward_sources = outward and (context.runtime_task_id or (path_argument and state.arguments.get(path_argument)))
+    if outward_sources or delegated_write:
+        from app.database import tenant_scoped_session
+        from app.services.content_input_receipts import ContentInputReceiptError
+        from app.services.delegation_permission_runtime import load_outward_tool_round, validate_permission_input_sources
+        from app.tools.runtime import ToolExecutionRequest as RuntimeToolRequest
+
+        runtime_request = RuntimeToolRequest(request.tool_name, state.arguments, context)
+        validate = partial(validate_permission_input_sources, runtime_request=runtime_request)
+        if session_approval:
+            # The approval's own transaction runs the shared check after live
+            # approver validation and before opening the durable effect fence.
+            payload["validate_effect_sources"] = validate
+        else:
+            try:
+                async with tenant_scoped_session(context.tenant_id, require_tenant=True) as db:
+                    session, model = await load_outward_tool_round(db, runtime_request=runtime_request,
+                        approval=request.approval_decision)
+                    await validate(db, session=session, model=model)
+            except ContentInputReceiptError as exc:
+                unavailable = exc.status_code >= 500
+                _record_lifecycle(state, "blocked", exc.code)
+                _record_final_decision(state, outcome=(
+                    ports.decision_outcome_type.UNAVAILABLE if unavailable else ports.decision_outcome_type.DENY
+                ), reasons=(exc.code,))
+                return ports.render_tool_error(tool_name=request.tool_name, error_class="auth_or_permission",
+                    message="The sources for this action could not be verified for sharing.", provider="runtime",
+                    retryable=False, actionable_hint="Use sources you are authorized to share.",
+                    extra={"outcome": "unavailable" if unavailable else "denied", "reason_code": exc.code})
+    if request.pre_effect_callback is not None:
+        # A fence failure must propagate before executor entry.
+        await ports.maybe_await(request.pre_effect_callback(payload))
+    return None
 
 
 async def _log_execution_result(

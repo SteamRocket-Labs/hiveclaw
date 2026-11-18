@@ -228,7 +228,6 @@ export const FOLDABLE_RETRIEVAL_TOOL_NAMES: ReadonlySet<string> = new Set([
   'task_output',
   'tavily_extract',
   'tavily_search',
-  'tool_search',
   'web_fetch',
   'web_search',
   'xcrawl_scrape',
@@ -513,11 +512,6 @@ function kindForEventMessage(message: AgentChatMessage): RunStepKind {
     if (source.includes('a2a')) return 'a2a';
     return 'event';
   }
-  if (
-    message.eventType === 'tool_group_activation'
-    || message.eventType === 'pack_activation'
-    || message.eventType === 'deferred_tools_delta'
-  ) return 'tool';
   if (message.eventType === 'workflow_run' || message.eventType === 'workflow_step' || message.eventType === 'dynamic_workflow') return 'workflow';
   if (
     message.eventType === 'child_session'
@@ -561,7 +555,6 @@ function getEventStepPresentation(
   if (eventHasDedicatedConversationSurface(message)) return 'external';
   if (kind === 'compaction') return 'process';
   if (kind === 'permission' && status === 'blocked') return 'external';
-  if (kind === 'tool') return 'tool_history';
   if (
     message.eventType === 'hook_progress'
     || message.eventType === 'hook_summary'
@@ -680,6 +673,10 @@ export function isDisclosureStepMessage(message: AgentChatMessage): boolean {
 
 function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: boolean, delegationReceiptExpected: boolean): RunStepSnapshot | null {
   if (!isDisclosureStepMessage(message)) return null;
+  // Discovery remains a run source for grouping without becoming a member step.
+  if (message.role === 'tool_call' && message.toolName === 'tool_search') return null;
+  if (message.role === 'event'
+    && ['tool_group_activation', 'pack_activation', 'deferred_tools_delta'].includes(message.eventType || '')) return null;
   // The approval card already owns the decision. A canonical resolved item
   // with no sentence otherwise becomes a question-mark "Runtime event" row.
   if (message.eventType === 'permission_resolved' && !message.content?.trim()) return null;

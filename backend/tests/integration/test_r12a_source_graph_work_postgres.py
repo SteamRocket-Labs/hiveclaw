@@ -178,6 +178,39 @@ async def _browser(n, endpoint):
     return await n.client.get(f"/agents/{n.agent}/files/artifacts/{n.artifact}/{endpoint}")
 
 
+async def _grant_graph_card(n, owner_sessionmaker):
+    from app.models.chat_artifact import ChatArtifact
+    from app.models.chat_session import ChatSession
+    from app.models.security_audit import ResourcePermission
+
+    session = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(ChatSession(id=session, tenant_id=n.tenant, agent_id=n.agent, user_id=n.foreign))
+        await db.flush()
+        # owner 11-18 decision A: the source walk applies to a card read through a grant.
+        card = await db.get(ChatArtifact, n.artifact)
+        card.owner_user_id, card.session_id, card.root_session_id = n.foreign, session, session
+        db.add(ResourcePermission(tenant_id=n.tenant, principal_type="user", principal_id=n.user,
+            resource_type="chat_artifact", resource_id=card.id, actions=["read", "download"], conditions={}))
+        await db.commit()
+
+
+async def _grant_graph_file(n, owner_sessionmaker):
+    from app.core.resource_authority import workspace_resource_id
+    from app.models.security_audit import ResourcePermission
+
+    path = "workspace/granted-graph.md"
+    async with owner_sessionmaker() as db:
+        # owner 11-18 decision A: a grant recipient still checks the inherited graph.
+        await stage_report(db, tenant=n.tenant, agent=n.agent, user=n.foreign, session=None,
+            root=n.root, path=path, dependencies=[_source(n.receipts[-1])])
+        db.add(ResourcePermission(tenant_id=n.tenant, principal_type="user", principal_id=n.user,
+            resource_type="workspace_file", resource_id=workspace_resource_id(n.agent, path),
+            actions=["read"], conditions={}))
+        await db.commit()
+    return path
+
+
 async def _heartbeat(n):
     # Exact source-admission phase invoked by heartbeat's held T2-job retry,
     # before that job's first model/configuration call. No provider is used.
@@ -459,6 +492,7 @@ async def test_large_graph_deep_source_change_withholds(native_workspace, owner_
         command.request_hash = "0" * 64
         await db.commit()
     if path in {"download", "content"}:
+        await _grant_graph_card(n, owner_sessionmaker)
         result = await asyncio.wait_for(_browser(n, path), TIMEOUT)
         assert result.status_code == 403, result.text
         assert "COMPANY_SOURCE_MARKER" not in result.text
@@ -486,7 +520,8 @@ async def test_large_graph_deep_source_change_withholds(native_workspace, owner_
         result = await asyncio.wait_for(_model(n, app_user_sessionmaker), TIMEOUT)
         assert result["wire_request"]["messages"] == [{"role": "system", "content": DERIVED}]
     else:
-        result = str(await asyncio.wait_for(n.service.execute("read_file", {"path": n.path},
+        granted = await _grant_graph_file(n, owner_sessionmaker)
+        result = str(await asyncio.wait_for(n.service.execute("read_file", {"path": granted},
             agent_id=n.agent, user_id=n.user, session_id=str(n.session), runtime_task_id=str(n.run),
             emit_runtime_hooks=False), TIMEOUT))
         assert "COMPANY_SOURCE_MARKER" not in result
@@ -535,6 +570,8 @@ async def test_sources_are_validated_once_and_authority_checks_stay_live(native_
     from app.services import content_input_receipts as receipts
 
     n = await _graph(native_workspace, 10, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    if path == "download":
+        await _grant_graph_card(n, owner_sessionmaker)
     validations, authority, checks, resolutions = Counter(), Counter(), Counter(), Counter()
     validate, access = receipts._validate_input_dependency_batch, permissions.check_agent_access
     live_access = permissions._agent_access_for_live_row
@@ -626,6 +663,7 @@ async def test_cycle_is_not_hidden_by_completed_dag_siblings(native_workspace, o
         leaf.dependencies_json = [_source(n.receipts[-1])]
         await db.commit()
     if path in {"download", "content"}:
+        await _grant_graph_card(n, owner_sessionmaker)
         response = await asyncio.wait_for(_browser(n, path), TIMEOUT)
         assert response.status_code == 503 and "COMPANY_SOURCE_MARKER" not in response.text
         assert response.json()["detail"]["code"] == "content_source_unavailable"
@@ -640,7 +678,8 @@ async def test_cycle_is_not_hidden_by_completed_dag_siblings(native_workspace, o
         assert snapshot["wire_request"]["messages"] == [{"role": "system", "content": DERIVED}]
         assert all(entry["status"] == "bound" for entry in snapshot["input_bindings"]["messages"])
     else:
-        result = str(await asyncio.wait_for(n.service.execute("read_file", {"path": n.path},
+        granted = await _grant_graph_file(n, owner_sessionmaker)
+        result = str(await asyncio.wait_for(n.service.execute("read_file", {"path": granted},
             agent_id=n.agent, user_id=n.user, session_id=str(n.session), runtime_task_id=str(n.run),
             emit_runtime_hooks=False), TIMEOUT))
         assert "COMPANY_SOURCE_MARKER" not in result and "content_source_unavailable" in result
@@ -695,6 +734,7 @@ async def test_download_manifest_quarantine_is_live_between_copies(native_worksp
     from app.services import content_input_receipts as receipts
 
     n = await _graph(native_workspace, 4, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+    await _grant_graph_card(n, owner_sessionmaker)
     first = n.receipts[0]
     async with owner_sessionmaker() as db:
         copy = ContentInputReceipt(id=uuid.uuid4(), tenant_id=n.tenant, carrier_kind=first.carrier_kind,

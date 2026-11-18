@@ -57,6 +57,7 @@ class ToolExecutionContext:
     tool_execution_frames: list[dict[str, Any]] = field(default_factory=list)
     resolved_asset_refs: tuple["ResolvedAssetRefV1", ...] = ()
     workspace_authority_scope: Any | None = None
+    prepared_email_attachments: list[tuple[Path, bytes]] | None = field(default=None, repr=False)
     owner_action_policy: Any | None = None
     # Typed policy result supplied by the governed caller. Tool arguments are
     # never keyword-scanned to invent a company-boundary conflict.

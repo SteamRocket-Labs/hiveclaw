@@ -127,6 +127,7 @@ class _DisclosureSourceValidations:
         self.source_ids = {}
         self.retained = {}
         self.checkpoint = (None, None)
+        self.share_session_source_facts = False
         self.workspace_read = None
 
 
@@ -255,7 +256,10 @@ def _checkpoint_key(scope, point, binding):
     from app.core.source_read_purpose import current_source_recipient
     from app.services.project_context import _SOURCE_READER
 
-    return ("checkpoint", scope.checkpoint, point, binding, current_source_recipient(), _SOURCE_READER.get() is not None)
+    # At outward execution the same member's two readers share the SQL facts,
+    # while each still applies its own session and source permissions.
+    recipient = None if scope.share_session_source_facts and point == "session_source" else current_source_recipient()
+    return ("checkpoint", scope.checkpoint, point, binding, recipient, _SOURCE_READER.get() is not None)
 
 
 def _checkpoint_scope():
@@ -2031,6 +2035,7 @@ async def _validate_session_dependency(
     db, tenant_id, dependency, *, row, model, user, runtime_request, active_workspace_receipts=None,
     reader_facts=None, model_state=None
 ):
+    from app.core.source_read_purpose import current_source_recipient
     from app.models.session_v2 import SessionCommand, SessionToolInvocation
     from app.services.session_model_inputs import _hash
     from app.services.session_semantic_history import _event_payload
@@ -2110,7 +2115,15 @@ async def _validate_session_dependency(
             active_workspace_receipts=active_workspace_receipts or frozenset(),
         )
     if model is SessionToolInvocation:
-        if (payload.get("metadata") or {}).get("native_tool_timeout_receipt") is not None:
+        metadata = payload.get("metadata") or {}
+        workspace_input = metadata.get("workspace_input_receipt")
+        recipient = current_source_recipient()
+        if (recipient is not None and recipient[2] and isinstance(workspace_input, dict)
+            and workspace_input.get("status") == "verified" and workspace_input.get("content_input_receipt_id") is None):
+            raise ContentInputReceiptError(
+                "workspace_content_unverified", "The workspace source lacks a receipt for disclosure."
+            )
+        if metadata.get("native_tool_timeout_receipt") is not None:
             from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
 
             if not await native_tool_timeout_bound(db, agent_id=session.agent_id, invocation=source, payload=payload):
@@ -2947,7 +2960,6 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
 async def _validate_workspace_node(db, tenant_id, dependency, *, user, runtime_request, active_receipts):
     from fastapi import HTTPException
     from app.models.workspace_resource import WorkspaceResourceManifest
-    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
     try:
         receipt_id = uuid.UUID(dependency["source_id"])
@@ -3027,7 +3039,6 @@ async def _validate_workspace_live(db, tenant_id, dependency, *, user, runtime_r
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
     from fastapi import HTTPException
 
-    receipt_id = receipt.id
     if manifest is None or manifest.authority_state != "owned" or manifest.deleted_at is not None:
         raise ContentInputReceiptError(
             "content_source_access_denied", "The workspace source is unavailable or quarantined.", 403
@@ -3123,8 +3134,6 @@ async def _walk_workspace_receipt_inputs(db, receipt, *, user, runtime_request, 
 async def _validate_workspace_tool_input(db, request, receipt):
     """Validate a working copy's source chain as this session's output recipient."""
     from app.core.source_read_purpose import source_recipient_read
-    from app.models.chat_session import ChatSession
-
     tenant_id = uuid.UUID(str(request.context.tenant_id))
     principal, user = await _runtime_input_actor(db, tenant_id, request)
     session = await runtime_actor_session(db, tenant_id, principal)
@@ -3166,51 +3175,48 @@ async def authorize_workspace_execution_inputs(request):
         reads, omitted = [], set()
         tenant_id = uuid.UUID(str(context.tenant_id))
         async with tenant_scoped_session(tenant_id) as db:
-            task = await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id))) if context.runtime_task_id else None
-            receipt_ids = {ref: receipt_id for receipt_id, ref in await db.execute(
-                select(ContentInputReceipt.id, ContentInputReceipt.carrier_ref).where(ContentInputReceipt.tenant_id == tenant_id,
+            receipts = {receipt.carrier_ref: receipt for receipt in await db.scalars(
+                select(ContentInputReceipt).where(ContentInputReceipt.tenant_id == tenant_id,
                     ContentInputReceipt.carrier_kind == "workspace_artifact",
                     ContentInputReceipt.carrier_ref.in_([workspace_artifact_ref(context.agent_id, path) for path in paths]))
                 .distinct(ContentInputReceipt.carrier_ref)
                 .order_by(ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())
-                .execution_options(populate_existing=True)
-            )} if paths else {}
-            with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as frame:
-                from app.services.source_read_queries import transcript_event_columns
+                .execution_options(populate_existing=True))} if paths else {}
+            shared_paths = paths - scope.owner_paths
+            receipt_ids = {ref: receipt.id for ref, receipt in receipts.items() if ref.partition("\n")[2] in shared_paths}
+            if receipt_ids:
+                task = await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id))) if context.runtime_task_id else None
+                with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as frame:
+                    from app.services.source_read_queries import transcript_event_columns
 
-                transcript_event_columns(frame)
-                source_rows = _preflight_inputs(db)
-                if task is not None:
-                    source_rows[(RuntimeTask, task.id)] = task
-                if receipt_ids:
+                    transcript_event_columns(frame)
+                    source_rows = _preflight_inputs(db)
+                    if task is not None:
+                        source_rows[(RuntimeTask, task.id)] = task
                     await _preload_execution_sources(db, tenant_id, [{"source_kind": "workspace_artifact",
                         "source_id": str(receipt_id)} for receipt_id in receipt_ids.values()], latest_receipts=receipt_ids)
-                    receipts = {ref: source_rows.get((ContentInputReceipt, receipt_id)) for ref, receipt_id in receipt_ids.items()}
-                else:
-                    receipts = {}
-                async with workspace_read_checkpoint(db, tenant_id):
-                    point = frame.workspace_read
-                    point.paths, point.omitted = {}, omitted
-                    for path in sorted(paths):
-                        point.current_path = path
-                        ref = workspace_artifact_ref(context.agent_id, path)
-                        receipt = receipts.get(ref)
-                        if ref in receipt_ids and (receipt is None or receipt.carrier_kind != "workspace_artifact"
-                            or receipt.carrier_ref != ref):
-                            omitted.add(path)
-                            continue
-                        if receipt is None and path not in scope.full_control_paths:
-                            continue
-                        if receipt is not None:
+                    async with workspace_read_checkpoint(db, tenant_id):
+                        point = frame.workspace_read
+                        point.paths, point.omitted = {}, omitted
+                        for ref, receipt_id in sorted(receipt_ids.items()):
+                            path = ref.partition("\n")[2]
+                            receipt = source_rows.get((ContentInputReceipt, receipt_id))
+                            if receipt is None or receipt.carrier_kind != "workspace_artifact" or receipt.carrier_ref != ref:
+                                omitted.add(path)
+                                continue
+                            point.current_path = path
+                            receipts[ref] = receipt
                             try:
                                 await _validate_workspace_tool_input(db, request, receipt)
                             except ContentInputReceiptError:
                                 omitted.add(path)
-                                continue
-                        reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
-                            revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
-                            dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
-        context.workspace_authority_scope = replace(scope, input_reads=tuple(read for read in reads if read.path not in omitted),
+            for path in sorted(paths - omitted):
+                receipt = receipts.get(workspace_artifact_ref(context.agent_id, path))
+                if receipt is not None or path in scope.full_control_paths:
+                    reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
+                        revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
+                        dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
+        context.workspace_authority_scope = replace(scope, input_reads=tuple(reads),
             allowed_paths=scope.allowed_paths - omitted)
     except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
         code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
@@ -3219,7 +3225,7 @@ async def authorize_workspace_execution_inputs(request):
 
 
 async def authorize_workspace_receipt_read(request):
-    """Validate a working copy's sources once before its bytes enter the model."""
+    """Capture working-copy versions; keep dedicated memory read authority."""
     from app.core.resource_authority import normalize_workspace_resource_path
 
     office_read = request.tool_name in {"office_document_view", "office_document_query",
@@ -3267,7 +3273,7 @@ async def authorize_workspace_receipt_read(request):
                     receipt = await latest_workspace_receipt(db, uuid.UUID(str(context.tenant_id)), context.agent_id, path)
                     if receipt is None and path not in scope.full_control_paths:
                         return None
-                    if receipt is not None:
+                    if receipt is not None and path not in scope.owner_paths:
                         with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as frame:
                             from app.services.source_read_queries import transcript_event_columns
 
@@ -4164,11 +4170,11 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
     """Retain known and inherited sources for every executor-observed successor."""
     from app.config import get_settings
     from app.models.invocation_span import InvocationSpan
-    from app.services.session_model_inputs import _model_dependencies, _stored_dependencies, _unique_dependencies
+    from app.services.session_model_inputs import _stored_dependencies, _unique_dependencies, model_output_dependencies
     from app.services.skill_source_receipts import SkillInputCapture
     from app.tools.runtime import ToolExecutionRequest
 
-    dependencies, complete = _model_dependencies(model)
+    dependencies, complete = model_output_dependencies(model)
     if not complete:
         from app.services.learned_skill_sources import model_source
 

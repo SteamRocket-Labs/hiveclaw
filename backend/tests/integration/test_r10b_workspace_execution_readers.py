@@ -103,7 +103,7 @@ async def _personal_source(db, n, *, member_grant, path="workspace/derived-sourc
 
 @pytest.mark.parametrize("tool", ["grep_search", "run_command"])
 @pytest.mark.parametrize("member_grant", [False, True])
-async def test_personal_execution_inputs_use_member_grant(
+async def test_personal_execution_inputs_keep_own_copy_with_user_or_agent_grant(
     native_workspace, owner_sessionmaker, monkeypatch, tool, member_grant,  # noqa: F811
 ):
     n = native_workspace
@@ -112,18 +112,18 @@ async def test_personal_execution_inputs_use_member_grant(
     async with owner_sessionmaker() as db:
         await _enable_commands(db, n)
         await _personal_source(db, n, member_grant=member_grant)
-    executions = _local_process(monkeypatch, absent=() if member_grant else ("derived-source.md",),
-        present={"derived-source.md": "DERIVED_SOURCE_BODY"} if member_grant else {})
+    # owner 11-18 decision A: a session-only agent grant does not withhold the member's own copy.
+    executions = _local_process(monkeypatch, present={"derived-source.md": "DERIVED_SOURCE_BODY"})
     result = await _execute(n, tool, path)
     if tool == "grep_search":
-        assert ("DERIVED_SOURCE_BODY" in str(result)) == member_grant, result
+        assert "DERIVED_SOURCE_BODY" in str(result), result
     else:
         assert len(executions) == 1, result
     assert "content_source_access_denied" not in str(result), result
 
 
 @pytest.mark.parametrize("tool", ["run_command", "execute_code"])
-async def test_delegation_execution_excludes_unpublishable_chain_and_keeps_own_write(
+async def test_delegation_execution_keeps_owned_copies_and_own_write(
     native_workspace, owner_sessionmaker, monkeypatch, tool,  # noqa: F811
 ):
     n = native_workspace
@@ -134,16 +134,18 @@ async def test_delegation_execution_excludes_unpublishable_chain_and_keeps_own_w
         await _unverifiable_history(db, tenant=n.tenant, agent=n.agent, user=n.user,
             session=n.session, root=n.root)
         await db.commit()
-    executions = _local_process(monkeypatch, absent=("old-native-output.md", "intermediate-report.md", "earlier-report.md"),
-        present={"derived-source.md": "CHILD_OWN_WRITE"})
+    # owner 11-18 decision A: the member's child session may use their three prior copies.
+    executions = _local_process(monkeypatch, present={"derived-source.md": "CHILD_OWN_WRITE",
+        **{path: "# Report\nCOMPANY_SOURCE_MARKER\n" for path in (
+            "old-native-output.md", "intermediate-report.md", "earlier-report.md")}})
     result = await _execute(n, tool, "workspace")
     assert len(executions) == 1, result
-    assert "derived-source.md" in str(result) and "earlier-report.md" not in str(result), result
+    assert "derived-source.md" in str(result) and "earlier-report.md" in str(result), result
     assert "CHILD_OWN_WRITE" in str(await _execute(n, "read_file", "workspace/derived-source.md"))
 
 
 @pytest.mark.parametrize("run_kind", ["web_chat_turn", "delegation"])
-async def test_depth_three_execution_preflight_is_batched_once(
+async def test_depth_three_owned_copy_does_not_replay_execution_sources(
     native_workspace, owner_sessionmaker, monkeypatch, run_kind,  # noqa: F811
 ):
     from app.services import content_input_receipts as receipts
@@ -195,46 +197,58 @@ async def test_depth_three_execution_preflight_is_batched_once(
     monkeypatch.setattr(learned_skill_sources, "_validate_model_source", model)
     monkeypatch.setattr(receipts, "authorize_workspace_execution_inputs", gate)
     result = await _execute(n, "grep_search", path)
-    assert "COMPANY_SOURCE_MARKER" not in str(result), result
-    # Validate the two upstream receipts, not the selected working copy's bytes.
-    assert calls == {"batch_preload": 1, "workspace_validation": 2, "model_validation": 1}, calls
+    # owner 11-18 decision A: an unverifiable ancestor does not hide the member's own prior report.
+    assert "COMPANY_SOURCE_MARKER" in str(result), result
+    assert calls == {}, calls
     print("R10B_EXECUTION_COST", json.dumps({"task_type": run_kind, "depth": 3, **calls}))
 
 
 @pytest.mark.parametrize("tool", ["read_file", "grep_search"])
-async def test_scoped_admin_cannot_consume_business_inspection_sources(
+async def test_scoped_admin_reads_own_copy_but_not_another_members_derived_report(
     native_workspace, owner_sessionmaker, tool,  # noqa: F811
 ):
+    from app.core.resource_authority import workspace_resource_id
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
+    from app.models.security_audit import ResourcePermission
     from app.models.user import User
     from tests.integration.test_artifact_publication_transactions import stage_report
 
     n = native_workspace
-    peer, session = uuid.uuid4(), uuid.uuid4()
+    peer, session, shared_session = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    path, shared_path = "workspace/derived-source.md", "workspace/shared-report.md"
     async with owner_sessionmaker() as db:
         (await db.get(User, n.user)).role = "org_admin"
         await _enable_commands(db, n)
         db.add(Agent(id=peer, tenant_id=n.tenant, name="Colleague", creator_id=n.foreign, owner_user_id=n.foreign))
         await db.flush()
-        db.add(ChatSession(id=session, tenant_id=n.tenant, agent_id=peer, user_id=n.foreign))
+        db.add_all([ChatSession(id=session, tenant_id=n.tenant, agent_id=peer, user_id=n.foreign),
+            ChatSession(id=shared_session, tenant_id=n.tenant, agent_id=n.agent, user_id=n.foreign)])
         await db.flush()
         source = await stage_report(db, tenant=n.tenant, agent=peer, user=n.foreign, session=session,
             root=n.root.parent / str(peer), path="workspace/colleague.md")
         await db.flush()
-        path = "workspace/derived-source.md"
+        dependency = {"source_kind": "workspace_artifact", "source_id": str(source.id),
+            "source_version": source.content_sha256}
         await stage_report(db, tenant=n.tenant, agent=n.agent, user=n.user, session=n.session, root=n.root,
-            path=path, dependencies=[{"source_kind": "workspace_artifact", "source_id": str(source.id),
-                "source_version": source.content_sha256}])
+            path=path, dependencies=[dependency])
+        await stage_report(db, tenant=n.tenant, agent=n.agent, user=n.foreign, session=shared_session,
+            root=n.root, path=shared_path, dependencies=[dependency])
+        db.add(ResourcePermission(tenant_id=n.tenant, principal_type="user", principal_id=n.user,
+            resource_type="workspace_file", resource_id=workspace_resource_id(n.agent, shared_path),
+            actions=["read"], conditions={}))
         await db.commit()
-    result = await _execute(n, tool, path)
+    # owner 11-18 decision A: private ownership admits the admin's copy but inspection grants no source access.
+    owned = await _execute(n, tool, path)
+    assert "COMPANY_SOURCE_MARKER" in str(owned), owned
+    result = await _execute(n, tool, shared_path)
     assert "COMPANY_SOURCE_MARKER" not in str(result), result
     if tool == "read_file":
         assert "content_source_access_denied" in str(result), result
 
 
 @pytest.mark.parametrize("tool", ["office_document_view", "office_document_query", "office_document_validate", "office_document_dump"])
-async def test_office_reads_edited_working_copy_but_denies_revoked_sources_before_adapter(
+async def test_office_reads_edited_working_copy_after_source_revocation(
     native_workspace, owner_sessionmaker, monkeypatch, tool,  # noqa: F811
 ):
     from sqlalchemy import select
@@ -269,8 +283,8 @@ async def test_office_reads_edited_working_copy_but_denies_revoked_sources_befor
         await db.commit()
     invoked.clear()
     result = await _execute(n, tool, path)
-    assert "OUT_OF_BAND_REWRITE" not in str(result), result
-    assert "content_source_access_denied" in str(result) and invoked == [], result
+    # owner 11-18 decision A: Office reads the same edited owner copy after revocation.
+    assert "OUT_OF_BAND_REWRITE" in str(result) and invoked == [True], result
 
 
 @pytest.mark.parametrize("path", ["memory/explicit/notes.docx", "memory/control/run.docx"])

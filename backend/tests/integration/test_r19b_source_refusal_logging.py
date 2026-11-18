@@ -20,6 +20,8 @@ async def test_source_refusal_logs_leaf_without_changing_response(
     owner_sessionmaker, monkeypatch, tmp_path, boundary,
 ):
     from app.config import get_settings
+    from app.core.resource_authority import workspace_resource_id
+    from app.models.security_audit import ResourcePermission
     from app.services import content_input_receipts, runtime_result_sources
     from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
     from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
@@ -38,8 +40,17 @@ async def test_source_refusal_logs_leaf_without_changing_response(
             root=root, path="workspace/intermediate.md", dependencies=[dependency])
         middle_ref = {"source_kind": "workspace_artifact", "source_id": str(middle.id),
             "source_version": middle.content_sha256}
-        await stage_report(db, tenant=tenant, user=user, agent=agent, session=session,
-            root=root, path="workspace/report.md", dependencies=[middle_ref])
+        if boundary == "artifact_delivery":
+            # owner 11-18 decision A: the recipient now reads a granted report.
+            other = uuid4()
+            db.add(User(id=other, tenant_id=tenant, username=other.hex,
+                email=f"{other.hex}@fixture.test", password_hash="fixture", display_name="Report owner", role="member"))
+            await db.flush()
+            await stage_report(db, tenant=tenant, user=other, agent=agent, session=None,
+                root=root, path="workspace/report.md", dependencies=[middle_ref])
+            db.add(ResourcePermission(tenant_id=tenant, principal_type="user", principal_id=user,
+                resource_type="workspace_file", resource_id=workspace_resource_id(agent, "workspace/report.md"),
+                actions=["read", "deliver"], conditions={}))
         await db.commit()
     # A real byte mismatch, with the receipt and authority left intact.
     (root / "workspace/private-source.md").write_text("PRIVATE_CHANGED_BODY")

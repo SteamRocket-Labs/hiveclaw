@@ -299,7 +299,7 @@ async def test_member_write_through_someone_elses_session_still_fails(monkeypatc
     member = SimpleNamespace(id=member_id, tenant_id=tenant_id, role="member", department_id=None)
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
     employee_session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=employee_id, root_session_id=None,
-        audience_kind="private")
+        audience_kind="private", deleted_at=None)
 
     async def fake_access(_db, _user, _agent_id):
         return agent, "manage"

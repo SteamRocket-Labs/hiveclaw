@@ -97,7 +97,8 @@ it.each(['zh', 'en'])('localizes other member-visible system producers in %s and
   for (const text of ['白鹭助手', '周报计划', '报告已准备好。', '资料助手', '整理本周资料']) {
     expect(container.textContent).toContain(text);
   }
-  expect(container.querySelectorAll('[data-testid="run-disclosure-step"], .run-tool-history-item').length).toBe(events.length);
+  expect(container.textContent).not.toContain(language === 'zh' ? '准备所需功能' : 'Tools ready');
+  expect(container.querySelectorAll('[data-testid="run-disclosure-step"], .run-tool-history-item')).toHaveLength(events.length - 3);
 });
 
 it('preserves task result prose and the member objective while translating system labels', () => {

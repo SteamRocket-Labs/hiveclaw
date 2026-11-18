@@ -59,6 +59,7 @@ from app.services.session_control_plane import build_session_json_export, build_
 from app.services.session_live_input import IdempotencyConflict, submit_live_cancel_input, submit_live_human_input
 from app.services.session_tool_runtime import ToolEffectReconciliationRequired
 from app.services.agent_tools import get_agent_tools_for_llm
+from app.services.sidebar_conversations import SidebarConversation, read_sidebar_conversations
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
 logger = logging.getLogger(__name__)
@@ -1355,6 +1356,14 @@ async def list_sessions(
                 )
             )
         return await _with_run_status(db, out, agent)
+
+
+@router.get("/sessions/sidebar")
+async def list_sidebar_conversations(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[SidebarConversation]:
+    return await read_sidebar_conversations(db, current_user, hidden_sources=_MINE_HIDDEN_CHAT_SOURCES)
 
 
 @router.post("/{agent_id}/sessions", status_code=201)

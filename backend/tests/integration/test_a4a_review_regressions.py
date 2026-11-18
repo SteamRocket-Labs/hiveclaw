@@ -207,14 +207,16 @@ async def test_revoked_document_cannot_leave_after_working_copy_read(native_work
 
 
 @pytest.mark.parametrize('revoked_member_grant', [False, True])
-async def test_agent_only_source_grant_cannot_admit_or_publish_member_working_copy(
-    native_workspace, owner_sessionmaker, revoked_member_grant,  # noqa: F811
+async def test_agent_only_source_keeps_own_private_copy_and_card_but_blocks_email(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch, revoked_member_grant,  # noqa: F811
 ):
     from datetime import datetime, timedelta, timezone
     from app.models.chat_artifact import ChatArtifact
     from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
     from app.services.content_input_receipts import latest_workspace_receipt, validate_runtime_input_dependencies
+    from app.services.llm_client import LLMMessage
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+    from tests.integration.test_a4a_round3 import _resolve_email
     from tests.integration.test_artifact_publication_transactions import publish_report
 
     n = native_workspace
@@ -249,26 +251,31 @@ async def test_agent_only_source_grant_cannot_admit_or_publish_member_working_co
             await db.commit()
         context = ToolExecutionContext(agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant), workspace=n.root,
             session_id=str(n.session), runtime_task_id=str(n.run))
-        # The legacy grant is valid for its runtime reader, but cannot authorize the member's read or publication.
+        # Runtime source access remains separate from publication to the member.
         await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name='send_email', arguments={}, context=context),
             [{'source_kind': 'workspace_artifact', 'source_id': str(receipt.id), 'source_version': receipt.content_sha256}])
         await db.commit()
-        result, sources, complete, _invocation = await _read_with_inventory(n, db, tool='read_file', path=path)
-        assert 'DERIVED_SOURCE_BODY' not in str(result), result
+        result, sources, complete, invocation = await _read_with_inventory(n, db, tool='read_file', path=path)
+        # owner 11-18 decision A: an agent-only grant leaves the member's own copy readable.
+        assert 'DERIVED_SOURCE_BODY' in str(result), result
         assert 'SOURCE_DOCUMENT' not in str(result), result
-        assert 'content_source_access_denied' in str(result), result
-        assert result.metadata['native_read_denial'] == {'kind': 'workspace_source_read_denied', 'path': path,
-            'http_status': 403, 'reason_code': 'content_source_access_denied'}
+        assert 'content_source_access_denied' not in str(result), result
         assert complete, 'NO_BODY_DENIAL_POISONED_INPUT_INVENTORY'
-        assert not any(row['source_kind'] in {'workspace_artifact', 'knowledge_document'} for row in sources), sources
+        assert any(row['source_kind'] == 'workspace_artifact' for row in sources), sources
         publication = SimpleNamespace(tenant=n.tenant, agent=n.agent, users=[n.user], sessions=[n.session],
             paths=[path], root=n.root)
         parts, errors = await publish_report(db, publication, 0)
-        assert parts == []
-        assert [error['reason_code'] for error in errors] == ['content_source_access_denied']
-        assert await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == n.agent, ChatArtifact.path == path)) is None
+        # owner 11-18 decision A: the copy can be attached to the same private chat.
+        assert len(parts) == 1 and not errors
+        artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == n.agent, ChatArtifact.path == path))
+        assert artifact.session_id == n.session and artifact.owner_user_id == n.user
         assert receipt.dependencies_json == [dependency] and grant.revoked_at is None
         await db.commit()
+        response = await n.client.get(f'/agents/{n.agent}/files/artifacts/{artifact.id}/content')
+        assert response.status_code == 200 and response.json()['content'] == 'DERIVED_SOURCE_BODY', response.text
+        message = LLMMessage(role='tool', tool_call_id=invocation.provider_tool_use_id, content=str(result),
+            source_ref=f'session-tool-result:{invocation.id}')
+        await _resolve_email(n, db, app_user_sessionmaker, monkeypatch, message, index=2, body='DERIVED_SOURCE_BODY')
 
 
 @pytest.mark.parametrize('tool', ['read_file', 'grep_search'])
@@ -413,6 +420,7 @@ async def test_unreceipted_input_keeps_delegated_approval_and_sandbox_artifact_u
     from app.services.session_permission_runtime import _execution_evidence
     from app.services.web_chat_runtime import _persist_tool_call
     from app.services.workspace_resource_authority import register_workspace_path
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
     from tests.integration.test_m1g24_workspace_artifact_authority_postgres import _prepare_write
 
     n = native_workspace
@@ -435,8 +443,12 @@ async def test_unreceipted_input_keeps_delegated_approval_and_sandbox_artifact_u
             permission_profile=PermissionProfileV1(), budget_run_id=str(n.run))
         from app.database import pin_rls_tenant_context
         await pin_rls_tenant_context(db, n.tenant)
-        await validate_permission_input_sources(db, authority=SimpleNamespace(tenant_id=n.tenant, agent_id=n.agent, principal_id=n.user),
-            session=await db.get(ChatSession, n.session), invocation=invocation, model=model, execution={'authority_frame': frame})
+        context = ToolExecutionContext(agent_id=n.agent, user_id=n.user, tenant_id=n.tenant, workspace=n.root,
+            session_id=str(n.session), runtime_task_id=str(n.run), tool_call_id=invocation.provider_tool_use_id,
+            execution_principal=frame.principal, execution_identity=frame.execution_identity,
+            authority_frame_required=True, budget_run_id=frame.budget_run_id, permission_profile=frame.permission_profile)
+        await validate_permission_input_sources(db, session=await db.get(ChatSession, n.session), model=model,
+            runtime_request=ToolExecutionRequest('run_command', arguments, context))
         await db.commit()
         async def process(_command, *, work_dir, **kwargs):
             content = (work_dir / 'own-note.md').read_text()

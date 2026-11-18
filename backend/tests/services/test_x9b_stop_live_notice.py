@@ -25,6 +25,16 @@ async def test_x9b_stopped_colleague_end_notice_reaches_the_session_socket(owner
     from app.services import web_chat_stream_bus as bus
     from app.services.web_chat_broker import web_chat_broker
 
+    # The outbox drain below is not tenant-scoped; earlier tests in the same
+    # database can leave claimable notifications. Settle them first so this
+    # test observes only its own notification.
+    async def settle(_item):
+        return {}
+
+    preclear = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    for _ in range(50):
+        if not (await preclear.drain_once(worker_id="x9b-preclear", deliver=settle))["claimed"]:
+            break
     tenant, user, agent, session = await _seed_parent_session(owner_sessionmaker)
     root, child = uuid.uuid4(), uuid.uuid4()
     colleague, child_session = uuid.uuid4(), uuid.uuid4()

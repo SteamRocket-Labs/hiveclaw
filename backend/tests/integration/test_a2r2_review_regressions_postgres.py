@@ -5,6 +5,7 @@ import json
 import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -23,7 +24,7 @@ from tests.integration.test_m4g_learned_skill_sources_postgres import learned_sk
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-async def _deliver(n, dependency, owner_sessionmaker, app_user_sessionmaker):
+async def _deliver(n, dependency, owner_sessionmaker, app_user_sessionmaker, *, granted=False):
     from app.models.chat_artifact import ChatArtifact
 
     n.sources = [dependency]
@@ -39,7 +40,14 @@ async def _deliver(n, dependency, owner_sessionmaker, app_user_sessionmaker):
         # when distributing its sources over historical receipt rows.
         receipt.dependencies_json = [dependency]
         await db.commit()
-        return f"/agents/{n.agent}/files/artifacts/{artifact.id}/download", body.encode()
+        artifact_id = artifact.id
+    if granted:
+        from tests.integration.test_r12a_source_graph_work_postgres import _grant_graph_card
+
+        # owner 11-18 decision A: use a granted card to exercise upstream reads.
+        await _grant_graph_card(SimpleNamespace(tenant=n.tenant, agent=n.agent, user=n.user,
+            artifact=artifact_id, foreign=n.foreign), owner_sessionmaker)
+    return f"/agents/{n.agent}/files/artifacts/{artifact_id}/download", body.encode()
 
 
 async def _private_memory(n, owner_sessionmaker):
@@ -248,7 +256,7 @@ async def test_explicit_memory_download_rechecks_current_session_agent_after_rec
 
     n = graph
     original, source_session, dependency = await _private_memory(n, owner_sessionmaker)
-    url, body = await _deliver(n, dependency, owner_sessionmaker, app_user_sessionmaker)
+    url, body = await _deliver(n, dependency, owner_sessionmaker, app_user_sessionmaker, granted=True)
     replacement = uuid.uuid4()
     async with owner_sessionmaker() as db:
         db.add(Agent(id=replacement, tenant_id=n.tenant, creator_id=n.foreign if replacement_access == "no_grant" else n.user,
@@ -436,7 +444,7 @@ async def test_download_retains_learned_skill_with_tool_only_model_source(
         dependency = {"source_kind": "learned_skill_file", "source_id":
             f"{n.agent}\n{n.first_learned_skill_path}\n{install.id}", "source_version": content["files"][n.first_learned_skill_path]}
         await db.commit()
-    url, body = await _deliver(n, dependency, owner_sessionmaker, app_user_sessionmaker)
+    url, body = await _deliver(n, dependency, owner_sessionmaker, app_user_sessionmaker, granted=True)
     async with owner_sessionmaker() as db:
         artifact = await db.get(ChatArtifact, uuid.UUID(url.split("/")[-2]))
         receipt = await db.get(ContentInputReceipt, uuid.UUID(artifact.snapshot_json["content_input_receipt_id"]))

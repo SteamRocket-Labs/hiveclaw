@@ -217,8 +217,9 @@ async def test_native_tool_effect_phases(native_workspace, app_user_sessionmaker
     for row in rows:
         if row["tool"] in {"write_file", "edit_file"}:
             assert row["effect_seconds"] <= 3, row
+    # owner 11-18 decision A: private cards skip seven source-validation statements.
     assert {row["tool"]: row["effect_statements"] for row in rows
-        if row["tool"] in {"write_file", "edit_file"}} == {"write_file": 60, "edit_file": 60}
+        if row["tool"] in {"write_file", "edit_file"}} == {"write_file": 53, "edit_file": 53}
     from sqlalchemy import select
     from app.models.organization_identity import ContentInputReceipt
     from app.models.chat_artifact import ChatArtifact

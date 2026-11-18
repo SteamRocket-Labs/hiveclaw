@@ -129,7 +129,7 @@ it('X5c-3: a private-reasoning-only block has no count and preserves its status/
   }
 });
 
-it('X5c-4: enabling plaza tools reports completion rather than a returned result, live and after reload', () => {
+it('X5c-4: enabling plaza tools adds no member row, live and after reload', () => {
   const message = 'Discovered deferred tools: plaza_get_new_posts';
   const part = { type: 'event', event_type: 'deferred_tools_delta', title: 'Deferred Tools Updated', status: 'info', text: message,
     tool_groups: [{ name: 'plaza_pack', tools: ['plaza_get_new_posts', 'plaza_create_post', 'plaza_add_comment'], source: 'system' }], trigger_tool: 'tool_search' };
@@ -138,13 +138,15 @@ it('X5c-4: enabling plaza tools reports completion rather than a returned result
     legacy_kind: 'legacy_unknown', legacy_lifecycle: 'legacy_unknown', legacy_event_type: 'deferred_tools_delta',
     legacy_item_type: 'event', legacy_item_status: 'succeeded', occurred_at: '2026-11-14T17:52:10Z',
     payload: { content: JSON.stringify({ ...part, message }), parts: [part], metadata: { ...part, message, runtime_task_id: 'run' } } };
+  const progress = event(5, 'assistant_commentary', 'completed', 'progress', { content: 'Checking the plaza.' }, 6);
   for (const language of ['zh', 'en'] as const) {
     locale.language = language;
-    for (const messages of both([...start(), activation, event(5, 'run', 'completed', 'run', {}, 17)])) {
+    for (const messages of both([...start(), activation, progress, event(6, 'run', 'completed', 'run', {}, 17)])) {
       const { container, unmount } = mount(messages);
-      expect(container.querySelector('.run-tool-history-title, .run-step-title')?.textContent).toBe(language === 'zh' ? '准备所需功能' : 'Tools ready');
       expandRows(container);
-      expect(container.querySelector('p')?.textContent).toBe(language === 'zh' ? '准备所需功能。完成' : 'Tools ready. Done');
+      expect(container.querySelector('.run-tool-history-title, .run-step-title')).toBeNull();
+      expect(container.textContent).toContain('Checking the plaza.');
+      expect(container.textContent).not.toContain(language === 'zh' ? '准备所需功能' : 'Tools ready');
       expect(container.textContent).not.toMatch(/已返回结果|Result returned|plaza_pack|plaza_get_new_posts|deferred_tools_delta/);
       unmount();
     }

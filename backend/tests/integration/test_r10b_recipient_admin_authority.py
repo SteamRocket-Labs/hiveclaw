@@ -17,13 +17,14 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
 @pytest.mark.parametrize("tool", ["read_file", "grep_search"])
-async def test_revoked_project_grant_withholds_admin_working_copy_but_keeps_browser_inspection(
+async def test_revoked_project_grant_keeps_own_working_copy_and_browser_inspection(
     project_http, owner_sessionmaker, app_user_sessionmaker, tool,  # noqa: F811
 ):
+    from app.core.source_read_purpose import source_recipient_read
     from app.models.security_audit import ResourcePermission
     from app.models.user import User
     from app.models.workbench_project import WorkbenchProject
-    from app.services.content_input_receipts import validate_browser_input_dependencies
+    from app.services.content_input_receipts import ContentInputReceiptError, validate_browser_input_dependencies
     from app.services.session_model_inputs import _origin_dependencies
     from tests.integration.test_artifact_publication_transactions import stage_report
     from tests.integration.test_r10b_workspace_execution_readers import _enable_commands, _execute
@@ -55,14 +56,18 @@ async def test_revoked_project_grant_withholds_admin_working_copy_but_keeps_brow
     async with owner_sessionmaker() as db:
         await db.delete(await db.get(ResourcePermission, grant_id))
         await db.commit()
-    denied = str(await _execute(n, tool, path))
-    assert "COMPANY_SOURCE_MARKER" not in denied, denied
-    if tool == "read_file":
-        assert "project_access_denied" in denied, denied
+    # owner 11-18 decision A: losing the project grant leaves the admin's own copy readable.
+    retained = str(await _execute(n, tool, path))
+    assert "COMPANY_SOURCE_MARKER" in retained, retained
     # The same source remains inspectable through the administrator's browser authority.
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
-        await validate_browser_input_dependencies(db, n.tenant, await db.get(User, n.user), sources)
+        user = await db.get(User, n.user)
+        with source_recipient_read(session_id=n.session, user_id=n.user):
+            with pytest.raises(ContentInputReceiptError) as denied:
+                await validate_browser_input_dependencies(db, n.tenant, user, sources)
+            assert denied.value.code == "project_access_denied"
+        await validate_browser_input_dependencies(db, n.tenant, user, sources)
     inspected = await p.request("GET", f"/{selected['project_id']}")
     assert inspected.status_code == 200 and inspected.json()["id"] == selected["project_id"], inspected.text
 

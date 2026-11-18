@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.daemon_concurrency import get_daemon_semaphore
@@ -23,6 +23,7 @@ from app.database import enter_rls_bypass, tenant_scoped_session
 from app.memory.t2.read_model import load_t2_package_snapshots, render_t2_package_snapshots
 from app.services.heartbeat_t3_core import run_heartbeat_t3_core
 from app.services.heartbeat_policy import managed_heartbeat_interval_minutes
+from app.services.llm_client import LLMError
 from app.services.runtime_task_service import (
     build_restart_reconciliation_metadata,
     build_restart_replay_contract,
@@ -41,6 +42,7 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 _HEARTBEAT_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
 _HEARTBEAT_LEASE_TTL_SECONDS = 600
 _HEARTBEAT_TIMEOUT_SECONDS = 300
+_HEARTBEAT_BACKOFF_CAP_MINUTES = 24 * 60
 _heartbeat_leases: dict[uuid.UUID, datetime] = {}
 
 _HEARTBEAT_SCORE_RUBRIC_SUFFIX = """
@@ -68,6 +70,22 @@ def _format_heartbeat_exception(exc: BaseException) -> str:
     message = str(exc).strip()
     exc_type = type(exc).__name__
     return f"{exc_type}: {message}" if message else exc_type
+
+
+def _is_heartbeat_provider_account_error(http_status: int | None, error: str | None) -> bool:
+    if http_status in {401, 402, 403}:
+        return True
+    if not error or not error.startswith("LLMError: "):
+        return False
+    # Older tasks store only the formatted exception. Some providers put
+    # account failures in the body even when the HTTP status is generic.
+    body = error.removeprefix("LLMError: ").casefold()
+    return (
+        http_status is None and body.startswith(("http 401:", "http 402:", "http 403:"))
+    ) or any(
+        message in body
+        for message in ("user not found", "insufficient balance", "insufficient_balance", "余额不足")
+    )
 
 
 def _log_heartbeat_error(agent_id: uuid.UUID, error_text: str) -> None:
@@ -1429,16 +1447,83 @@ async def _execute_heartbeat(
             )
         except Exception as log_err:
             logger.opt(exception=True).debug("Failed to log heartbeat crash to activity: {}", log_err)
+        failure_metadata = {"error": error_text}
+        if isinstance(e, LLMError) and e.http_status is not None:
+            failure_metadata["provider_http_status"] = e.http_status
         await _update_heartbeat_runtime_task(
             runtime_task_id,
             status="failed",
             result_summary=f"Heartbeat failed: {error_text}",
             session_id=heartbeat_session_id,
-            metadata_json={"error": error_text},
+            metadata_json=failure_metadata,
         )
     finally:
         if lease_held:
             await _release_heartbeat_lease_async(agent_id)
+
+
+async def _load_heartbeat_failure_streaks(
+    db: AsyncSession,
+    agent_keys: list[tuple[uuid.UUID, uuid.UUID]],
+    cutoff: datetime,
+) -> dict[uuid.UUID, tuple[int, datetime, bool]]:
+    """Read the failure streak and latest failure for each due agent in one query."""
+    from app.models.runtime_task import RuntimeTask
+
+    if not agent_keys:
+        return {}
+
+    agent_id = RuntimeTask.parent_agent_id
+    completed_at = RuntimeTask.completed_at
+    outcomes = (
+        select(
+            RuntimeTask.id,
+            agent_id,
+            completed_at,
+            RuntimeTask.status,
+            func.max(completed_at).filter(RuntimeTask.status == "completed").over(partition_by=agent_id).label(
+                "last_success_at"
+            ),
+        )
+        .where(
+            tuple_(RuntimeTask.tenant_id, agent_id).in_(agent_keys),
+            RuntimeTask.task_type == "heartbeat",
+            RuntimeTask.status.in_(("completed", "failed")),
+            completed_at.is_not(None),
+        )
+        .subquery()
+    )
+    failures = (
+        select(
+            outcomes.c.id,
+            outcomes.c.parent_agent_id,
+            outcomes.c.completed_at,
+            func.count().over(partition_by=outcomes.c.parent_agent_id).label("failure_count"),
+        )
+        .where(
+            outcomes.c.status == "failed",
+            or_(outcomes.c.last_success_at.is_(None), outcomes.c.completed_at > outcomes.c.last_success_at),
+        )
+        .distinct(outcomes.c.parent_agent_id)
+        .order_by(outcomes.c.parent_agent_id, outcomes.c.completed_at.desc(), outcomes.c.id.desc())
+        .subquery()
+    )
+    result = await db.execute(
+        select(
+            failures.c.parent_agent_id,
+            failures.c.failure_count,
+            failures.c.completed_at,
+            RuntimeTask.metadata_json["provider_http_status"].as_integer(),
+            RuntimeTask.metadata_json["error"].as_string(),
+        )
+        .join_from(failures, RuntimeTask, failures.c.id == RuntimeTask.id)
+        # Keep older failures in the count, even when only recent failures can defer the tick.
+        .where(failures.c.completed_at > cutoff)
+    )
+    return {
+        agent_id: (count, failed_at, _is_heartbeat_provider_account_error(http_status, error))
+        for agent_id, count, failed_at, http_status, error in result.all()
+    }
 
 
 async def _heartbeat_tick():
@@ -1462,22 +1547,45 @@ async def _heartbeat_tick():
                 )
             )
             agents = result.scalars().all()
+            interval_minutes = managed_heartbeat_interval_minutes()
+            interval = timedelta(minutes=interval_minutes)
+            candidates = [
+                agent
+                for agent in agents
+                if agent.tenant_id is not None
+                and (agent.last_heartbeat_at is None or now - agent.last_heartbeat_at >= interval)
+            ]
+            failures = await _load_heartbeat_failure_streaks(
+                db,
+                [(agent.tenant_id, agent.id) for agent in candidates],
+                now - timedelta(minutes=_HEARTBEAT_BACKOFF_CAP_MINUTES),
+            )
 
             # Workspace sync moved to _workspace_sync_loop (600s cadence).
             # Keeping it inline blocked the 60s heartbeat tick on Volume I/O.
 
             triggered = 0
             skipped_hours = 0
-            skipped_interval = 0
-            for agent in agents:
-                if agent.tenant_id is None:
-                    skipped_interval += 1
-                    continue
-
-                interval = timedelta(minutes=managed_heartbeat_interval_minutes())
-                if agent.last_heartbeat_at and (now - agent.last_heartbeat_at) < interval:
-                    skipped_interval += 1
-                    continue
+            skipped_interval = len(agents) - len(candidates)
+            for agent in candidates:
+                failure = failures.get(agent.id)
+                if failure is not None:
+                    count, failed_at, account_error = failure
+                    # With minute granularity, larger exponents already exceed the cap.
+                    doublings = min(count - 1, _HEARTBEAT_BACKOFF_CAP_MINUTES.bit_length())
+                    delay_minutes = min(interval_minutes * 2**doublings, _HEARTBEAT_BACKOFF_CAP_MINUTES)
+                    if account_error:
+                        delay_minutes = _HEARTBEAT_BACKOFF_CAP_MINUTES
+                    next_due = failed_at + timedelta(minutes=delay_minutes)
+                    if now < next_due:
+                        logger.info(
+                            "[Heartbeat] Deferring agent {}: consecutive_failures={}, next_due={}",
+                            agent.id,
+                            count,
+                            next_due.isoformat(),
+                        )
+                        skipped_interval += 1
+                        continue
 
                 # Fire heartbeat
                 if not await _try_acquire_heartbeat_lease_async(agent.id, now=now):

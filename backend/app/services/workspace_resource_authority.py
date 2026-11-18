@@ -1177,6 +1177,7 @@ async def load_workspace_authority_scope(
     operator_reason: str | None = None,
     agent_access: tuple[object, str] | None = None,
     runtime_principal: Any | None = None,
+    manifest_paths: set[str] | None = None,
 ) -> WorkspaceAuthorityScope:
     if runtime_principal is not None and operator_view:
         raise HTTPException(status_code=403, detail="Native workspace input cannot use browser inspection authority")
@@ -1194,17 +1195,15 @@ async def load_workspace_authority_scope(
         resource_tenant_id=resolved_agent_access[0].tenant_id,
         session_id=session_id,
     )
-    manifests = (
-        (
-            await db.execute(
-                select(WorkspaceResourceManifest).where(
-                    WorkspaceResourceManifest.agent_id == agent_id,
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    manifests = ()
+    if manifest_paths is None or manifest_paths:
+        manifest_query = select(WorkspaceResourceManifest).where(WorkspaceResourceManifest.agent_id == agent_id)
+        if manifest_paths is not None:
+            # A file can also be visible through a manifest for its descendant.
+            manifest_query = manifest_query.where(or_(WorkspaceResourceManifest.path.in_(manifest_paths), *(
+                WorkspaceResourceManifest.path.startswith(f"{path}/", autoescape=True) for path in manifest_paths
+            )))
+        manifests = (await db.scalars(manifest_query)).all()
 
     collection_decision = None
     try:

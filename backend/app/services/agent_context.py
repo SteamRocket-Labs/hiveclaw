@@ -168,6 +168,12 @@ def _strip_primary_heading(content: str) -> str:
     return content
 
 
+def skill_catalog_instructions(agent_id, session_id):
+    loader = WorkspaceSkillLoader()
+    roots = {(base / str(agent_id)).resolve() for base in (TOOL_WORKSPACE, PERSISTENT_DATA)}
+    return {root: loader.discover_instructions(root, session_id=session_id) for root in roots}
+
+
 def _load_skills_index(
     agent_id: uuid.UUID,
     *,
@@ -179,6 +185,7 @@ def _load_skills_index(
     ranking_manifest: list[dict] | None = None,
     source_observer=None,
     source_authorizer=None,
+    instructions=None,
 ) -> str:
     """Load skill index (name + description) from skills/ directory.
 
@@ -194,8 +201,15 @@ def _load_skills_index(
     registry = SkillRegistry()
     loaded_skills = []
 
-    for ws_root in [TOOL_WORKSPACE / str(agent_id), PERSISTENT_DATA / str(agent_id)]:
-        loaded_skills.extend(loader.load_from_workspace(ws_root, session_id=session_id, source_authorizer=source_authorizer))
+    parsed_by_root = {}
+    for base in (TOOL_WORKSPACE, PERSISTENT_DATA):
+        ws_root = (base / str(agent_id)).resolve()
+        if ws_root not in parsed_by_root:
+            parsed_by_root[ws_root] = loader.load_from_workspace(
+                ws_root, session_id=session_id, source_authorizer=source_authorizer,
+                instructions=instructions.get(ws_root) if instructions is not None else None,
+            )
+        loaded_skills.extend(parsed_by_root[ws_root])
 
     rank_workspace = PERSISTENT_DATA / str(agent_id)
     if not rank_workspace.exists():
@@ -250,6 +264,7 @@ def build_skill_catalog_section_for_agent(
     ranking_manifest: list[dict] | None = None,
     source_observer=None,
     source_authorizer=None,
+    instructions=None,
 ) -> str:
     """Render the ## Skills catalog section for an agent's workspace.
 
@@ -275,6 +290,7 @@ def build_skill_catalog_section_for_agent(
         ranking_manifest=ranking_manifest,
         source_observer=source_observer,
         source_authorizer=source_authorizer,
+        instructions=instructions,
     )
     return build_skills_catalog_section(skills_text, budget_chars=skill_budget)
 

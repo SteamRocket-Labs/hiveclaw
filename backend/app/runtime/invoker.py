@@ -887,6 +887,9 @@ async def _resolve_memory_context(
             _memory_kwargs["return_result"] = True
         if "runtime_task_id" in _memory_sig:
             _memory_kwargs["runtime_task_id"] = turn_metadata.get("runtime_task_id") or turn_metadata.get("task_id")
+        if (private_web_turn is not None and request.user_id == private_web_turn.requester.id
+            and "verified_agent" in _memory_sig):
+            _memory_kwargs["verified_agent"] = private_web_turn.agent
         memory_clock = asyncio.get_running_loop()
         memory_started_at = memory_clock.time()
         memory_value = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)

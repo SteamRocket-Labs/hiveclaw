@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import asdict
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,9 @@ from app.services.session_v2_persistence import (
     runtime_result_integration_command_stamp,
 )
 from app.services.session_tool_runtime import assert_session_tool_effects_settled
+
+if TYPE_CHECKING:
+    from app.services.credential_boundary_loader import IngressSecretInventory
 
 
 def shape_human_input_parts(parts, *, pasted_credential_notice=False) -> list[dict[str, Any]]:
@@ -170,6 +173,7 @@ async def submit_live_human_input(
     a2a_peer_agent_id: uuid.UUID | str | None = None,
     runtime_result_page_id: uuid.UUID | str | None = None,
     runtime_result_page_claim_token: uuid.UUID | str | None = None,
+    ingress_inventory: IngressSecretInventory | None = None,
 ) -> dict[str, Any]:
     """Accept, Hook-admit and dispatch one production HumanInput."""
 
@@ -188,6 +192,7 @@ async def submit_live_human_input(
             reply_target=getattr(session, "delivery_target_json", None),
             source_channel=source_channel,
             source=source,
+            inventory=ingress_inventory,
             payload={
                 "content": content,
                 "display_content": display_content,
@@ -532,9 +537,9 @@ async def submit_live_human_input(
         )
     else:
         accepted = await accept_human_input(db, authority=authority, intent=intent)
-    await db.commit()
 
     if accepted.replayed:
+        await db.commit()
         replay_row = await db.get(SessionTurnInput, input_uuid)
         replay_admission = (
             await db.scalar(
@@ -586,6 +591,8 @@ async def submit_live_human_input(
 
     from app.services.session_input_admission import run_user_prompt_admission
 
+    # Fresh acceptance and the Hook.started claim share the commit that
+    # precedes hook execution. A resumed admission still uses its durable row.
     outcome = await run_user_prompt_admission(
         db,
         authority=authority,
@@ -604,6 +611,7 @@ async def submit_live_human_input(
             db,
             admission_id=outcome.admission_id,
             worker_id=f"live-dispatch:{clean_source}:{input_uuid}",
+            ingress_inventory=ingress_inventory,
         )
         dispatch_receipt = dict(dispatched.receipt or {})
         dispatch_status = dispatched.state

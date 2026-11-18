@@ -11,8 +11,9 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 from loguru import logger
@@ -32,12 +33,13 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
-from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+from app.runtime.invoker import AgentInvocationRequest, invoke_agent, resolve_private_web_turn
 from app.runtime.ccplus_contracts import (
     DEFAULT_CCPLUS_PERMISSION_MODE,
     DEFAULT_CCPLUS_WRITABLE_ROOTS,
     normalize_permission_mode,
 )
+
 from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase, build_phase_event
 from app.services.chat_message_parts import (
     SESSION_NATIVE_EVENT_TYPES,
@@ -77,6 +79,9 @@ from app.services.runtime_root_ledger import (
     register_runtime_task_root_item,
 )
 from app.services.web_chat_broker import web_chat_broker
+
+if TYPE_CHECKING:
+    from app.services.credential_boundary_loader import IngressSecretInventory
 
 
 WEB_CHAT_TURN_TASK_TYPE = "web_chat_turn"
@@ -2918,6 +2923,7 @@ async def start_web_chat_run(
     budget_interactive: bool = True,
     root_item_intent: RuntimeRootIntentSpec | None = None,
     budget_admission_status_override: str | None = None,
+    ingress_inventory: IngressSecretInventory | None = None,
 ) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
@@ -2943,6 +2949,7 @@ async def start_web_chat_run(
             reply_target=getattr(session, "delivery_target_json", None),
             source_channel=source_channel,
             source=source_channel,
+            inventory=ingress_inventory,
             payload={
                 "content": content,
                 "display_content": display_content,
@@ -6024,13 +6031,13 @@ async def _resolve_runtime_models_for_task(
 
 async def _load_runtime_context(
     run_uuid: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | None = None,
 ) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[Any], ChatSession | None]:
     from app.kernel.contracts import ExecutionAuthorityUnavailable
 
-    tenant_id = await resolve_tenant_for_runtime_task(
-        run_uuid,
-        session_factory=_async_session,
-    )
+    if tenant_id is None:
+        tenant_id = await resolve_tenant_for_runtime_task(run_uuid, session_factory=_async_session)
     if tenant_id is None:
         raise RuntimeError(f"RuntimeTask {run_uuid.hex} not found")
     async with tenant_scoped_session(
@@ -6154,10 +6161,9 @@ async def _load_runtime_context(
         from app.services.native_trigger_frame import load_native_trigger_frame
 
         native_frame = await load_native_trigger_frame(db, task=runtime_task, session=session)
-        runtime_task._native_trigger_frame = native_frame
         from app.services.plan_mode_native_run import load_system_plan_mode
 
-        runtime_task._system_plan_mode = await load_system_plan_mode(db, task=runtime_task, session=session)
+        system_plan_mode = await load_system_plan_mode(db, task=runtime_task, session=session)
         if native_frame is not None and native_frame.model_id is not None:
             metadata = {**metadata, "runtime_model_id": str(native_frame.model_id)}
         try:
@@ -6171,12 +6177,24 @@ async def _load_runtime_context(
 
         if session is None:
             raise RuntimeError(f"RuntimeTask {run_uuid.hex} has no canonical ChatSession")
-        from app.services.session_semantic_history import load_session_semantic_history
+        from app.services.session_semantic_history import is_member_authored_run, load_session_semantic_history
 
-        # Bootstrap writes must release the task row before history/recovery
-        # reads: their autoflush otherwise blocks the independent lease renewer.
+        # Bootstrap writes must release the task row before turn configuration
+        # and history/recovery reads so the independent lease renewer can write.
         stored_metadata = dict(runtime_task.metadata_json or {})
         await db.commit()
+        private_web_turn = None
+        if (
+            isinstance(user, User)
+            and is_member_authored_run(runtime_task)
+            and session.session_kind == "human_chat"
+            and session.source_channel == "web"
+            and session.audience_kind in {None, "private"}
+            and session.user_id == user.id
+            and user.tenant_id == tenant_id
+        ):
+            private_web_turn = await resolve_private_web_turn(db, task=runtime_task, agent=agent, requester=user)
+
         metadata = dict(metadata)
         semantic_history = await load_session_semantic_history(
             db,
@@ -6257,6 +6275,9 @@ async def _load_runtime_context(
             key: value for key, value in metadata.items() if key not in stored_metadata or value != stored_metadata[key]
         }
         runtime_task.metadata_json = {**dict(runtime_task.metadata_json or {}), **updates}
+        runtime_task._native_trigger_frame = native_frame
+        runtime_task._system_plan_mode = system_plan_mode
+        runtime_task._private_web_turn = private_web_turn
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 
 
@@ -6339,7 +6360,7 @@ def _phase_for_interactive_pause(summary: str | None, *, cancelled: bool) -> Run
     return RuntimePhase.DONE
 
 
-def _web_chat_run_ports() -> Any:
+def _web_chat_run_ports(*, tenant_id: uuid.UUID | None = None) -> Any:
     from app.services.web_chat_run_orchestrator import (
         WebChatArtifactPorts,
         WebChatContextPorts,
@@ -6352,7 +6373,7 @@ def _web_chat_run_ports() -> Any:
     return WebChatRunPorts(
         context=WebChatContextPorts(
             run_id=_run_id,
-            load_runtime_context=_load_runtime_context,
+            load_runtime_context=partial(_load_runtime_context, tenant_id=tenant_id) if tenant_id else _load_runtime_context,
             conversation_from_history=conversation_from_history_messages,
             merge_permission_metadata=_merge_runtime_permission_metadata,
             actor_user_id=_runtime_actor_user_id,
@@ -6793,7 +6814,7 @@ async def _retry_pending_session_run_settlements(
         require_tenant=True,
         source="pending_session_token_settlement_retry",
     ) as db:
-        cursor = await _load_settlement_scan_cursor(db, session_id=session_uuid)
+        start_cursor = cursor = await _load_settlement_scan_cursor(db, session_id=session_uuid)
         wrapped = False
         pages_read = 0
         while pages_read < _PENDING_SESSION_SETTLEMENT_MAX_PAGES:
@@ -6915,7 +6936,7 @@ async def _retry_pending_session_run_settlements(
     # keeps it a candidate, the wrap re-enumerates it, and the rank ordering
     # schedules its attempt without holding the window.
     next_cursor: tuple[datetime, uuid.UUID] | None = None if wrapped else (scanned[-1] if scanned else None)
-    if scanned or wrapped:
+    if (scanned or wrapped) and next_cursor != start_cursor:
         try:
             await _persist_settlement_scan_cursor(
                 tenant_id,
@@ -6949,6 +6970,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     from app.services.runtime_task_fence import current_runtime_task_fence
 
     run_uuid = _run_id(run_id)
+    retry_tenant = None
     try:
         # Reachable retry for prior runs of this session whose committed-round
         # charges stayed suppressed (bounded, idempotent, keyed).
@@ -6974,12 +6996,15 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 run_uuid,
                 exc,
             )
-        if current_runtime_task_fence() is not None and await _reconcile_claimed_web_chat_terminal_ghost(run_uuid):
+        tenant_scope = {"tenant_id": retry_tenant} if retry_tenant is not None else {}
+        if current_runtime_task_fence() is not None and await _reconcile_claimed_web_chat_terminal_ghost(
+            run_uuid, **tenant_scope
+        ):
             return
         return await run_web_chat_task(
             run_id=run_uuid,
             cancel_event=cancel_event,
-            ports=_web_chat_run_ports(),
+            ports=_web_chat_run_ports(**tenant_scope),
         )
     finally:
         # The run's own terminal state is durable here and this caller holds
@@ -7000,7 +7025,9 @@ async def _settle_completed_run_after_execution(run_uuid: uuid.UUID) -> None:
         )
 
 
-async def _reconcile_claimed_web_chat_terminal_ghost(run_uuid: uuid.UUID) -> bool:
+async def _reconcile_claimed_web_chat_terminal_ghost(
+    run_uuid: uuid.UUID, *, tenant_id: uuid.UUID | None = None,
+) -> bool:
     """Stop a reclaimed run when its transcript already proves terminal.
 
     The check executes inside the claimed/fenced worker before the lifecycle
@@ -7008,10 +7035,8 @@ async def _reconcile_claimed_web_chat_terminal_ghost(run_uuid: uuid.UUID) -> boo
     transcript commit succeeded but the RuntimeTask terminal projection did
     not.
     """
-    tenant_id = await resolve_tenant_for_runtime_task(
-        run_uuid,
-        session_factory=_async_session,
-    )
+    if tenant_id is None:
+        tenant_id = await resolve_tenant_for_runtime_task(run_uuid, session_factory=_async_session)
     if tenant_id is None:
         return True
     async with tenant_scoped_session(

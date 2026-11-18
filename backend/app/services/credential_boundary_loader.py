@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 import uuid
 
@@ -18,6 +19,16 @@ from app.services.exact_secret_boundary import (
 
 class RuntimeIngressSecretBoundaryUnavailable(RuntimeError):
     """The authoritative credential inventory could not be loaded."""
+
+
+@dataclass(slots=True)
+class IngressSecretInventory:
+    """Carry one requester's inventory from ingress to inline dispatch."""
+
+    tenant_id: uuid.UUID
+    agent_id: uuid.UUID
+    requester_user_id: uuid.UUID
+    boundary: ExactSecretBoundary | None = dataclass_field(default=None, init=False, repr=False)
 
 
 _PASTE_POLICY_EXEMPT_SOURCES = frozenset({
@@ -270,16 +281,24 @@ async def load_runtime_ingress_secret_boundary(
     agent_id: uuid.UUID | None,
     requester_user_id: uuid.UUID | None,
     reply_target: dict[str, Any] | None = None,
+    inventory: IngressSecretInventory | None = None,
 ) -> ExactSecretBoundary:
     """Load the exact tenant inventory plus the current typed reply target."""
 
     try:
-        tenant_boundary = await load_requester_exact_secret_boundary(
-            db,
-            tenant_id=tenant_id,
-            agent_id=agent_id,
-            requester_user_id=requester_user_id,
-        )
+        same_requester = inventory is not None and (
+            inventory.tenant_id, inventory.agent_id, inventory.requester_user_id
+        ) == (tenant_id, agent_id, requester_user_id)
+        tenant_boundary = inventory.boundary if same_requester else None
+        if tenant_boundary is None:
+            tenant_boundary = await load_requester_exact_secret_boundary(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                requester_user_id=requester_user_id,
+            )
+            if same_requester:
+                inventory.boundary = tenant_boundary
         return ExactSecretBoundary.combine(
             tenant_boundary,
             boundary_from_reply_target(reply_target),
@@ -300,6 +319,7 @@ async def redact_runtime_ingress_payload(
     reply_target: dict[str, Any] | None = None,
     source_channel: str | None = None,
     source: str | None = None,
+    inventory: IngressSecretInventory | None = None,
 ) -> ExactSecretPayloadRedaction:
     """Protect durable ingress, including the opt-in Web paste policy."""
 
@@ -326,6 +346,7 @@ async def redact_runtime_ingress_payload(
             agent_id=agent_id,
             requester_user_id=requester_user_id,
             reply_target=reply_target,
+            inventory=inventory,
         )
         redaction = boundary.redact_payload_with_evidence(payload)
     if web_paste and (pasted_count or redaction.redacted_count) and isinstance(redaction.value, dict):

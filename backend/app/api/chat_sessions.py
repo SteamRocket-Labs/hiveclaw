@@ -1673,6 +1673,12 @@ async def create_session_run(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new human web session and start its first durable run atomically."""
+    from app.services.credential_boundary_loader import (
+        IngressSecretInventory,
+        RuntimeIngressSecretBoundaryUnavailable,
+        redact_runtime_ingress_payload,
+    )
+
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     reject_non_executing_agent_access(access_level)
 
@@ -1689,17 +1695,17 @@ async def create_session_run(
             {"key": f"first-input-session:{session_id}"})
     session = await db.get(ChatSession, session_id, populate_existing=True) if body.input_id else None
     tenant_id = getattr(agent, "tenant_id", getattr(current_user, "tenant_id", None))
+    ingress_inventory = IngressSecretInventory(tenant_id, agent_id, current_user.id)
     if session is not None and (session.agent_id != agent_id or session.tenant_id != tenant_id
         or session.user_id != current_user.id or session.session_kind != "human_chat"
         or session.audience_kind not in {None, "private"}):
         raise HTTPException(409, detail={"code": "first_input_session_conflict"})
     if session is None:
-        from app.services.credential_boundary_loader import RuntimeIngressSecretBoundaryUnavailable, redact_runtime_ingress_payload
-
         try:
             protected_title = await redact_runtime_ingress_payload(
                 db, tenant_id=tenant_id, agent_id=agent_id, source_channel="web", payload={"title": body.title},
                 requester_user_id=current_user.id,
+                inventory=ingress_inventory,
             )
         except RuntimeIngressSecretBoundaryUnavailable as exc:
             raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc
@@ -1736,6 +1742,7 @@ async def create_session_run(
             attachments=body.attachments,
             parts=body.parts,
             allow_project_selection=True,
+            ingress_inventory=ingress_inventory,
         )
         run = dict(receipt.get("run") or receipt)
     except IdempotencyConflict as exc:
@@ -1764,6 +1771,8 @@ async def start_session_run(
     db: AsyncSession = Depends(get_db),
 ):
     """Start a durable in-process web chat run for a session."""
+    from app.services.credential_boundary_loader import IngressSecretInventory
+
     session, agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
@@ -1793,6 +1802,11 @@ async def start_session_run(
             attachments=body.attachments,
             parts=body.parts,
             allow_project_selection=True,
+            ingress_inventory=(
+                IngressSecretInventory(agent.tenant_id, agent.id, current_user.id)
+                if isinstance(session, ChatSession) and session.audience_kind in {None, "private"}
+                else None
+            ),
         )
         if receipt.get("run"):
             return receipt["run"]

@@ -18,6 +18,7 @@ import re
 import threading
 import uuid
 from contextvars import ContextVar
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
@@ -555,6 +556,33 @@ async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> _MCPGating | Non
     return _MCPGating(reachable_by_tool_id=gating, always_load_tool_names=always_load_tool_names)
 
 
+@dataclass(frozen=True, slots=True)
+class AgentToolConfiguration:
+    agent: Agent
+    tools: list
+    assignments: dict
+    policies: dict[str, bool]
+    mcp_gating: _MCPGating | None
+
+
+async def _load_agent_tool_rows(db, agent: Agent | None, agent_id: uuid.UUID, *, mcp_only: bool = False):
+    from app.models.tool import AgentTool, Tool
+
+    statement = select(Tool).where(Tool.enabled)
+    if mcp_only:
+        statement = statement.where(Tool.type == "mcp")
+    tools = (await db.execute(statement.where(_tool_tenant_predicate(Tool, agent)))).scalars().all()
+    assignments = (await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))).scalars().all()
+    return list(tools), {str(row.tool_id): row for row in assignments}
+
+
+async def load_agent_tool_configuration(db, agent: Agent) -> AgentToolConfiguration:
+    policies = await get_agent_capability_group_policies(db, agent.tenant_id, agent.id)
+    tools, assignments = await _load_agent_tool_rows(db, agent, agent.id)
+    gating = await _resolve_agent_mcp_gating(db, agent.id)
+    return AgentToolConfiguration(agent, tools, assignments, policies, gating)
+
+
 _WORD_RUN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+")
 _ASCII_ALNUM = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 # Host labels that carry no identity: every MCP endpoint has them.
@@ -710,7 +738,8 @@ def _tool_tenant_predicate(ToolModel: Any, agent: Any | None):
 
 
 async def discoverable_tool_names_for_query(
-    agent_id: uuid.UUID, query: str, *, company_connections: list[tuple[str, str]] | None = None
+    agent_id: uuid.UUID, query: str, *, company_connections: list[tuple[str, str]] | None = None,
+    configuration: AgentToolConfiguration | None = None,
 ) -> list[str]:
     """Single source for "query → discoverable (deferred) tool names" (Step 3).
 
@@ -724,13 +753,14 @@ async def discoverable_tool_names_for_query(
     return [
         name
         for name, _connection_label in await discoverable_deferred_tools_for_query(
-            agent_id, query, company_connections=company_connections
+            agent_id, query, company_connections=company_connections, configuration=configuration,
         )
     ]
 
 
 async def discoverable_deferred_tools_for_query(
-    agent_id: uuid.UUID, query: str, *, company_connections: list[tuple[str, str]] | None = None
+    agent_id: uuid.UUID, query: str, *, company_connections: list[tuple[str, str]] | None = None,
+    configuration: AgentToolConfiguration | None = None
 ) -> list[tuple[str, str]]:
     """``discoverable_tool_names_for_query`` with each tool's model-facing
     connection label (``""`` for non-MCP tools; the validated MCP URL's host
@@ -747,9 +777,12 @@ async def discoverable_deferred_tools_for_query(
     capability_group_policies: dict[str, bool] | None = None
     capability_group_policy_available = True
     try:
-        tenant_id = await resolve_tenant_for_agent(agent_id)
-        async with tenant_scoped_session(tenant_id) as db:
-            capability_group_policies = await get_agent_capability_group_policies(db, tenant_id, agent_id)
+        if configuration is not None:
+            capability_group_policies = configuration.policies
+        else:
+            tenant_id = await resolve_tenant_for_agent(agent_id)
+            async with tenant_scoped_session(tenant_id) as db:
+                capability_group_policies = await get_agent_capability_group_policies(db, tenant_id, agent_id)
     except Exception as exc:
         logger.warning(
             "[Tools] capability group policy lookup failed for discovery; failing L2 discovery closed: %s",
@@ -802,7 +835,8 @@ async def discoverable_deferred_tools_for_query(
     # the prompt's Company Applications section and tool_search share one
     # governed listing (G4c r4 N-a: plain kwarg; seam fakes accept it).
     for mcp_name, connection_label in await list_agent_mcp_deferred_tools_with_labels(
-        agent_id, mcp_query, company_connections=company_connections
+        agent_id, mcp_query, company_connections=company_connections,
+        **({"configuration": configuration} if configuration is not None else {}),
     ):
         if mcp_name in CORE_TOOL_NAMES or mcp_name in seen:
             continue
@@ -812,7 +846,8 @@ async def discoverable_deferred_tools_for_query(
 
 
 async def available_deferred_tool_names_for_agent(
-    agent_id: uuid.UUID, *, limit: int = 80, company_connections: list[tuple[str, str]] | None = None
+    agent_id: uuid.UUID, *, limit: int = 80, company_connections: list[tuple[str, str]] | None = None,
+    configuration: AgentToolConfiguration | None = None,
 ) -> list[str]:
     """Stable complete list of deferred tools the agent may select/load.
 
@@ -821,7 +856,10 @@ async def available_deferred_tool_names_for_agent(
     ``company_connections`` (G4c r3) rides the same enumeration unchanged.
     """
     del limit
-    names = await discoverable_tool_names_for_query(agent_id, "", company_connections=company_connections)
+    names = await discoverable_tool_names_for_query(
+        agent_id, "", company_connections=company_connections,
+        **({"configuration": configuration} if configuration is not None else {}),
+    )
     return sorted(dict.fromkeys(names))
 
 
@@ -875,6 +913,7 @@ def _deferred_tool_activation_keys(candidate: dict[str, Any]) -> dict[str, Any]:
 async def available_deferred_tool_candidates_for_agent(
     agent_id: uuid.UUID, *, limit: int = 80, source_unbound: list[str] | None = None,
     bound_only: bool = False, company_connections: list[tuple[str, str]] | None = None,
+    configuration: AgentToolConfiguration | None = None,
 ) -> list[dict[str, Any]]:
     """Turn-1 candidates; bound_only keeps external names in tool_search instead.
 
@@ -883,7 +922,8 @@ async def available_deferred_tool_candidates_for_agent(
     Company Applications section derives from it with zero additional
     statements."""
     names = await available_deferred_tool_names_for_agent(
-        agent_id, limit=limit, company_connections=company_connections
+        agent_id, limit=limit, company_connections=company_connections,
+        **({"configuration": configuration} if configuration is not None else {}),
     )
     builtin_names = AGENT_TEAM_DEFERRED_TOOL_NAMES | {
         name for capability in iter_runtime_l2_capabilities() for name in capability.tools}
@@ -956,7 +996,8 @@ async def gather_deferred_tool_candidates_for_agent(
 
 
 async def list_agent_mcp_deferred_tools_with_labels(
-    agent_id: uuid.UUID, query: str = "", *, company_connections: list[tuple[str, str]] | None = None
+    agent_id: uuid.UUID, query: str = "", *, company_connections: list[tuple[str, str]] | None = None,
+    configuration: AgentToolConfiguration | None = None
 ) -> list[tuple[str, str]]:
     """The single DB-aware, governed MCP enumeration (J / 🦴#2; G4b r2).
 
@@ -980,7 +1021,6 @@ async def list_agent_mcp_deferred_tools_with_labels(
     wrapper for direct callers.
     """
 
-    from app.models.tool import AgentTool, Tool
     from app.services.mcp_metadata_trust import _safe_endpoint_host, is_mcp_metadata_runtime_approved, trusted_connection_label
 
     matched: list[tuple[str, str]] = []
@@ -989,21 +1029,18 @@ async def list_agent_mcp_deferred_tools_with_labels(
     try:
         # RLS 阶段1: `tools`/`agents` are policy-bearing — resolve the agent's
         # tenant first (audited single-row bypass), then scope the whole read.
-        tid = await resolve_tenant_for_agent(agent_id)
-        async with tenant_scoped_session(tid) as db:
-            agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
-            mcp_gating = await _resolve_agent_mcp_gating(db, agent_id)
-            mcp_tools = (
-                (
-                    await db.execute(
-                        select(Tool).where(Tool.enabled, Tool.type == "mcp", _tool_tenant_predicate(Tool, agent))
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
-            assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
+        async with AsyncExitStack() as stack:
+            if configuration is not None:
+                agent = configuration.agent
+                mcp_gating = configuration.mcp_gating
+                mcp_tools = [tool for tool in configuration.tools if tool.type == "mcp"]
+                assignments = configuration.assignments
+            else:
+                tenant_id = await resolve_tenant_for_agent(agent_id)
+                db = await stack.enter_async_context(tenant_scoped_session(tenant_id))
+                agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+                mcp_gating = await _resolve_agent_mcp_gating(db, agent_id)
+                mcp_tools, assignments = await _load_agent_tool_rows(db, agent, agent_id, mcp_only=True)
 
             for t in mcp_tools:
                 if not _tool_visible_to_agent_tenant(t, agent):
@@ -1063,6 +1100,8 @@ async def get_agent_tools_for_llm(
     agent_id: uuid.UUID,
     core_only: bool = False,
     requested_names: list[str] | None = None,
+    *,
+    configuration: AgentToolConfiguration | None = None,
 ) -> list[dict]:
     """Load enabled tools for an agent from DB (OpenAI function-calling format).
 
@@ -1084,18 +1123,23 @@ async def get_agent_tools_for_llm(
     requested_set = set(explicit_requested_set)
     if requested_set:
         requested_set |= CORE_TOOL_NAMES
+    if configuration is not None and configuration.agent.id != agent_id:
+        configuration = None
 
     capability_group_policies = None
     try:
-        from app.models.tool import Tool, AgentTool
         from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
 
         # RLS 阶段1: `tools`/`agents` are policy-bearing — resolve the agent's
         # tenant first (audited single-row bypass), then scope the whole read.
-        tid = await resolve_tenant_for_agent(agent_id)
-        async with tenant_scoped_session(tid) as db:
-            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
-            agent = agent_result.scalar_one_or_none()
+        async with AsyncExitStack() as stack:
+            if configuration is None:
+                tenant_id = await resolve_tenant_for_agent(agent_id)
+                db = await stack.enter_async_context(tenant_scoped_session(tenant_id))
+                agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+                agent = agent_result.scalar_one_or_none()
+            else:
+                agent = configuration.agent
             hr_agent = is_hr_agent(agent)
             _core = _core_tools_for_agent(agent)
             _always_tools = (
@@ -1108,23 +1152,22 @@ async def get_agent_tools_for_llm(
                 )
                 + (_get_hr_tools() if hr_agent else [])
             )
-            capability_group_policies = await get_agent_capability_group_policies(
-                db,
-                getattr(agent, "tenant_id", None),
-                agent_id,
-            )
+            if configuration is not None:
+                capability_group_policies = configuration.policies
+                all_tools = configuration.tools
+                assignments = configuration.assignments
+                mcp_gating = configuration.mcp_gating
+            else:
+                capability_group_policies = await get_agent_capability_group_policies(
+                    db,
+                    getattr(agent, "tenant_id", None),
+                    agent_id,
+                )
 
-            # Get globally enabled tools visible to this agent's tenant.
-            all_tools_r = await db.execute(select(Tool).where(Tool.enabled, _tool_tenant_predicate(Tool, agent)))
-            all_tools = all_tools_r.scalars().all()
-
-            # Get agent-specific assignments
-            agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
-            assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
-
-            # MCP-tool reachability from the new assignment tables (§8.5).
-            # None → agent not yet backfilled; keep legacy AgentTool/is_default logic for MCP.
-            mcp_gating = await _resolve_agent_mcp_gating(db, agent_id)
+                all_tools, assignments = await _load_agent_tool_rows(db, agent, agent_id)
+                # MCP-tool reachability from the new assignment tables (§8.5).
+                # None → agent not yet backfilled; keep legacy AgentTool/is_default logic for MCP.
+                mcp_gating = await _resolve_agent_mcp_gating(db, agent_id)
 
             result = []
             db_tool_names = set()

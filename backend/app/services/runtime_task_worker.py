@@ -1437,7 +1437,7 @@ async def _terminal_boundary_lane_loop(*, worker_id: str, lane: str, once: bool 
             state["last_error"] = _STATE["last_error"] = f"{lane}_terminal_boundary:{type(exc).__name__}: {exc}"
             state["error_type"] = type(exc).__name__
             logger.exception("[RuntimeTaskWorker] {} terminal boundary tick failed", lane)
-        except BaseException as exc:
+        except asyncio.CancelledError as exc:
             if asyncio.current_task().cancelling():
                 raise
             state["last_error"] = _STATE["last_error"] = f"{lane}_terminal_boundary:unexpected_exit"
@@ -1489,7 +1489,7 @@ async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -
                         result = probe.result()
                         # Conservatively discard values observed after the read's deadline.
                         due = result if now < probe_at else dict.fromkeys(consumers, True)
-                    except BaseException:
+                    except (Exception, asyncio.CancelledError):
                         if asyncio.current_task().cancelling():
                             raise
                         due = dict.fromkeys(consumers, True)

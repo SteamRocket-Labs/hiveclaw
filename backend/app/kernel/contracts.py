@@ -7,9 +7,12 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from app.runtime.session import SessionContext
+
+if TYPE_CHECKING:
+    from app.services.agent_tools import AgentToolConfiguration
 
 ChunkCallback = Callable[[str], Awaitable[None] | None]
 ThinkingCallback = Callable[[str], Awaitable[None] | None]
@@ -202,6 +205,7 @@ class InvocationRequest:
     # consumed by every recovery reader/writer in the turn.
     recovery_authority: Any | None = None
     recovery_manifest_result: Any | None = None
+    initial_tool_configuration: AgentToolConfiguration | None = None
 
 
 @dataclass(slots=True)

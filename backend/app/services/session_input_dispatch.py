@@ -12,7 +12,7 @@ import json
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 from sqlalchemy import String, case, cast, func, or_, select
@@ -37,6 +37,10 @@ from app.services.session_v2_persistence import (
 )
 from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES
 
+if TYPE_CHECKING:
+    from app.services.credential_boundary_loader import IngressSecretInventory
+
+_DISPATCH_LEASE_DURATION = timedelta(seconds=5)
 
 @dataclass(frozen=True, slots=True)
 class InputDispatchOutcome:
@@ -349,6 +353,7 @@ async def _start_input_runtime(
     user: Any,
     session: ChatSession,
     successor: bool,
+    ingress_inventory: IngressSecretInventory | None = None,
 ) -> dict[str, Any]:
     from app.services.web_chat_runtime import start_web_chat_run
 
@@ -432,6 +437,7 @@ async def _start_input_runtime(
         run_id=run_id,
         runtime_task_type=runtime_task_type,
         source_channel=None,  # Already redacted at ingress; apply only the exact-secret boundary.
+        ingress_inventory=ingress_inventory,
         budget_interactive=budget_interactive,
         parts=list(row.content_parts_json or []),
         extra_metadata={
@@ -596,6 +602,7 @@ async def _dispatch_one(
     db: AsyncSession,
     *,
     admission_id: uuid.UUID,
+    ingress_inventory: IngressSecretInventory | None = None,
 ) -> tuple[dict[str, Any], bool]:
     admission, row, command, authority, agent, user, session = await _dispatch_context(
         db,
@@ -633,6 +640,7 @@ async def _dispatch_one(
                     user=user,
                     session=session,
                     successor=False,
+                    ingress_inventory=ingress_inventory,
                 ),
                 False,
             )
@@ -765,11 +773,15 @@ def _begin_dispatch_claim(
 async def _dispatch_claimed_admissions(
     db: AsyncSession,
     claimed_ids: list[uuid.UUID],
+    *,
+    ingress_inventory: IngressSecretInventory | None = None,
 ) -> dict[str, int]:
     counts = {"claimed": len(claimed_ids), "dispatched": 0, "deferred": 0, "retried": 0}
     for admission_id in claimed_ids:
         try:
-            receipt, deferred = await _dispatch_one(db, admission_id=admission_id)
+            receipt, deferred = await _dispatch_one(
+                db, admission_id=admission_id, ingress_inventory=ingress_inventory
+            )
             admission = await db.scalar(
                 select(SessionInputAdmission).where(SessionInputAdmission.id == admission_id).with_for_update()
             )
@@ -904,7 +916,7 @@ async def recover_admitted_session_inputs_once(
     db: AsyncSession,
     *,
     worker_id: str,
-    stale_after: timedelta = timedelta(seconds=5),
+    stale_after: timedelta = _DISPATCH_LEASE_DURATION,
     tenant_id: uuid.UUID | None = None,
     admission_ids: tuple[uuid.UUID, ...] | None = None,
     limit: int = 100,
@@ -1033,55 +1045,36 @@ async def dispatch_admitted_input_fast_path(
     *,
     admission_id: uuid.UUID,
     worker_id: str,
+    ingress_inventory: IngressSecretInventory | None = None,
 ) -> InputDispatchOutcome:
-    """Optional latency path; the durable worker remains authoritative."""
+    """Try this input only, using the same claim rules as the recovery worker."""
 
-    admission = await db.scalar(
-        select(SessionInputAdmission).where(SessionInputAdmission.id == admission_id).with_for_update()
-    )
-    if admission is None:
-        raise ValueError("input_admission_not_found")
-    if admission.dispatch_state == "dispatched":
-        return InputDispatchOutcome(
-            admission.id,
-            admission.input_id,
-            admission.dispatch_state,
-            dict(admission.dispatch_receipt_json or {}),
-        )
-    if admission.state != "admitted":
-        return InputDispatchOutcome(admission.id, admission.input_id, admission.dispatch_state, {})
     now = datetime.now(timezone.utc)
-    if (
-        admission.dispatch_state == "dispatching"
-        and admission.lease_expires_at is not None
-        and admission.lease_expires_at > now
-    ):
-        return InputDispatchOutcome(
-            admission.id,
-            admission.input_id,
-            admission.dispatch_state,
-            dict(admission.dispatch_receipt_json or {}),
-            deferred=True,
-        )
-    # Release the aggregate lock, but never clear another worker's lease.  The
-    # durable claim query owns pending/stale-dispatching CAS transitions.
-    await db.commit()
-    await recover_admitted_session_inputs_once(
-        db,
-        worker_id=worker_id,
-        tenant_id=admission.tenant_id,
-        admission_ids=(admission.id,),
-        limit=1,
+    admission = await db.scalar(
+        _admitted_input_candidate_statement(SessionInputAdmission, now=now, tenant_id=None, limit=1)
+        .where(SessionInputAdmission.id == admission_id)
+        .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
     )
-    current = await db.get(SessionInputAdmission, admission.id)
-    assert current is not None
+    if admission is not None:
+        _begin_dispatch_claim(
+            admission, worker_id=worker_id, now=now, lease_seconds=_DISPATCH_LEASE_DURATION.total_seconds()
+        )
+        await db.commit()
+        await _dispatch_claimed_admissions(db, [admission_id], ingress_inventory=ingress_inventory)
+
+    current = await db.get(SessionInputAdmission, admission_id, populate_existing=True)
+    if current is None:
+        raise ValueError("input_admission_not_found")
     return InputDispatchOutcome(
         current.id,
         current.input_id,
         current.dispatch_state,
-        dict(current.dispatch_receipt_json or {}),
-        deferred=current.dispatch_state == "pending",
-    )
+        dict(current.dispatch_receipt_json or {})
+        if admission is not None or current.state == "admitted" or current.dispatch_state == "dispatched"
+        else {},
+        deferred=current.state == "admitted" and current.dispatch_state in {"pending", "dispatching"},
+        )
 
 
 __all__ = [

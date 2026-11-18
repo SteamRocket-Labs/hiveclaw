@@ -1194,7 +1194,6 @@ def _agent_invocation_request(
         ),
         model_routing_locked=bool(state.metadata.get("model_routing_locked"))
         or bool(getattr(state, "native_trigger_frame", None) and getattr(state, "native_trigger_frame", None).model_id),
-        smart_model_routing=(private_web_turn.agent.smart_model_routing or {}) if private_web_turn else None,
         private_web_turn=private_web_turn,
         **profile,
     )

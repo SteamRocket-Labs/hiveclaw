@@ -1616,6 +1616,11 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
 
     private_web_turn = request.private_web_turn if request else None
 
+    async def resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
+        if private_web_turn is not None and agent_id == private_web_turn.agent.id:
+            return private_web_turn.config
+        return await _resolve_runtime_config(agent_id)
+
     async def _kernel_resolve_memory_context(
         request: InvocationRequest,
         tenant_id: uuid.UUID | None,
@@ -1725,7 +1730,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
 
     return AgentKernel(
         KernelDependencies(
-            resolve_runtime_config=(lambda _agent_id: private_web_turn.config) if private_web_turn else _resolve_runtime_config,
+            resolve_runtime_config=resolve_runtime_config,
             resolve_current_user_name=(lambda _user_id: private_web_turn.requester_name) if private_web_turn else _resolve_current_user_name,
             build_system_prompt=_kernel_build_system_prompt,
             resolve_memory_context=_kernel_resolve_memory_context,
@@ -2006,9 +2011,17 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
     private_web_turn = request.private_web_turn
 
     async def load_secret_boundary(**scope):
-        if private_web_turn is not None:
+        if private_web_turn is not None and (
+            scope.get("tenant_id"), scope.get("agent_id"), scope.get("requester_user_id")
+        ) == (private_web_turn.agent.tenant_id, private_web_turn.agent.id, private_web_turn.requester.id):
             return private_web_turn.credential_boundary
         return await _load_invocation_secret_boundary(**scope)
+
+    async def resolve_smart_routing(agent_id: uuid.UUID | None) -> dict[str, Any] | None:
+        if private_web_turn is not None and agent_id == private_web_turn.agent.id:
+            routing = private_web_turn.agent.smart_model_routing
+            return routing if isinstance(routing, dict) else None
+        return await _resolve_agent_smart_model_routing(agent_id)
 
     return await run_agent_invocation(
         request=request,
@@ -2023,7 +2036,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             latest_user_prompt=_latest_user_prompt,
             maybe_await=_maybe_await,
             normalize_session_context=_normalize_invocation_session_context,
-            resolve_smart_routing=_resolve_agent_smart_model_routing,
+            resolve_smart_routing=resolve_smart_routing,
             resolve_context_budget=_resolve_context_budget,
             resolve_turn_route=_resolve_effective_turn_route,
             resolve_eviction_dir=_resolve_eviction_dir,

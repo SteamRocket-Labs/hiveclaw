@@ -1955,6 +1955,19 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
         if turn is not None:
             await stack.enter_async_context(async_agent_workspace_lock(agent_id, data_root=data_root))
         instructions = agent_context.skill_catalog_instructions(agent_id, kwargs.get("session_id")) if turn else None
+        manifest_paths = None
+        include_candidates = True
+        if instructions is not None:
+            manifest_paths = set()
+            include_candidates = False
+            for view, groups in instructions.items():
+                for _name, paths in groups:
+                    for path in paths:
+                        target = path.resolve()
+                        if target.is_relative_to(root / "workspace"):
+                            manifest_paths.add(target.relative_to(root).as_posix())
+                        if target.is_relative_to(root / "evolution") or target.is_relative_to(view / "evolution"):
+                            include_candidates = True
         if request.user_id is not None and request.tenant_id is not None:
             try:
                 async with tenant_scoped_session(request.tenant_id) as db:
@@ -1980,13 +1993,6 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
                             autonomous=autonomous,
                             delegation_id=str(delegation_id) if delegation_id else None,
                         )
-                        manifest_paths = None
-                        if instructions is not None:
-                            manifest_paths = {
-                                path.relative_to(root).as_posix()
-                                for groups in instructions.values() for _name, paths in groups
-                                for file in paths if (path := file.resolve()).is_relative_to(root / "workspace")
-                            }
                         scope = await load_workspace_authority_scope(
                             db,
                             user,
@@ -1995,6 +2001,7 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
                             runtime_principal=principal,
                             agent_access=(turn.agent, turn.access_level) if turn else None,
                             manifest_paths=manifest_paths,
+                            include_learning_candidates=include_candidates,
                         )
             except Exception:
                 capture.unbound.append("skill_catalog_authority_unavailable")
@@ -2024,7 +2031,8 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
         if turn is None:
             await stack.enter_async_context(async_agent_workspace_lock(agent_id, data_root=data_root))
         await load_skill_input_snapshot(
-            capture, request.tenant_id, runtime_request=principal if scope is not None else None
+            capture, request.tenant_id, runtime_request=principal if scope is not None else None,
+            include_candidates=include_candidates,
         )
         catalog = build_skill_catalog_section_for_agent(
             agent_id, **kwargs, source_observer=observed, source_authorizer=allowed, instructions=instructions,

@@ -1072,7 +1072,13 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # _heartbeat_tick now calls _load_heartbeat_failure_streaks, one read of
 # runtime_tasks inside the existing heartbeat tick bypass (heartbeat.py:1541).
 # No new bypass scope or write.
-RLS_BYPASS_SCOPES_SHA256 = "bb69b3f277b0ba610b63661da357bdbc9044d1971f7c226e362997cb1749afff"
+# Land46 (A2fp1) versus land45: 123 callsites and 809 entries unchanged; no key
+# added or removed. Changed hashes only: module sources of chat_transcript,
+# credential_boundary_loader, runtime_task_worker, session_human_input,
+# session_input_dispatch, session_model_round and web_chat_runtime, and the
+# functions lock_transcript_session, mark_bound_inputs_applied and
+# commit_sealed_model_round. No new bypass scope or write.
+RLS_BYPASS_SCOPES_SHA256 = "588514cd4c9f0323f0eea12443ef73a0870cb2015c085ab38f481c304916171e"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

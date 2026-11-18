@@ -20,6 +20,7 @@ from app.core.execution_context import (
     get_execution_identity,
     set_execution_identity,
 )
+from app.core.request_timing import provider_request_timing
 from app.kernel.contracts import (
     ChunkCallback,
     ExecutionAuthorityUnavailable,
@@ -4031,9 +4032,10 @@ async def _stream_with_cancel(
     cancel_event: asyncio.Event | None,
     **kwargs: Any,
 ) -> Any:
-    return await _await_with_cancel(
-        lambda: client.stream(**kwargs), cancel_event=cancel_event, provider_request_sent=True
-    )
+    with provider_request_timing():
+        return await _await_with_cancel(
+            lambda: client.stream(**kwargs), cancel_event=cancel_event, provider_request_sent=True
+        )
 
 
 def _resolve_continuation_max_tokens(active_model: Any) -> int:

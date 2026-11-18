@@ -1033,7 +1033,29 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # _agent_access_for_loaded passes them and raises 403 when the canonical check fails, and
 # the content_input_receipts module batches the published-receipt source check in the
 # existing A2w frame. R27 changes no fingerprinted entry.
-RLS_BYPASS_SCOPES_SHA256 = "7c706af9c41653aff0c69ff844d593b0cf5d869788c69f982e18c41a77c3f6d5"
+# Land38 (X7h, R29a, A2z, R28a) versus land36: still 805 entries and 123 callsites, no
+# new or removed key, no new bypass scope, 7 changed hashes, all tenant-filtered reads
+# without new bypass writes. R29a: runtime_notification_outbox (module, the root
+# continuation denial moves into a helper that also reads cancel_state) and
+# web_chat_runtime (module, a member stop also cancels a2a_continuation children).
+# A2z: session_input_dispatch (module, positive status keys), session_model_round
+# (module), session_round_obligation (module, current_run_fences locks and reads only
+# the fence columns) and session_tool_runtime (module, prepare_tool_invocation loads
+# only the columns it uses). X7h and R28a change no fingerprinted entry.
+# Land39 (SP1, SP2b) versus land38: still 805 entries and 123 callsites, no new or
+# removed key, no new bypass scope, 1 changed hash: app/database.py (module; SP2b adds
+# jit=off to the asyncpg startup settings). SP1 changes no fingerprinted entry.
+# Land40 (X8, SP2c) versus land39: 807 entries (+2 new functions, no removed key) and
+# still 123 callsites, no new bypass scope. New: web_chat_runtime
+# find_stoppable_web_chat_handoff and session_control_input _cancel_target_is_active
+# (a completed parent with an outstanding colleague counts as stoppable). Changed:
+# web_chat_runtime (module), session_control_input (module,
+# settle_pending_controls_for_run, recover_stale_cancel_control_inputs_once).
+# SP2c changes no fingerprinted entry.
+# Land41 (SP3b) versus land40: still 807 entries and 123 callsites, no new or
+# removed key, no new bypass scope. Changed: module source of web_chat_runtime
+# (timing decorator and terminal marks) and session_model_round (timing span).
+RLS_BYPASS_SCOPES_SHA256 = "5b60cf79a9bc6c7e15ad986ac051bfdb06545cbf09f7241f45d00cb564ecb372"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

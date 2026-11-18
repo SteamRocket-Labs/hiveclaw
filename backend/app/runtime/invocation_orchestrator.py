@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.request_timing import timed_phase
+
 if TYPE_CHECKING:
     from app.runtime.invoker import AgentInvocationRequest, AgentInvocationResult
 
@@ -334,6 +336,7 @@ def _resolve_execution_identity(request: AgentInvocationRequest, ports: Invocati
     return None
 
 
+@timed_phase("skill_catalog")
 async def _build_skill_catalog(request: AgentInvocationRequest, ports: InvocationPorts) -> str:
     if request.agent_id is None or (request.standalone_system_prompt or "").strip():
         return ""

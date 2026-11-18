@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SKILL_CATALOG_GUIDANCE = """Skills are progressive-disclosure capability capsules. A folder-based skill can package references, \
+SKILL_CATALOG_GUIDANCE = """Skills provide methods and reusable task instructions. A folder-based skill can package references, \
 templates, scripts, workflow definitions, and subagent definitions; loading it adds context and guidance only. \
 Executable components still run through their governed runtime: workflows via `preview_workflow`/`start_workflow`, \
 subagents via `spawn_subagent`/`delegate_to_agent`, and scripts through approved sandbox/code execution.

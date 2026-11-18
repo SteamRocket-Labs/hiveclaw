@@ -14,6 +14,7 @@ import { assistantReplyForDisplay } from '../agent-detail/CanonicalCardAssistant
 import {
   agentChatMessageRunId as messageRunId,
   isSameSessionRunId,
+  isAppliedRunCancel,
   isStreamingAssistantMessage,
   normalizeSessionRunId,
   terminalRuntimePhaseForSessionEvent,
@@ -2142,7 +2143,8 @@ function isCanonicalRunTerminal(message: AgentChatMessage): boolean {
   const item = message.sessionItem;
   return (item?.kind === 'run' && CANONICAL_RUN_TERMINAL_LIFECYCLES.has(item.lifecycle)
     && terminalRuntimePhaseForSessionEvent(item.kind, item.lifecycle, item.payload) !== 'awaiting_approval')
-    || (item?.kind === 'runtime_failure' && item.scope.level === 'run' && item.lifecycle === 'recorded');
+    || (item?.kind === 'runtime_failure' && item.scope.level === 'run' && item.lifecycle === 'recorded')
+    || isAppliedRunCancel(message);
 }
 
 function isFiniteTimelineTime(value: unknown): value is string {
@@ -2260,7 +2262,8 @@ function applyCanonicalRunTerminalEvidence(
     // R26a: retain the backend failure event, but reuse completed handoff
     // presentation. X2/X5a keep it running only until the colleague settles.
     const completedAction = message.eventType === 'runtime_action_completed' && ['completed', 'done'].includes(message.eventStatus || '');
-    const lifecycle = completedAction ? 'completed' : item?.kind === 'runtime_failure' ? isRunningTaskReadStop(message) ? 'completed' : 'failed'
+    const appliedCancel = isAppliedRunCancel(message);
+    const lifecycle = appliedCancel ? 'cancelled' : completedAction ? 'completed' : item?.kind === 'runtime_failure' ? isRunningTaskReadStop(message) ? 'completed' : 'failed'
       : item?.kind === 'run' ? item.lifecycle : null;
     if (!lifecycle || (!completedAction && !isCanonicalRunTerminal(message))) return;
     const runId = messageRunId(message);
@@ -2270,7 +2273,7 @@ function applyCanonicalRunTerminalEvidence(
     const rawSequence = item?.terminalSequence ?? item?.last_sequence ?? message.threadItem?.sequence;
     const sequence = typeof rawSequence === 'number' && Number.isFinite(rawSequence) && rawSequence > 0 ? rawSequence : Infinity;
     const previous = terminalByRunId.get(runId);
-    if (previous && previous.sequence <= sequence) return;
+    if (previous && previous.sequence <= sequence && !appliedCancel) return;
     const status: RunTimelineSnapshot['status'] = lifecycle === 'failed' || lifecycle === 'needs_reconciliation'
       ? 'failed'
       : lifecycle === 'cancelled' || lifecycle === 'killed'
@@ -2557,7 +2560,8 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     .reverse().find(message => messageRunId(message)));
   const blockedRun = sessionWorkbench?.runtime_tasks?.find(task => isSameSessionRunId(
     readString(task, ['runtime_task_id', 'id'], ''), headerRunId));
-  const runLifecycle = pendingSendState ? undefined : CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
+  const runLifecycle = pendingSendState ? undefined : input.messages.some(message => isAppliedRunCancel(message)
+    && isSameSessionRunId(messageRunId(message), headerRunId)) ? 'cancelled' : CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     ? currentRun?.lifecycle : approvalStatus === 'running'
       ? acceptedPermissionStatus(readString(blockedRun ?? {}, ['status'], '') || input.activeRunStatus || activeRunStatus || currentRun?.lifecycle)
       : approvalStatus || readString(blockedRun ?? {}, ['status'], '') || currentRun?.lifecycle;
@@ -2596,7 +2600,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       .map(cell => (cell.kind === 'active_run' && delegationReceiptExpected
         && cell.timeline.status === 'done' && !cell.timeline.statusUnknown
         && cell.timeline.steps.some(stepDelegationStillInProgress))
-        ? { ...cell, timeline: { ...cell.timeline, delegationInFlight: true } }
+        ? { ...cell, timeline: { ...cell.timeline, delegationInFlight: true, durationIsFinal: false } }
         : cell);
   const lastUserCell = settledCells.map(cell => cell.kind === 'user_turn' ? 1 : 0).lastIndexOf(1);
   const latestTurnHandoffInFlight = delegationReceiptExpected && headerStatus === 'complete'

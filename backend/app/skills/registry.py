@@ -107,7 +107,7 @@ class SkillRegistry:
 
         header = (
             "You have the following skills available. "
-            "Each skill is a progressive-disclosure capability capsule for a task domain."
+            "Each skill provides reusable task instructions for a kind of task, with details loaded when relevant."
         )
         footer = (
             "\nA skill can package references, templates, scripts, workflow definitions, and subagent definitions. "

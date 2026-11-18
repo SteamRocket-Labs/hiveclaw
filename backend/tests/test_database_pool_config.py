@@ -64,10 +64,23 @@ def test_asyncpg_connections_receive_database_resource_guards() -> None:
     assert _engine_connect_args(settings) == {
         "server_settings": {
             "application_name": "hive-api",
+            "jit": "off",
             "statement_timeout": "12000",
             "idle_in_transaction_session_timeout": "90000",
         }
     }
+
+
+async def test_live_engine_connections_disable_jit() -> None:
+    from sqlalchemy import text
+
+    from app.database import engine
+
+    try:
+        async with engine.connect() as connection:
+            assert await connection.scalar(text("SHOW jit")) == "off"
+    finally:
+        await engine.dispose()
 
 
 def test_rls_role_bootstrap_owns_privileged_temp_file_guards(monkeypatch) -> None:

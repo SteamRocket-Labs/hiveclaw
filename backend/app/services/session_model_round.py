@@ -12,6 +12,7 @@ from typing import Any, Iterable
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.request_timing import timed_phase
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
@@ -566,6 +567,7 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
     input_bindings["dependencies"][:] = [ref for ref in input_bindings["dependencies"] if ref in retained]
 
 
+@timed_phase("model_input_source_validation")
 async def _validate_or_withhold_model_sources(
     db, *, tenant_id, agent_id, session_id, run_id, input_bindings, messages, wire_request
 ):

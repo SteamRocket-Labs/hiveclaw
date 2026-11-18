@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from app.core.request_timing import timed_phase
 from app.tools.adapters import adapt_and_call
 from app.tools.decorator import ToolMeta, get_all_registered_tools
 from app.tools.result_envelope import ToolContentEnvelope
@@ -117,6 +118,7 @@ def _import_handler_modules(*, force_reload: bool = False) -> None:
         )
 
 
+@timed_phase("tool_collection")
 def collect_tools() -> CollectedTools:
     """Discover all @tool-decorated handlers and build platform data structures."""
     _import_handler_modules()

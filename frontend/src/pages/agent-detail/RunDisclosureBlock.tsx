@@ -114,7 +114,7 @@ function persistObservedRunDuration(presentationKey: string | null, durationMs: 
 }
 
 function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string | null): string {
-  const running = timeline.status === 'running';
+  const running = timeline.status === 'running' || Boolean(timeline.delegationInFlight);
   const parsed = timeline.startedAt ? Date.parse(timeline.startedAt) : NaN;
   const sampleEnd = Date.parse(timeline.completedAt || '');
   const waitingMs = timeline.durationMs != null && Number.isFinite(sampleEnd)
@@ -172,7 +172,7 @@ function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string |
   // clock may only serve live work (run 18: 44 s at the failed status settled
   // to the typed 35 s); a delayed terminal projection never re-inflates it.
   // `blocked` keeps the live elapsed clock while the member waits.
-  if (timeline.status !== 'running' && timeline.status !== 'blocked' && timeline.status !== 'idle') {
+  if (!running && timeline.status !== 'blocked' && timeline.status !== 'idle') {
     return formatDuration(timeline.durationMs);
   }
   const duration = formatDuration(Math.max(observedDurationMs, timeline.durationMs ?? 0));
@@ -192,6 +192,7 @@ function stepMarkerLabel(status: RunStepSnapshot['status'] | undefined, t: TFunc
 }
 
 function stepWaitingForColleague(step: RunStepSnapshot): boolean {
+  if (['cancelled', 'killed', 'canceled'].includes((step.details as { taskTerminalStatus?: string } | null)?.taskTerminalStatus || '')) return false;
   const summary = (step.details as { memberSummary?: { kind?: string; state?: string; status?: string } } | null)?.memberSummary;
   const observedRunning = summary?.kind === 'colleague_result' && summary.state === 'in_progress';
   // A new delegation is also suspended, so that status cannot distinguish
@@ -274,6 +275,34 @@ function RunStepDetails({ step, viewerOwnsSession }: { step: RunStepSnapshot; vi
   const { t } = useTranslation();
   if (toolNameOf(step) || ['tool', 'file', 'search', 'command'].includes(step.kind)) {
     const toolName = toolNameOf(step);
+    const skillKey = toolName === 'save_skill' ? 'skillSave'
+      : toolName === 'reconcile_skill_candidate' ? 'skillCheck' : null;
+    if (skillKey && ['running', 'done', 'failed'].includes(step.status) && !stepIsUnconfirmed(step)) {
+      const state = step.status === 'running' ? 'Started' : step.status === 'done' ? 'Done' : 'Failed';
+      const fallback = skillKey === 'skillSave'
+        ? { Started: 'Saving a skill.', Done: 'The skill save request returned a result.', Failed: 'The skill was not saved this time.' }
+        : { Started: 'Checking whether the skill was saved.', Done: 'The skill request returned a result.', Failed: 'Could not check whether the skill was saved.' };
+      const details = step.details as { args?: Record<string, unknown>; result?: string } | undefined;
+      let result: Record<string, unknown> | undefined;
+      try { result = JSON.parse(details?.result || ''); } catch { /* Legacy submissions return prose, not typed outcomes. */ }
+      const args = details?.args;
+      const saved = result?.schema === 'hive.reviewed_skill_activation_result.v1'
+        && ['provisional', 'already_installed'].includes(String(result.status));
+      const cancelled = result?.schema === 'hive.skill_candidate_operation.v1' && result.status === 'cancelled';
+      const done = step.status === 'done' ? skillKey === 'skillSave'
+        ? saved || args?.reviewed_revision_id
+          ? t('agent.chat.toolResults.memberSummary.skillSaveActivated', 'Saved a skill.')
+          : args ? t('agent.chat.toolResults.memberSummary.skillSaveSubmitted', 'Submitted the skill for review; it can be used after approval.') : null
+        : cancelled || args?.action === 'cancel'
+          ? t('agent.chat.toolResults.memberSummary.skillCheckCancelled', 'Cancelled this skill submission.')
+          : args?.action === 'retry'
+            ? t('agent.chat.toolResults.memberSummary.skillSaveSubmitted', 'Submitted the skill for review; it can be used after approval.')
+            : args?.action === 'status' || result?.schema === 'hive.skill_candidate_operations.v1'
+              ? t('agent.chat.toolResults.memberSummary.skillCheckStatus', 'Checked whether the skill was saved.') : null
+        : null;
+      return <p>{toolFailureForDisplay(step.details, t, step.status)
+        || done || t(`agent.chat.toolResults.memberSummary.${skillKey}${state}`, fallback[state])}</p>;
+    }
     // X3: summarized tools show one plain sentence in place of the raw result
     // the model saw. There is deliberately no way to view the raw text here.
     // An unknown kind falls through to a plain action/status sentence.

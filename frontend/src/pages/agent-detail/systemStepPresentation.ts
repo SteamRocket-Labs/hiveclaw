@@ -28,6 +28,37 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
   const metadata = event.metadata;
   const text = typeof step.details === 'string' ? step.details : step.summary || '';
   const display = (title: string, summary?: string): RunStepSnapshot => ({ ...step, title, titleIsLocalized: true, summary, details: summary });
+  const failureCode = metadata.reason;
+  const failedDelegation = step.status === 'failed' && typeof failureCode === 'string'
+    && (metadata.action_kind === 'a2a_delegation' || event.type === 'child_session');
+  const delegationFailure = (sentence: string): RunStepSnapshot => {
+    const name = metadata.target_agent_name || metadata.to_agent_name;
+    const summary = typeof name === 'string' && name.trim()
+      ? t('agent.chat.disclosure.system.delegationFailure', '{{name}}: {{reason}}', { name, reason: sentence }) : sentence;
+    return { ...step, summary, details: summary };
+  };
+  if (failedDelegation) {
+    const sentence = failureCode === 'delegation_instruction_source_access_denied'
+      ? t('agent.chat.toolResults.memberSummary.delegationMaterialsDenied', 'The colleague could not use the materials needed for this task and did not continue.')
+      : failureCode === 'delegation_instruction_source_unavailable'
+        ? t('agent.chat.toolResults.memberSummary.delegationMaterialsUnavailable', 'The colleague could not read the materials needed for this task and did not continue.')
+        : null;
+    if (sentence) return delegationFailure(sentence);
+  }
+  if (step.status === 'failed') {
+    const actor = metadata.target_agent_name;
+    const prefix = event.type === 'runtime_action_failed' && metadata.action_kind === 'a2a_delegation'
+      && typeof actor === 'string' && text.startsWith(`${actor} 的委派任务失败：`)
+      ? `${actor} 的委派任务失败：` : '';
+    const reason = text.slice(prefix.length);
+    const localized = /^\[Runtime Limit\] This turn stopped because the configured token budget was exhausted \(\d+\/\d+ tokens used\)\.$/.test(reason)
+      ? t('agent.chat.disclosure.failure.tokenBudget', 'This turn used up its usage budget and did not finish.')
+      : /^I reached the configured tool-round limit \(\d+\) before I could finish\. The current state has been saved; continue the task to resume from here, or raise max_tool_rounds for this agent\.$/.test(reason)
+        ? t('agent.chat.disclosure.failure.toolRound', 'This turn reached its round limit and did not finish. Retry to continue.') : null;
+    if (localized) return failedDelegation ? delegationFailure(localized)
+      : { ...step, summary: prefix + localized, details: prefix + localized };
+  }
+  if (failedDelegation) return delegationFailure(t('agent.chat.toolResults.memberSummary.delegationFailed', 'The colleague did not finish this work.'));
   const delegation = metadata.action_kind === 'a2a_delegation' || (event.type === 'child_session' && String(metadata.reason || '').startsWith('delegation_'));
   if (delegation && (['killed', 'cancelled'].includes(String(metadata.status))
     || (event.type === 'runtime_action_started' && ['completed', 'failed', 'error', 'blocked', 'skipped'].includes(String(metadata.status))))) {
@@ -75,18 +106,6 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
       : reason ? t('agent.chat.disclosure.system.approvalResultKept', 'The approval result is kept; this conversation did not continue.')
       : t('agent.chat.disclosure.system.approvalResultReturned', 'The approval result has returned.');
     return { ...step, summary: sentence, details: sentence };
-  }
-  if (step.status === 'failed') {
-    const actor = metadata.target_agent_name;
-    const prefix = event.type === 'runtime_action_failed' && metadata.action_kind === 'a2a_delegation'
-      && typeof actor === 'string' && text.startsWith(`${actor} 的委派任务失败：`)
-      ? `${actor} 的委派任务失败：` : '';
-    const reason = text.slice(prefix.length);
-    const localized = /^\[Runtime Limit\] This turn stopped because the configured token budget was exhausted \(\d+\/\d+ tokens used\)\.$/.test(reason)
-      ? t('agent.chat.disclosure.failure.tokenBudget', 'This turn used up its usage budget and did not finish.')
-      : /^I reached the configured tool-round limit \(\d+\) before I could finish\. The current state has been saved; continue the task to resume from here, or raise max_tool_rounds for this agent\.$/.test(reason)
-        ? t('agent.chat.disclosure.failure.toolRound', 'This turn reached its round limit and did not finish. Retry to continue.') : null;
-    if (localized) return { ...step, summary: prefix + localized, details: prefix + localized };
   }
   const statusLabel = (status: unknown) => status === 'needs_reconciliation'
     ? t('agent.businessTasks.status.needs_reconciliation', 'Review required')

@@ -236,12 +236,14 @@ def _engine_connect_args(settings) -> dict[str, dict[str, str]]:
     parameters. They are intentionally installed as ``app_rls`` role defaults
     by ``grant_rls_app_role`` instead of being sent here, which would make every
     production connection fail during authentication.
+    JIT is off because OLTP statements were paying seconds of compilation on misestimated plans.
     """
 
     process_role = str(getattr(settings, "HIVE_PROCESS_ROLE", "runtime") or "runtime").strip().lower()
     return {
         "server_settings": {
             "application_name": f"hive-{process_role}",
+            "jit": "off",
             "statement_timeout": str(max(1, int(settings.DB_STATEMENT_TIMEOUT_MS))),
             "idle_in_transaction_session_timeout": str(max(1, int(settings.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS))),
         }

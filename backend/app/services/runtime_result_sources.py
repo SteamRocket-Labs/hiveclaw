@@ -233,6 +233,23 @@ async def _published_owned_delegation_input(
 ):
     kind, source_id = dependency["source_kind"], dependency["source_id"]
     from app.services.content_input_receipts import _input_row
+    if kind == "explicit_memory":
+        from app.services.content_input_receipts import _preflight_inputs
+
+        try:
+            uuid.UUID(task.child_session_id)
+            identity = uuid.UUID(source_id)
+            binding = (_preflight_inputs(db) or {}).get(("memory_receipt_binding", identity))
+            ref = binding.carrier_ref if binding is not None else await db.scalar(
+                select(ContentInputReceipt.carrier_ref).where(
+                    ContentInputReceipt.id == identity,
+                    ContentInputReceipt.tenant_id == task.tenant_id,
+                    ContentInputReceipt.carrier_kind == "explicit_memory",
+                )
+            )
+            return bool(ref) and uuid.UUID(ref.split("\n", 1)[0]) == task.child_agent_id
+        except (ValueError, TypeError):
+            return False
     if kind == "agent_directory_observation":
         from app.services.agent_directory_sources import _load
 
@@ -265,6 +282,7 @@ async def _published_owned_delegation_input(
         )
     if kind == "session_tool_invocation":
         try:
+            child_session_id = uuid.UUID(task.child_session_id)
             row = await _input_row(db, SessionToolInvocation, uuid.UUID(source_id))
         except ValueError:
             return False
@@ -272,7 +290,7 @@ async def _published_owned_delegation_input(
             row is None
             or row.tenant_id != task.tenant_id
             or row.run_id != task.id
-            or row.session_id != uuid.UUID(task.child_session_id)
+            or row.session_id != child_session_id
         ):
             return False
         from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
@@ -296,11 +314,13 @@ async def _published_owned_delegation_input(
         directory_read = row.tool_name in {"list_files", "fs_list", "glob_search"}
         search_read = row.tool_name == "grep_search"
         clock_read = row.tool_name == "get_current_time"
+        memory_read = row.tool_name in {"search_memory", "load_memory"}
         if (
             not ledger_read
             and not directory_read
             and not search_read
             and not clock_read
+            and not memory_read
             and row.tool_name not in {"read_file", "read_document", "fs_read", "office_document_view",
                 "office_document_query", "office_document_validate", "office_document_dump"}
         ):
@@ -330,6 +350,22 @@ async def _published_owned_delegation_input(
         )
         if model is None:
             return False
+        if memory_read:
+            from app.models.chat_session import ChatSession
+            from app.services.explicit_memory_tool_sources import memory_result_sources
+
+            child_session = await _input_row(db, ChatSession, row.session_id)
+            if child_session is None or child_session.session_kind != "delegation_run":
+                return False
+            _sources, complete = await memory_result_sources(
+                db,
+                tenant_id=task.tenant_id,
+                agent_id=task.child_agent_id,
+                invocation=row,
+                model=model,
+                content_hash=payload.get("content_hash"),
+            )
+            return complete
         if clock_read:
             from app.services.content_input_receipts import load_native_clock_read_evidence
 

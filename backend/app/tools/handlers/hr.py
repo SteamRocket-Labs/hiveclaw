@@ -1374,7 +1374,7 @@ def _build_create_employee_result(
         message = (
             f"Successfully created digital employee '{agent_name}' (ID: {agent_id}). "
             f"Config: {', '.join(features)}. "
-            f"{_default_skill_count()} default platform skill capsules are auto-installed. "
+            f"{_default_skill_count()} default platform skills are auto-installed. "
             f"Skills directory: {skills_dir}."
         )
     return json.dumps(

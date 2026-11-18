@@ -789,7 +789,7 @@
     "controlLinks": "Control plane links",
     "controlLinksDesc": "Company-level settings remain in the control plane; the employee still owns runtime execution.",
     "skillRegistry": "Skill registry",
-    "skillRegistryDesc": "Skill capsules and evolution candidates",
+    "skillRegistryDesc": "Reusable skills and evolution candidates",
     "workflowWorkbench": "Workflow workbench",
     "workflowWorkbenchDesc": "Preview, start, inspect, and promote workflow runs",
     "memoryGovernance": "Memory governance",
@@ -2677,6 +2677,7 @@
         "toolHistory": "Tool call history",
         "system": {
           "delegationStarted": "Delegated to {{name}}; running in the background.",
+          "delegationFailure": "{{name}}: {{reason}}",
           "approvalResultKept": "The approval result is kept; this conversation did not continue.",
           "approvalResultReturned": "The approval result has returned.",
           "resultsReceived": "Received {{count}} task results",
@@ -2749,6 +2750,8 @@
           "fetchWebPage": "Fetch web page",
           "checkTime": "Check time",
           "loadSkill": "Load skill",
+          "saveSkill": "Save skill",
+          "checkSkillSaving": "Check skill saving",
           "browsePlaza": "Browse Plaza",
           "runCommand": "Run command",
           "editDocument": "Edit document",
@@ -3013,7 +3016,21 @@
           "webFetchFailedHost": "The web page {{host}} did not open",
           "delegationStopped": "Stopped; the colleague did not finish this work.",
           "delegationDone": "The colleague has finished this work.",
-          "delegationFailed": "The colleague did not finish this work."
+          "delegationFailed": "The colleague did not finish this work.",
+          "delegationMaterialsDenied": "The colleague could not use the materials needed for this task and did not continue.",
+          "delegationMaterialsUnavailable": "The colleague could not read the materials needed for this task and did not continue.",
+          "skillSaveStarted": "Saving a skill.",
+          "skillSaveDone": "The skill save request returned a result.",
+          "skillSaveActivated": "Saved a skill.",
+          "skillSaveSubmitted": "Submitted the skill for review; it can be used after approval.",
+          "skillSaveFailed": "The skill was not saved this time.",
+          "skillSaveTimeout": "Saving the skill timed out.",
+          "skillCheckStarted": "Checking whether the skill was saved.",
+          "skillCheckDone": "The skill request returned a result.",
+          "skillCheckStatus": "Checked whether the skill was saved.",
+          "skillCheckCancelled": "Cancelled this skill submission.",
+          "skillCheckFailed": "Could not check whether the skill was saved.",
+          "skillCheckTimeout": "Checking whether the skill was saved timed out."
         }
       },
       "workLedger": {

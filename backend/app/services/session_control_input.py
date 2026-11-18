@@ -131,6 +131,19 @@ async def _locked_run(
     )
 
 
+async def _cancel_target_is_active(db: AsyncSession, task: RuntimeTask | None) -> bool:
+    if task is None:
+        return False
+    if task.status in _ACTIVE_RUN_STATUSES:
+        return True
+    if task.status != "completed":
+        return False
+    from app.services.web_chat_runtime import find_stoppable_web_chat_handoff
+
+    return await find_stoppable_web_chat_handoff(db, agent_id=task.parent_agent_id,
+        session_id=task.parent_session_id, run_id=task.id) is not None
+
+
 async def _locked_control(
     db: AsyncSession,
     *,
@@ -780,7 +793,7 @@ async def accept_cancel_control_input(
         )
 
     task = await _locked_run(db, authority=authority, run_id=run_uuid)
-    if task is None or task.status not in _ACTIVE_RUN_STATUSES:
+    if not await _cancel_target_is_active(db, task):
         command.status = "rejected"
         command.rejection_json = {"reason_code": "active_run_not_found"}
         rejected_sequence = await _append_control_rejected_event(
@@ -871,7 +884,7 @@ async def begin_cancel_control_input(
             replayed=True,
         )
     task = await _locked_run(db, authority=authority, run_id=control.expected_run_id)
-    if task is None or task.status not in _ACTIVE_RUN_STATUSES:
+    if not await _cancel_target_is_active(db, task):
         control.status = "rejected"
         control.settlement_ref = f"session-control:{control.id}:rejected:run_not_active"
         control.recovery_owner = None
@@ -929,7 +942,7 @@ async def begin_cancel_control_input(
                 },
                 command_id=command.id,
             ),
-            SessionEventDraft(
+            *([SessionEventDraft(
                 item_id=task.id,
                 item_kind="run",
                 lifecycle="cancelling",
@@ -937,7 +950,7 @@ async def begin_cancel_control_input(
                 actor={"type": "runtime"},
                 payload={"run_id": str(task.id), "control_id": str(control.id)},
                 command_id=command.id,
-            ),
+            )] if task.status != "completed" else []),
         ],
     )
     return ControlInputReceipt(
@@ -1047,6 +1060,23 @@ async def settle_pending_controls_for_run(
     if str(locked_metadata.get("terminal_execution_fence_ref") or "") != clean_fence:
         raise ValueError("runtime_task_terminal_fence_mismatch")
 
+    handoff_cancel = (locked_task.status == "completed" and locked_metadata.get("cancel_state") == "cancelling"
+        and bool(locked_metadata.get("cancel_control_id")))
+    if handoff_cancel:
+        from app.services.web_chat_runtime import outstanding_web_chat_delegations
+
+        # A cancel started against a running parent keeps the existing late
+        # completion rule. Only a completed handoff omits run.cancelling.
+        handoff_cancel = not await db.scalar(select(select(ChatTranscriptEvent.id).where(
+            ChatTranscriptEvent.session_id == session_id, ChatTranscriptEvent.run_id == locked_task.id,
+            ChatTranscriptEvent.item_kind == "run", ChatTranscriptEvent.lifecycle == "cancelling",
+            ChatTranscriptEvent.command_id == uuid.UUID(locked_metadata["cancel_command_id"]),
+        ).exists()))
+    if handoff_cancel:
+        if await db.scalar(select(outstanding_web_chat_delegations(
+            run_uuid=locked_task.id, tenant_id=locked_task.tenant_id).exists())):
+            return {"applied": 0, "rejected": 0}
+
     controls = list(
         (
             await db.execute(
@@ -1068,7 +1098,7 @@ async def settle_pending_controls_for_run(
         command = await db.get(SessionCommand, control.command_id)
         if command is None:
             raise RuntimeError("control_input_command_missing")
-        cancel_effect_committed = locked_task.status == "killed" and str(
+        cancel_effect_committed = (locked_task.status == "killed" or handoff_cancel) and str(
             locked_metadata.get("cancel_control_id") or ""
         ) == str(control.id)
         control.recovery_owner = None
@@ -1120,7 +1150,7 @@ async def settle_pending_controls_for_run(
                 command_id=command.id,
             )
         ]
-        if cancel_effect_committed:
+        if cancel_effect_committed and not handoff_cancel:
             drafts.append(
                 SessionEventDraft(
                     item_id=locked_task.id,
@@ -1222,7 +1252,8 @@ async def recover_stale_cancel_control_inputs_once(
             continue
         control, command, task = row
         counts["claimed"] += 1
-        if task.status in _TERMINAL_RUN_STATUSES:
+        handoff_active = task.status == "completed" and await _cancel_target_is_active(db, task)
+        if task.status in _TERMINAL_RUN_STATUSES and not handoff_active:
             terminal_fence = str((task.metadata_json or {}).get("terminal_execution_fence_ref") or "")
             if terminal_fence:
                 settled = await settle_pending_controls_for_run(
@@ -1232,8 +1263,10 @@ async def recover_stale_cancel_control_inputs_once(
                     terminal_source="cancel_recovery_sweep",
                 )
                 counts["settled"] += int(settled["applied"]) + int(settled["rejected"])
+                if not any(settled.values()):
+                    command.updated_at = claimed_at
             continue
-        if task.status not in _ACTIVE_RUN_STATUSES:
+        if task.status not in _ACTIVE_RUN_STATUSES and not handoff_active:
             continue
         from app.models.chat_session import ChatSession
 
@@ -1297,7 +1330,7 @@ async def recover_stale_cancel_control_inputs_once(
                         },
                         command_id=command.id,
                     ),
-                    SessionEventDraft(
+                    *([SessionEventDraft(
                         item_id=task.id,
                         item_kind="run",
                         lifecycle="cancelling",
@@ -1309,7 +1342,7 @@ async def recover_stale_cancel_control_inputs_once(
                             "recovered": True,
                         },
                         command_id=command.id,
-                    ),
+                    )] if task.status != "completed" else []),
                 ],
             )
         from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES, _apply_terminal_task_update_and_settle

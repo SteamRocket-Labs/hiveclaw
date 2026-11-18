@@ -756,6 +756,7 @@ it.each(['continuation', 'answer', 'plan'] as const)('X9a.1 shows an inline %s a
   await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === firstInput)?.sendState).toBe('failed'));
   expect(screen.queryByText('思考中')).toBeNull();
   expect(Boolean(screen.queryByTestId('session-composer-stop'))).toBe(entry === 'answer');
+  expect(Boolean(screen.queryByRole('button', { name: zh.common.retry }))).toBe(entry === 'plan');
   if (entry !== 'plan') expect(screen.getByRole('alert').textContent).toBe('Connection lost');
   const retry = deferred<any>();
   api.mockReturnValue(retry.promise);
@@ -769,6 +770,89 @@ it.each(['continuation', 'answer', 'plan'] as const)('X9a.1 shows an inline %s a
     : { admission_state: 'admitted', status: 'accepted' }); });
   if (entry === 'continuation') await screen.findByText(zh.agent.chat.artifacts.continueRecorded);
   else await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === firstInput)?.sendState).toBeUndefined());
+});
+
+async function submitInlinePlanDecision(decision: 'approve' | 'decline') {
+  let sending!: Promise<unknown>;
+  const submit = (action: () => Promise<unknown>) => {
+    sending = action().catch((error: Error) => error);
+    return sending;
+  };
+  render(<StructuredToolResultBody toolMeta={{ kind: 'plan_mode_request', reason: 'Review this plan', nextAction: null }}
+    onEnterPlanMode={(reason) => submit(() => mocks.chatProps.onEnterPlanMode(reason))}
+    onSendMessage={(text: string, options?: { planMode?: boolean }) => submit(() => mocks.chatProps.onSendMessage(text, options))} />);
+  fireEvent.click(screen.getByRole('button', { name: zh.agent.plan.request[decision] }));
+  await act(async () => { expect(await sending).toBeInstanceOf(Error); });
+  expect(screen.queryByRole('button', { name: zh.agent.plan.request[decision] })).toBeNull();
+}
+
+it.each(['approve', 'decline'] as const)('X9a.r4.1 offers no bubble Retry for a refused but retryable plan %s', async decision => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: 'rejected',
+    status: 'rejected', dispatch: { retryable: true, message: 'Try in a new conversation' }, run: null });
+  await mountOwnedArtifactWork();
+  await submitInlinePlanDecision(decision);
+  expect(mocks.chatProps.chatMessages.find((message: any) => message.role === 'user')).toMatchObject({
+    sendState: 'failed', sendError: 'Try in a new conversation', retrySend: undefined,
+  });
+  expect(screen.queryByRole('button', { name: zh.common.retry })).toBeNull();
+  expect(mocks.startSessionRun).toHaveBeenCalledOnce();
+});
+
+it('X9a.r4.2 keeps failed continuation retry in the card with its save guard and no bubble Retry', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.startSessionRun.mockRejectedValueOnce(new Error('Connection lost'))
+    .mockResolvedValueOnce({ run_id: 'continued-run', status: 'running' });
+  await mountOwnedArtifactWork();
+  const props = { artifact: { id: 'report', name: 'report.md', path: 'workspace/report.md' }, workspaceAgentId: 'agent-1',
+    context: { sessionId: mocks.sessionId!, send: mocks.chatProps.onSendMessage } };
+  const card = render(<ArtifactContinuation {...props} blocked={false} />);
+  const draft = screen.getByRole('textbox', { name: zh.agent.chat.artifacts.continueLabel }) as HTMLTextAreaElement;
+  fireEvent.change(draft, { target: { value: 'Revise saved file' } });
+  fireEvent.click(screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('alert').textContent).toBe('Connection lost');
+  expect(screen.queryByRole('button', { name: zh.common.retry })).toBeNull();
+  expect(draft.value).toBe('Revise saved file');
+  expect((screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }) as HTMLButtonElement).disabled).toBe(false);
+  card.rerender(<ArtifactContinuation {...props} blocked />);
+  expect(screen.getByText(zh.agent.chat.artifacts.saveBeforeContinue)).toBeTruthy();
+  expect((screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }) as HTMLButtonElement).disabled).toBe(true);
+  card.rerender(<ArtifactContinuation {...props} blocked={false} />);
+  fireEvent.click(screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }));
+  await screen.findByText(zh.agent.chat.artifacts.continueRecorded);
+  expect(mocks.startSessionRun).toHaveBeenCalledTimes(2);
+  expect(mocks.startSessionRun.mock.calls[1]).toEqual(mocks.startSessionRun.mock.calls[0]);
+  expect(draft.value).toBe('');
+  expect(screen.queryByRole('alert')).toBeNull();
+  const inputId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  expect(mocks.chatProps.chatMessages.filter((message: any) => message.id === inputId)).toHaveLength(1);
+});
+
+it.each(['approve', 'decline'] as const)('X9a.r4.3 adds no second notice when a plan %s bubble Retry fails again', async decision => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.startSessionRun.mockRejectedValue(new Error('Connection lost'));
+  await mountOwnedArtifactWork();
+  await submitInlinePlanDecision(decision);
+  expect(Boolean(mocks.startSessionRun.mock.calls[0][2].plan_mode_requested)).toBe(decision === 'approve');
+  const inputId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  const notices = mocks.chatProps.chatMessages.filter((message: any) => message.role === 'event');
+  expect(notices).toHaveLength(1);
+  for (const attempts of [2, 3]) {
+    fireEvent.click(screen.getByRole('button', { name: zh.common.retry }));
+    await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === inputId)?.sendState).toBe('failed'));
+    expect(mocks.startSessionRun).toHaveBeenCalledTimes(attempts);
+    expect(mocks.startSessionRun.mock.calls[attempts - 1]).toEqual(mocks.startSessionRun.mock.calls[0]);
+    expect(mocks.chatProps.chatMessages.filter((message: any) => message.id === inputId)).toHaveLength(1);
+    expect(mocks.chatProps.chatMessages.filter((message: any) => message.role === 'event')).toEqual(notices);
+    expect(screen.getByRole('button', { name: zh.common.retry })).toBeTruthy();
+  }
 });
 
 it.each(['rejects', 'no-run'] as const)('X9a.r3.1 restores a new goal conversation draft and attachment when startGoal %s', async outcome => {

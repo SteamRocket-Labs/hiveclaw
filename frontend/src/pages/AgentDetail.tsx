@@ -2143,7 +2143,7 @@ function AgentDetailInner() {
     // queues it as a mid-run user message. When `planMode` is true the message carries
     // plan_mode_requested=true so the existing Plan Mode entry path activates
     // Plan Mode (used by the plan-mode-request approval card).
-    const sendChatMessageText = async (text: string, options?: SessionMessageOptions) => {
+    const sendChatMessageText = async (text: string, options?: SessionMessageOptions, retryInputId?: string) => {
         const userMsg = text.trim();
         const expectedSessionId = options?.expectedSessionId;
         let runSessionId = expectedSessionId || String(activeSession?.id || '');
@@ -2162,7 +2162,7 @@ function AgentDetailInner() {
         if (compactingSessionsRef.current.has(buildSessionRuntimeKey(id, String(activeSession.id)))) {
             throw new Error(t('agent.chat.commands.compactInProgress', 'Context is being compacted. Continue when it finishes.'));
         }
-        const acceptedInputId = options?.inputId || globalThis.crypto.randomUUID();
+        const acceptedInputId = options?.inputId || retryInputId || globalThis.crypto.randomUUID();
         const displayContent = options?.displayContent || userMsg;
         let activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
         let refused = false;
@@ -2206,11 +2206,11 @@ function AgentDetailInner() {
                 : err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             updateOptimisticUserMessage(activeRuntimeKey, runSessionId, acceptedInputId, {
                 sendState: 'failed', sendError: msg,
-                retrySend: retryable ? () => { if (stillOriginalWork()) void sendChatMessageText(text, { ...options, expectedSessionId: runSessionId, inputId: acceptedInputId }).catch(() => undefined); } : undefined,
+                retrySend: retryable && !refused && options?.planMode !== undefined ? () => { if (stillOriginalWork()) void sendChatMessageText(text, { ...options, expectedSessionId: runSessionId }, acceptedInputId).catch(() => undefined); } : undefined,
             });
             if (!stillOriginalWork()) throw err;
             setChatMessagesSessionId(runSessionId);
-            setChatMessagesAfterQueuedForSession(runSessionId, prev => [...prev, parseChatMsg({ role: 'event', content: msg,
+            if (!retryInputId) setChatMessagesAfterQueuedForSession(runSessionId, prev => [...prev, parseChatMsg({ role: 'event', content: msg,
                 eventType: unconfirmed ? 'runtime_action_unconfirmed' : 'runtime_action_failed',
                 eventStatus: unconfirmed ? 'input_outcome_unknown' : 'run_start_failed' })]);
             throw err;

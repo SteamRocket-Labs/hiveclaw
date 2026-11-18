@@ -8,6 +8,7 @@ import PlanCard from './PlanCard';
 import { planApi } from '../../api/domains/plans';
 import { getWorkflowPreview, previewWorkflowCandidate, startWorkflow } from '../../api/domains/workflows';
 import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope';
+import type { SessionMessageOptions } from './ArtifactContinuation';
 
 const HrCreationHandoffCard = lazy(() => import('./HrCreationHandoffCard'));
 const InlineApprovalCard = lazy(() => import('./InlineApprovalCard'));
@@ -30,7 +31,7 @@ interface StructuredToolResultBodyProps {
   sessionId?: string;
   agentName?: string | null;
   submitted?: boolean;
-  onSendMessage?: (text: string) => void | Promise<unknown>;
+  onSendMessage?: (text: string, options?: SessionMessageOptions) => void | Promise<unknown>;
   questionItemId?: string;
   onAnswerQuestion?: (itemId: string, text: string) => Promise<unknown>;
   onEnterPlanMode?: (reason: string) => void | Promise<unknown>;
@@ -471,7 +472,7 @@ export function StructuredToolResultBody({
         agentName={agentName}
         reason={toolMeta.reason}
         onApprove={() => onEnterPlanMode(toolMeta.reason)}
-        onDecline={() => onSendMessage(t('agent.plan.request.declineMessage', 'Continue without entering Plan Mode.'))}
+        onDecline={() => onSendMessage(t('agent.plan.request.declineMessage', 'Continue without entering Plan Mode.'), { planMode: false })}
         dense
       />
     );

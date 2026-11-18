@@ -62,6 +62,7 @@ def test_asyncpg_connections_receive_database_resource_guards() -> None:
     )
 
     assert _engine_connect_args(settings) == {
+        "prepared_statement_cache_size": 1024,
         "server_settings": {
             "application_name": "hive-api",
             "jit": "off",

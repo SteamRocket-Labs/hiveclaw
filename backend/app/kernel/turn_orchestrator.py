@@ -1565,6 +1565,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     deferred_kwargs["source_unbound"] = deferred_source_unbound
                 if "bound_only" in deferred_signature.parameters:
                     deferred_kwargs["bound_only"] = True
+                if getattr(request, "initial_tool_configuration", None) is not None:
+                    deferred_kwargs["configuration"] = request.initial_tool_configuration
                 available_deferred_tools = await available_deferred_tool_candidates_for_agent(
                     request.agent_id, **deferred_kwargs
                 )

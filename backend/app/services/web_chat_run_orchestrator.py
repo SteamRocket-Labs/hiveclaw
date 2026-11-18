@@ -1120,6 +1120,7 @@ def _agent_invocation_request(
 ) -> AgentInvocationRequest:
     from app.services.session_semantic_history import is_member_authored_run
 
+    private_web_turn = getattr(state.runtime_task, "_private_web_turn", None)
     profile = {}
     if getattr(state, "system_plan_mode", None) is not None:
         from app.services.plan_mode_system_run import SYSTEM_PLAN_RUN_MAX_ROUNDS
@@ -1180,6 +1181,8 @@ def _agent_invocation_request(
         ),
         model_routing_locked=bool(state.metadata.get("model_routing_locked"))
         or bool(getattr(state, "native_trigger_frame", None) and getattr(state, "native_trigger_frame", None).model_id),
+        smart_model_routing=(private_web_turn.agent.smart_model_routing or {}) if private_web_turn else None,
+        private_web_turn=private_web_turn,
         **profile,
     )
 

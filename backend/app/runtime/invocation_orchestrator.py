@@ -427,6 +427,7 @@ def _build_kernel_request(
         eviction_dir=ports.resolve_eviction_dir(request.agent_id),
         invocation_scope=request.invocation_scope,
         delegation_token=request.delegation_token,
+        **({"initial_tool_configuration": request.private_web_turn.tools} if request.private_web_turn else {}),
     )
 
 

@@ -283,23 +283,23 @@ async def _search_shape(n, owner):
 
 async def _model_prepare(n, app_factory, monkeypatch, delay):
     from app.kernel.engine import _context_message
-    from app.services import session_model_round
+    from app.services import session_model_inputs
 
     timings = []
-    original = session_model_round._validate_or_withhold_model_sources
+    # owner 11-13 / 11-18 A: measure source binding in the private round.
+    original = session_model_inputs.build_model_input_bindings
 
     async def measured(*args, **kwargs):
-        value, row = await _measure("prepare_model_request_sources", lambda: original(*args, **kwargs), monkeypatch, delay)
-        bindings = kwargs["input_bindings"]
+        bindings, row = await _measure("prepare_model_request_sources", lambda: original(*args, **kwargs), monkeypatch, delay)
         assert bindings["status"] == "resolved" and bindings["dependency_coverage"]["complete"]
         assert not any(entry.get("status") == "withheld" for entry in bindings["messages"])
         timings.append(row)
-        return value
+        return bindings
 
     run = n.run
     round_index = n.memory_rounds[str(run)] + 1
     with monkeypatch.context() as patch:
-        patch.setattr(session_model_round, "_validate_or_withhold_model_sources", measured)
+        patch.setattr(session_model_inputs, "build_model_input_bindings", measured)
         async with tenant_scoped_session(n.tenant, session_factory=app_factory) as db:
             await n.prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
                 run_id=run, turn_id=f"turn-{run.hex}", round_index=round_index, messages=[_context_message(role="system",

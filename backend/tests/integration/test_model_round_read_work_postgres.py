@@ -194,12 +194,11 @@ async def test_two_round_web_statement_work(web_memory_work, app_user_engine, ap
     assert len(client.requests) == 2
     assert all("MEMORY_DAG_9" in json.dumps(request["messages"]) for request in client.requests)
     assert "Help the owner" in json.dumps(client.requests[1]["messages"])
-    # These bounds protect the round's repeated authority reads, not model or
-    # evidence-write latency. Both rounds must still check the retained DAG.
+    # owner 11-13 / 11-18 A: private rounds bind the admitted DAG without
+    # replaying its authority checks.
     for round_index, bound in ((1, 500), (2, 500)):
         assert len(probe.statements[round_index, "prepare_model_request"]) <= bound
-        assert checked[round_index] and max(checked[round_index].values()) == 1, checked[round_index]
-    assert set(checked[1]) <= set(checked[2])
+        assert not checked[round_index], checked[round_index]
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         run = await db.get(RuntimeTask, n.web_run)
         assert run.status == "completed", run.result_summary
@@ -210,7 +209,7 @@ async def test_two_round_web_statement_work(web_memory_work, app_user_engine, ap
 
 
 @pytest.mark.parametrize("change", ["revoked", "bytes"])
-async def test_next_round_rechecks_sources_and_withholds_only_affected_item(
+async def test_next_private_round_keeps_both_admitted_memory_inputs(
     web_memory_work, owner_sessionmaker, app_user_sessionmaker, change,
 ):
     from app.database import tenant_scoped_session
@@ -234,7 +233,8 @@ async def test_next_round_rechecks_sources_and_withholds_only_affected_item(
         row = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
         return row.model_request_snapshot_json
 
-    # A new round must refresh even within the same DB session/transaction.
+    # owner 11-13 / 11-18 A: the private model keeps the admitted bytes;
+    # revocation or a new version applies to the next read of the memory.
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         first = await prepare(db, 1)
         assert all(entry["status"] == "bound" for entry in first["input_bindings"]["messages"]), first["input_bindings"]
@@ -246,17 +246,13 @@ async def test_next_round_rechecks_sources_and_withholds_only_affected_item(
             else:
                 n.entries[9].path.write_text(n.entries[9].path.read_text() + "\nChanged between model rounds.\n")
         second = await prepare(db, 2)
-        bindings = second["input_bindings"]
-        withheld, retained = bindings["messages"]
-        assert withheld["status"] == "withheld"
-        assert withheld["code"] == ("explicit_memory_history_denied" if change == "revoked"
-            else "content_source_changed")
-        assert retained["status"] == "bound" and bindings["dependency_coverage"]["complete"]
-        assert second["wire_request"]["messages"] == [
-            {"role": "system", "content": "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"},
-            {"role": "system", "content": n.entries[4].content},
+        assert second["wire_request"]["messages"] == first["wire_request"]["messages"] == [
+            {"role": "system", "content": n.entries[index].content} for index in (9, 4)
         ]
-        assert "MEMORY_DAG_9" not in json.dumps(second)
+        bindings = second["input_bindings"]
+        assert bindings["dependencies"] == first["input_bindings"]["dependencies"]
+        assert all(entry["status"] == "bound" for entry in bindings["messages"])
+        assert bindings["dependency_coverage"]["complete"]
         await db.rollback()
 
 

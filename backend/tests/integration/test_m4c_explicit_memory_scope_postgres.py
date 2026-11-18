@@ -624,14 +624,15 @@ async def test_lost_worker_response_leaves_discoverable_owned_operation_without_
     assert len(reviews) == 1
 
 
-async def test_next_provider_request_cannot_reuse_memory_after_its_historical_source_is_withdrawn(
+async def test_private_history_retains_admitted_memory_after_its_source_is_withdrawn(
     shared_memory, app_user_sessionmaker, owner_sessionmaker,
 ):
     from app.models.session_v2 import SessionModelResult
 
     n = shared_memory.n
     session, run = await new_owner_work(n, owner_sessionmaker)
-    loaded, _invocation = await memory_call(n, app_user_sessionmaker, "load_memory", {"ids": [shared_memory.entry_id]},
+    arguments = {"ids": [shared_memory.entry_id]}
+    loaded, read = await memory_call(n, app_user_sessionmaker, "load_memory", arguments,
         session=session, run=run)
     assert "ORCHID_PRIVATE_MARKER" in loaded, loaded
     async with owner_sessionmaker() as db:
@@ -644,8 +645,17 @@ async def test_next_provider_request_cannot_reuse_memory_after_its_historical_so
         rows = list((await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run))).all())
         assert len(rows) == 2, rows
         current = max(rows, key=lambda row: row.round_id)
-        request = json.dumps(current.model_request_snapshot_json["messages"], ensure_ascii=False)
-        assert "ORCHID_PRIVATE_MARKER" not in request
-        assert "有一项上下文暂时无法核实" in request
+        snapshot = current.model_request_snapshot_json
+        request = json.dumps(snapshot["wire_request"]["messages"], ensure_ascii=False)
+        # owner 11-13 / 11-18 A: the previously admitted result is part of
+        # this member's private history, even after the source changes hands.
+        entry = next(item for item in snapshot["input_bindings"]["messages"]
+            if item["source_ref"] == f"session-tool-result:{read.id}")
+        assert entry["status"] == "bound" and entry["dependencies"]
+        assert snapshot["wire_request"]["messages"][entry["message_index"]]["content"] == loaded
         assert "content_source_access_denied" not in request
         assert "Remember a note derived from the withdrawn release memory" in request
+
+    fresh = await n.service.execute("load_memory", arguments, agent_id=n.agent, user_id=n.user,
+        session_id=str(session), runtime_task_id=str(run), emit_runtime_hooks=False)
+    assert "ORCHID_PRIVATE_MARKER" not in str(fresh)

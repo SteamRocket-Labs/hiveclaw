@@ -1,7 +1,5 @@
 """Document revocation follows derived memory through every recall surface."""
 
-# Owner ruling 11-10: a memory derived from a revoked document may be saved in the revocation round but never reaches the model from the next round on.
-
 import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4, uuid5
@@ -15,7 +13,6 @@ from app.models.organization_identity import ContentInputReceipt
 from app.models.session_v2 import SessionModelResult
 from app.services import memory_service
 from app.services.personal_knowledge_service import PersonalKnowledgeService
-from tests.integration.source_withholding_helpers import assert_source_withheld
 from tests.integration.test_m1g24_workspace_artifact_authority_postgres import native_workspace  # noqa: F401
 from tests.integration.test_m4c_explicit_memory_scope_postgres import (
     memory_call,
@@ -101,7 +98,7 @@ async def _model_request(s, session_factory, *, context=None):
 
 
 @pytest.mark.parametrize("surface", ["load", "search", "automatic"])
-async def test_revoked_document_derived_memory_is_withheld_from_later_model_requests(
+async def test_revoked_document_blocks_new_reads_and_preserves_admitted_private_history(
     shared_memory, owner_sessionmaker, app_user_sessionmaker, monkeypatch, surface,  # noqa: F811
 ):
     s = shared_memory
@@ -203,26 +200,27 @@ async def test_revoked_document_derived_memory_is_withheld_from_later_model_requ
     assert DOCUMENT_MARKER not in direct_read, direct_read
 
     after, recalled = await _recall(s, app_user_sessionmaker, surface, [entry_id])
-    denied = await _model_request(
+    later = await _model_request(
         s, app_user_sessionmaker, context=recalled if surface == "automatic" else None,
     )
-    denied_snapshot = denied.model_request_snapshot_json
-    assert_source_withheld([denied], content=DERIVED_MARKER, code="content_source_access_denied")
-    # Document absence alone is not withholding proof: its history body was already omitted.
-    assert DOCUMENT_MARKER not in json.dumps(denied_snapshot["wire_request"]), denied_snapshot
+    later_snapshot = later.model_request_snapshot_json
+    # owner 11-13 / 11-18 A: previously admitted derived bytes remain in this
+    # member's private history. The original document body and fresh reads
+    # still require the corresponding live read authority.
+    assert DERIVED_MARKER in json.dumps(later_snapshot["wire_request"]), later_snapshot
+    assert DOCUMENT_MARKER not in json.dumps(later_snapshot["wire_request"]), later_snapshot
+    assert later_snapshot["input_bindings"]["source_authority"] == "not_evaluated"
     for marker in (DOCUMENT_MARKER, DERIVED_MARKER):
         assert marker not in after, after
     if surface != "automatic":
         assert "content_source_access_denied" in after, after
-    # A withheld source stays in provenance (A4d round-5 ruling); whatever stays
-    # bound to the revoked document must carry none of its content.
+    # The original document remains a dependency with a reference-only result.
     document_bindings = [
-        entry for entry in denied_snapshot["input_bindings"]["messages"]
+        entry for entry in later_snapshot["input_bindings"]["messages"]
         if dependency in entry["dependencies"]
     ]
-    assert document_bindings, denied_snapshot["input_bindings"]
+    assert document_bindings, later_snapshot["input_bindings"]
     for binding in document_bindings:
         if binding["status"] == "bound":
-            wire_message = denied_snapshot["wire_request"]["messages"][binding["message_index"]]
-            for marker in (DOCUMENT_MARKER, DERIVED_MARKER):
-                assert marker not in json.dumps(wire_message), (binding, wire_message)
+            wire_message = later_snapshot["wire_request"]["messages"][binding["message_index"]]
+            assert DOCUMENT_MARKER not in json.dumps(wire_message), (binding, wire_message)

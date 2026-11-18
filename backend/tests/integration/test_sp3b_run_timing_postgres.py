@@ -157,8 +157,9 @@ async def test_scripted_run_has_one_content_free_partitioned_summary(
     for entries in (line["statements"], line["gaps"], line["phases"]):
         assert [entry["ms"] for entry in entries] == sorted(
             (entry["ms"] for entry in entries), reverse=True)
+    # owner 11-13 / 11-18 A: the private worker has no history authority phase.
     assert {span["name"] for span in line["phases"]} == {
-        "tool_collection", "prompt_build", "memory_context", "model_input_source_validation", "hook_dispatch",
+        "tool_collection", "prompt_build", "memory_context", "hook_dispatch",
         "skill_catalog", "secret_boundary"}
     numeric = {"wall_ms", "cleanup_ms", "pre_model_ms", "model_ms", "between_rounds_ms", "post_model_ms",
         "rounds", "db_statements", "db_ms", "pool_ms", "transactions", "instrumentation_errors"}

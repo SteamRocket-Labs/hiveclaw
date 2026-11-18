@@ -48,10 +48,15 @@ export function createPendingUserMessageActions(
       });
     },
     updateOptimisticUserMessage: (key: string, sessionId: string, inputId: string, patch: Partial<AgentChatMessage>) => {
-      pending.current[key] = (pending.current[key] || []).map(item =>
-        item.message.id === inputId ? { ...item, message: { ...item.message, ...patch } } : item);
-      updateMessages(sessionId, prev => mergePendingForSession(key, prev.map(message =>
-        message.id === inputId ? { ...message, ...patch } : message)));
+      updateMessages(sessionId, prev => {
+        const inputs = pending.current[key] || [];
+        const optimisticMessages = new Set(inputs.map(item => item.message));
+        pending.current[key] = inputs.map(item =>
+          item.message.id === inputId ? { ...item, message: { ...item.message, ...patch } } : item);
+        // A local bubble in the snapshot cannot confirm its own durable display.
+        return mergePendingForSession(key, prev.filter(message => !optimisticMessages.has(message)).map(message =>
+          message.id === inputId ? { ...message, ...patch } : message));
+      });
     },
   };
 }

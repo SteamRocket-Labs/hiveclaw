@@ -1052,7 +1052,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # web_chat_runtime (module), session_control_input (module,
 # settle_pending_controls_for_run, recover_stale_cancel_control_inputs_once).
 # SP2c changes no fingerprinted entry.
-RLS_BYPASS_SCOPES_SHA256 = "9db3ee8d9c8d545f8df83f5cdb0b2a4e50dfb85569c99be7dd97167302a7393c"
+# Land41 (SP3b) versus land40: still 807 entries and 123 callsites, no new or
+# removed key, no new bypass scope. Changed: module source of web_chat_runtime
+# (timing decorator and terminal marks) and session_model_round (timing span).
+RLS_BYPASS_SCOPES_SHA256 = "5b60cf79a9bc6c7e15ad986ac051bfdb06545cbf09f7241f45d00cb564ecb372"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   realChat: false,
   realTransport: false,
   startSessionRun: vi.fn(),
+  createSession: vi.fn(),
   createSessionRun: vi.fn(),
   cancelSessionRun: vi.fn(),
   deleteSession: vi.fn(),
@@ -158,6 +159,7 @@ vi.mock('../api/domains/chat', () => ({
     getSessionMessages: mocks.getSessionMessages,
     getSessionLineage: mocks.getSessionLineage,
     startSessionRun: mocks.startSessionRun,
+    createSession: mocks.createSession,
     createSessionRun: mocks.createSessionRun,
     cancelSessionRun: mocks.cancelSessionRun,
     getActiveSessionRun: mocks.getActiveSessionRun,
@@ -282,6 +284,7 @@ beforeEach(() => {
   mocks.getSessionLineage.mockResolvedValue([]);
   mocks.chatProps = null;
   mocks.startSessionRun.mockReset();
+  mocks.createSession.mockReset();
   mocks.createSessionRun.mockReset();
   mocks.cancelSessionRun.mockReset();
   mocks.deleteSession.mockReset();
@@ -710,6 +713,342 @@ async function composeOrdinaryMessage(text = 'Keep this message') {
   act(() => mocks.chatProps.onSetChatInput(text));
 }
 
+it.each(['continuation', 'answer', 'plan'] as const)('X9a.1 shows an inline %s and thinking before its request settles', async entry => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  mocks.answerQuestion.mockReturnValue(request.promise);
+  if (entry === 'answer') mocks.activeSessionRun = { run_id: 'question-run', status: 'suspended' };
+  await mountOwnedArtifactWork();
+  if (entry === 'continuation') {
+    render(<ArtifactContinuation artifact={{ id: 'report', name: 'report.md', path: 'workspace/report.md' }}
+      workspaceAgentId="agent-1" blocked={false}
+      context={{ sessionId: mocks.sessionId!, send: mocks.chatProps.onSendMessage }} />);
+    fireEvent.change(screen.getByRole('textbox', { name: zh.agent.chat.artifacts.continueLabel }), { target: { value: 'Revise saved file' } });
+    fireEvent.click(screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }));
+    expect(screen.getByRole('button', { name: zh.agent.chat.artifacts.continuing })).toBeTruthy();
+  } else if (entry === 'answer') {
+    await act(async () => {
+      receiveLiveMessage(activeRunEvent(1, 'human_input', 'accepted', null, { content_parts: [{ type: 'text', text: 'Choose an audience' }] }));
+      receiveLiveMessage(activeRunEvent(2, 'run', 'running', 'question-run'));
+      receiveLiveMessage(activeRunEvent(3, 'user_question', 'waiting', 'question-run', {
+        status: 'awaiting_user_clarification', legacy_event_id: 'question-tool', requested_by_user_id: 'platform-admin-1',
+        questions: [{ header: 'Audience', question: 'Which audience?', multiSelect: false, options: [{ label: 'Team', description: '' }] }],
+      }, 'question'));
+    });
+    fireEvent.click(await screen.findByRole('radio', { name: 'Team' }));
+    fireEvent.click(screen.getByRole('button', { name: zh.agent.clarification.submit }));
+  } else {
+    act(() => { void mocks.chatProps.onEnterPlanMode('Review this plan').catch(() => undefined); });
+  }
+  const api = entry === 'answer' ? mocks.answerQuestion : mocks.startSessionRun;
+  expect(api).toHaveBeenCalledOnce();
+  const content = entry === 'continuation' ? 'report.md\nRevise saved file' : entry === 'answer' ? 'Audience: Team' : 'Review this plan';
+  await waitFor(() => expect(mocks.chatProps.chatMessages.some((message: any) => message.role === 'user'
+    && message.content === content && message.sendState === 'sending')).toBe(true));
+  expect(screen.getByText(content.replace(/\s+/g, ' '), { exact: false })).toBeTruthy();
+  expect(screen.getByTestId('session-workbench-header').querySelector('.swb-header-status')?.textContent).toBe('运行中');
+  expect(screen.getAllByText('思考中').length).toBeGreaterThan(0);
+  const firstInput = entry === 'answer' ? api.mock.calls[0][4] : api.mock.calls[0][2].input_id;
+  await act(async () => { request.reject(new Error('Connection lost')); });
+  await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === firstInput)?.sendState).toBe('failed'));
+  expect(screen.queryByText('思考中')).toBeNull();
+  expect(Boolean(screen.queryByTestId('session-composer-stop'))).toBe(entry === 'answer');
+  expect(Boolean(screen.queryByRole('button', { name: zh.common.retry }))).toBe(entry === 'plan');
+  if (entry !== 'plan') expect(screen.getByRole('alert').textContent).toBe('Connection lost');
+  const retry = deferred<any>();
+  api.mockReturnValue(retry.promise);
+  fireEvent.click(screen.getByRole('button', { name: entry === 'plan' ? zh.common.retry : entry === 'continuation'
+    ? zh.agent.chat.artifacts.continueHere : zh.agent.clarification.submit }));
+  expect(api).toHaveBeenCalledTimes(2);
+  await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === firstInput)?.sendState).toBe('sending'));
+  expect(api.mock.calls[1]).toEqual(api.mock.calls[0]);
+  expect(mocks.chatProps.chatMessages.filter((message: any) => message.id === firstInput)).toHaveLength(1);
+  await act(async () => { retry.resolve(entry !== 'answer' ? { run_id: 'continued-run', status: 'running' }
+    : { admission_state: 'admitted', status: 'accepted' }); });
+  if (entry === 'continuation') await screen.findByText(zh.agent.chat.artifacts.continueRecorded);
+  else await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === firstInput)?.sendState).toBeUndefined());
+});
+
+async function submitInlinePlanDecision(decision: 'approve' | 'decline') {
+  let sending!: Promise<unknown>;
+  const submit = (action: () => Promise<unknown>) => {
+    sending = action().catch((error: Error) => error);
+    return sending;
+  };
+  render(<StructuredToolResultBody toolMeta={{ kind: 'plan_mode_request', reason: 'Review this plan', nextAction: null }}
+    onEnterPlanMode={(reason) => submit(() => mocks.chatProps.onEnterPlanMode(reason))}
+    onSendMessage={(text: string, options?: { planMode?: boolean }) => submit(() => mocks.chatProps.onSendMessage(text, options))} />);
+  fireEvent.click(screen.getByRole('button', { name: zh.agent.plan.request[decision] }));
+  await act(async () => { expect(await sending).toBeInstanceOf(Error); });
+  expect(screen.queryByRole('button', { name: zh.agent.plan.request[decision] })).toBeNull();
+}
+
+it.each(['approve', 'decline'] as const)('X9a.r4.1 offers no bubble Retry for a refused but retryable plan %s', async decision => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: 'rejected',
+    status: 'rejected', dispatch: { retryable: true, message: 'Try in a new conversation' }, run: null });
+  await mountOwnedArtifactWork();
+  await submitInlinePlanDecision(decision);
+  expect(mocks.chatProps.chatMessages.find((message: any) => message.role === 'user')).toMatchObject({
+    sendState: 'failed', sendError: 'Try in a new conversation', retrySend: undefined,
+  });
+  expect(screen.queryByRole('button', { name: zh.common.retry })).toBeNull();
+  expect(mocks.startSessionRun).toHaveBeenCalledOnce();
+});
+
+it('X9a.r4.2 keeps failed continuation retry in the card with its save guard and no bubble Retry', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.startSessionRun.mockRejectedValueOnce(new Error('Connection lost'))
+    .mockResolvedValueOnce({ run_id: 'continued-run', status: 'running' });
+  await mountOwnedArtifactWork();
+  const props = { artifact: { id: 'report', name: 'report.md', path: 'workspace/report.md' }, workspaceAgentId: 'agent-1',
+    context: { sessionId: mocks.sessionId!, send: mocks.chatProps.onSendMessage } };
+  const card = render(<ArtifactContinuation {...props} blocked={false} />);
+  const draft = screen.getByRole('textbox', { name: zh.agent.chat.artifacts.continueLabel }) as HTMLTextAreaElement;
+  fireEvent.change(draft, { target: { value: 'Revise saved file' } });
+  fireEvent.click(screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('alert').textContent).toBe('Connection lost');
+  expect(screen.queryByRole('button', { name: zh.common.retry })).toBeNull();
+  expect(draft.value).toBe('Revise saved file');
+  expect((screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }) as HTMLButtonElement).disabled).toBe(false);
+  card.rerender(<ArtifactContinuation {...props} blocked />);
+  expect(screen.getByText(zh.agent.chat.artifacts.saveBeforeContinue)).toBeTruthy();
+  expect((screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }) as HTMLButtonElement).disabled).toBe(true);
+  card.rerender(<ArtifactContinuation {...props} blocked={false} />);
+  fireEvent.click(screen.getByRole('button', { name: zh.agent.chat.artifacts.continueHere }));
+  await screen.findByText(zh.agent.chat.artifacts.continueRecorded);
+  expect(mocks.startSessionRun).toHaveBeenCalledTimes(2);
+  expect(mocks.startSessionRun.mock.calls[1]).toEqual(mocks.startSessionRun.mock.calls[0]);
+  expect(draft.value).toBe('');
+  expect(screen.queryByRole('alert')).toBeNull();
+  const inputId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  expect(mocks.chatProps.chatMessages.filter((message: any) => message.id === inputId)).toHaveLength(1);
+});
+
+it.each(['approve', 'decline'] as const)('X9a.r4.3 adds no second notice when a plan %s bubble Retry fails again', async decision => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.startSessionRun.mockRejectedValue(new Error('Connection lost'));
+  await mountOwnedArtifactWork();
+  await submitInlinePlanDecision(decision);
+  expect(Boolean(mocks.startSessionRun.mock.calls[0][2].plan_mode_requested)).toBe(decision === 'approve');
+  const inputId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  const notices = mocks.chatProps.chatMessages.filter((message: any) => message.role === 'event');
+  expect(notices).toHaveLength(1);
+  for (const attempts of [2, 3]) {
+    fireEvent.click(screen.getByRole('button', { name: zh.common.retry }));
+    await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === inputId)?.sendState).toBe('failed'));
+    expect(mocks.startSessionRun).toHaveBeenCalledTimes(attempts);
+    expect(mocks.startSessionRun.mock.calls[attempts - 1]).toEqual(mocks.startSessionRun.mock.calls[0]);
+    expect(mocks.chatProps.chatMessages.filter((message: any) => message.id === inputId)).toHaveLength(1);
+    expect(mocks.chatProps.chatMessages.filter((message: any) => message.role === 'event')).toEqual(notices);
+    expect(screen.getByRole('button', { name: zh.common.retry })).toBeTruthy();
+  }
+});
+
+it.each(['rejects', 'no-run'] as const)('X9a.r3.1 restores a new goal conversation draft and attachment when startGoal %s', async outcome => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'startGoal').mockReturnValue(request.promise);
+  mocks.createSession.mockResolvedValue({ id: 'new-goal-session', agent_id: 'agent-1', user_id: 'platform-admin-1',
+    session_kind: 'human_chat', read_only: false });
+  mocks.upload.mockResolvedValue({ filename: 'notes.txt', extracted_text: 'Private notes', workspace_path: 'workspace/uploads/notes.txt' });
+  await mountOwnedArtifactWork();
+  mocks.sessionId = undefined;
+  await act(async () => { await mocks.chatProps.onCreateNewSession(); });
+  expect(mocks.chatProps.activeSession.id).toMatch(/^draft:/);
+  act(() => { mocks.chatProps.onSetChatInput('Goal with notes'); });
+  await act(async () => { await mocks.chatProps.onHandleChatFile({ target: { files: [new File(['Private notes'], 'notes.txt')] } }); });
+  const attachments = mocks.chatProps.attachedFiles;
+  act(() => mocks.chatProps.onToggleGoalMode());
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(ccParityApi.startGoal).toHaveBeenCalledOnce());
+  expect(mocks.chatProps.activeSession.id).toBe('new-goal-session');
+  expect(ccParityApi.startGoal).toHaveBeenCalledWith('agent-1', 'new-goal-session', expect.objectContaining({
+    content: expect.stringContaining('Goal with notes'), attachments: [expect.objectContaining({ name: 'notes.txt' })],
+  }));
+  expect((screen.getByTestId('session-composer-input') as HTMLTextAreaElement).value).toBe('');
+  expect(screen.queryByTestId('session-composer-attachments')).toBeNull();
+  await act(async () => {
+    if (outcome === 'rejects') request.reject(new Error('Goal unavailable'));
+    else request.resolve({ run: null });
+  });
+  await waitFor(() => expect((screen.getByTestId('session-composer-input') as HTMLTextAreaElement).value).toBe('Goal with notes'));
+  expect(mocks.chatProps.attachedFiles).toEqual(attachments);
+  expect(screen.getByTestId('session-composer-attachments').textContent).toContain('notes.txt');
+});
+
+it.each([
+  ['approve', 'success'], ['approve', 'failure'], ['decline', 'success'], ['decline', 'failure'],
+] as const)('X9a.r3.3 keeps conversation B unchanged when a pending plan %s in A settles with %s', async (decision, outcome) => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  await mountOwnedArtifactWork();
+  const sessionA = mocks.chatProps.activeSession;
+  const sessionB = { ...sessionA, id: 'other-session', title: 'Conversation B' };
+  mocks.listSessions.mockResolvedValue([sessionA, sessionB]);
+  let sending!: Promise<unknown>;
+  act(() => { sending = (decision === 'approve' ? mocks.chatProps.onEnterPlanMode('Plan in conversation A')
+    : mocks.chatProps.onSendMessage('Continue without Plan Mode in A')).catch((error: Error) => error); });
+  expect(mocks.startSessionRun).toHaveBeenCalledOnce();
+  mocks.getSessionMessages.mockResolvedValue([{ id: 'b-message', role: 'assistant', content: 'Retained conversation B reply' }]);
+  mocks.sessionId = sessionB.id;
+  await act(async () => { await mocks.chatProps.onSelectSession(sessionB); });
+  await screen.findByText('Retained conversation B reply');
+  expect(mocks.chatProps.chatMessagesSessionId).toBe(sessionB.id);
+  const messages = mocks.chatProps.chatMessages;
+  const notice = mocks.chatProps.transportNotice;
+  await act(async () => {
+    if (outcome === 'success') request.resolve({ run_id: 'a-plan-run', status: 'running' });
+    else request.reject(new Error('Conversation A send failed'));
+    await sending;
+  });
+  expect(mocks.chatProps.activeSession.id).toBe(sessionB.id);
+  expect(mocks.chatProps.chatMessagesSessionId).toBe(sessionB.id);
+  expect(mocks.chatProps.chatMessages).toEqual(messages);
+  expect(mocks.chatProps.transportNotice).toBe(notice);
+  expect(screen.getByText('Retained conversation B reply')).toBeTruthy();
+  expect(screen.queryByText('Conversation A send failed')).toBeNull();
+});
+
+it.each([
+  ['rejected', {}, zh.agent.chat.sendRefused],
+  ['cancelled', {}, zh.agent.chat.sendCancelled],
+  ['needs_reconciliation', {}, zh.agent.chat.sendUnconfirmed],
+  ['rejected', { message: 'A specific refusal' }, 'A specific refusal'],
+  ['rejected', { reason_code: 'terminal_boundary_dead_letter', message: 'Do not replace the member copy', retryable: false }, zh.agent.chat.previousRunUnfinished],
+] as const)('X9a.r3.4 preserves the main composer refusal message for inline %s (%j)', async (admission, dispatch, message) => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: admission, status: admission, dispatch, run: null });
+  await mountOwnedArtifactWork();
+  await act(async () => { await expect(mocks.chatProps.onEnterPlanMode('Review this plan')).rejects.toThrow(message); });
+  const bubble = mocks.chatProps.chatMessages.find((item: any) => item.role === 'user');
+  expect(bubble).toMatchObject({ sendState: 'failed', sendError: message });
+  expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ role: 'event', content: message, eventType: 'runtime_action_failed' });
+  expect(screen.getByTestId('message-send-status').textContent).toContain(message);
+  if ('retryable' in dispatch && !dispatch.retryable) expect(screen.queryByRole('button', { name: zh.common.retry })).toBeNull();
+});
+
+it.each(['plan', 'continuation'] as const)('X9a.r3.4 keeps the inline %s bubble and notice unconfirmed after a 5xx', async entry => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.startSessionRun.mockRejectedValue(new ApiError(503, 'Acknowledgement unavailable'));
+  await mountOwnedArtifactWork();
+  await act(async () => {
+    await expect(entry === 'plan' ? mocks.chatProps.onEnterPlanMode('Review this plan')
+      : mocks.chatProps.onSendMessage('Revise saved file', { expectedSessionId: mocks.sessionId })).rejects.toThrow('Acknowledgement unavailable');
+  });
+  expect(mocks.chatProps.chatMessages.find((item: any) => item.role === 'user')).toMatchObject({
+    sendState: 'failed', sendError: zh.agent.chat.sendUnconfirmed,
+  });
+  expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ role: 'event', content: zh.agent.chat.sendUnconfirmed,
+    eventType: 'runtime_action_unconfirmed', eventStatus: 'input_outcome_unknown' });
+  expect(screen.getByTestId('message-send-status').textContent).toContain(zh.agent.chat.sendUnconfirmed);
+  expect(screen.queryByText(zh.agent.chat.sendFailed)).toBeNull();
+});
+
+it.each(['continuation', 'answer'] as const)('X9a.1 clears thinking after an inline %s is refused', async entry => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  mocks.answerQuestion.mockReturnValue(request.promise);
+  await mountOwnedArtifactWork();
+  let sending!: Promise<unknown>;
+  act(() => { sending = (entry === 'answer' ? mocks.chatProps.onAnswerQuestion('question', 'Audience: Team')
+    : mocks.chatProps.onSendMessage('Revise saved file')).catch((error: Error) => error); });
+  await screen.findByText('思考中');
+  await act(async () => { request.resolve({ schema: 'hive.human_input_receipt', admission_state: 'rejected', status: 'rejected', run: null });
+    expect(await sending).toBeInstanceOf(Error); });
+  expect(mocks.chatProps.chatMessages.find((message: any) => message.role === 'user')?.sendState).toBe('failed');
+  expect(screen.queryByText('思考中')).toBeNull();
+});
+
+it.each(['network', 'refused', 'goal'] as const)('X9a.2 clears text and attachments while pending and restores them after %s failure', async failure => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  vi.spyOn(ccParityApi, 'startGoal').mockReturnValue(request.promise);
+  mocks.upload.mockResolvedValue({ filename: 'notes.txt', extracted_text: 'Private notes', workspace_path: 'workspace/uploads/notes.txt' });
+  await composeOrdinaryMessage();
+  await act(async () => { await mocks.chatProps.onHandleChatFile({ target: { files: [new File(['Private notes'], 'notes.txt')] } }); });
+  const attachments = mocks.chatProps.attachedFiles;
+  act(() => failure === 'goal' ? mocks.chatProps.onToggleGoalMode() : mocks.chatProps.onTogglePlanMode());
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(failure === 'goal' ? ccParityApi.startGoal : mocks.startSessionRun).toHaveBeenCalledOnce());
+  expect((screen.getByTestId('session-composer-input') as HTMLTextAreaElement).value).toBe('');
+  expect(screen.queryByTestId('session-composer-attachments')).toBeNull();
+  expect(mocks.chatProps.planModeRequested).toBe(failure !== 'goal');
+  expect(mocks.chatProps.goalModeRequested).toBe(failure === 'goal');
+  await act(async () => {
+    if (failure === 'network') request.reject(new Error('Connection lost'));
+    else if (failure === 'refused') request.resolve({ schema: 'hive.human_input_receipt', admission_state: 'rejected', run: null });
+    else request.resolve({ run: null });
+  });
+  await waitFor(() => expect((screen.getByTestId('session-composer-input') as HTMLTextAreaElement).value).toBe('Keep this message'));
+  expect(mocks.chatProps.attachedFiles).toEqual(attachments);
+  expect(screen.getByTestId('session-composer-attachments').textContent).toContain('notes.txt');
+  expect(mocks.chatProps.planModeRequested).toBe(failure !== 'goal');
+  expect(mocks.chatProps.goalModeRequested).toBe(failure === 'goal');
+});
+
+it.each(['network', 'refused', 'success'] as const)('X9a.2 keeps newer text and attachments after a pending send ends in %s', async outcome => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  mocks.upload.mockResolvedValueOnce({ filename: 'old.txt', extracted_text: 'Old file', workspace_path: 'workspace/uploads/old.txt' })
+    .mockResolvedValueOnce({ filename: 'new.txt', extracted_text: 'New file', workspace_path: 'workspace/uploads/new.txt' });
+  await composeOrdinaryMessage();
+  await act(async () => { await mocks.chatProps.onHandleChatFile({ target: { files: [new File(['Old file'], 'old.txt')] } }); });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(mocks.startSessionRun).toHaveBeenCalledOnce());
+  expect((screen.getByTestId('session-composer-input') as HTMLTextAreaElement).value).toBe('');
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'New draft' } });
+  await act(async () => { await mocks.chatProps.onHandleChatFile({ target: { files: [new File(['New file'], 'new.txt')] } }); });
+  await act(async () => {
+    if (outcome === 'network') request.reject(new Error('Connection lost'));
+    else request.resolve(outcome === 'refused' ? { schema: 'hive.human_input_receipt', admission_state: 'rejected', run: null }
+      : { run_id: 'accepted-run', status: 'running' });
+  });
+  expect((screen.getByTestId('session-composer-input') as HTMLTextAreaElement).value).toBe('New draft');
+  expect(mocks.chatProps.attachedFiles).toMatchObject([{ name: 'new.txt' }]);
+  expect(mocks.chatProps.attachedFiles).toHaveLength(1);
+});
+
+it.each([false, true])('X9a.2 does not restore old attachments after a new text draft (erased: %s)', async erase => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  mocks.upload.mockResolvedValue({ filename: 'old.txt', extracted_text: 'Old file', workspace_path: 'workspace/uploads/old.txt' });
+  await composeOrdinaryMessage();
+  await act(async () => { await mocks.chatProps.onHandleChatFile({ target: { files: [new File(['Old file'], 'old.txt')] } }); });
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: 'New draft' } });
+  if (erase) fireEvent.change(screen.getByTestId('session-composer-input'), { target: { value: '' } });
+  await act(async () => { request.reject(new Error('Connection lost')); });
+  expect((screen.getByTestId('session-composer-input') as HTMLTextAreaElement).value).toBe(erase ? '' : 'New draft');
+  expect(mocks.chatProps.attachedFiles).toEqual([]);
+});
+
 it.each(['accepted', 'deferred'])('R16a.4 does not describe a first %s input as merged work', async status => {
   mocks.language = 'zh';
   mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', status, run: null,
@@ -762,7 +1101,7 @@ function receiveLiveMessage(data: any) {
 function activeRunEvent(sequence: number, kind: string, lifecycle: string, runId: string | null,
   payload: Record<string, unknown> = {}, itemId = `${kind}-${sequence}`) {
   const sessionId = 'owned-artifact-work';
-  const round = kind.startsWith('assistant_');
+  const round = kind.startsWith('assistant_') || kind === 'tool_call' || kind === 'tool_result';
   const timestamp = new Date(Date.UTC(2026, 10, 10, 0, 0, sequence)).toISOString();
   return {
     schema: 'hive.session_event', schema_version: 2, event_id: `active-run-event-${sequence}`, sequence,
@@ -837,6 +1176,76 @@ it('R16a.3 round2 adopts the 201 run and its later terminal after a pending send
   await receiveRunEvents(nextEvents, [...history, ...nextEvents]);
   expectMemberRunState('失败');
   expect(disclosureStates().at(-1)).toBe('failed');
+});
+
+it.each(['completed', 'failed', 'cancelled'] as const)('X9a.3 keeps Stop after stream done until the run is %s', async lifecycle => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.activeSessionRun = { run_id: 'tail-run', status: 'running' };
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  await mountOwnedArtifactWork();
+  const history = completedRunEvents(1, 'tail-run').slice(0, 4);
+  await receiveRunEvents(history);
+  expect(mocks.chatProps.activeRunId).toBe('tail-run');
+  expectMemberRunState('运行中');
+  const fresh = deferred<typeof history>();
+  mocks.getSessionTranscript.mockReturnValue(fresh.promise);
+  await act(async () => { receiveLiveMessage({ type: 'done', run_id: 'tail-run', content: '' }); });
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBeNull());
+  expect(mocks.chatProps.isStreaming).toBe(false);
+  expect(mocks.chatProps.isWaiting).toBe(false);
+  expectMemberRunState('运行中');
+  fireEvent.click(screen.getByTestId('session-composer-stop'));
+  await waitFor(() => expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith(
+    'agent-1', 'owned-artifact-work', 'tail-run'));
+  const terminal = activeRunEvent(5, 'run', lifecycle, 'tail-run');
+  mocks.activeSessionRun = null;
+  await receiveRunEvents([terminal], [...history, terminal]);
+  await act(async () => fresh.resolve([...history, terminal]));
+  expectMemberRunState(lifecycle === 'completed' ? '完成' : lifecycle === 'failed' ? '失败' : '已停止');
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
+});
+
+it('X9a.3 keeps Stop across a parent stream end while its colleague is still working', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  const parentRunId = 'parent-run';
+  const progress = colleagueRows.events.find(event => event.payload.member_summary?.kind === 'colleague_result')!;
+  const call = colleagueRows.events.find(event => event.sequence === progress.sequence - 1)!;
+  mocks.activeSessionRun = { run_id: parentRunId, status: 'running' };
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  await mountOwnedArtifactWork();
+  const history = [...completedRunEvents(1, parentRunId).slice(0, 3),
+    activeRunEvent(4, 'tool_call', 'started', parentRunId, call.payload, call.item_id),
+    activeRunEvent(5, 'tool_result', 'completed', parentRunId, progress.payload, progress.item_id),
+    activeRunEvent(6, 'assistant_commentary', 'completed', parentRunId, { content: 'Waiting for the colleague.' })];
+  await receiveRunEvents(history);
+  expect(mocks.chatProps.chatMessages.some((message: any) => message.toolMemberSummary?.kind === 'colleague_result'
+    && message.toolMemberSummary.state === 'in_progress')).toBe(true);
+  expectMemberRunState('运行中');
+  const fresh = deferred<unknown[]>();
+  mocks.getSessionTranscript.mockReturnValue(fresh.promise);
+  await act(async () => { receiveLiveMessage({ type: 'done', run_id: parentRunId, content: '' }); });
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBeNull());
+  expect(mocks.chatProps.isStreaming).toBe(false);
+  expect(mocks.chatProps.isWaiting).toBe(false);
+  expectMemberRunState('运行中');
+  fireEvent.click(screen.getByTestId('session-composer-stop'));
+  await waitFor(() => expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith(
+    'agent-1', 'owned-artifact-work', parentRunId));
+  const parentEnd = [activeRunEvent(7, 'assistant_final', 'completed', parentRunId, { content: 'The colleague is still working.' }),
+    activeRunEvent(8, 'run', 'completed', parentRunId)];
+  await receiveRunEvents(parentEnd, [...history, ...parentEnd]);
+  expectMemberRunState('运行中');
+  expect(screen.getByTestId('session-composer-stop')).toBeTruthy();
+  const colleagueEnd = { ...colleagueRows.events.find(event => event.legacy_event_type === 'runtime_action_completed'
+    && event.payload.metadata?.action_kind === 'a2a_delegation')!, sequence: 9, tenant_id: 'tenant-1' };
+  await act(async () => { receiveLiveMessage(colleagueEnd); fresh.resolve([...history, ...parentEnd, colleagueEnd]); });
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(false));
+  expectMemberRunState('完成');
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
 });
 
 it.each([1, 2])('R16a.9 round2 only announces earlier history after a load failure when the first sequence is %s', async firstSequence => {
@@ -1234,7 +1643,7 @@ it('shows the ordinary message before the response and sends only once on a doub
   expect(mocks.startSessionRun).toHaveBeenCalledTimes(1);
   expect(mocks.chatProps.chatMessages.filter((m: any) => m.role === 'user')).toHaveLength(1);
   expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ content: 'Keep this message', sendState: 'sending' });
-  expect(mocks.chatProps.chatInput).toBe('Keep this message');
+  expect(mocks.chatProps.chatInput).toBe('');
   await act(async () => { request.resolve({ schema: 'hive.human_input_receipt', admission_state: 'admitted', run: null }); await first; });
   expect(mocks.chatProps.chatInput).toBe('');
   expect(mocks.chatProps.chatMessages.at(-1).sendState).toBeUndefined();
@@ -1741,7 +2150,7 @@ it.each([true, false])('preserves the goal run-id success criterion and input on
   let send!: Promise<unknown>;
   act(() => { send = mocks.chatProps.onSendChatMsg(); });
   await waitFor(() => expect(ccParityApi.startGoal).toHaveBeenCalledTimes(1));
-  expect(mocks.chatProps.chatInput).toBe('Goal objective');
+  expect(mocks.chatProps.chatInput).toBe('');
   await act(async () => { request.resolve({ run: success ? { run_id: 'goal-run', status: 'pending' } : null }); await send; });
   expect(mocks.chatProps.chatInput).toBe(success ? '' : 'Goal objective');
 });

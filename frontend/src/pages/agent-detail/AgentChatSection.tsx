@@ -1047,7 +1047,6 @@ function AgentChatSection({
   }, [activeRunId, normalizedActiveRunStatus, permissionDecisionAccepted, sessionWorkbenchBase, visibleTimeline]);
   const unfinishedRunStatus = ['created', 'pending', 'queued', 'running', 'started', 'in_progress', 'resuming',
     'waiting', 'waiting_user', 'suspended', 'resumable'].includes(normalizedActiveRunStatus);
-  const hasUnfinishedRun = Boolean(activeRunId?.trim()) && unfinishedRunStatus;
   const rewindUnavailableReason = isStreaming
     || isWaiting
     || unfinishedRunStatus
@@ -1818,6 +1817,12 @@ function AgentChatSection({
       visibleTimeline,
     ],
   );
+  // Stream completion clears the transport run before the session run settles.
+  // Keep its projected identity; command-only progress has no run to stop.
+  const projectedRun = [...threadTimelineModel.cells].reverse().find(cell => cell.kind === 'active_run');
+  const hasUnfinishedRun = (Boolean(activeRunId?.trim()) && unfinishedRunStatus)
+    || (threadTimelineModel.header.status !== 'waiting' && Boolean(projectedRun?.runId)
+      && projectedRun?.timeline.status === 'running');
   const showDetailAuditBrowser = !sessionOnly && isAdmin;
   const detailSessionRows = allSessions;
   const detailSessionsLoading = allSessionsLoading;

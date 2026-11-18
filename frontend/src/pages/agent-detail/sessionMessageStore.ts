@@ -1,6 +1,6 @@
 import React from 'react';
 
-import type { AgentChatMessage } from './chatRuntime';
+import { mergePendingUserMessages, type AgentChatMessage, type PendingUserMessage } from './chatRuntime';
 
 export type ChatMessagesUpdater = (previous: AgentChatMessage[]) => AgentChatMessage[];
 type Listener = () => void;
@@ -21,6 +21,40 @@ export interface SessionMessageStore {
 }
 
 const EMPTY_MESSAGES: AgentChatMessage[] = Object.freeze([]) as unknown as AgentChatMessage[];
+
+export function createPendingUserMessageActions(
+  pending: { current: Record<string, PendingUserMessage[]> },
+  updateMessages: SessionMessageStore['updateAfterQueued'],
+  parseMessage: (message: AgentChatMessage) => AgentChatMessage,
+) {
+  const mergePendingForSession = (key: string, messages: AgentChatMessage[]) => {
+    const merged = mergePendingUserMessages(messages, pending.current[key] || []);
+    if (merged.pending.length) pending.current[key] = merged.pending;
+    else delete pending.current[key];
+    return merged.messages;
+  };
+  return {
+    mergePendingForSession,
+    appendOptimisticUserMessage: (key: string, sessionId: string, input: AgentChatMessage) => {
+      const message = parseMessage(input);
+      updateMessages(sessionId, prev => {
+        pending.current[key] = [
+          ...(pending.current[key] || []).filter(item => item.message.id !== message.id),
+          { message, anchorMessageCount: prev.length,
+            anchorMessageId: prev.at(-1)?.id || prev.at(-1)?.messageId || prev.at(-1)?.transcriptEventId || undefined },
+        ];
+        return mergePendingForSession(key, prev.map(existing => existing.id === message.id
+          ? { ...existing, sendState: message.sendState, sendError: undefined } : existing));
+      });
+    },
+    updateOptimisticUserMessage: (key: string, sessionId: string, inputId: string, patch: Partial<AgentChatMessage>) => {
+      pending.current[key] = (pending.current[key] || []).map(item =>
+        item.message.id === inputId ? { ...item, message: { ...item.message, ...patch } } : item);
+      updateMessages(sessionId, prev => mergePendingForSession(key, prev.map(message =>
+        message.id === inputId ? { ...message, ...patch } : message)));
+    },
+  };
+}
 
 function normalizeSessionId(sessionId: string | null | undefined): string {
   return sessionId ? String(sessionId) : '';

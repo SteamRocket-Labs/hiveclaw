@@ -185,18 +185,10 @@ async def load_exact_secret_boundary(
 
     server_query = select(MCPServer).where(MCPServer.tenant_id == tenant_id)
     if agent_id is not None:
-        assigned_ids = (
-            (
-                await db.execute(
-                    select(AgentMCPServerAssignment.mcp_server_id).where(
-                        AgentMCPServerAssignment.tenant_id == tenant_id,
-                        AgentMCPServerAssignment.agent_id == agent_id,
-                        AgentMCPServerAssignment.enabled.is_(True),
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        assigned_ids = select(AgentMCPServerAssignment.mcp_server_id).where(
+            AgentMCPServerAssignment.tenant_id == tenant_id,
+            AgentMCPServerAssignment.agent_id == agent_id,
+            AgentMCPServerAssignment.enabled.is_(True),
         )
         server_query = server_query.where(MCPServer.id.in_(assigned_ids))
     servers = (await db.execute(server_query)).scalars().all()

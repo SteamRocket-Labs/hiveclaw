@@ -23,6 +23,7 @@ from sqlalchemy.orm import joinedload
 
 from app.config import get_settings
 from app.core.permissions import is_agent_expired
+from app.core.request_timing import mark_run_terminal, timed_web_chat_run
 from app.kernel.contracts import ExecutionIdentityRef, SessionRestartRecoveryRequired, TerminalReason
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
@@ -4556,6 +4557,7 @@ async def _finalize_web_chat_run_with_assistant(
                 status=status,
             )
             await db.commit()
+            mark_run_terminal()
             return True
 
         assistant_message_id = uuid.uuid4()
@@ -4677,6 +4679,7 @@ async def _finalize_web_chat_run_with_assistant(
             status=status,
         )
         await db.commit()
+        mark_run_terminal()
         return True
 
 
@@ -4911,6 +4914,7 @@ async def _finalize_web_chat_run_without_assistant(
             status=status,
         )
         await db.commit()
+        mark_run_terminal()
         if terminal_envelope is not None:
             # Live delivery of the committed canonical terminal envelope.  The
             # outbox row committed in the same transaction owns cross-instance
@@ -6938,6 +6942,7 @@ async def _retry_pending_session_run_settlements(
     return recovered
 
 
+@timed_web_chat_run
 async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> None:
     """Delegate to the single run_web_chat_task lifecycle owner."""
     from app.services.web_chat_run_orchestrator import run_web_chat_task

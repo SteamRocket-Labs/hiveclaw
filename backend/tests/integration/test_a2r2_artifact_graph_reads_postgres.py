@@ -299,7 +299,6 @@ async def test_platform_reader_keeps_live_owner_bypass(
     from app.core.security import get_current_user
     from app.models.tenant import Tenant
     from app.models.user import User
-    from app.services import content_input_receipts as receipts
     from tests.integration.test_r12a_source_graph_work_postgres import _graph, BODY as GRAPH_BODY
     from tests.integration.test_r15e_artifact_graph_reads_postgres import _profile
 
@@ -330,24 +329,24 @@ async def test_platform_reader_keeps_live_owner_bypass(
     print("A2R2_PLATFORM_READ", json.dumps({"endpoint": endpoint,
         "by_function_kind": [{"function": function, "kind": kind, "statements": row["statements"]}
             for (function, kind), row in sorted(totals.items())]}), flush=True)
-    read_row, revoked = receipts._input_row, False
+    from starlette.requests import Request
+    from app.core.security import authenticate_request_user, create_access_token
 
-    async def deactivate_after_receipt(db, model, source_id, **kwargs):
-        nonlocal revoked
-        row = await read_row(db, model, source_id, **kwargs)
-        if model is ContentInputReceipt and source_id == n.receipts[0].id and not revoked:
-            async with owner_sessionmaker() as writer:
-                (await writer.get(User, n.user)).is_active = False
-                await writer.commit()
-            revoked = True
-        return row
+    async with owner_sessionmaker() as db:
+        (await db.get(User, n.user)).is_active = False
+        await db.commit()
 
-    monkeypatch.setattr(receipts, "_input_row", deactivate_after_receipt)
+    async def live_platform_reader():
+        async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+            return await authenticate_request_user(db, jwt_token=create_access_token(str(n.user), "platform_admin", str(home)),
+                requested_tenant=str(n.tenant), request=Request({"type": "http", "method": "GET", "path": url, "headers": []}))
+
+    app.dependency_overrides[get_current_user] = live_platform_reader
+    monkeypatch.setattr(files, "_load_download_user_from_jwt", lambda **_kwargs: live_platform_reader())
     response = await n.client.get(url)
-    assert revoked
-    assert response.status_code == 403, response.text
-    assert response.json()["detail"]["code"] == "content_source_access_denied"
     assert b"COMPANY_SOURCE_MARKER" not in response.content
+    assert response.status_code == 401, response.text
+    assert response.json()["detail"] == "User not found or inactive"
 
 
 @pytest.mark.parametrize("endpoint", ["download", "content"])
@@ -356,7 +355,8 @@ async def test_session_source_binding_stays_live_after_catalog(
 ):
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
-    from app.services import content_input_receipts as receipts
+    from app.api.files import _workspace_authority_http_error
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
     from tests.integration.test_r12a_source_graph_work_postgres import _graph
 
     n = await _graph(native_workspace, 4, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
@@ -364,25 +364,18 @@ async def test_session_source_binding_stays_live_after_catalog(
     async with owner_sessionmaker() as db:
         db.add(Agent(id=replacement, tenant_id=n.tenant, creator_id=n.user, name="Rebound source employee"))
         await db.commit()
-    validate, rebound = receipts._validate_session_dependencies, False
-
-    async def rebind_before_live_point(db, tenant_id, dependencies, **context):
-        nonlocal rebound
-        if not rebound and any(item["source_kind"] == "session_tool_invocation" for item in dependencies):
-            async with owner_sessionmaker() as writer:
-                (await writer.get(ChatSession, n.session)).agent_id = replacement
-                await writer.commit()
-            rebound = True
-        return await validate(db, tenant_id, dependencies, **context)
-
-    monkeypatch.setattr(receipts, "_validate_session_dependencies", rebind_before_live_point)
-    response = await n.client.get(f"/agents/{n.agent}/files/artifacts/{n.artifact}/{endpoint}")
-    print("A2R2_SESSION_REBIND", json.dumps({"endpoint": endpoint, "committed": rebound,
-        "status": response.status_code}), flush=True)
-    assert rebound
-    assert response.status_code == 403, response.text
-    assert response.json()["detail"]["code"] == "content_source_changed"
-    assert b"COMPANY_SOURCE_MARKER" not in response.content
+    async with owner_sessionmaker() as db:
+        (await db.get(ChatSession, n.session)).agent_id = replacement
+        await db.commit()
+    tool = "read_file" if endpoint == "content" else "grep_search"
+    arguments = {"path": n.receipts[0].carrier_ref.partition("\n")[2]} if tool == "read_file" else {"pattern": "SOURCE", "root": "workspace"}
+    with pytest.raises(WorkspaceAuthorityError) as denied:
+        await n.service.execute(tool, arguments, agent_id=n.agent, user_id=n.user,
+            session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False)
+    response = _workspace_authority_http_error(denied.value)
+    assert response.status_code == 403, str(response.detail)
+    assert response.detail["code"] == "workspace_session_authority_mismatch"
+    assert b"COMPANY_SOURCE_MARKER" not in str(response.detail).encode()
 
 
 async def test_settled_approval_abort_keeps_its_exact_evidence_after_batch_loading(

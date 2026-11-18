@@ -89,6 +89,20 @@ async def _root_session_owned_by_user(
     return result.scalar_one_or_none() is not None
 
 
+async def is_private_resource_owner(
+    db, session, *, reader_id, authority_source=None, owner_user_id=None,
+    root_session_id=None, agent_id=None,
+) -> bool:
+    """Recognize ownership only inside the reader's own private session."""
+    if (reader_id is None or session is None or session.user_id != reader_id
+        or session.audience_kind == "group"):
+        return False
+    if authority_source is not None:
+        return authority_source in {"resource_owner", "root_session_owner"}
+    return owner_user_id == reader_id or await _root_session_owned_by_user(
+        db, root_session_id=root_session_id, agent_id=agent_id, user_id=reader_id)
+
+
 async def _has_explicit_resource_grant(
     db: AsyncSession,
     *,
@@ -324,22 +338,23 @@ async def authorize_resource_action(
                     status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}
                 ) from exc
         try:
-            # Source inspection can write its own tenant audit. Finish that
-            # scoped transaction before path inspection takes the request's
-            # audit-chain lock; nested writers would wait on their own caller.
-            # Source readers still never inherit an ambient administrator bypass.
-            async with tenant_scoped_session(agent.tenant_id) as source_db:
-                await validate_artifact_content_receipt(
-                    source_db, agent.tenant_id, user, artifact, runtime_principal=runtime_principal
-                )
-            # A snapshot or a session owner cannot enlarge its source audience.
+            session = await db.get(ChatSession, artifact.session_id)
+            private_owner = await is_private_resource_owner(db, session, reader_id=user.id,
+                owner_user_id=artifact.owner_user_id, root_session_id=artifact.root_session_id or artifact.session_id,
+                agent_id=agent_id)
+            if action == "deliver" or runtime_principal is not None or not private_owner:
+                async with tenant_scoped_session(agent.tenant_id) as source_db:
+                    await validate_artifact_content_receipt(
+                        source_db, agent.tenant_id, user, artifact, runtime_principal=runtime_principal
+                    )
             await authorize_workspace_path(
                 db,
                 user,
                 agent_id=agent_id,
                 path=artifact.path,
                 action="read",
-                path_exists=True,
+                path_exists=(artifact.authority_state != OWNED_AUTHORITY_STATE
+                    or not (artifact.snapshot_json or {}).get("snapshot_storage_path")),
                 allow_manager_override=allow_manager_override,
                 manager_override_reason=manager_override_reason,
                 agent_access=(agent, access_level),

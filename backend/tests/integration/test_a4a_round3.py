@@ -95,7 +95,8 @@ async def _read_document(n, db, document, messages):
     return read
 
 
-async def _resolve_email(n, db, app_user_sessionmaker, monkeypatch, message, *, index, handover=False):
+async def _resolve_email(n, db, app_user_sessionmaker, monkeypatch, message, *, index, handover=False,
+    body="PRIVATE_DOCUMENT_D"):
     from app.models.agent import Agent
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.security_audit import ResourcePermission
@@ -111,7 +112,7 @@ async def _resolve_email(n, db, app_user_sessionmaker, monkeypatch, message, *, 
     monkeypatch.setattr(agent_tools, "_handle_email_tool", deliver)
     monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", notify)
     send = await _step(n, db, "send_email", {"to": "recipient@example.test", "subject": "Report",
-        "body": "PRIVATE_DOCUMENT_D"}, [message], index)
+        "body": body}, [message], index)
     assert "session_permission_required" in str(send.result), send.result
     await db.commit()
     if handover:
@@ -207,7 +208,7 @@ async def test_bot_successor_keeps_document_until_approved_send(native_workspace
         successor = await latest_workspace_receipt(db, n.tenant, n.agent, path)
         grant.revoked_at = datetime.now(timezone.utc)
         await db.commit()
-        # A fresh session cannot borrow the writing session's source grant.
+        # owner 11-18 decision A: a later private session still reads the member's own report.
         from app.models.chat_session import ChatSession
         later = ChatSession(id=uuid.uuid4(), tenant_id=n.tenant, agent_id=n.agent, user_id=n.user,
             title="Later approved send")
@@ -224,8 +225,7 @@ async def test_bot_successor_keeps_document_until_approved_send(native_workspace
         later_n = SimpleNamespace(**{**vars(n), "session": later.id, "run": run.id})
         later_messages = await _admitted_write_messages(db, later_n, content="Email my report")
         later_read = await _step(later_n, db, "read_file", {"path": path}, later_messages, 1)
-        # R10a read-time ruling: after revocation the derived working copy does not re-enter a run
-        assert "PRIVATE_DOCUMENT_D" not in str(later_read.result) and "content_source_access_denied" in str(later_read.result)
+        assert "PRIVATE_DOCUMENT_D" in str(later_read.result) and "content_source_access_denied" not in str(later_read.result)
         # Keep the outward control in the writing session that already consumed D.
         from app.models.knowledge import KnowledgeGrant
         runtime_grant = await db.scalar(select(KnowledgeGrant).where(KnowledgeGrant.document_id == document.id,
@@ -276,7 +276,10 @@ async def test_process_with_unbound_input_keeps_restricted_successor(native_work
             await validate_browser_input_dependencies(db, n.tenant, await db.get(User, n.user), receipt.dependencies_json)
         artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == n.agent,
             ChatArtifact.path == "workspace/unbound-result.md"))
-        assert artifact is None
+        # owner 11-18 decision A: the execution output is usable in the private chat.
+        assert artifact is not None
+        card = await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")
+        assert card.status_code == 200 and card.json()["content"] == "FOREIGN_UNBOUND_BODY", card.text
 
 
 @pytest.mark.parametrize("mode", ["plan", "dontAsk"])
@@ -432,8 +435,8 @@ async def test_incomplete_successor_remains_owned_but_cannot_leave(native_worksp
         readable = await n.client.get(f"/agents/{n.agent}/files/content", params={"path": path})
         assert readable.status_code == 200 and "PRIVATE_DOCUMENT_D" in readable.text
         read = await _step(n, db, "read_file", {"path": path}, messages, 3)
-        # R10a read-time ruling: an unverifiable source never reaches the model
-        assert "PRIVATE_DOCUMENT_D" not in str(read.result) and "learned_model_source_unavailable" in str(read.result)
+        # owner 11-18 decision A: an incomplete upstream model does not withhold the saved copy.
+        assert "PRIVATE_DOCUMENT_D" in str(read.result) and "learned_model_source_unavailable" not in str(read.result)
         if route == "approved_send":
             from app.runtime.context_candidates import ContextMessageOrigin
             # Seed historical context with the actual working copy's receipt chain.
@@ -455,5 +458,16 @@ async def test_incomplete_successor_remains_owned_but_cannot_leave(native_worksp
             with pytest.raises(ContentInputReceiptError):
                 await validate_browser_input_dependencies(db, n.tenant, await db.get(User, n.user), receipt.dependencies_json)
         else:
+            from fastapi import HTTPException
+            from app.core.resource_authority import authorize_resource_action
+
             artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == n.agent, ChatArtifact.path == path))
-            assert artifact is None, "INCOMPLETE_CONTENT_PUBLISHED_AS_ARTIFACT"
+            # owner 11-18 decision A: the local card is readable and delivery still checks its sources.
+            assert artifact is not None
+            card = await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")
+            assert card.status_code == 200 and card.json()["content"] == "PRIVATE_DOCUMENT_D", card.text
+            with pytest.raises(HTTPException) as denied:
+                await authorize_resource_action(db, await db.get(User, n.user), agent_id=n.agent,
+                    resource_kind="chat_artifact", resource_id=artifact.id, action="deliver",
+                    owner_user_id=n.user, root_session_id=n.session, authority_state=artifact.authority_state)
+            assert denied.value.detail["code"] == "learned_model_source_unavailable"

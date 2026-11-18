@@ -9,7 +9,7 @@ import os
 import shutil
 import stat
 import uuid
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from datetime import datetime, timezone, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -1038,7 +1038,8 @@ async def authorize_artifact_recipient_read(db, user, artifact, **authority):
     scope = (
         nullcontext()
         if authority.get("allow_manager_override") is True
-        else source_recipient_read(session_id=artifact.root_session_id or artifact.session_id, user_id=user.id)
+        else source_recipient_read(session_id=artifact.root_session_id or artifact.session_id,
+            user_id=user.id, require_workspace_receipts=True)
     )
     with scope:
         return await authorize_resource_action(
@@ -1251,7 +1252,9 @@ async def create_chat_artifacts_for_message(
     )
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
+    from app.core.resource_authority import is_private_resource_owner
     from app.database import _RLS_TENANT_INFO_KEY, tenant_scoped_session
+    from app.core.source_read_purpose import source_recipient_read
 
     @asynccontextmanager
     async def source_validation_scope():
@@ -1269,7 +1272,7 @@ async def create_chat_artifacts_for_message(
     seen: set[tuple[str, str]] = set()
     session_uuid = uuid.UUID(str(session_id))
     runtime_uuid = uuid.UUID(str(runtime_task_id)) if runtime_task_id else None
-    authority_user = runtime_principal = authority_error = machine_scope = None
+    authority_user = runtime_principal = authority_error = machine_scope = authority_session = None
     from app.services.machine_runtime_authority import is_machine_runtime_actor
 
     if isinstance(db, AsyncSession):
@@ -1361,6 +1364,12 @@ async def create_chat_artifacts_for_message(
         "owned" if owner_user_id is not None or is_machine_runtime_actor(authority_user) else "quarantined"
     )
 
+    def publication_reader():
+        return source_recipient_read(session_id=session_uuid, user_id=owner_user_id, require_workspace_receipts=True) if (
+            authority_session is not None and authority_session.user_id is not None
+            and authority_session.audience_kind != "group"
+        ) else nullcontext()
+
     def record_source_error(path, exc):
         log_source_refusal(exc, operation="artifact_delivery")
         if publication_errors is not None:
@@ -1396,6 +1405,7 @@ async def create_chat_artifacts_for_message(
     for path in paths:
         if _safe_workspace_relative_path(path) is None:
             continue
+        private_owner = False
         if isinstance(db, AsyncSession):
             try:
                 if authority_error is not None:
@@ -1412,7 +1422,7 @@ async def create_chat_artifacts_for_message(
                         )
                 else:
                     async with db.begin_nested():
-                        await authorize_workspace_path(
+                        workspace_access = await authorize_workspace_path(
                             db,
                             authority_user,
                             agent_id=agent_id,
@@ -1422,6 +1432,10 @@ async def create_chat_artifacts_for_message(
                             session_id=session_uuid,
                             runtime_principal=runtime_principal,
                         )
+                    private_owner = await is_private_resource_owner(
+                        db, authority_session, reader_id=authority_user.id,
+                        authority_source=workspace_access.authority_source,
+                    )
             except (WorkspaceAuthorityError, HTTPException) as exc:
                 if publication_errors is not None:
                     denied = not isinstance(exc, HTTPException) or exc.status_code in {401, 403, 404}
@@ -1449,15 +1463,13 @@ async def create_chat_artifacts_for_message(
             if handled:
                 if native_artifact is not None:
                     try:
-                        with group_source_read(batch_inputs=True):
-                            async with source_validation_scope() as source_db:
-                                await validate_artifact_content_receipt(
-                                    source_db,
-                                    tenant_id,
-                                    authority_user,
-                                    native_artifact,
-                                    runtime_principal=runtime_principal,
-                                )
+                        if not private_owner:
+                            with publication_reader(), group_source_read(batch_inputs=True):
+                                async with source_validation_scope() as source_db:
+                                    await validate_artifact_content_receipt(
+                                        source_db, tenant_id, authority_user, native_artifact,
+                                        runtime_principal=runtime_principal,
+                                    )
                         with captured_chat_artifact_file(native_artifact, workspace_root) as (captured, _source):
                             if captured is None:
                                 native_artifact = None
@@ -1547,21 +1559,22 @@ async def create_chat_artifacts_for_message(
                 )
                 else None
             )
-            try:
-                with group_source_read(batch_inputs=True):
-                    async with source_validation_scope() as source_db:
-                        source_receipt = receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None
-                        if runtime_principal is not None:
-                            await validate_runtime_workspace_receipt(
-                                source_db, tenant_id, runtime_principal, source_receipt, candidate["content_hash"]
-                            )
-                        else:
-                            await validate_published_workspace_receipt(
-                                source_db, tenant_id, authority_user, source_receipt, candidate["content_hash"]
-                            )
-            except ContentInputReceiptError as exc:
-                record_source_error(path, exc)
-                continue
+            if not private_owner:
+                try:
+                    with publication_reader(), group_source_read(batch_inputs=True):
+                        async with source_validation_scope() as source_db:
+                            source_receipt = receipt if candidate["snapshot"]["content_input_receipt_id"] else None
+                            if runtime_principal is not None:
+                                await validate_runtime_workspace_receipt(
+                                    source_db, tenant_id, runtime_principal, source_receipt, candidate["content_hash"]
+                                )
+                            else:
+                                await validate_published_workspace_receipt(
+                                    source_db, tenant_id, authority_user, source_receipt, candidate["content_hash"]
+                                )
+                except ContentInputReceiptError as exc:
+                    record_source_error(path, exc)
+                    continue
         dedupe_key = (candidate["path"], candidate["snapshot_hash"])
         if dedupe_key in seen:
             continue
@@ -1615,7 +1628,7 @@ async def create_chat_artifacts_for_message(
                 )
                 db.add(existing)
                 await db.flush()
-            if isinstance(db, AsyncSession):
+            if isinstance(db, AsyncSession) and not private_owner:
                 try:
                     with group_source_read(batch_inputs=True):
                         async with source_validation_scope() as source_db:
@@ -1698,21 +1711,23 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
         evidence_id = uuid.uuid5(invocation.id, "workspace-input-evidence")
         span = await db.get(InvocationSpan, evidence_id)
         proof = (span.metadata_json or {}).get("workspace_input_evidence", {}) if span else {}
-        try:
-            receipt_id = uuid.UUID(proof["content_input_receipt_id"])
-        except (KeyError, ValueError, TypeError):
+        receipt_ref = proof.get("content_input_receipt_id")
+        digest = proof.get("observed_sha256")
+        if not digest:
             continue
-        receipt = await db.get(ContentInputReceipt, receipt_id)
-        if (
-            receipt is None
-            or {
-                "source_kind": "workspace_artifact",
-                "source_id": str(receipt_id),
+        receipt_ids = None
+        if receipt_ref is not None:
+            try:
+                receipt_id = uuid.UUID(receipt_ref)
+            except (TypeError, ValueError):
+                continue
+            receipt = await db.get(ContentInputReceipt, receipt_id)
+            if receipt is None or {
+                "source_kind": "workspace_artifact", "source_id": str(receipt_id),
                 "source_version": receipt.content_sha256,
-            }
-            not in sources
-        ):
-            continue
+            } not in sources:
+                continue
+            receipt_ids = {path: receipt_id}
         message_id = uuid.uuid5(invocation.id, "read-result-artifact-message")
         anchor = await _ensure_tool_result_artifact_message(
             db,
@@ -1727,7 +1742,7 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
                     "tool_name": invocation.tool_name,
                     "invocation_id": str(invocation.id),
                     "path": path,
-                    "source_receipt_id": str(receipt_id),
+                    "source_receipt_id": receipt_ref,
                 }
             ),
         )
@@ -1744,8 +1759,8 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
             source="workspace_read",
             action="referenced",
             tool_call_id=invocation.provider_tool_use_id,
-            source_receipt_ids={path: receipt_id},
-            expected_content_hashes={path: receipt.content_sha256},
+            source_receipt_ids=receipt_ids,
+            expected_content_hashes={path: digest},
             selection_model_result_id=model.id,
             execution_evidence_ref=f"workspace-input:{evidence_id}",
             tool_invocation_id=invocation.id,

@@ -810,10 +810,9 @@ async def _resolve_session_tool_permission(
                     action_type=f"tool.action_preflight.{invocation.tool_name}", details={"origin": {"type": "action_preflight"}})
                 if agent is None or user is None or not await can_resolve_approval(db, agent=agent, user=user, approval=approval):
                     raise PermissionError("Only the responsible approver can decide this action")
-            from app.services.delegation_permission_runtime import validate_permission_input_sources
-
-            await validate_permission_input_sources(db, authority=authority, session=session,
-                invocation=invocation, model=source_result, execution=delegated_execution)
+            validate_sources = payload.get("validate_effect_sources")
+            if validate_sources is not None:
+                await validate_sources(db, session=session, model=source_result)
             await mark_tool_effect_started(
                 db,
                 tenant_id=authority.tenant_id,

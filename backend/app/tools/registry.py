@@ -182,6 +182,13 @@ PARALLEL_SAFE_TOOL_NAMES: Set[str] = _LazyToolNameSet("parallel_safe")
 _DESTRUCTIVE_NAMES: frozenset[str] | None = None
 _RESULT_CHAR_LIMITS: dict[str, int | None] | None = None
 
+OUTWARD_WORKSPACE_PATH_ARGUMENTS = {
+    "send_email": "attachments",
+    "send_channel_file": "file_path",
+    "upload_image": "file_path",
+    "feishu_base_record_upload_attachment": "file_path",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ToolExecutionPolicy:
@@ -206,6 +213,11 @@ def tool_execution_policy(name: str) -> ToolExecutionPolicy:
         external_visible=bool(meta.external_visible),
         delegated_user_authorized=bool(meta.delegated_user_authorized),
     )
+
+
+def needs_outward_source_check(name: str, *, policy: ToolExecutionPolicy | None = None) -> bool:
+    """Identify tools that can disclose inputs under their existing execution policy."""
+    return name == "send_message_to_agent" or (policy or tool_execution_policy(name)).external_visible
 
 
 def _ensure_destructive_and_limits() -> None:

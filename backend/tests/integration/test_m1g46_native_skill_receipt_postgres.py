@@ -871,8 +871,8 @@ async def test_scoped_native_writer_binds_complete_control_input_once(
                 key: value for key, value in artifact.snapshot_json.items() if key != "content_input_receipt_id"
             }
             await writer.commit()
-        unavailable = await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")
-        assert unavailable.status_code == 409 and arguments["content"] not in unavailable.text
+        retained = await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")
+        assert retained.status_code == 200 and arguments["content"] in retained.text
         async with owner_sessionmaker() as writer:
             (await writer.get(ChatArtifact, artifact.id)).snapshot_json = dict(artifact.snapshot_json)
             await writer.commit()
@@ -989,7 +989,8 @@ async def test_scoped_native_writer_binds_complete_control_input_once(
             assert working_copy.status_code == 200 and working_copy.json()["content"] == arguments["content"]
             for endpoint in ("/content", "/download"):
                 response = await n.client.get(url + endpoint)
-                assert response.status_code == 403 and arguments["content"] not in response.text, response.text
+                # owner 11-18 decision A: the member's own card survives the source grant revocation.
+                assert response.status_code == 200 and arguments["content"] in response.text, response.text
             from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
 
             for rebind in (False, True):
@@ -1007,7 +1008,10 @@ async def test_scoped_native_writer_binds_complete_control_input_once(
                     rebind_existing_to_message=rebind,
                     publication_errors=errors,
                 )
-                assert not parts and errors[0]["status"] == "denied", (parts, errors)
+                # owner 11-18 decision A: rebinding or attaching to the same private chat stays private.
+                assert len(parts) == 1 and not errors, (parts, errors)
+            with pytest.raises(A2AArtifactUnavailable, match="artifact_source_access_denied"):
+                await load_artifact_packet(db, **packet_args, runtime_principal=principal)
             return
         model = await db.scalar(
             select(SessionModelResult).where(SessionModelResult.provider_request_id == invocation.provider_request_id)
@@ -1061,9 +1065,9 @@ async def test_scoped_native_writer_binds_complete_control_input_once(
         assert successor is not None and successor.dependencies_json == receipt.dependencies_json
         await db.commit()
         assert (n.root / n.path).read_text() == arguments["content"]
-        denied = await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")
-        assert denied.status_code == 403 and "content_source_changed" in denied.text
-        assert arguments["content"] not in denied.text
+        retained = await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")
+        assert retained.status_code == 200
+        assert arguments["content"] in retained.text
         async with owner_sessionmaker() as writer:
             (await writer.get(SessionCommand, command_id)).target_hash = original_target_hash
             await writer.commit()

@@ -185,6 +185,7 @@ async def _assert_business_file_return(
         )
         assert office_preview.status_code == 403, office_preview.text
     (seed["agent_root"] / "workspace/business-report.md").write_text("EDITED_AFTER_COMPLETION")
+    private_card = not seed.get("group_config_id")
     if withdrawn:
         revoked = await client.post(
             f"/chat/attachments/{original['original_attachment']['id']}/withdraw",
@@ -192,18 +193,20 @@ async def _assert_business_file_return(
             json={"expected_content_sha256": original["original_attachment"]["content_sha256"]},
         )
         assert revoked.status_code == 200, revoked.text
-        inaccessible = await client.get(
+        retained = await client.get(
             f"/agents/{seed['agent_id']}/tasks/{run.metadata_json['business_task_id']}", headers=headers
         )
-        assert inaccessible.status_code == 200 and inaccessible.json()["artifacts"] == [], inaccessible.text
-        assert inaccessible.json()["artifact_delivery"]["status"] == "denied"
-        assert inaccessible.json()["task"]["result_visibility"]["status"] == "denied"
-        assert "PRIVATE_BUSINESS_INPUT" not in inaccessible.text
+        assert retained.status_code == 200, retained.text
+        # owner 11-18 decision A: the owner's card survives withdrawal of the original attachment.
+        assert [part["artifact_id"] for part in retained.json()["artifacts"]] == ([artifact_id] if private_card else [])
+        assert retained.json()["artifact_delivery"]["status"] == ("complete" if private_card else "denied")
+        assert retained.json()["task"]["result_visibility"]["status"] == "denied"
+        assert "PRIVATE_BUSINESS_INPUT" not in json.dumps(retained.json()["task"])
     downloaded = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{artifact_id}/download", headers=headers)
-    assert downloaded.status_code == (403 if withdrawn else 200), downloaded.text
+    assert downloaded.status_code == (403 if withdrawn and not private_card else 200), downloaded.text
     preview = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{artifact_id}/content", headers=headers)
-    assert preview.status_code == (403 if withdrawn else 200), preview.text
-    if not withdrawn:
+    assert preview.status_code == (403 if withdrawn and not private_card else 200), preview.text
+    if not withdrawn or private_card:
         assert downloaded.content == artifact_body.encode()
         assert preview.json()["content"] == artifact_body and preview.json()["workspace_changed"] is True
     texts, sent_files = [], []

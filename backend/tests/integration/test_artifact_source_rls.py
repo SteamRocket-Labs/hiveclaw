@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -23,8 +24,11 @@ async def test_permission_worker_publication_keeps_source_reads_in_tenant_rls(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path
 ):
     from app.config import get_settings
+    from app.core.resource_authority import workspace_resource_id
     from app.models.chat_artifact import ChatArtifact
     from app.models.organization_identity import ContentInputReceipt
+    from app.models.security_audit import ResourcePermission
+    from app.models.user import User
     from app.services import content_input_receipts, session_approval
     from app.services.runtime_task_worker import expire_session_permission_requests_once
 
@@ -34,7 +38,15 @@ async def test_permission_worker_publication_keeps_source_reads_in_tenant_rls(
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("app.database.async_session", app_user_sessionmaker)
     paths = ["workspace/foreign-source.md", "workspace/own-report.md"]
+    colleague = uuid.uuid4()
     async with owner_sessionmaker() as db:
+        db.add(User(id=colleague, tenant_id=tenant, username=colleague.hex,
+            email=f"{colleague.hex}@fixture.test", password_hash="fixture", display_name="Colleague", role="member"))
+        await db.flush()
+        # owner 11-18 decision A: the worker still rechecks sources of an explicitly granted file.
+        db.add(ResourcePermission(tenant_id=tenant, principal_type="user", principal_id=user,
+            resource_type="workspace_file", resource_id=workspace_resource_id(agent, paths[0]),
+            actions=["read"], conditions={}))
         foreign = await stage_report(
             db,
             tenant=other_tenant,
@@ -54,8 +66,8 @@ async def test_permission_worker_publication_keeps_source_reads_in_tenant_rls(
                 db,
                 tenant=tenant,
                 agent=agent,
-                user=user,
-                session=session,
+                user=colleague if path == paths[0] else user,
+                session=None if path == paths[0] else session,
                 root=root,
                 path=path,
                 dependencies=[dependency] if path == paths[0] else [],

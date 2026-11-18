@@ -155,7 +155,7 @@ async def test_delegation_resolve_history_and_source_checkpoint(
         seen, denied = [], []
 
         async def sources(*args, **kwargs):
-            assert kwargs["execution"], "The test must reach the delegated ToolExecutionRequest branch"
+            assert kwargs["runtime_request"].context.authority_frame_required
             seen.append(True)
             if revoked:
                 await original(*args, **kwargs)

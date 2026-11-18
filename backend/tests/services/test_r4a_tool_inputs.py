@@ -27,7 +27,7 @@ async def test_workspace_input_receipts_are_loaded_in_one_query(
     paths = frozenset(f"workspace/file-{i}.md" for i in range(file_count))
     controlled = paths - {"workspace/file-0.md"}
     scope = WorkspaceAuthorityScope(agent_id=agent, user_id=user, root_session_id=session,
-        allowed_paths=paths, full_control_paths=controlled, operator_view=False, authority_source="owner")
+        allowed_paths=paths, full_control_paths=controlled, owner_paths=controlled, operator_view=False, authority_source="owner")
     request = ToolExecutionRequest(tool_name=tool_name, arguments={}, context=ToolExecutionContext(
         agent_id=agent, user_id=user, tenant_id=str(tenant), workspace=Path("/unused"),
         session_id=str(session), runtime_task_id=str(run), workspace_authority_scope=scope))

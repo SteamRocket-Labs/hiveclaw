@@ -638,6 +638,7 @@ class WorkspaceAuthorityScope:
     authority_source: str
     known_paths: frozenset[str] = frozenset()
     full_control_paths: frozenset[str] = frozenset()
+    owner_paths: frozenset[str] = frozenset()
     action_permissions: frozenset[tuple[str, str]] = frozenset()
     collection_actions: frozenset[str] = frozenset()
     input_reads: tuple[WorkspaceInputRead, ...] = ()
@@ -707,7 +708,8 @@ class WorkspaceAuthorityScope:
         if source_access is not None:
             return source_access
         if self.operator_view:
-            return True
+            normalized = normalize_workspace_resource_path(path)
+            return normalized not in self.known_paths or normalized in self.allowed_paths
         normalized = normalize_workspace_resource_path(path)
         if normalized == "memory/explicit" or normalized.startswith("memory/explicit/"):
             observed = self.input_read(normalized)
@@ -868,8 +870,8 @@ async def _canonical_root_session(
     user: User,
     resource_tenant_id: uuid.UUID | None,
     session_id: uuid.UUID | None,
-) -> uuid.UUID | None:
-    """Resolve the canonical root session binding one workspace operation.
+) -> tuple[uuid.UUID | None, bool]:
+    """Resolve the workspace root and whether the reader owns this private session.
 
     The session owner always binds directly. A scoped business administrator
     (PDEC-013) may bind through an employee's exact session without owning it;
@@ -877,7 +879,7 @@ async def _canonical_root_session(
     never reassigns the employee's resource ownership.
     """
     if session_id is None:
-        return None
+        return None, False
     from app.services.content_input_receipts import _preflight_inputs
 
     rows = _preflight_inputs(db, authority=True)
@@ -937,10 +939,10 @@ async def _canonical_root_session(
             "workspace_session_authority_mismatch",
             "The workspace operation is not bound to a session owned by the requester.",
         )
-    root = session.root_session_id or session.id
+    binding = session.root_session_id or session.id, user.id is not None and session.user_id == user.id and not shared_member
     if rows is not None:
-        rows[key] = root
-    return root
+        rows[key] = binding
+    return binding
 
 
 async def authorize_workspace_path(
@@ -984,7 +986,9 @@ async def authorize_workspace_path(
         if source_facts is None
         else source_facts[0]
     )
-    root_session_id = await _canonical_root_session(
+    if action == "read" and path_exists and manifest is not None and manifest.deleted_at is not None:
+        raise WorkspaceAuthorityError("workspace_resource_not_found", "The workspace resource was deleted.")
+    root_session_id, _ = await _canonical_root_session(
         db,
         agent_id=agent_id,
         user=user,
@@ -1183,7 +1187,7 @@ async def load_workspace_authority_scope(
     )
     if str(resolved_agent_access[0].id) != str(agent_id):
         raise HTTPException(status_code=403, detail="Agent authority context mismatch")
-    canonical_root = await _canonical_root_session(
+    canonical_root, owns_private_session = await _canonical_root_session(
         db,
         agent_id=agent_id,
         user=user,
@@ -1232,7 +1236,7 @@ async def load_workspace_authority_scope(
             agent_id=agent_id,
             user_id=user.id,
             root_session_id=canonical_root,
-            allowed_paths=frozenset(manifest.path for manifest in manifests),
+            allowed_paths=frozenset(manifest.path for manifest in manifests if manifest.deleted_at is None),
             operator_view=True,
             authority_source=collection_decision.authority_source,
             known_paths=frozenset(manifest.path for manifest in manifests),
@@ -1241,9 +1245,10 @@ async def load_workspace_authority_scope(
             learning_files=learning_files,
         )
 
-    allowed: set[str] = {manifest.path for manifest in manifests} if operator_view else set()
+    allowed: set[str] = {manifest.path for manifest in manifests if manifest.deleted_at is None} if operator_view else set()
     authority_sources: set[str] = set()
     full_control_paths: set[str] = set()
+    owner_paths: set[str] = set()
     action_permissions: set[tuple[str, str]] = set()
     for manifest in manifests:
         try:
@@ -1262,11 +1267,13 @@ async def load_workspace_authority_scope(
             )
         except HTTPException:
             continue
-        if not operator_view:
+        if not operator_view and manifest.deleted_at is None:
             allowed.add(manifest.path)
             authority_sources.add(decision.authority_source)
         if decision.full_control:
             full_control_paths.add(manifest.path)
+            if owns_private_session and not operator_view and decision.authority_source in {"resource_owner", "root_session_owner"}:
+                owner_paths.add(manifest.path)
             action_permissions.update((manifest.path, action) for action in _WORKSPACE_EFFECT_ACTIONS)
     grant_candidates = [
         manifest
@@ -1303,6 +1310,7 @@ async def load_workspace_authority_scope(
         ),
         known_paths=frozenset(manifest.path for manifest in manifests),
         full_control_paths=frozenset(full_control_paths),
+        owner_paths=frozenset(owner_paths),
         action_permissions=frozenset(action_permissions),
         collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS)
         if collection_decision and collection_decision.full_control

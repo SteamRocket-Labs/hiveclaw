@@ -2381,7 +2381,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         "total_tool_calls": loop_guard.total_tool_calls,
                         "failed_tool_calls": loop_guard.failed_tool_calls,
                         "context_tokens": self._deps.estimate_tokens_from_chars(_ctx_chars),
-                        "skip_work_ledger_reminders": request.member_authored_turn and logical_round_index == 1,
                         "work_ledger_snapshot_provider": _work_ledger_snapshot_provider,
                         "work_ledger_progress_review_provider": _work_ledger_progress_review_provider,
                     },

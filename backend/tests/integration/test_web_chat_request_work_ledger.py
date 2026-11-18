@@ -189,6 +189,6 @@ async def test_hello_keeps_history_and_memory_without_starting_work(
     )
     assert [fragment for fragment in forbidden if fragment.casefold() in guidance] == []
     core = system_text.split("<core_directives>", 1)[1].split("</core_directives>", 1)[0]
-    assert "Answer greetings and simple questions directly. Do not start work the user did not ask for in this message." in core
+    assert "When a member's new message is a greeting or a simple question, answer it directly; do not start or resume earlier work it does not ask for." in core
     todo_tool = next(tool["function"] for tool in hello["tools"] if tool["function"]["name"] == "track_todo")
     assert "proactively" not in todo_tool["description"]

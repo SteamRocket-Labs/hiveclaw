@@ -1468,10 +1468,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         if ledger_reminder_case:
             from app.runtime.prompts.runtime_reminders import WORK_LEDGER_REMINDER
 
-            assert all(message.get("content") != WORK_LEDGER_REMINDER for message in creator_client.requests[0]["messages"])
             assert any(
                 message.get("role") == "system" and message.get("content") == WORK_LEDGER_REMINDER
-                for request in creator_client.requests[1:] for message in request["messages"]
+                for message in creator_client.requests[0]["messages"]
             )
         if input_case == "first_task_explicit_unverified_memory":
             assert len(creator_client.requests) == 3

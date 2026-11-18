@@ -165,7 +165,7 @@ class TestExecutingActionsContract:
         section = build_executing_actions_section()
         assert "To Session Worker" in section
         assert "To Employee" in section
-        assert "consider `spawn_subagent` as To Session Worker" in section
+        assert "Use `spawn_subagent`" in section
         assert "Use `delegate_to_agent`" in section
         assert "A2A Collaborators context" in section
         assert "session-local worker" in section
@@ -181,9 +181,9 @@ class TestExecutingActionsContract:
     def test_subagent_prompt_does_not_suppress_worker_use_by_default(self) -> None:
         section = build_executing_actions_section()
         assert "Default to doing the work yourself" not in section
-        assert "When the request needs a tool, call it directly for work you can complete yourself." in section
-        assert "consider `spawn_subagent` as To Session Worker" in section
-        assert "proactively as To Session Worker" not in section
+        assert "Use direct tool calls for small, non-separable work" in section
+        assert "Use `spawn_subagent`" in section
+        assert "proactively as To Session Worker" in section
 
 
 class TestToolsSection:

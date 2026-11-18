@@ -228,9 +228,7 @@ def _ledger_eligible(session_context: Any) -> bool:
     return isinstance(metadata, dict) and bool(metadata.get(_WORK_LEDGER_ENABLED_METADATA_KEY))
 
 
-def _ledger_content(_session_context: Any, round_state: RoundState) -> str | RuntimeReminderInjection | None:
-    if round_state.get("skip_work_ledger_reminders"):
-        return None
+def _ledger_content(_session_context: Any, round_state: RoundState) -> str | RuntimeReminderInjection:
     text = _WORK_LEDGER_REMINDER
     snapshot = ""
     provider = round_state.get("work_ledger_snapshot_provider")
@@ -248,8 +246,6 @@ def _ledger_content(_session_context: Any, round_state: RoundState) -> str | Run
 
 
 def _progress_replan_content(_session_context: Any, round_state: RoundState) -> str | None:
-    if round_state.get("skip_work_ledger_reminders"):
-        return None
     review = round_state.get("work_ledger_progress_review")
     provider = round_state.get("work_ledger_progress_review_provider")
     try:

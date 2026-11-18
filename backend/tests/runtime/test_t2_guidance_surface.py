@@ -2,15 +2,15 @@
 
 Small-cut guidance alignment, pinned in one place:
 
-* the seven-primitive decision sequence lives in ``executing_actions`` —
-  default to direct work, ``track_todo`` for multi-step working memory,
+* the decision sequence lives in ``executing_actions`` —
+  direct tool calls when the request needs them,
   ``load_skill``/``tool_search`` for missing method/capability,
   ``spawn_subagent`` vs ``delegate_to_agent`` for who-does-it,
   workflow ONLY when the step order itself is a requirement,
   ``set_trigger`` for when-to-wake, ``save_skill`` vs workflow promotion
   for consolidation (§7 criteria);
-* tool descriptions cross-reference each other (CC discipline: selection
-  philosophy lives in tool descriptions);
+* tool descriptions cross-reference each other and scope ``track_todo`` to
+  multi-step work requested in the current turn;
 * ``set_trigger`` documents ``config.workflow_ref`` with its criterion;
 * ``system.py`` states the C2 exposure reality: source capabilities are
   core-resident, integration tools are discovered through ``tool_search``;
@@ -36,12 +36,11 @@ def _tool_parameters(name: str) -> dict:
 # ── §5 decision sequence in executing_actions ───────────────────────
 
 
-def test_executing_actions_carries_seven_primitive_sequence():
+def test_executing_actions_preserves_work_routing_and_scopes_todos():
     from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
 
     text = build_executing_actions_section()
     for token in (
-        "track_todo",
         "load_skill",
         "tool_search",
         "spawn_subagent",
@@ -53,6 +52,8 @@ def test_executing_actions_carries_seven_primitive_sequence():
         "save_skill",
     ):
         assert token in text, token
+    assert "track_todo" not in text
+    assert "multi-step work requested in this turn" in _tool_description("track_todo")
 
 
 def test_executing_actions_states_workflow_is_for_required_order():
@@ -65,8 +66,7 @@ def test_executing_actions_states_workflow_is_for_required_order():
 
 
 def test_executing_actions_carries_consolidation_criteria():
-    """§7 one-liner: repeated successful know-how → skill; never-drift process
-    → workflow promotion (reviewed, never self-approved); one-off → ledger."""
+    """Repeated successful know-how becomes a skill and fixed processes need reviewed promotion."""
     from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
 
     text = build_executing_actions_section()

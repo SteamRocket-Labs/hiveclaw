@@ -31,9 +31,11 @@ from app.services.session_user_checkpoint import (
     is_human_input_checkpoint,
     user_checkpoint_content,
 )
+from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS
 
 
 _BRANCH_PREFIX_SOURCE = "conversation_branch_prefix"
+_WORK_LEDGER_DATA_TOOLS = LEDGER_RESULT_TOOLS - {"report_progress"}
 _USER_STOP_MARKER = "[Request interrupted by user; its plan and todos are stopped. Resume only if asked.]"
 _USER_STOP_NOTICE = f"Previous run: {_USER_STOP_MARKER}\nAnswer the member's latest message."
 # A stop control cut this call off before any result existed; the next turn's
@@ -44,6 +46,44 @@ _INTERRUPTED_TOOL_CALL_NEVER_RAN = "[Interrupted: this tool call was issued but 
 _INTERRUPTED_TOOL_CALL_NO_RESULT = (
     "[Interrupted: this tool call returned no result; whether it took effect is unknown.]"
 )
+
+
+def project_prior_work_ledger_calls(message: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
+    """Keep prior replies and ordinary tool calls without replaying work notes."""
+    calls = message.get("tool_calls")
+    if not isinstance(calls, list):
+        return message, set()
+    kept = []
+    omitted = set()
+    for call in calls:
+        function = call.get("function") if isinstance(call, dict) else None
+        if isinstance(function, dict) and str(function.get("name")) in _WORK_LEDGER_DATA_TOOLS:
+            omitted.add(str(call.get("id") or ""))
+        else:
+            kept.append(call)
+    if not omitted:
+        return message, omitted
+    projected = {**message, "tool_calls": kept}
+    projected.pop("reasoning_content", None)
+    projected.pop("reasoning_signature", None)
+    if not kept:
+        del projected["tool_calls"]
+    return projected, omitted
+
+
+def project_prior_work_ledger_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply the same tool-pair projection to a saved compaction tail."""
+    history = []
+    omitted = set()
+    for message in messages:
+        if message["role"] == "assistant":
+            message, omitted = project_prior_work_ledger_calls(message)
+            if omitted and not (message.get("content") or message.get("tool_calls")):
+                continue
+        elif message["role"] == "tool" and message.get("tool_call_id") in omitted:
+            continue
+        history.append(message)
+    return history
 
 
 def is_member_authored_run(task: Any) -> bool:
@@ -695,6 +735,13 @@ async def _committed_round_messages(
                 retryable=False,
                 evidence_refs=(f"session_model_result:{result.id}",),
             )
+        omitted_call_ids = set()
+        if current_run_id is not None:
+            response, omitted_call_ids = project_prior_work_ledger_calls(response)
+            if omitted_call_ids:
+                tool_calls = [call for call in tool_calls if call["id"] not in omitted_call_ids]
+                if not content and not tool_calls:
+                    continue
         messages.append(
             SessionSemanticMessage(
                 id=f"session-model-result:{result.id}",
@@ -715,6 +762,8 @@ async def _committed_round_messages(
             )
         )
         for tool_call, invocation, result_view in completed_pairs:
+            if tool_call["id"] in omitted_call_ids:
+                continue
             payload = _event_payload(result_view.source)
             # Model replay uses the bounded provider projection when the durable
             # receipt carries one; the complete receipt stays as UI/audit
@@ -738,6 +787,8 @@ async def _committed_round_messages(
                 )
             )
         for tool_call, interrupted_notice in interrupted_calls:
+            if tool_call["id"] in omitted_call_ids:
+                continue
             messages.append(
                 SessionSemanticMessage(
                     id=f"session-tool-interrupted:{result.id}:{tool_call['id']}",
@@ -812,6 +863,13 @@ async def _legacy_messages(
                         f"chat_message:{row.id}",
                     ),
                 )
+            if current_run_id is not None and row.role == "tool_call":
+                try:
+                    call = json.loads(row.content)
+                except (TypeError, ValueError):
+                    call = None
+                if isinstance(call, dict) and str(call.get("name")) in _WORK_LEDGER_DATA_TOOLS:
+                    continue
             seen_message_ids.add(source.message_id)
             messages.append(
                 SessionSemanticMessage(
@@ -868,7 +926,9 @@ async def load_session_semantic_history(
     checks are identical to the provider-turn path. ``reader_run_id`` applies
     shared-reader authority independently of excluding the current run, so
     external executors retain their same-run protocol history. ``before_sequence``
-    reconstructs an immutable request's prior inputs without projecting later work."""
+    reconstructs an immutable request's prior inputs without projecting later work.
+    Work Ledger calls from prior runs stay available on demand in new runs.
+    """
 
     try:
         views, branch_receipt = await _load_event_views(

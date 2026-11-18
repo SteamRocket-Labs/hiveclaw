@@ -32,6 +32,7 @@ from app.services.conversation_branch_service import create_conversation_branch
 from app.services.session_semantic_history import (
     SessionSemanticHistoryUnavailable,
     load_session_semantic_history,
+    project_prior_work_ledger_messages,
 )
 from app.services.session_user_checkpoint import (
     event_item_kind,
@@ -1547,6 +1548,7 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
         ]
     else:
         messages = _events_to_summary_messages(events)
+    messages = project_prior_work_ledger_messages(messages)
     if not messages:
         return _typed_result(
             command="compact",

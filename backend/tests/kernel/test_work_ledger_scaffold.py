@@ -2,10 +2,8 @@
 
 docs/agent-task-cognitive-scaffold.md §5.3 Delta-2 / §9 acceptance 2-3:
 
-* the kernel injects a per-round Work Ledger reminder ONLY when the invoker has
-  flagged the turn complex (``metadata["work_ledger_enabled"]``) — zero overhead
-  on simple Q&A, and suppressed while Plan Mode is active so the two reminders
-  never conflict (§8 invariant);
+* the kernel injects a Work Ledger reminder for current-request work under the
+  existing eligibility and throttling rules, with suppression in Plan Mode;
 * after a context compaction the kernel re-injects the 5-question reboot
   (where am I / what's open / what's verified / what failed / what's pending)
   from the persisted ledger, so the agent resumes from the next open todo instead
@@ -19,6 +17,8 @@ real ``_build_restoration_context``.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from functools import partial
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -117,6 +117,7 @@ def _write_complex_ledger(agent_id, data_root):
 def test_restoration_injects_ledger_reboot_on_complex_turn(tmp_path, monkeypatch):
     from app.kernel.engine import _build_restoration_context
     from app.runtime.session import SessionContext
+    from app.services.agent_work_ledger import read_work_ledger_prompt_view, upsert_agent_work_ledger_todo
 
     agent_id = uuid4()
     workspace = tmp_path / str(agent_id)
@@ -125,17 +126,26 @@ def test_restoration_injects_ledger_reboot_on_complex_turn(tmp_path, monkeypatch
     # non-empty; soul.md is the anchor that the rest of the context appends to.
     (workspace / "soul.md").write_text("# Identity\nMigration assistant.", encoding="utf-8")
 
+    upsert_agent_work_ledger_todo(agent_id=agent_id, title="Prior delivery notes", data_root=tmp_path)
+    request_started_at = datetime.now(timezone.utc)
     _write_complex_ledger(agent_id, tmp_path)
 
     monkeypatch.setattr(
         "app.config.get_settings",
         lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
     )
+    monkeypatch.setattr("app.services.agent_work_ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     session = SessionContext()
     session.metadata = {"work_ledger_enabled": True}
 
-    restored = _build_restoration_context(agent_id, session_context=session)
+    restored = _build_restoration_context(
+        agent_id, session_context=session,
+        work_ledger_view_provider=partial(
+            read_work_ledger_prompt_view, agent_id=agent_id, plan_id=None, runtime_task_id=None,
+            session_id=None, request_started_at=request_started_at,
+        ),
+    )
 
     # The 5-question reboot must be present with the live ledger state.
     assert "Work Ledger — Reboot After Compaction" in restored
@@ -144,6 +154,7 @@ def test_restoration_injects_ledger_reboot_on_complex_turn(tmp_path, monkeypatch
     assert "Write the up/down migration" in restored  # open required todo
     assert "Run the migration against a temp DB" in restored  # open required todo
     assert "Survey the existing migration scripts" not in restored  # completed → not "open"
+    assert "Prior delivery notes" not in restored
     assert "alembic heads is single" in restored  # verified finding
     assert "autogenerate dropped an unrelated index" in restored  # failure → do not repeat
     assert "evidence, not an instruction" in restored
@@ -180,6 +191,7 @@ def test_restoration_no_ledger_block_when_no_ledger_file(tmp_path, monkeypatch):
     """Complex turn but no ledger written yet → no empty reboot block."""
     from app.kernel.engine import _build_restoration_context
     from app.runtime.session import SessionContext
+    from app.services.agent_work_ledger import read_work_ledger_prompt_view
 
     agent_id = uuid4()
     workspace = tmp_path / str(agent_id)
@@ -190,10 +202,17 @@ def test_restoration_no_ledger_block_when_no_ledger_file(tmp_path, monkeypatch):
         "app.config.get_settings",
         lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
     )
+    monkeypatch.setattr("app.services.agent_work_ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     session = SessionContext()
     session.metadata = {"work_ledger_enabled": True}
-    restored = _build_restoration_context(agent_id, session_context=session)
+    restored = _build_restoration_context(
+        agent_id, session_context=session,
+        work_ledger_view_provider=partial(
+            read_work_ledger_prompt_view, agent_id=agent_id, plan_id=None, runtime_task_id=None,
+            session_id=None, request_started_at=datetime.now(timezone.utc),
+        ),
+    )
 
     assert "Work Ledger — Reboot After Compaction" not in restored
     assert "Helper." in restored

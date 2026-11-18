@@ -866,13 +866,15 @@ def _latest_by_created_at(items: list[dict[str, Any]]) -> dict[str, Any] | None:
     return candidates[-1][2]
 
 
-def _items_after(items: list[dict[str, Any]], boundary: datetime | None) -> list[dict[str, Any]]:
+def _items_after(
+    items: list[dict[str, Any]], boundary: datetime | None, *, timestamp_key: str = "created_at",
+) -> list[dict[str, Any]]:
     if boundary is None:
         return items
     return [
         item
         for item in items
-        if (_parse_ledger_timestamp(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)) > boundary
+        if (_parse_ledger_timestamp(item.get(timestamp_key)) or datetime.min.replace(tzinfo=timezone.utc)) > boundary
     ]
 
 
@@ -1429,6 +1431,39 @@ def read_agent_work_ledger_view(
             ledger, path=_relative_to_agent(agent_id, path, data_root=data_root))
     return (view, {"before": ledger, "after": ledger, "operation": "ledger_read",
         "missing": not path.exists() and not path.is_symlink()}) if capture_source else view
+
+
+def read_work_ledger_prompt_view(
+    *,
+    agent_id: uuid.UUID,
+    plan_id: uuid.UUID | str | None,
+    runtime_task_id: uuid.UUID | str | None,
+    session_id: uuid.UUID | str | None,
+    request_started_at: datetime | str,
+) -> dict[str, Any] | None:
+    """Read an execution-scoped ledger or current-request session entries for prompts."""
+    if plan_id or runtime_task_id:
+        view = read_agent_work_ledger_view(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id)
+        if view is not None:
+            return view
+
+    ledger = load_agent_work_ledger(agent_id=agent_id, session_id=session_id)
+    if not ledger:
+        return None
+    boundary = _parse_ledger_timestamp(request_started_at)
+    if boundary is None:
+        return None
+    # Status changes preserve the todo's original updated_at.
+    entries = {
+        key: _items_after(
+            [item for item in ledger.get(key, []) if isinstance(item, dict)], boundary,
+            timestamp_key="updated_at" if key in {"todo_items", "verification"} else "created_at",
+        )
+        for key in ("todo_items", "verification", "progress", "failures", "replans", "findings")
+    }
+    if not any(entries.values()):
+        return None
+    return build_agent_work_ledger_display_view({**ledger, **entries})
 
 
 async def read_latest_session_work_ledger_view(

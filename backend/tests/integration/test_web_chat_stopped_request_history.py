@@ -342,6 +342,7 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         )
         assert compact["action"] == "compacted_context_installed"
         assert len(captured_summary) == 1
+        assert OLD_TODO not in json.dumps(captured_summary[0], ensure_ascii=False)
         if case == "compact_summary":
             assert STOP_MARKER in [message["content"] for message in captured_summary[0]]
 
@@ -404,7 +405,7 @@ async def test_next_request_records_member_stop_without_current_old_todos(
     assert len(second.requests) == 1
     wire = second.requests[0]["messages"]
     contents = [str(message.get("content") or "") for message in wire]
-    todo_indices = [i for i, content in enumerate(contents) if OLD_TODO in content]
+    assert OLD_TODO not in json.dumps(wire, ensure_ascii=False)
     followup_index = next(i for i, content in enumerate(contents) if FOLLOWUP in content)
     markers = [i for i, content in enumerate(contents) if content == STOP_MARKER]
     if case == "compact_summary":
@@ -424,7 +425,6 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         else:
             partial_index = next(i for i, content in enumerate(contents) if PARTIAL_WORK in content)
             assert partial_index < markers[0]
-            assert todo_indices and all(i < markers[0] for i in todo_indices)
     else:
         assert markers == []
     # R11a no longer filters the session file or claims to fix card ownership.
@@ -470,6 +470,7 @@ async def test_next_request_records_member_stop_without_current_old_todos(
         third = ScriptedLLMClient([{"content": "不客气。", "finish_reason": "stop"}])
         monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: third)
         await execute(third_run)
+        assert OLD_TODO not in json.dumps(third.requests[0]["messages"], ensure_ascii=False)
         third_contents = [str(message.get("content") or "") for message in third.requests[0]["messages"]]
         assert third_contents.index(PARTIAL_WORK) < third_contents.index(STOP_MARKER) < third_contents.index(FOLLOWUP)
         assert third_contents.index(FOLLOWUP) < third_contents.index("已停止。")

@@ -47,9 +47,6 @@ transient state, or raw transcripts as skills. Durable user corrections go throu
 the memory prompt/tool schema qualifies them; operational notes and evidence belong in workspace artifacts.
 - Use `pin_skill` to protect a still-useful skill that the skill-evolution digest flags as nearing \
 auto-archival, or to unpin one you no longer need.
-- Work board: use `track_todo` / `read_ledger` to maintain your todo list and findings. \
-Writing a todo never triggers execution — to launch background/autonomous work use \
-`delegate_to_agent` / `spawn_subagent` / `propose_dynamic_workflow` / `start_workflow`.
 - After writing files, verify the result with `read_file` if correctness is critical.\
 """
 

@@ -93,7 +93,7 @@ class TestMemorySectionProperties:
 
     def test_renders_embedded_snapshot(self) -> None:
         out = build_memory_section("- [feedback] user prefers concise answers")
-        assert "### Current Memory State" in out
+        assert "### Background Memory" in out
         assert "user prefers concise answers" in out
 
     def test_empty_snapshot_uses_placeholder(self) -> None:

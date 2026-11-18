@@ -93,6 +93,7 @@ class RuntimeReminderInjection:
     ttl: str = "current_round"
     priority: int = 50
     unbound: tuple[str, ...] = ("context_sources_unbound",)
+    sections: tuple[dict[str, Any], ...] = ()
 
 
 class ReminderScheduler:
@@ -166,6 +167,7 @@ class ReminderScheduler:
                     ttl=spec.ttl,
                     priority=spec.priority,
                     unbound=content.unbound if isinstance(content, RuntimeReminderInjection) else ("context_sources_unbound",),
+                    sections=content.sections if isinstance(content, RuntimeReminderInjection) else (),
                 )
             )
             seen_texts.add(text)
@@ -228,8 +230,7 @@ def _ledger_eligible(session_context: Any) -> bool:
     return isinstance(metadata, dict) and bool(metadata.get(_WORK_LEDGER_ENABLED_METADATA_KEY))
 
 
-def _ledger_content(_session_context: Any, round_state: RoundState) -> str | RuntimeReminderInjection:
-    text = _WORK_LEDGER_REMINDER
+def _ledger_content(_session_context: Any, round_state: RoundState) -> RuntimeReminderInjection | None:
     snapshot = ""
     provider = round_state.get("work_ledger_snapshot_provider")
     try:
@@ -239,10 +240,18 @@ def _ledger_content(_session_context: Any, round_state: RoundState) -> str | Run
             snapshot = str(round_state.get("work_ledger_snapshot") or "").strip()
     except Exception:
         snapshot = ""
-    if snapshot:
-        return f"{text}\n\n{snapshot}"
-    # This producer owns the static guidance, not any dynamic ledger body.
-    return RuntimeReminderInjection(text=text, source="work_ledger", unbound=())
+    if not snapshot:
+        if round_state.get("total_tool_calls", 0):
+            return RuntimeReminderInjection(text=_WORK_LEDGER_REMINDER, source="work_ledger", unbound=())
+        return None
+    return RuntimeReminderInjection(
+        text=f"{_WORK_LEDGER_REMINDER}\n\n{snapshot}",
+        source="work_ledger",
+        sections=(
+            {"content": _WORK_LEDGER_REMINDER, "sources": (), "unbound": ()},
+            {"content": snapshot, "sources": (), "unbound": ("context_sources_unbound",)},
+        ),
+    )
 
 
 def _progress_replan_content(_session_context: Any, round_state: RoundState) -> str | None:

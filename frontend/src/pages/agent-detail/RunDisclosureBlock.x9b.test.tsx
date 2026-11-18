@@ -367,11 +367,13 @@ it('X9b-r3-5: a longer guessed clock cannot inflate the first saved duration', (
 it.each(['disabled', 'failed'] as const)('X9b-r3-2: a %s workbench query renders historical blocks', async state => {
   const client = new QueryClient();
   const fetch = vi.fn().mockRejectedValue(new Error('Workbench unavailable'));
+  const events = structuredClone(rows.delegation) as Event[];
+  failDelegation(events);
   let queryStatus = '';
   function HistoricalBlocks() {
     const query = useQuery({ queryKey: ['workbench'], queryFn: fetch, enabled: state !== 'disabled', retry: false });
     queryStatus = query.status;
-    const timeline = model(structuredClone(rows.delegation) as Event[], 'reload', {
+    const timeline = model(events, 'reload', {
       sessionWorkbench: query.data ?? null, sessionWorkbenchLoading: query.isLoading,
     });
     return timeline.cells.map(cell => cell.kind === 'active_run'

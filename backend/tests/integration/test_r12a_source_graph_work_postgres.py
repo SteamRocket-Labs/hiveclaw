@@ -141,8 +141,8 @@ async def _graph(n, size, owner_sessionmaker, app_user_sessionmaker, monkeypatch
         {"path": n.path}), TIMEOUT)
     assert "COMPANY_SOURCE_MARKER" in raw, raw
     n.newest_read, n.newest_raw = newest_read, raw
-    # A genuine read-tool result enters a committed Web round. Its source-bound
-    # output is revalidated at the next provider boundary and by T2.
+    # A genuine read-tool result enters a committed Web round. T2 reads its
+    # source graph, and the next private round carries the admitted output.
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         message = LLMMessage(role="tool", content=raw, tool_call_id=newest_read.provider_tool_use_id,
             source_ref=f"session-tool-result:{newest_read.id}")
@@ -515,10 +515,10 @@ async def test_large_graph_deep_source_change_withholds(native_workspace, owner_
         assert denied and set(denied) == {("content_source_changed", 403)}, denied
         assert result is not None and DERIVED not in json.dumps(result), result
     elif path == "web_model":
+        # owner 11-13 / 11-18 A: the earlier committed output stays available
+        # to the member's private model round after its source changes.
         result = await asyncio.wait_for(_model(n, app_user_sessionmaker), TIMEOUT)
-        assert DERIVED not in json.dumps(result["wire_request"])
-        assert any(row.get("status") == "withheld" and row.get("code") == "content_source_changed"
-            for row in result["input_bindings"]["messages"])
+        assert result["wire_request"]["messages"] == [{"role": "system", "content": DERIVED}]
     else:
         granted = await _grant_graph_file(n, owner_sessionmaker)
         result = str(await asyncio.wait_for(n.service.execute("read_file", {"path": granted},
@@ -528,7 +528,7 @@ async def test_large_graph_deep_source_change_withholds(native_workspace, owner_
         assert "content_source_changed" in result
         own_copy = await asyncio.wait_for(n.client.get(f"/agents/{n.agent}/files/content", params={"path": n.path}), TIMEOUT)
         assert own_copy.status_code == 200 and own_copy.json()["content"] == BODY
-    # Withholding never rewrites the retained source graph or its old model.
+    # Each boundary leaves the retained source graph and its old model intact.
     from app.models.organization_identity import ContentInputReceipt
 
     async with owner_sessionmaker() as db:
@@ -539,15 +539,15 @@ async def test_large_graph_deep_source_change_withholds(native_workspace, owner_
             from app.services.session_model_inputs import load_context_message_origin, _origin_dependencies
             from app.services.learned_skill_sources import model_source
 
-            # A4d round 5: inspect the newly withheld round's retained origin,
-            # not just the model sealed before the source changed.
+            # A4d round 5: inspect the new round's retained origin and the
+            # source graph from before the change.
             model = await db.get(SessionModelResult, n.next_model)
             assert model.round_id == f"{n.run}:round:5"
             snapshot = model.model_request_snapshot_json
-            withheld = [entry for entry in snapshot["input_bindings"]["messages"] if entry["status"] == "withheld"]
-            assert withheld and DERIVED not in json.dumps(snapshot["wire_request"])
             old_source = model_source(await db.get(SessionModelResult, n.model))
-            for entry in withheld:
+            entries = snapshot["input_bindings"]["messages"]
+            assert entries and all(entry["status"] == "bound" and old_source in entry["dependencies"] for entry in entries)
+            for entry in entries:
                 origin = await load_context_message_origin(db, tenant_id=n.tenant, agent_id=n.agent,
                     source_id=uuid.UUID(entry["source_ref"].split(":", 1)[1]), session_id=n.session)
                 assert origin["model_result_id"] == str(model.id)
@@ -633,17 +633,21 @@ async def test_sources_are_validated_once_and_authority_checks_stay_live(native_
     monkeypatch.setattr(receipts, "_resolve_session_input_source", observe_resolution)
     operation = {"download": lambda: _browser(n, "download"), "heartbeat_t2": lambda: _heartbeat(n),
         "web_model": lambda: _model(n, app_user_sessionmaker)}[path]
-    await asyncio.wait_for(operation(), TIMEOUT)
+    result = await asyncio.wait_for(operation(), TIMEOUT)
+    if path == "web_model":
+        # owner 11-13 / 11-18 A: preparation binds the private history without
+        # refreshing its source graph or reader checkpoints.
+        assert result["wire_request"]["messages"] == [{"role": "system", "content": DERIVED}]
+        assert not (validations or authority or checks or resolutions)
+        return
     assert validations and max(validations.values()) == 1, validations
     observed = {key[-1] for key in validations if key[-1][0] == "workspace_artifact"}
     expected = n.receipts[:-1] if path == "download" else n.receipts
     assert observed == {tuple(_source(receipt).values()) for receipt in expected}
     # R12a review round 1: authority reads stay live within one request.
     assert checks and all(resolutions[key] == count for key, count in checks.items()), (checks, resolutions)
-    # N=10: live Agent checks peak at 4 on download, 26 per T2 event,
-    # and 37 in the new model round; a one-check authority snapshot must fail.
-    assert authority and max(authority.values()) == {
-        "download": 4, "heartbeat_t2": 26, "web_model": 37}[path], authority
+    # N=10: live Agent checks peak at 4 on download and 26 per T2 event.
+    assert authority and max(authority.values()) == {"download": 4, "heartbeat_t2": 26}[path], authority
 
 
 @pytest.mark.parametrize("path", ["download", "content", "heartbeat_t2", "web_model", "run_read"])
@@ -668,10 +672,11 @@ async def test_cycle_is_not_hidden_by_completed_dag_siblings(native_workspace, o
             await asyncio.wait_for(_heartbeat(n), TIMEOUT)
         assert error.value.status_code == 503 and error.value.code == "content_source_unavailable"
     elif path == "web_model":
+        # owner 11-13 / 11-18 A: this private round uses the previously
+        # admitted output. The other cases exercise new source reads.
         snapshot = await asyncio.wait_for(_model(n, app_user_sessionmaker), TIMEOUT)
-        assert DERIVED not in json.dumps(snapshot["wire_request"])
-        assert any(entry.get("status") == "withheld" and entry.get("code") == "content_source_unavailable"
-            for entry in snapshot["input_bindings"]["messages"])
+        assert snapshot["wire_request"]["messages"] == [{"role": "system", "content": DERIVED}]
+        assert all(entry["status"] == "bound" for entry in snapshot["input_bindings"]["messages"])
     else:
         granted = await _grant_graph_file(n, owner_sessionmaker)
         result = str(await asyncio.wait_for(n.service.execute("read_file", {"path": granted},

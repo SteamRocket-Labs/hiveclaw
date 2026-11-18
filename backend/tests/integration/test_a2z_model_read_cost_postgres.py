@@ -68,8 +68,11 @@ async def test_prepare_takes_no_explicit_run_lock_before_source_reads(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 ):
     """A span-free fixture isolates prepare's explicit lock; FK locks are tested separately."""
+    from app.services import session_model_inputs
+
     seed = await _seed_waiting_batch(owner_sessionmaker)
-    original = session_model_round._validate_or_withhold_model_sources
+    # owner 11-13 / 11-18 A: binding still reads sources in a private round.
+    original = session_model_inputs.build_model_input_bindings
     lock_available = []
 
     async def inspect_lock(db, **kwargs):
@@ -88,7 +91,7 @@ async def test_prepare_takes_no_explicit_run_lock_before_source_reads(
                 lock_available.append(True)
         return await original(db, **kwargs)
 
-    monkeypatch.setattr(session_model_round, "_validate_or_withhold_model_sources", inspect_lock)
+    monkeypatch.setattr(session_model_inputs, "build_model_input_bindings", inspect_lock)
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed.tenant_id)
         await session_model_round.prepare_model_request(db, tenant_id=seed.tenant_id, agent_id=seed.agent_id,
@@ -339,12 +342,12 @@ async def test_terminal_boundary_lookup_does_not_scan_delivered_history(
     assert scanned_rows(plans[0][0]["Plan"]) < 50, plans
 
 
-async def test_model_prepare_rechecks_claim_after_unlocked_source_validation(
+async def test_model_prepare_rechecks_claim_after_unlocked_source_binding(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 ):
     from datetime import datetime, timedelta, timezone
     from sqlalchemy import update
-    from app.services import explicit_memory_authority
+    from app.services import session_model_inputs
     from app.services.runtime_task_fence import (
         StaleRuntimeTaskFenceError, reset_runtime_task_fence, set_runtime_task_fence,
     )
@@ -355,7 +358,8 @@ async def test_model_prepare_rechecks_claim_after_unlocked_source_validation(
         task.status, task.claimed_by, task.claim_version = "running", "a2z-original", 1
         task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
         await db.commit()
-    original = explicit_memory_authority.validate_memory_model_sources
+    # owner 11-13 / 11-18 A: supersede the claim during the private binding read.
+    original = session_model_inputs.build_model_input_bindings
     changed = []
 
     async def supersede_claim(*args, **kwargs):
@@ -369,7 +373,7 @@ async def test_model_prepare_rechecks_claim_after_unlocked_source_validation(
             changed.append(True)
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(explicit_memory_authority, "validate_memory_model_sources", supersede_claim)
+    monkeypatch.setattr(session_model_inputs, "build_model_input_bindings", supersede_claim)
     token = set_runtime_task_fence(task_id=seed.run_id, claim_version=1, worker_id="a2z-original")
     try:
         async with app_user_sessionmaker() as db:

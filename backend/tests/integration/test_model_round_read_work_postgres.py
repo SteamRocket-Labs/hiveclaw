@@ -194,12 +194,11 @@ async def test_two_round_web_statement_work(web_memory_work, app_user_engine, ap
     assert len(client.requests) == 2
     assert all("MEMORY_DAG_9" in json.dumps(request["messages"]) for request in client.requests)
     assert "Help the owner" in json.dumps(client.requests[1]["messages"])
-    # These bounds protect the round's repeated authority reads, not model or
-    # evidence-write latency. Both rounds must still check the retained DAG.
+    # owner 11-13 / 11-18 A: private rounds bind the admitted DAG without
+    # replaying its authority checks.
     for round_index, bound in ((1, 500), (2, 500)):
         assert len(probe.statements[round_index, "prepare_model_request"]) <= bound
-        assert checked[round_index] and max(checked[round_index].values()) == 1, checked[round_index]
-    assert set(checked[1]) <= set(checked[2])
+        assert not checked[round_index], checked[round_index]
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         run = await db.get(RuntimeTask, n.web_run)
         assert run.status == "completed", run.result_summary
@@ -210,7 +209,7 @@ async def test_two_round_web_statement_work(web_memory_work, app_user_engine, ap
 
 
 @pytest.mark.parametrize("change", ["revoked", "bytes"])
-async def test_next_round_rechecks_sources_and_withholds_only_affected_item(
+async def test_next_private_round_keeps_both_admitted_memory_inputs(
     web_memory_work, owner_sessionmaker, app_user_sessionmaker, change,
 ):
     from app.database import tenant_scoped_session
@@ -234,7 +233,8 @@ async def test_next_round_rechecks_sources_and_withholds_only_affected_item(
         row = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
         return row.model_request_snapshot_json
 
-    # A new round must refresh even within the same DB session/transaction.
+    # owner 11-13 / 11-18 A: the private model keeps the admitted bytes;
+    # revocation or a new version applies to the next read of the memory.
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         first = await prepare(db, 1)
         assert all(entry["status"] == "bound" for entry in first["input_bindings"]["messages"]), first["input_bindings"]
@@ -246,36 +246,27 @@ async def test_next_round_rechecks_sources_and_withholds_only_affected_item(
             else:
                 n.entries[9].path.write_text(n.entries[9].path.read_text() + "\nChanged between model rounds.\n")
         second = await prepare(db, 2)
-        bindings = second["input_bindings"]
-        withheld, retained = bindings["messages"]
-        assert withheld["status"] == "withheld"
-        assert withheld["code"] == ("explicit_memory_history_denied" if change == "revoked"
-            else "content_source_changed")
-        assert retained["status"] == "bound" and bindings["dependency_coverage"]["complete"]
-        assert second["wire_request"]["messages"] == [
-            {"role": "system", "content": "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"},
-            {"role": "system", "content": n.entries[4].content},
+        assert second["wire_request"]["messages"] == first["wire_request"]["messages"] == [
+            {"role": "system", "content": n.entries[index].content} for index in (9, 4)
         ]
-        assert "MEMORY_DAG_9" not in json.dumps(second)
+        bindings = second["input_bindings"]
+        assert bindings["dependencies"] == first["input_bindings"]["dependencies"]
+        assert all(entry["status"] == "bound" for entry in bindings["messages"])
+        assert bindings["dependency_coverage"]["complete"]
         await db.rollback()
 
 
-@pytest.mark.parametrize("attached", [False, True])
 @pytest.mark.parametrize("change", ["inactive", "membership", "unchanged"])
 async def test_private_round_keeps_reader_and_origin_group_live(
-    group_memory, owner_sessionmaker, app_user_engine, app_user_sessionmaker, monkeypatch, change, attached,  # noqa: F811
+    group_memory, owner_sessionmaker, app_user_sessionmaker, monkeypatch, change,  # noqa: F811
 ):
     from app.database import tenant_scoped_session
     from app.memory.explicit_overlay import load_explicit_overlay_entries
-    from app.models.session_v2 import SessionModelResult
     from app.models.user import User
-    from app.runtime.context_candidates import ContextMessageOrigin
     from app.services import explicit_memory_authority
     from app.services.explicit_memory_authority import latest_memory_receipt, source_dependency
-    from app.services.llm_client import LLMMessage
-    from app.services.session_model_round import _validate_or_withhold_model_sources, prepare_model_request
+    from app.services.session_model_round import _validate_or_withhold_model_sources
     from tests.integration.test_a4c_one_item_withheld import _bindings
-    from tests.integration.test_memory_source_read_work_postgres import statement_count
     from tests.integration.test_m4c_explicit_memory_scope_postgres import new_owner_work
     from tests.integration.test_m4d_group_memory_postgres import group_call, save_group
 
@@ -290,11 +281,7 @@ async def test_private_round_keeps_reader_and_origin_group_live(
             for entry in load_explicit_overlay_entries(n.root.parent, n.agent)]
     sources.sort(key=lambda pair: (pair[1].authority_json["audience_kind"] != "group", str(pair[1].id)))
     assert [r.authority_json["audience_kind"] for _, r in sources] == ["group", "group", "private"]
-    # Binding sorts source triples by receipt ID. Deactivate at the first
-    # actual source, or drop membership at the first group source, so every
-    # expected withheld item is still pending the base's in-walk recheck.
-    target = (min(sources, key=lambda pair: str(pair[1].id))[1]
-        if change == "inactive" and attached else sources[0][1])
+    target = sources[0][1]
     session, run = await new_owner_work(n, owner_sessionmaker)
     authorize = explicit_memory_authority.authorize_memory_audience
 
@@ -314,51 +301,68 @@ async def test_private_round_keeps_reader_and_origin_group_live(
         return await authorize(db, **kwargs)
 
     monkeypatch.setattr(explicit_memory_authority, "authorize_memory_audience", change_before_post_walk_audience)
-    messages = [LLMMessage(role="system", content=e.content,
-        context_origin=ContextMessageOrigin.capture(kind="memory", role="system", content=e.content,
-            sources=[source_dependency(r)], unbound=())) for e, r in sources]
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
-        if not attached:
-            bindings = _bindings(0, {})
-            bindings["dependencies"] = [source_dependency(r) for _, r in sources]
-            wire = {"messages": []}
-            await _validate_or_withhold_model_sources(db, tenant_id=n.tenant, agent_id=n.agent, session_id=session,
-                run_id=run, input_bindings=bindings, messages=[], wire_request=wire)
-            expected = [change != "unchanged", change != "unchanged", change == "inactive"]
-            assert bindings["dependencies"] == [source_dependency(r) for (_, r), withheld in
-                zip(sources, expected, strict=True) if not withheld]
-            assert wire == {"messages": [{"role": "system", "content":
-                "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"}] * sum(expected)}
-            assert injected and bindings["dependency_coverage"]["complete"]
-            await db.rollback()
-            return
-        for round_index in range(1, 3) if change == "unchanged" else (1,):
-            with statement_count(app_user_engine) as statements:
-                request = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent, session_id=session,
-                    run_id=run, turn_id=f"turn-{run.hex}", round_index=round_index, messages=messages, tools=[],
-                    provider="synthetic", model="local-reference")
-            if change == "unchanged":
-                print("A2B_PREPARE_FIXTURE_SQL", "private", round_index, len(statements))
-                assert len(statements) <= 500
-            row = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
-            snapshot = row.model_request_snapshot_json
+        bindings = _bindings(0, {})
+        bindings["dependencies"] = [source_dependency(r) for _, r in sources]
+        wire = {"messages": []}
+        await _validate_or_withhold_model_sources(db, tenant_id=n.tenant, agent_id=n.agent, session_id=session,
+            run_id=run, input_bindings=bindings, messages=[], wire_request=wire)
+        expected = [change != "unchanged", change != "unchanged", change == "inactive"]
+        assert bindings["dependencies"] == [source_dependency(r) for (_, r), withheld in
+            zip(sources, expected, strict=True) if not withheld]
+        assert wire == {"messages": [{"role": "system", "content":
+            "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"}] * sum(expected)}
+        assert injected and bindings["dependency_coverage"]["complete"]
         await db.rollback()
-    assert injected
-    expected = [change != "unchanged", change != "unchanged", change == "inactive"]
-    bindings = snapshot["input_bindings"]
-    assert bindings["dependency_coverage"]["complete"]
-    notice = "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"
-    for (entry, receipt), bound, wire, withheld in zip(sources, bindings["messages"],
-            snapshot["wire_request"]["messages"], expected, strict=True):
-        assert bound["status"] == ("withheld" if withheld else "bound"), bound
-        if withheld:
-            assert bound["code"] == ("content_source_access_denied" if change == "inactive" else "group_membership_required")
-            assert bound["dependencies"] == []
-            assert wire == {"role": "system", "content": notice}
-            assert entry.content not in json.dumps(snapshot, ensure_ascii=False)
-        else:
-            assert wire["content"] == entry.content
-            assert source_dependency(receipt) in bindings["dependencies"]
+
+
+@pytest.mark.parametrize("change", ["inactive", "membership", "unchanged"])
+async def test_next_private_run_reads_current_group_memory(
+    group_memory, owner_sessionmaker, app_user_sessionmaker, change,  # noqa: F811
+):
+    from app.models.user import User
+    from app.runtime.tenant_admission import RuntimeTenantPreconditionError
+    from app.services.memory_service import build_memory_context
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import new_owner_work
+    from tests.integration.test_m4d_group_memory_postgres import save_group
+
+    g = group_memory
+    n = g.n
+    await save_group(g, app_user_sessionmaker)
+
+    async def memory_index(session, run):
+        return await build_memory_context(n.agent, n.tenant, session_id=str(session),
+            runtime_task_id=str(run), current_user_id=n.user)
+
+    async def search_memory(session, run):
+        search = await n.service.execute("search_memory", {"query": "release", "scope": "facts"},
+            agent_id=n.agent, user_id=n.user, session_id=str(session), runtime_task_id=str(run),
+            emit_runtime_hooks=False)
+        return str(search)
+
+    for result in (await memory_index(n.session, n.run), await search_memory(n.session, n.run)):
+        assert "GROUP_RELEASE_MARKER" in result, result
+
+    if change == "inactive":
+        async with owner_sessionmaker() as db:
+            (await db.get(User, n.user)).is_active = False
+            await db.commit()
+    elif change == "membership":
+        g.members.remove("memory-author")
+
+    # owner 11-13 / 11-18 A: the next read observes current access.
+    session, run = await new_owner_work(n, owner_sessionmaker)
+    index = await memory_index(session, run)
+    assert ("GROUP_RELEASE_MARKER" in index) is (change == "unchanged"), index
+    assert ("ORCHID_PRIVATE_MARKER" in index) is (change != "inactive"), index
+    if change == "inactive":
+        with pytest.raises(RuntimeTenantPreconditionError) as refused:
+            await search_memory(session, run)
+        assert refused.value.reason_code == "tool_requester_not_found"
+    else:
+        result = await search_memory(session, run)
+        assert ("GROUP_RELEASE_MARKER" in result) is (change == "unchanged"), result
+        assert "ORCHID_PRIVATE_MARKER" in result, result
 
 
 @pytest.mark.parametrize("change,attached", [("claim", True), ("membership", True), ("inactive", True),

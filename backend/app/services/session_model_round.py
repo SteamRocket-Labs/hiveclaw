@@ -567,27 +567,10 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
     input_bindings["dependencies"][:] = [ref for ref in input_bindings["dependencies"] if ref in retained]
 
 
-@timed_phase("model_input_source_validation")
-async def _validate_or_withhold_model_sources(
-    db, *, tenant_id, agent_id, session_id, run_id, input_bindings, messages, wire_request
-):
-    from app.kernel.contracts import ExecutionAuthorityUnavailable
+def _withhold_unbound_model_inputs(messages, wire_request, input_bindings):
     from app.runtime.context_candidates import ContextMessageOrigin
-    from app.services.content_input_receipts import (
-        ContentInputReceiptError,
-        _validate_input_dependencies,
-        group_source_read,
-    )
-    from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.services.delegation_context_sources import PERMISSION_INPUT_KEYS
-    from app.services.shared_group_authority import validate_shared_group_model_inputs
-    from app.services.trigger_read_sources import validate_native_trigger_model_sources
-    from app.services.team_task_context import validate_model_sources
-    from app.services.explicit_memory_authority import preload_memory_receipts, validate_memory_model_sources
 
-    task = await db.get(RuntimeTask, run_id)
-    # A selected team goal defines the work, rather than an optional source.
-    await validate_model_sources(db, task=task, dependencies=input_bindings["dependencies"], effect="model_request")
     # Compiler-bound platform constants have resolved, empty dependencies;
     # unbound data has no such proof, even when sent with the system role.
     unbound = [
@@ -611,6 +594,28 @@ async def _validate_or_withhold_model_sources(
         complete = all(entry.get("dependency_status") == "resolved" for entry in input_bindings["messages"])
         input_bindings["status"] = "resolved" if complete else "incomplete"
         input_bindings["dependency_coverage"]["complete"] = complete
+
+
+@timed_phase("model_input_source_validation")
+async def _validate_or_withhold_model_sources(
+    db, *, tenant_id, agent_id, session_id, run_id, input_bindings, messages, wire_request
+):
+    from app.kernel.contracts import ExecutionAuthorityUnavailable
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError,
+        _validate_input_dependencies,
+        group_source_read,
+    )
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.shared_group_authority import validate_shared_group_model_inputs
+    from app.services.trigger_read_sources import validate_native_trigger_model_sources
+    from app.services.team_task_context import validate_model_sources
+    from app.services.explicit_memory_authority import preload_memory_receipts, validate_memory_model_sources
+
+    task = await db.get(RuntimeTask, run_id)
+    # A selected team goal defines the work, rather than an optional source.
+    await validate_model_sources(db, task=task, dependencies=input_bindings["dependencies"], effect="model_request")
+    _withhold_unbound_model_inputs(messages, wire_request, input_bindings)
     group_principal = await validate_shared_group_model_inputs(
         db,
         tenant_id=tenant_id,
@@ -726,6 +731,10 @@ async def _validate_or_withhold_model_sources(
                     ) from exc
                 _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
 
+    _order_model_source_notices(messages, wire_request, input_bindings)
+
+
+def _order_model_source_notices(messages, wire_request, input_bindings):
     # Defer non-tool rows within a group, but never cross into the next group.
     wire_messages = wire_request["messages"]
     if len(messages) != len(wire_messages):
@@ -961,16 +970,29 @@ async def prepare_model_request(
         wire_messages=list(canonical_wire_request.get("messages") or []),
         locked_session=locked_session,
     )
-    await _validate_or_withhold_model_sources(
-        db,
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        session_id=session_id,
-        run_id=run_id,
-        input_bindings=input_bindings,
-        messages=messages,
-        wire_request=canonical_wire_request,
-    )
+    if (
+        locked_session is not None and locked_session.audience_kind in {None, "private"}
+        and locked_session.visibility_scope == "direct_user" and locked_session.user_id is not None
+        and not any(source["source_kind"] == "team_task_input" for source in input_bindings["dependencies"])
+        and (task := await db.get(RuntimeTask, run_id)) is not None
+        and task.root_user_id == locked_session.user_id and task.machine_credential_id is None
+        and task.task_type in {"web_chat_turn", "goal_continuation"}
+        and not isinstance((task.metadata_json or {}).get("trigger_origin"), dict)
+    ):
+        # Previously admitted private inputs stay bound to the member's work.
+        _withhold_unbound_model_inputs(messages, canonical_wire_request, input_bindings)
+        _order_model_source_notices(messages, canonical_wire_request, input_bindings)
+    else:
+        await _validate_or_withhold_model_sources(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            input_bindings=input_bindings,
+            messages=messages,
+            wire_request=canonical_wire_request,
+        )
     # The transcript advisory still serializes round/control writers. Acquire
     # the run row and plan's FK locks only after potentially slow source reads,
     # so the independent lease renewer can update the running task meanwhile.

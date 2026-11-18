@@ -43,6 +43,11 @@ def legacy_model_requests(monkeypatch):
     async def retain_legacy_request(*_args, **_kwargs):
         pass
 
+    def retain_legacy_messages(*_args, **_kwargs):
+        pass
+
     with monkeypatch.context() as legacy:
         legacy.setattr("app.services.session_model_round._validate_or_withhold_model_sources", retain_legacy_request)
+        legacy.setattr("app.services.session_model_round._withhold_unbound_model_inputs", retain_legacy_messages)
+        legacy.setattr("app.services.session_model_round._order_model_source_notices", retain_legacy_messages)
         yield

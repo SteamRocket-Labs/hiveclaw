@@ -1001,6 +1001,7 @@ async def mark_bound_inputs_applied(
     run_id: uuid.UUID,
     round_id: str,
     provider_response_ref: str,
+    event_drafts: list[SessionEventDraft] | None = None,
 ) -> list[SessionTurnInput]:
     """Settle bound inputs only after a proven provider response/stream receipt."""
 
@@ -1048,7 +1049,9 @@ async def mark_bound_inputs_applied(
                 input_id=row.id,
             )
         )
-    if drafts:
+    if event_drafts is not None:
+        event_drafts.extend(drafts)
+    elif drafts:
         await append_session_events(
             db,
             tenant_id=tenant_id,

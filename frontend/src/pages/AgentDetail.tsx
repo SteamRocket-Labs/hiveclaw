@@ -67,7 +67,7 @@ import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } fr
 import { enterpriseApi } from '../api/domains/enterprise';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
-import { chatApi, type ChatSession, type ConversationBranchMode, type SessionRun, type SessionStartResponse, type StartSessionRunInput } from '../api/domains/chat';
+import { chatApi, type ChatSession, type ConversationBranchMode, type SessionHumanInputReceipt, type SessionRun, type SessionStartResponse, type StartSessionRunInput } from '../api/domains/chat';
 import { ccParityApi } from '../api/domains/ccParity';
 import { ApiError } from '../api/core';
 import { useChatAttachments } from './agent-detail/useChatAttachments';
@@ -1242,7 +1242,12 @@ function AgentDetailInner() {
         await selectSession(draft);
     };
 
-    const replaceDraftActiveSession = (draftId: string, created: ChatSession) => {
+    const replaceDraftActiveSession = (agentId: string, draftId: string, created: ChatSession) => {
+        const draftKey = buildSessionRuntimeKey(agentId, draftId);
+        const nextKey = buildSessionRuntimeKey(agentId, String(created.id));
+        pendingUserMessagesRef.current[nextKey] = pendingUserMessagesRef.current[draftKey] || [];
+        delete pendingUserMessagesRef.current[draftKey];
+        setChatMessagesAfterQueuedForSession(String(created.id), prev => mergePendingForSession(nextKey, prev));
         setSessions(prev => [created, ...prev.filter((session: any) => String(session.id) !== draftId)]);
         activeSessionIdRef.current = String(created.id);
         setActiveSession(created);
@@ -1258,7 +1263,7 @@ function AgentDetailInner() {
         if (!isDraftHumanChatSession(activeSession)) return activeSession;
         const draftId = String(activeSession.id);
         const created = await chatApi.createSession(id);
-        return replaceDraftActiveSession(draftId, created);
+        return replaceDraftActiveSession(id, draftId, created);
     };
 
     const startRunForActiveSession = async (input: StartSessionRunInput): Promise<{ session: ChatSession; run: SessionStartResponse } | null> => {
@@ -1269,7 +1274,7 @@ function AgentDetailInner() {
         }
         const draftId = String(activeSession.id);
         const response = await chatApi.createSessionRun(id, input);
-        const created = replaceDraftActiveSession(draftId, response.session);
+        const created = replaceDraftActiveSession(id, draftId, response.session);
         return { session: created, run: response.run };
     };
 
@@ -1844,6 +1849,14 @@ function AgentDetailInner() {
         }
     }, [activeSession?.id, activeTab]);
 
+    const sessionInputRefusalMessage = (input: SessionHumanInputReceipt) => input.dispatch?.reason_code === 'terminal_boundary_dead_letter'
+        ? t('agent.chat.previousRunUnfinished', 'The previous task did not end normally. This conversation cannot continue. Please start a new conversation and try again.')
+        : String(input.dispatch?.message || '') || (input.admission_state === 'cancelled'
+        ? t('agent.chat.sendCancelled', 'Not sent: sending was cancelled.')
+        : input.admission_state === 'needs_reconciliation'
+            ? t('agent.chat.sendUnconfirmed', 'Could not confirm whether this message was saved.')
+            : t('agent.chat.sendRefused', 'Not sent: this message could not be accepted.'));
+
     const sendChatMsg = async (options?: SessionMessageOptions, retryMessageId?: string, retrySession?: ChatSession) => {
         let sendSession = retrySession || activeSession;
         if (!id || !sendSession?.id) return;
@@ -2029,6 +2042,8 @@ function AgentDetailInner() {
             if (goalModeRequested) {
                 const goalSession = await ensureDurableActiveSession();
                 if (!goalSession?.id) return;
+                sendSessionId = String(goalSession.id);
+                sendKey = buildSessionRuntimeKey(id, sendSessionId);
                 const goalFingerprint = JSON.stringify([
                     String(goalSession.id),
                     contentForLLM,
@@ -2073,27 +2088,14 @@ function AgentDetailInner() {
             }
             if (!started?.session?.id) return;
             sendSession = started.session;
-            const nextSessionId = String(started.session.id);
-            if (nextSessionId !== sendSessionId) {
-                const nextKey = buildSessionRuntimeKey(id, nextSessionId);
-                pendingUserMessagesRef.current[nextKey] = pendingUserMessagesRef.current[sendKey] || [];
-                delete pendingUserMessagesRef.current[sendKey];
-                sendSessionId = nextSessionId;
-                sendKey = nextKey;
-                setChatMessagesAfterQueuedForSession(sendSessionId, prev => mergePendingForSession(sendKey, prev));
-            }
+            sendSessionId = String(started.session.id);
+            sendKey = buildSessionRuntimeKey(id, sendSessionId);
             if (!goalModeRequested && 'admission_state' in started.run) {
                 const issue = submittedSessionInputIssue(started.run);
                 refused = issue === 'refused';
                 queued = issue === 'queued';
                 retryable = started.run.dispatch?.retryable !== false;
-                if (refused) throw new Error(started.run.dispatch?.reason_code === 'terminal_boundary_dead_letter'
-                    ? t('agent.chat.previousRunUnfinished', 'The previous task did not end normally. This conversation cannot continue. Please start a new conversation and try again.')
-                    : String(started.run.dispatch?.message || '') || (started.run.admission_state === 'cancelled'
-                    ? t('agent.chat.sendCancelled', 'Not sent: sending was cancelled.')
-                    : started.run.admission_state === 'needs_reconciliation'
-                        ? t('agent.chat.sendUnconfirmed', 'Could not confirm whether this message was saved.')
-                        : t('agent.chat.sendRefused', 'Not sent: this message could not be accepted.')));
+                if (refused) throw new Error(sessionInputRefusalMessage(started.run));
             }
             updateSend({ sendState: queued ? 'queued' : undefined, sendError: undefined, retrySend: undefined });
             if (activeSessionIdRef.current !== sendSessionId || !stillOriginalSubject()) return true;
@@ -2122,7 +2124,7 @@ function AgentDetailInner() {
             }
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             if (goalModeRequested) {
-                setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'run_start_failed' })]);
+                setChatMessagesAfterQueuedForSession(sendSessionId, prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'run_start_failed' })]);
             } else {
                 // An uncertain refusal can rarely duplicate; re-read the thread before retry in a future upgrade.
                 updateSend({ sendState: 'failed', sendError: refused ? msg : t('agent.chat.sendFailed', 'Message not sent. Try again.'),
@@ -2144,14 +2146,13 @@ function AgentDetailInner() {
     const sendChatMessageText = async (text: string, options?: SessionMessageOptions) => {
         const userMsg = text.trim();
         const expectedSessionId = options?.expectedSessionId;
+        let runSessionId = expectedSessionId || String(activeSession?.id || '');
         const currentSubject = () => {
             const subject = useAuthStore.getState().user;
             return `${localStorage.getItem('current_tenant_id') || subject?.tenant_id || ''}:${subject?.id || ''}:${subject?.role || ''}`;
         };
         const originalSubject = `${readinessScopeKey}:${currentUser?.role || ''}`;
-        const stillOriginalWork = () => !expectedSessionId || (
-            activeSessionIdRef.current === expectedSessionId && currentSubject() === originalSubject
-        );
+        const stillOriginalWork = () => activeSessionIdRef.current === runSessionId && currentSubject() === originalSubject;
         if (!id || !activeSession?.id || !userMsg || expectedSessionId && (
             String(activeSession.id) !== expectedSessionId || isDraftHumanChatSession(activeSession) || !stillOriginalWork()
         )) {
@@ -2163,8 +2164,9 @@ function AgentDetailInner() {
         }
         const acceptedInputId = options?.inputId || globalThis.crypto.randomUUID();
         const displayContent = options?.displayContent || userMsg;
-        let runSessionId = String(activeSession.id);
         let activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
+        let refused = false;
+        let retryable = true;
         setChatMessagesSessionId(runSessionId);
         appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {
             role: 'user', id: acceptedInputId, content: displayContent,
@@ -2183,31 +2185,32 @@ function AgentDetailInner() {
                 ? { session: activeSession, run: await chatApi.startSessionRun(id, expectedSessionId, input) }
                 : await startRunForActiveSession(input);
             if (!started?.session?.id) return;
-            if (String(started.session.id) !== runSessionId) {
-                const nextKey = buildSessionRuntimeKey(id, String(started.session.id));
-                pendingUserMessagesRef.current[nextKey] = pendingUserMessagesRef.current[activeRuntimeKey] || [];
-                delete pendingUserMessagesRef.current[activeRuntimeKey];
-                runSessionId = String(started.session.id);
-                activeRuntimeKey = nextKey;
-            }
+            runSessionId = String(started.session.id);
+            activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
             const issue = 'admission_state' in started.run ? submittedSessionInputIssue(started.run) : null;
-            if (issue === 'refused') throw new Error(t('agent.chat.sendRefused', 'Not sent: this message could not be accepted.'));
-            updateOptimisticUserMessage(activeRuntimeKey, runSessionId, acceptedInputId, { sendState: issue === 'queued' ? 'queued' : undefined, sendError: undefined });
+            if (issue === 'refused' && 'admission_state' in started.run) {
+                refused = true;
+                retryable = started.run.dispatch?.retryable !== false;
+                throw new Error(sessionInputRefusalMessage(started.run));
+            }
+            updateOptimisticUserMessage(activeRuntimeKey, runSessionId, acceptedInputId, { sendState: issue === 'queued' ? 'queued' : undefined, sendError: undefined, retrySend: undefined });
             if (!stillOriginalWork()) return;
             setTransportNotice(null);
             setChatMessagesSessionId(runSessionId);
             applySubmittedRun(activeRuntimeKey, started.run);
             invalidateSessionRuntimeQueries(id, runSessionId);
         } catch (err: any) {
+            const unconfirmed = !refused && !(err instanceof ApiError && err.status >= 400
+                && err.status < 500 && err.status !== 408);
+            const msg = unconfirmed ? t('agent.chat.sendUnconfirmed', 'Could not confirm whether this message was saved.')
+                : err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             updateOptimisticUserMessage(activeRuntimeKey, runSessionId, acceptedInputId, {
-                sendState: 'failed', sendError: t('agent.chat.sendFailed', 'Message not sent. Try again.'),
+                sendState: 'failed', sendError: msg,
+                retrySend: retryable ? () => { if (stillOriginalWork()) void sendChatMessageText(text, { ...options, expectedSessionId: runSessionId, inputId: acceptedInputId }).catch(() => undefined); } : undefined,
             });
             if (!stillOriginalWork()) throw err;
-            const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
-            const unconfirmed = Boolean(expectedSessionId && !(err instanceof ApiError && err.status >= 400
-                && err.status < 500 && err.status !== 408));
-            setChatMessagesSessionId(String(activeSession.id));
-            setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg,
+            setChatMessagesSessionId(runSessionId);
+            setChatMessagesAfterQueuedForSession(runSessionId, prev => [...prev, parseChatMsg({ role: 'event', content: msg,
                 eventType: unconfirmed ? 'runtime_action_unconfirmed' : 'runtime_action_failed',
                 eventStatus: unconfirmed ? 'input_outcome_unknown' : 'run_start_failed' })]);
             throw err;

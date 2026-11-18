@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   realChat: false,
   realTransport: false,
   startSessionRun: vi.fn(),
+  createSession: vi.fn(),
   createSessionRun: vi.fn(),
   cancelSessionRun: vi.fn(),
   deleteSession: vi.fn(),
@@ -158,6 +159,7 @@ vi.mock('../api/domains/chat', () => ({
     getSessionMessages: mocks.getSessionMessages,
     getSessionLineage: mocks.getSessionLineage,
     startSessionRun: mocks.startSessionRun,
+    createSession: mocks.createSession,
     createSessionRun: mocks.createSessionRun,
     cancelSessionRun: mocks.cancelSessionRun,
     getActiveSessionRun: mocks.getActiveSessionRun,
@@ -282,6 +284,7 @@ beforeEach(() => {
   mocks.getSessionLineage.mockResolvedValue([]);
   mocks.chatProps = null;
   mocks.startSessionRun.mockReset();
+  mocks.createSession.mockReset();
   mocks.createSessionRun.mockReset();
   mocks.cancelSessionRun.mockReset();
   mocks.deleteSession.mockReset();
@@ -753,20 +756,126 @@ it.each(['continuation', 'answer', 'plan'] as const)('X9a.1 shows an inline %s a
   await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === firstInput)?.sendState).toBe('failed'));
   expect(screen.queryByText('思考中')).toBeNull();
   expect(Boolean(screen.queryByTestId('session-composer-stop'))).toBe(entry === 'answer');
-  if (entry !== 'plan') {
-    expect(screen.getByRole('alert').textContent).toBe('Connection lost');
-    const retry = deferred<any>();
-    api.mockReturnValue(retry.promise);
-    fireEvent.click(screen.getByRole('button', { name: entry === 'continuation'
-      ? zh.agent.chat.artifacts.continueHere : zh.agent.clarification.submit }));
-    await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === firstInput)?.sendState).toBe('sending'));
-    expect(api.mock.calls[1]).toEqual(api.mock.calls[0]);
-    expect(mocks.chatProps.chatMessages.filter((message: any) => message.id === firstInput)).toHaveLength(1);
-    await act(async () => { retry.resolve(entry === 'continuation' ? { run_id: 'continued-run', status: 'running' }
-      : { admission_state: 'admitted', status: 'accepted' }); });
-    if (entry === 'continuation') await screen.findByText(zh.agent.chat.artifacts.continueRecorded);
-    else await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === firstInput)?.sendState).toBeUndefined());
-  }
+  if (entry !== 'plan') expect(screen.getByRole('alert').textContent).toBe('Connection lost');
+  const retry = deferred<any>();
+  api.mockReturnValue(retry.promise);
+  fireEvent.click(screen.getByRole('button', { name: entry === 'plan' ? zh.common.retry : entry === 'continuation'
+    ? zh.agent.chat.artifacts.continueHere : zh.agent.clarification.submit }));
+  expect(api).toHaveBeenCalledTimes(2);
+  await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === firstInput)?.sendState).toBe('sending'));
+  expect(api.mock.calls[1]).toEqual(api.mock.calls[0]);
+  expect(mocks.chatProps.chatMessages.filter((message: any) => message.id === firstInput)).toHaveLength(1);
+  await act(async () => { retry.resolve(entry !== 'answer' ? { run_id: 'continued-run', status: 'running' }
+    : { admission_state: 'admitted', status: 'accepted' }); });
+  if (entry === 'continuation') await screen.findByText(zh.agent.chat.artifacts.continueRecorded);
+  else await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.id === firstInput)?.sendState).toBeUndefined());
+});
+
+it.each(['rejects', 'no-run'] as const)('X9a.r3.1 restores a new goal conversation draft and attachment when startGoal %s', async outcome => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'startGoal').mockReturnValue(request.promise);
+  mocks.createSession.mockResolvedValue({ id: 'new-goal-session', agent_id: 'agent-1', user_id: 'platform-admin-1',
+    session_kind: 'human_chat', read_only: false });
+  mocks.upload.mockResolvedValue({ filename: 'notes.txt', extracted_text: 'Private notes', workspace_path: 'workspace/uploads/notes.txt' });
+  await mountOwnedArtifactWork();
+  mocks.sessionId = undefined;
+  await act(async () => { await mocks.chatProps.onCreateNewSession(); });
+  expect(mocks.chatProps.activeSession.id).toMatch(/^draft:/);
+  act(() => { mocks.chatProps.onSetChatInput('Goal with notes'); });
+  await act(async () => { await mocks.chatProps.onHandleChatFile({ target: { files: [new File(['Private notes'], 'notes.txt')] } }); });
+  const attachments = mocks.chatProps.attachedFiles;
+  act(() => mocks.chatProps.onToggleGoalMode());
+  fireEvent.click(screen.getByTestId('session-composer-send'));
+  await waitFor(() => expect(ccParityApi.startGoal).toHaveBeenCalledOnce());
+  expect(mocks.chatProps.activeSession.id).toBe('new-goal-session');
+  expect(ccParityApi.startGoal).toHaveBeenCalledWith('agent-1', 'new-goal-session', expect.objectContaining({
+    content: expect.stringContaining('Goal with notes'), attachments: [expect.objectContaining({ name: 'notes.txt' })],
+  }));
+  expect((screen.getByTestId('session-composer-input') as HTMLTextAreaElement).value).toBe('');
+  expect(screen.queryByTestId('session-composer-attachments')).toBeNull();
+  await act(async () => {
+    if (outcome === 'rejects') request.reject(new Error('Goal unavailable'));
+    else request.resolve({ run: null });
+  });
+  await waitFor(() => expect((screen.getByTestId('session-composer-input') as HTMLTextAreaElement).value).toBe('Goal with notes'));
+  expect(mocks.chatProps.attachedFiles).toEqual(attachments);
+  expect(screen.getByTestId('session-composer-attachments').textContent).toContain('notes.txt');
+});
+
+it.each([
+  ['approve', 'success'], ['approve', 'failure'], ['decline', 'success'], ['decline', 'failure'],
+] as const)('X9a.r3.3 keeps conversation B unchanged when a pending plan %s in A settles with %s', async (decision, outcome) => {
+  mocks.realChat = true;
+  mocks.userRole = 'member';
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  await mountOwnedArtifactWork();
+  const sessionA = mocks.chatProps.activeSession;
+  const sessionB = { ...sessionA, id: 'other-session', title: 'Conversation B' };
+  mocks.listSessions.mockResolvedValue([sessionA, sessionB]);
+  let sending!: Promise<unknown>;
+  act(() => { sending = (decision === 'approve' ? mocks.chatProps.onEnterPlanMode('Plan in conversation A')
+    : mocks.chatProps.onSendMessage('Continue without Plan Mode in A')).catch((error: Error) => error); });
+  expect(mocks.startSessionRun).toHaveBeenCalledOnce();
+  mocks.getSessionMessages.mockResolvedValue([{ id: 'b-message', role: 'assistant', content: 'Retained conversation B reply' }]);
+  mocks.sessionId = sessionB.id;
+  await act(async () => { await mocks.chatProps.onSelectSession(sessionB); });
+  await screen.findByText('Retained conversation B reply');
+  expect(mocks.chatProps.chatMessagesSessionId).toBe(sessionB.id);
+  const messages = mocks.chatProps.chatMessages;
+  const notice = mocks.chatProps.transportNotice;
+  await act(async () => {
+    if (outcome === 'success') request.resolve({ run_id: 'a-plan-run', status: 'running' });
+    else request.reject(new Error('Conversation A send failed'));
+    await sending;
+  });
+  expect(mocks.chatProps.activeSession.id).toBe(sessionB.id);
+  expect(mocks.chatProps.chatMessagesSessionId).toBe(sessionB.id);
+  expect(mocks.chatProps.chatMessages).toEqual(messages);
+  expect(mocks.chatProps.transportNotice).toBe(notice);
+  expect(screen.getByText('Retained conversation B reply')).toBeTruthy();
+  expect(screen.queryByText('Conversation A send failed')).toBeNull();
+});
+
+it.each([
+  ['rejected', {}, zh.agent.chat.sendRefused],
+  ['cancelled', {}, zh.agent.chat.sendCancelled],
+  ['needs_reconciliation', {}, zh.agent.chat.sendUnconfirmed],
+  ['rejected', { message: 'A specific refusal' }, 'A specific refusal'],
+  ['rejected', { reason_code: 'terminal_boundary_dead_letter', message: 'Do not replace the member copy', retryable: false }, zh.agent.chat.previousRunUnfinished],
+] as const)('X9a.r3.4 preserves the main composer refusal message for inline %s (%j)', async (admission, dispatch, message) => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: admission, status: admission, dispatch, run: null });
+  await mountOwnedArtifactWork();
+  await act(async () => { await expect(mocks.chatProps.onEnterPlanMode('Review this plan')).rejects.toThrow(message); });
+  const bubble = mocks.chatProps.chatMessages.find((item: any) => item.role === 'user');
+  expect(bubble).toMatchObject({ sendState: 'failed', sendError: message });
+  expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ role: 'event', content: message, eventType: 'runtime_action_failed' });
+  expect(screen.getByTestId('message-send-status').textContent).toContain(message);
+  if ('retryable' in dispatch && !dispatch.retryable) expect(screen.queryByRole('button', { name: zh.common.retry })).toBeNull();
+});
+
+it.each(['plan', 'continuation'] as const)('X9a.r3.4 keeps the inline %s bubble and notice unconfirmed after a 5xx', async entry => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.startSessionRun.mockRejectedValue(new ApiError(503, 'Acknowledgement unavailable'));
+  await mountOwnedArtifactWork();
+  await act(async () => {
+    await expect(entry === 'plan' ? mocks.chatProps.onEnterPlanMode('Review this plan')
+      : mocks.chatProps.onSendMessage('Revise saved file', { expectedSessionId: mocks.sessionId })).rejects.toThrow('Acknowledgement unavailable');
+  });
+  expect(mocks.chatProps.chatMessages.find((item: any) => item.role === 'user')).toMatchObject({
+    sendState: 'failed', sendError: zh.agent.chat.sendUnconfirmed,
+  });
+  expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ role: 'event', content: zh.agent.chat.sendUnconfirmed,
+    eventType: 'runtime_action_unconfirmed', eventStatus: 'input_outcome_unknown' });
+  expect(screen.getByTestId('message-send-status').textContent).toContain(zh.agent.chat.sendUnconfirmed);
+  expect(screen.queryByText(zh.agent.chat.sendFailed)).toBeNull();
 });
 
 it.each(['continuation', 'answer'] as const)('X9a.1 clears thinking after an inline %s is refused', async entry => {

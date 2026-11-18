@@ -33,29 +33,26 @@ export function createPendingUserMessageActions(
     else delete pending.current[key];
     return merged.messages;
   };
+  const mergeWithPatchedInput = (key: string, messages: AgentChatMessage[], inputId: string | undefined, patch: Partial<AgentChatMessage>) =>
+    mergePendingForSession(key, messages.map(message => message.id === inputId ? { ...message, ...patch } : message));
   return {
     mergePendingForSession,
     appendOptimisticUserMessage: (key: string, sessionId: string, input: AgentChatMessage) => {
-      const message = parseMessage(input);
+      const message: AgentChatMessage = { ...parseMessage(input), localEcho: true };
       updateMessages(sessionId, prev => {
         pending.current[key] = [
           ...(pending.current[key] || []).filter(item => item.message.id !== message.id),
           { message, anchorMessageCount: prev.length,
             anchorMessageId: prev.at(-1)?.id || prev.at(-1)?.messageId || prev.at(-1)?.transcriptEventId || undefined },
         ];
-        return mergePendingForSession(key, prev.map(existing => existing.id === message.id
-          ? { ...existing, sendState: message.sendState, sendError: undefined } : existing));
+        return mergeWithPatchedInput(key, prev, message.id, { sendState: message.sendState, sendError: undefined, retrySend: undefined });
       });
     },
     updateOptimisticUserMessage: (key: string, sessionId: string, inputId: string, patch: Partial<AgentChatMessage>) => {
       updateMessages(sessionId, prev => {
-        const inputs = pending.current[key] || [];
-        const optimisticMessages = new Set(inputs.map(item => item.message));
-        pending.current[key] = inputs.map(item =>
+        pending.current[key] = (pending.current[key] || []).map(item =>
           item.message.id === inputId ? { ...item, message: { ...item.message, ...patch } } : item);
-        // A local bubble in the snapshot cannot confirm its own durable display.
-        return mergePendingForSession(key, prev.filter(message => !optimisticMessages.has(message)).map(message =>
-          message.id === inputId ? { ...message, ...patch } : message));
+        return mergeWithPatchedInput(key, prev, inputId, patch);
       });
     },
   };

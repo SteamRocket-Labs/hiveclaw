@@ -52,6 +52,7 @@ export type RuntimeEventType =
 
 export interface AgentChatMessage {
   pastedCredentialNotice?: boolean;
+  localEcho?: true;
   sendState?: 'sending' | 'queued' | 'failed';
   sendError?: string;
   retrySend?: () => void;
@@ -798,18 +799,15 @@ function userMessageHasIdentity(message: AgentChatMessage, identity: string): bo
 
 function hasMatchingDurableUserMessage(messages: AgentChatMessage[], pending: PendingUserMessage): boolean {
   const pendingId = String(pending.message.id || '').trim();
-  // Identity alone is not visible proof. Live replay may first expose a
-  // lifecycle-only HumanInput placeholder whose payload has no display bytes;
-  // dropping the optimistic accepted input at that point makes the user's
-  // prompt disappear until full hydration. Only a material durable projection
-  // may retire the optimistic display bytes.
+  // An identity-only input can carry borrowed local text after a display merge.
+  // Only material display from the transcript can retire the pending text.
   if (pendingId && messages.some((message) => (
-    userMessageHasIdentity(message, pendingId) && hasMaterialUserDisplay(message)
+    !message.localEcho && userMessageHasIdentity(message, pendingId) && hasMaterialUserDisplay(message)
   ))) return true;
   const pendingContent = normalizedUserContent(pending.message);
   if (!pendingContent) return false;
   return messages.slice(pending.anchorMessageCount).some((message) => (
-    message.role === 'user'
+    !message.localEcho && message.role === 'user'
     && normalizedUserContent(message) === pendingContent
     && (!pending.message.fileName || pending.message.fileName === message.fileName)
   ));
@@ -819,7 +817,7 @@ export function mergePendingUserMessages(
   messages: AgentChatMessage[],
   pending: PendingUserMessage[],
 ): { messages: AgentChatMessage[]; pending: PendingUserMessage[] } {
-  if (pending.length === 0) return { messages, pending };
+  if (pending.length === 0) return { messages: messages.filter(message => !message.localEcho), pending };
 
   const settledInputs = new Set(messages.flatMap(message => message.sessionItem?.kind === 'run'
     ? [message.sessionItem.payload.input_id]
@@ -830,25 +828,29 @@ export function mergePendingUserMessages(
   messages = messages.map(message => message.sendState === 'queued' && settledInputs.has(message.id)
     ? { ...message, sendState: undefined } : message);
   const remaining = pending.filter((item) => item.message.sendState || !hasMatchingDurableUserMessage(messages, item));
-  if (remaining.length === 0) return { messages, pending: [] };
-
-  const merged = [...messages];
+  const merged = messages.filter(message => {
+    if (!message.localEcho) return true;
+    const pendingId = remaining.find(item => item.message.id && userMessageHasIdentity(message, item.message.id))?.message.id;
+    return pendingId && !messages.some(saved => !saved.localEcho && userMessageHasIdentity(saved, pendingId));
+  });
   const sorted = [...remaining].sort((a, b) => a.anchorMessageCount - b.anchorMessageCount);
   sorted.forEach((item, offset) => {
     const pendingId = String(item.message.id || '').trim();
     const placeholderIndex = pendingId
       ? merged.findIndex((message) => (
-        userMessageHasIdentity(message, pendingId) && (item.message.sendState || !hasMaterialUserDisplay(message))
+        userMessageHasIdentity(message, pendingId) && (message.localEcho || item.message.sendState || !hasMaterialUserDisplay(message))
       ))
       : -1;
     if (placeholderIndex >= 0) {
-      const durablePlaceholder = merged[placeholderIndex];
+      const existing = merged[placeholderIndex];
+      const durableDisplay = !existing.localEcho && hasMaterialUserDisplay(existing);
       merged[placeholderIndex] = {
         ...item.message,
-        ...durablePlaceholder,
-        content: hasMaterialUserDisplay(durablePlaceholder) ? durablePlaceholder.content : item.message.content,
-        fileName: item.message.fileName || durablePlaceholder.fileName,
-        imageUrl: item.message.imageUrl || durablePlaceholder.imageUrl,
+        ...existing,
+        localEcho: durableDisplay ? undefined : item.message.localEcho,
+        content: durableDisplay ? existing.content : item.message.content,
+        fileName: item.message.fileName || existing.fileName,
+        imageUrl: item.message.imageUrl || existing.imageUrl,
       };
       return;
     }

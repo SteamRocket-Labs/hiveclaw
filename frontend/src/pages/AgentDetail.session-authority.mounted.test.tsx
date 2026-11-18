@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react
 
 import { ApiError } from '../api/core';
 import { ccParityApi } from '../api/domains/ccParity';
+import type { ChatSession, SessionRun } from '../api/domains/chat';
 import ArtifactContinuation from './agent-detail/ArtifactContinuation';
 import { StructuredToolResultBody } from './agent-detail/StructuredToolResult';
 import zh from '../i18n/zh.json';
@@ -45,6 +46,7 @@ const mocks = vi.hoisted(() => ({
   getActiveSessionRun: vi.fn(),
   getRuntimeSummary: vi.fn(),
   realRuntimeSummaryQuery: false,
+  realWorkbenchQuery: false,
   activeRunQueryClient: null as QueryClient | null,
   chatProps: null as any,
   answerQuestion: vi.fn(),
@@ -78,7 +80,8 @@ vi.mock('@tanstack/react-query', async importOriginal => {
   useMutation: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useQuery: (options: { queryKey: unknown[]; queryFn?: () => unknown; enabled?: unknown }) => {
     if (mocks.activeRunQueryClient && (options.queryKey[0] === 'chat-active-run'
-      || (mocks.realRuntimeSummaryQuery && options.queryKey[0] === 'chat-runtime-summary'))) {
+      || (mocks.realRuntimeSummaryQuery && options.queryKey[0] === 'chat-runtime-summary')
+      || (mocks.realWorkbenchQuery && options.queryKey[0] === 'chat-session-workbench'))) {
       return actual.useQuery(options as any);
     }
     mocks.queryCalls.push({ key: options.queryKey, enabled: options.enabled });
@@ -292,6 +295,7 @@ beforeEach(() => {
   mocks.activeRunObservedAt = 1;
   mocks.activeRunQueryClient = null;
   mocks.realRuntimeSummaryQuery = false;
+  mocks.realWorkbenchQuery = false;
   mocks.getRuntimeSummary.mockResolvedValue(null);
   mocks.getActiveSessionRun.mockImplementation(async () => mocks.activeSessionRun);
   mocks.questionControl = false;
@@ -712,6 +716,127 @@ async function composeOrdinaryMessage(text = 'Keep this message') {
   await mountOwnedArtifactWork();
   act(() => mocks.chatProps.onSetChatInput(text));
 }
+
+async function mountDraftComposer() {
+  mocks.sessionId = undefined;
+  mocks.hash = '#chat';
+  render(mocks.activeRunQueryClient
+    ? <QueryClientProvider client={mocks.activeRunQueryClient}><AgentDetail /></QueryClientProvider>
+    : <AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps?.activeSession?.is_draft).toBe(true));
+}
+
+function enterComposerText(text: string) {
+  const composer = screen.getByTestId('session-composer-input');
+  fireEvent.change(composer, { target: { value: text } });
+  fireEvent.keyDown(composer, { key: 'Enter' });
+}
+
+function composerTurn(text: string) {
+  const own = [...document.querySelectorAll('.session-tui-message-row-user .md-content')]
+    .find(message => message.textContent === text);
+  const block = screen.queryByTestId('run-disclosure-block');
+  return {
+    own: Boolean(own),
+    status: block?.getAttribute('data-status'),
+    title: block?.querySelector('.run-disclosure-title')?.textContent,
+  };
+}
+
+it.each(['draft', 'existing'] as const)('X9c shows the main composer message and running block in a %s session before the POST or any tick', async session => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.accessLevel = 'use';
+  const submit = session === 'draft' ? mocks.createSessionRun : mocks.startSessionRun;
+  submit.mockReturnValue(deferred<never>().promise);
+  if (session === 'draft') await mountDraftComposer();
+  else await mountOwnedArtifactWork();
+
+  vi.useFakeTimers();
+  const text = 'Keep the composer send visible';
+  await act(async () => { enterComposerText(text); });
+
+  expect(submit).toHaveBeenCalledOnce();
+  expect(composerTurn(text)).toEqual({ own: true, status: 'running', title: expect.stringMatching(/^(思考中|运行中)$/) });
+});
+
+it('X9c keeps the main composer turn visible across the created route, loading reads and first live events', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.accessLevel = 'use';
+  mocks.realWorkbenchQuery = true;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  mocks.activeRunQueryClient = client;
+  const session: ChatSession = { id: 'owned-artifact-work', agent_id: 'agent-1', user_id: 'platform-admin-1',
+    title: 'Created conversation', session_kind: 'human_chat', source_channel: 'web', read_only: false,
+    created_at: '2026-11-10T00:00:00Z', updated_at: '2026-11-10T00:00:00Z' };
+  const run: SessionRun = { run_id: 'first-live-run', status: 'running' };
+  const request = deferred<{ session: ChatSession; run: SessionRun }>();
+  const active = deferred<SessionRun>();
+  const workbench = deferred<Awaited<ReturnType<typeof ccParityApi.getSessionWorkbench>>>();
+  const transcript = deferred<ReturnType<typeof activeRunEvent>[]>();
+  mocks.createSessionRun.mockReturnValue(request.promise);
+  mocks.getActiveSessionRun.mockReturnValue(active.promise);
+  mocks.getSessionTranscript.mockReturnValue(transcript.promise);
+  vi.spyOn(ccParityApi, 'getSessionWorkbench').mockReturnValue(workbench.promise);
+  const route = `/agents/agent-1/sessions/${session.id}`;
+  mocks.navigate.mockImplementation((target: { pathname: string }) => {
+    if (target.pathname === route) { mocks.sessionId = session.id; mocks.hash = ''; }
+  });
+  await mountDraftComposer();
+
+  const text = 'Keep this new conversation turn visible';
+  const firstAnswer = 'Here is the first answer.';
+  const states: Array<{ stage: string; own: boolean; status?: string | null }> = [];
+  const observe = (stage: string) => {
+    if (screen.queryByText(firstAnswer)) return;
+    const { own, status } = composerTurn(text);
+    states.push({ stage, own, status });
+  };
+  const observer = new MutationObserver(() => observe('DOM mutation'));
+  await act(async () => { enterComposerText(text); });
+  observe('Enter');
+  observer.observe(screen.getByTestId('session-workbench'), { childList: true, subtree: true,
+    characterData: true, attributes: true, attributeFilter: ['data-status'] });
+  try {
+    const inputId = mocks.createSessionRun.mock.calls[0][1].input_id;
+    mocks.listSessions.mockResolvedValue([session]);
+    await act(async () => { request.resolve({ session, run }); });
+    expect(mocks.navigate).toHaveBeenCalledWith({ pathname: route, search: '', hash: '' }, { replace: true });
+    expect(mocks.chatProps.activeSession.id).toBe(session.id);
+    const activeKey = ['chat-active-run', 'agent-1', session.id, 'owner'];
+    const workbenchKey = ['chat-session-workbench', 'agent-1', session.id, 'owner'];
+    expect(client.getQueryState(activeKey)?.status).toBe('pending');
+    expect(client.getQueryState(workbenchKey)?.status).toBe('pending');
+    observe('created route while reads are loading');
+
+    await act(async () => {
+      active.resolve(run);
+      workbench.resolve({ schema: 'hive.session_workbench.v1', agent_id: 'agent-1', session: { id: session.id },
+        turn: { truth_source: 'session_events', event_count: 0 }, controls: {}, active_run: { ...run },
+        runtime_tasks: [{ id: run.run_id, status: run.status }], goals: [], teams: [] });
+    });
+    expect(client.getQueryState(activeKey)?.status).toBe('success');
+    expect(client.getQueryState(workbenchKey)?.status).toBe('success');
+    observe('workbench and active run resolved');
+
+    // The initial replay can identify the accepted input before its display content is available.
+    await act(async () => {
+      transcript.resolve([activeRunEvent(1, 'human_input', 'accepted', null, { intent: 'start_turn' }, inputId)]);
+    });
+    observe('first transcript page');
+    await act(async () => { receiveLiveMessage(activeRunEvent(2, 'run', 'running', run.run_id, { input_id: inputId })); });
+    await waitFor(() => expect(mocks.chatProps.chatMessages.some((message: any) => message.sessionItem?.kind === 'run')).toBe(true));
+    observe('first live run event');
+    await act(async () => { receiveLiveMessage(activeRunEvent(3, 'assistant_final', 'completed', run.run_id, { content: firstAnswer })); });
+    expect(await screen.findByText(firstAnswer)).toBeTruthy();
+  } finally {
+    observer.disconnect();
+  }
+  expect(states.filter(({ own, status }) => !own || status !== 'running')).toEqual([]);
+});
 
 it.each(['continuation', 'answer', 'plan'] as const)('X9a.1 shows an inline %s and thinking before its request settles', async entry => {
   mocks.realChat = true;

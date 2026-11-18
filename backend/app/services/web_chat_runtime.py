@@ -12,7 +12,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 from loguru import logger
@@ -77,6 +77,9 @@ from app.services.runtime_root_ledger import (
     register_runtime_task_root_item,
 )
 from app.services.web_chat_broker import web_chat_broker
+
+if TYPE_CHECKING:
+    from app.services.credential_boundary_loader import IngressSecretInventory
 
 
 WEB_CHAT_TURN_TASK_TYPE = "web_chat_turn"
@@ -2918,6 +2921,7 @@ async def start_web_chat_run(
     budget_interactive: bool = True,
     root_item_intent: RuntimeRootIntentSpec | None = None,
     budget_admission_status_override: str | None = None,
+    ingress_inventory: IngressSecretInventory | None = None,
 ) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
@@ -2943,6 +2947,7 @@ async def start_web_chat_run(
             reply_target=getattr(session, "delivery_target_json", None),
             source_channel=source_channel,
             source=source_channel,
+            inventory=ingress_inventory,
             payload={
                 "content": content,
                 "display_content": display_content,

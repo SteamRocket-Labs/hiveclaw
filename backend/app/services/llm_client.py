@@ -19,7 +19,6 @@ from typing import Any, Callable, Coroutine, Literal
 import httpx
 from loguru import logger
 
-from app.core.request_timing import provider_request_timing, timed_provider_stream
 from app.services.anthropic_content import to_anthropic_content_blocks
 from app.services.token_tracker import record_autonomous_llm_token_usage
 from app.runtime.context_candidates import ContextMessageOrigin
@@ -569,8 +568,7 @@ async def _post_with_status_retries(
 ) -> httpx.Response:
     for attempt in range(max_retries):
         try:
-            with provider_request_timing():
-                response = await client.post(url, json=payload, headers=headers)
+            response = await client.post(url, json=payload, headers=headers)
         except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
             # httpx does not expose whether request bytes reached the provider.
             # Replaying here can duplicate a completed generation, so the
@@ -1054,7 +1052,7 @@ class OpenAICompatibleClient(LLMClient):
 
         for attempt in range(max_retries):
             try:
-                async with timed_provider_stream(client.stream("POST", url, json=payload, headers=self._get_headers())) as resp:
+                async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:
                     if resp.status_code >= 400:
                         error_body = ""
                         async for chunk in resp.aiter_bytes():
@@ -1977,13 +1975,13 @@ class GeminiClient(LLMClient):
 
         for attempt in range(max_retries):
             try:
-                async with timed_provider_stream(client.stream(
+                async with client.stream(
                     "POST",
                     url,
                     params={"alt": "sse"},
                     json=payload,
                     headers=self._get_headers(),
-                )) as resp:
+                ) as resp:
                     if resp.status_code >= 400:
                         error_body = ""
                         async for chunk in resp.aiter_bytes():
@@ -2314,7 +2312,7 @@ class AnthropicClient(LLMClient):
         max_retries = http_max_attempts
         for attempt in range(max_retries):
             try:
-                async with timed_provider_stream(client.stream("POST", url, json=payload, headers=self._get_headers())) as resp:
+                async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:
                     if resp.status_code >= 400:
                         error_body = ""
                         async for chunk in resp.aiter_bytes():

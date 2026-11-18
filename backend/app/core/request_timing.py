@@ -5,7 +5,7 @@ import heapq
 import json
 import logging
 import sys
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import wraps
@@ -13,7 +13,6 @@ from inspect import iscoroutinefunction
 from time import perf_counter
 
 from greenlet import getcurrent
-from httpx import AsyncByteStream
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
@@ -49,7 +48,6 @@ class RunTiming(RequestTiming):
     between_seconds: float = 0.0
     rounds: int = 0
     transactions: int = 0
-    rows: int | None = 0
     instrumentation_errors: int = 0
     slow_statements: list = field(default_factory=list)
     slow_gaps: list = field(default_factory=list)
@@ -65,16 +63,18 @@ class RunTiming(RequestTiming):
             "pre_model_ms": round((first - self.started) * 1000, 3),
             "model_ms": round(self.model_seconds * 1000, 3),
             "between_rounds_ms": round(self.between_seconds * 1000, 3),
-            "post_model_ms": round((end - self.last_provider_end) * 1000, 3) if self.rounds else 0.0,
+            "post_model_ms": round((end - self.last_provider_end) * 1000, 3)
+                if self.last_provider_end is not None else 0.0,
             "rounds": self.rounds, "db_statements": self.statements,
-            "db_ms": round(self.db_seconds * 1000, 3), "transactions": self.transactions, "rows": self.rows,
+            "db_ms": round(self.db_seconds * 1000, 3),
+            "pool_ms": round(self.pool_seconds * 1000, 3), "transactions": self.transactions,
             "instrumentation_errors": self.instrumentation_errors,
             "statements": [{"hash": sql_hash, "frame": frame, "ms": round(seconds * 1000, 3)}
                 for seconds, _, sql_hash, frame in sorted(self.slow_statements, reverse=True)],
             "gaps": [{"from": previous, "to": frame, "ms": round(seconds * 1000, 3)}
                 for seconds, _, previous, frame in sorted(self.slow_gaps, reverse=True)],
-            "phases": [{"name": name, "ms": round(seconds * 1000, 3)}
-                for name, seconds in sorted(self.phases.items(), key=lambda item: item[1], reverse=True)][:10],
+            "phases": [{"name": name, "ms": round(seconds * 1000, 3), "n": count}
+                for name, (seconds, count) in sorted(self.phases.items(), key=lambda item: item[1][0], reverse=True)][:10],
         }
 
 
@@ -154,20 +154,13 @@ def mark_run_terminal() -> None:
 @contextmanager
 def provider_request_timing():
     timing, started = _run_timing(), None
-    if timing is not None and timing.terminal_at is None:
+    if timing is not None:
         started = _observe(timing, _provider_started, timing)
-    finished = False
-
-    def finish():
-        nonlocal finished
-        if not finished and started is not None and timing.active:
-            _observe(timing, _provider_finished, timing, started)
-        finished = True
-
     try:
-        yield finish
+        yield
     finally:
-        finish()
+        if started is not None and timing.active:
+            _observe(timing, _provider_finished, timing, started)
 
 
 def _provider_started(timing):
@@ -185,47 +178,11 @@ def _provider_finished(timing, started):
     timing.model_seconds += timing.last_provider_end - started
 
 
-@asynccontextmanager
-async def timed_provider_stream(stream):
-    with provider_request_timing() as finish:
-        async with stream as response:
-            timing = _run_timing()
-            if timing is not None:
-                _observe(timing, _time_provider_body, response, finish)
-            yield response
-
-
-def _time_provider_body(response, finish):
-    if response.is_stream_consumed:
-        finish()
-    else:
-        # End at the response body, before retry backoff or any
-        # post-stream application work inside the HTTP context.
-        response.stream = _TimedProviderBody(response.stream, finish)
-
-
-class _TimedProviderBody(AsyncByteStream):
-    def __init__(self, stream, finish):
-        self.stream, self.finish = stream, finish
-
-    async def __aiter__(self):
-        try:
-            async for chunk in self.stream:
-                yield chunk
-        finally:
-            self.finish()
-
-    async def aclose(self):
-        try:
-            await self.stream.aclose()
-        finally:
-            self.finish()
-
-
 def timed_phase(name):
     def decorate(function):
         def finish(timing, started):
-            timing.phases[name] = timing.phases.get(name, 0.0) + perf_counter() - started
+            seconds, count = timing.phases.get(name, (0.0, 0))
+            timing.phases[name] = seconds + perf_counter() - started, count + 1
 
         @wraps(function)
         async def measured_async(*args, **kwargs):
@@ -293,7 +250,7 @@ def _statement_attribution(timing, connection, statement):
     return connection, sql_hash, frame
 
 
-def _finish_cursor(context, cursor=None) -> None:
+def _finish_cursor(context) -> None:
     started = getattr(context, "_hive_request_timing", None)
     if started is not None:
         timing, clock, attribution = started
@@ -301,25 +258,20 @@ def _finish_cursor(context, cursor=None) -> None:
             ended = perf_counter()
             timing.db_seconds += ended - clock
             if isinstance(timing, RunTiming) and attribution is not None:
-                _observe(timing, _finish_attribution, timing, clock, ended, attribution, cursor)
+                _observe(timing, _finish_attribution, timing, clock, ended, attribution)
         context._hive_request_timing = None
 
 
-def _finish_attribution(timing, started, ended, attribution, cursor):
+def _finish_attribution(timing, started, ended, attribution):
     connection, sql_hash, frame = attribution
     _top_ten(timing.slow_statements, (ended - started, timing.statements, sql_hash, frame))
-    if cursor is not None and cursor.description is not None:
-        if cursor.rowcount < 0:
-            timing.rows = None
-        elif timing.rows is not None:
-            timing.rows += cursor.rowcount
     transaction = connection.info.get("_hive_run_transaction")
     if transaction is not None and transaction[0] is timing:
         connection.info["_hive_run_transaction"] = timing, (ended, frame)
 
 
 def _cursor_finished(_connection, _cursor, _statement, _parameters, context, _many):
-    _finish_cursor(context, _cursor)
+    _finish_cursor(context)
 
 
 def _cursor_failed(context):
@@ -340,7 +292,18 @@ def _begin_transaction(timing, connection):
 def _transaction_ended(connection):
     timing = _run_timing()
     if timing is not None:
-        _observe(timing, connection.info.pop, "_hive_run_transaction", None)
+        _observe(timing, _finish_transaction, timing, connection)
+
+
+def _finish_transaction(timing, connection):
+    transaction = connection.info.get("_hive_run_transaction")
+    try:
+        if transaction is not None and transaction[0] is timing and transaction[1] is not None:
+            ended, previous = transaction[1]
+            _top_ten(timing.slow_gaps,
+                (perf_counter() - ended, timing.statements, previous, _application_frame()))
+    finally:
+        connection.info.pop("_hive_run_transaction", None)
 
 
 def install_cursor_timing() -> None:

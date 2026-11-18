@@ -1962,6 +1962,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
     )
 
 
+@timed_phase("secret_boundary")
 async def _load_invocation_secret_boundary(
     *,
     tenant_id: uuid.UUID,

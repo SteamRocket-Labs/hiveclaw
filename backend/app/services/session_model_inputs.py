@@ -297,7 +297,6 @@ async def _build_model_input_bindings(
     from app.services.session_semantic_history import (
         SessionSemanticHistoryUnavailable,
         load_session_semantic_history,
-        project_prior_work_ledger_calls,
     )
     from app.services.session_user_question import answer_projections
 
@@ -518,9 +517,7 @@ async def _build_model_input_bindings(
         snapshot = message_snapshot(wire_messages[i])
         presentation = None
         presentation_code = "canonical_vision_presentation_matched"
-        if canonical[ref] != snapshot and not (
-            ref.startswith("session-model-result:") and project_prior_work_ledger_calls(canonical[ref])[0] == snapshot
-        ):
+        if canonical[ref] != snapshot:
             from app.runtime.message_presentation import match_vision_presentation
 
             presentation = match_vision_presentation(canonical[ref], snapshot)

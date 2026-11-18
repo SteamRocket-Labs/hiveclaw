@@ -26,7 +26,7 @@ def _tool_round(call_id, name, arguments):
     }
 
 
-async def test_hello_carries_memory_without_work_guidance_or_prior_todos(
+async def test_hello_keeps_history_and_memory_without_starting_work(
     t2_work, owner_sessionmaker, monkeypatch, drain_terminal_boundary_for_task, tmp_path,
 ):
     from app.memory.write_gate import MemoryWriteDecision
@@ -37,6 +37,7 @@ async def test_hello_carries_memory_without_work_guidance_or_prior_todos(
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionToolInvocation
     from app.runtime import invoker
+    from app.runtime.prompts.runtime_reminders import WORK_LEDGER_REMINDER
     from app.services.llm_client import OpenAICompatibleClient
     from app.services.runtime_control_bus import bridge_transcript_event_to_t0
     from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
@@ -139,6 +140,20 @@ async def test_hello_carries_memory_without_work_guidance_or_prior_todos(
     assert hello["model"] == "MiniMax-M3.1-flash"
     assert any(m["role"] == "user" and m["content"] == "hello" for m in hello["messages"])
     assert any(m.get("tool_call_id") == "clock-with-todo" for m in hello["messages"])
+    prior_calls = {
+        call["id"]: call["function"]["name"]
+        for message in hello["messages"] if message["role"] == "assistant"
+        for call in message.get("tool_calls", [])
+    }
+    for call_id, name, recorded_text in (
+        ("todo-1", "track_todo", old_title),
+        ("todo-2", "track_todo", other_title),
+        ("finding", "record_finding", old_finding),
+        ("failure", "record_finding", old_failure),
+    ):
+        assert prior_calls[call_id] == name
+        (result,) = [m for m in hello["messages"] if m.get("tool_call_id") == call_id]
+        assert result["role"] == "tool" and recorded_text in result["content"]
     assert any(
         isinstance(m.get("content"), str) and m["content"].startswith("- id=explicit_") and preference in m["content"]
         for m in hello["messages"]
@@ -160,13 +175,20 @@ async def test_hello_carries_memory_without_work_guidance_or_prior_todos(
     assert [item["summary"] for item in ledger["findings"]] == [old_finding]
     assert [item["error"] for item in ledger["failures"]] == [old_failure]
 
-    first_request = json.dumps(hello["messages"], ensure_ascii=False)
+    system_text = json.dumps(
+        [m["content"] for m in hello["messages"] if m["role"] == "system"], ensure_ascii=False,
+    )
+    trigger_precheck = "| Create a trigger / wake policy | `list_triggers` | Avoid duplicate schedules and orphan wake policies |"
+    assert trigger_precheck in system_text
+    guidance = system_text.replace(trigger_precheck, "", 1).casefold()
     forbidden = (
-        old_title, other_title, old_finding, old_failure,
-        "Recorded Work Ledger snapshot", "Progress Ledger advisory", "Work Ledger — Reboot After Compaction",
+        WORK_LEDGER_REMINDER, "Recorded Work Ledger snapshot", "Progress Ledger advisory",
+        "Work Ledger — Reboot After Compaction",
         "track_todo", "read_ledger", "list_triggers", "Work board: use",
         "Check your ledger", "Check your triggers", "Check your workspace",
     )
-    assert [fragment for fragment in forbidden if fragment.casefold() in first_request.casefold()] == []
+    assert [fragment for fragment in forbidden if fragment.casefold() in guidance] == []
+    core = system_text.split("<core_directives>", 1)[1].split("</core_directives>", 1)[0]
+    assert "Answer greetings and simple questions directly. Do not start work the user did not ask for in this message." in core
     todo_tool = next(tool["function"] for tool in hello["tools"] if tool["function"]["name"] == "track_todo")
     assert "proactively" not in todo_tool["description"]

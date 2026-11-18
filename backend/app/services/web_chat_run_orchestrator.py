@@ -322,14 +322,10 @@ async def _configure_runtime_session(state: _WebChatRunState) -> None:
     context.channel = str(state.metadata.get("channel") or context.channel or "web")
     context.metadata["tenant_id"] = str(state.agent.tenant_id) if state.agent.tenant_id else None
     context.metadata["runtime_task_id"] = state.run_uuid.hex
-    started_at = getattr(state.runtime_task, "started_at", None)
-    context.metadata["runtime_task_started_at"] = started_at.isoformat() if started_at else None
     if state.system_plan_mode is not None:
         context.plan_mode = state.system_plan_mode
         context.metadata["plan_mode"] = state.system_plan_mode.to_metadata()
         context.metadata["plan_id"] = state.system_plan_mode.plan_id
-    else:
-        context.metadata.pop("plan_id", None)
     # This worker's own claim identity: the kernel's Stop-effect fence verifies
     # it against the RuntimeTask's CURRENT claim before arming a governed Stop
     # emission, so a stale worker whose lease was reclaimed cannot execute the

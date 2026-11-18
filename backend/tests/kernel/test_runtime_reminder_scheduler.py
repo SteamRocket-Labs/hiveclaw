@@ -67,7 +67,7 @@ def _drive(scheduler, ctx, rounds: int, tools_per_round=()) -> dict[int, list[st
     """Run collect→observe for N rounds; return {round_index: texts}."""
     fired: dict[int, list[str]] = {}
     for i in range(rounds):
-        fired[i] = scheduler.collect(ctx, _round_state(round_i=i, work_ledger_snapshot="Current request todos"))
+        fired[i] = scheduler.collect(ctx, _round_state(round_i=i))
         scheduler.observe(tools_per_round[i] if i < len(tools_per_round) else ())
     return fired
 
@@ -100,33 +100,22 @@ def test_scheduler_collects_runtime_reminder_metadata():
     assert injections[0].priority == 95
 
 
-@pytest.mark.parametrize("snapshot,total_tool_calls", [("", 0), ("", 10), ("UNVERIFIED_PRIVATE_LEDGER_SNAPSHOT", 10)])
-def test_ledger_reminder_distinguishes_native_guidance_from_dynamic_body(snapshot, total_tool_calls):
+@pytest.mark.parametrize("snapshot", ["", "UNVERIFIED_PRIVATE_LEDGER_SNAPSHOT"])
+def test_ledger_reminder_distinguishes_native_guidance_from_dynamic_body(snapshot):
     from app.kernel.engine import _runtime_reminder_message
     from app.kernel.reminder_scheduler import _LEDGER_IDLE_ROUNDS
     from app.runtime.prompts.runtime_reminders import WORK_LEDGER_REMINDER
-    from app.services.session_model_round import split_context_message
 
     scheduler = _scheduler()
     for _ in range(_LEDGER_IDLE_ROUNDS):
         scheduler.observe(())
-    items = scheduler.collect_with_metadata(
-        _ledger_ctx(), _round_state(total_tool_calls=total_tool_calls, work_ledger_snapshot_provider=lambda: snapshot),
-    )
-    if not snapshot and not total_tool_calls:
-        assert items == []
-        return
-    item, = items
+    item, = scheduler.collect_with_metadata(_ledger_ctx(), _round_state(work_ledger_snapshot_provider=lambda: snapshot))
     message = _runtime_reminder_message(SimpleNamespace(), item)
     assert item.text == WORK_LEDGER_REMINDER + ("\n\n" + snapshot if snapshot else "")
     assert item.source == "work_ledger" and item.priority == 70
     assert message.content == item.text and message.role == "system"
     assert message.context_origin.unbound == (("context_sources_unbound",) if snapshot else ())
     assert message.context_origin.sources == ()
-    if snapshot:
-        guidance, body = split_context_message(message, item.sections)
-        assert guidance.content == WORK_LEDGER_REMINDER and guidance.context_origin.unbound == ()
-        assert body.content == snapshot and body.context_origin.unbound == ("context_sources_unbound",)
 
 
 @pytest.mark.parametrize("queued", [False, True])
@@ -172,7 +161,7 @@ def test_ledger_cooldown_between_injections():
     assert ledger_rounds[1] - ledger_rounds[0] >= 10
 
 
-def test_ledger_reminder_is_request_scoped_and_includes_current_snapshot():
+def test_ledger_reminder_limits_guidance_to_current_request_and_includes_snapshot():
     """T-G2: ledger reminder is a low-frequency nudge with current persisted state."""
     scheduler = _scheduler()
     ctx = _ledger_ctx()
@@ -524,11 +513,10 @@ async def test_first_round_request_still_carries_full_reminder():
 
 
 @pytest.mark.asyncio
-async def test_kernel_ledger_reminders_skip_prior_request_entries(tmp_path, monkeypatch):
-    """An old session ledger cannot revive work after a new request starts."""
+async def test_kernel_ledger_reminder_reads_persisted_session_snapshot(tmp_path, monkeypatch):
+    """T-G2 integration: the engine wires the persisted session ledger into the scheduler path."""
     from app.kernel.contracts import InvocationRequest
     from app.services.agent_work_ledger import (
-        append_agent_work_ledger_finding,
         initialize_agent_work_ledger_artifact,
         upsert_agent_work_ledger_todo,
     )
@@ -553,10 +541,6 @@ async def test_kernel_ledger_reminders_skip_prior_request_entries(tmp_path, monk
         status="in_progress",
         data_root=tmp_path,
     )
-    append_agent_work_ledger_finding(
-        agent_id=agent_id, session_id=session_id, finding_type="failure",
-        summary="Prior data collection stalled", data_root=tmp_path,
-    )
 
     client = _ToolLoopClient(tool_rounds=11, distinct_args=True)
     kernel = _kernel(client, max_rounds=20)
@@ -580,10 +564,10 @@ async def test_kernel_ledger_reminders_skip_prior_request_entries(tmp_path, monk
         m.content or ""
         for call in client.calls
         for m in call["messages"]
-        if m.role == "system"
+        if m.role == "system" and "Recorded Work Ledger snapshot" in (m.content or "")
     ]
-    assert not any("Recorded Work Ledger snapshot" in text or "Progress Ledger advisory" in text for text in reminder_messages)
-    assert not any("Collect Q3 revenue figures" in text or "Prior data collection stalled" in text for text in reminder_messages)
+    assert reminder_messages, "ledger reminder never carried the persisted snapshot"
+    assert any("[in_progress] Collect Q3 revenue figures" in text for text in reminder_messages)
 
 
 @pytest.mark.asyncio
@@ -631,7 +615,7 @@ async def test_ledger_reminder_keeps_this_requests_todo_in_later_rounds(tmp_path
     result = await kernel.handle(InvocationRequest(
         model=_model(), messages=[{"role": "user", "content": "整理这三份文件并写周报"}],
         agent_name="Agent", role_description="desc", agent_id=agent_id, user_id=user_id,
-        memory_session_id=session.session_id, session_context=session,
+        memory_session_id=session.session_id, session_context=session, member_authored_turn=True,
     ))
 
     assert result.content == "done"

@@ -222,7 +222,7 @@ class TestExecutingActionsPR28Deepening:
         assert "| Action | Pre-check tool | Why |" in matrix
         # Specific rows
         assert "Overwrite a file" in matrix
-        assert "`list_triggers`" not in matrix
+        assert "| Create a trigger / wake policy | `list_triggers` | Avoid duplicate schedules and orphan wake policies |" in matrix
         assert "Mark a task complete" in matrix
         assert "When the current request calls for recurring or deferred work, `set_trigger`" in out
 

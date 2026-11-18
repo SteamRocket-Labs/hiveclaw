@@ -184,6 +184,7 @@ Check existing state before creating or modifying:
 | Action | Pre-check tool | Why |
 |--------|---------------|-----|
 | Overwrite a file | `read_file` | Avoid clobbering unrelated changes |
+| Create a trigger / wake policy | `list_triggers` | Avoid duplicate schedules and orphan wake policies |
 | Claim a fact about web/Feishu/email/API state | a fetch/read tool | Never assert state without a tool result |
 | Mark a task complete | verification tool (pytest/curl/tool response) | "Should work" is not evidence |
 

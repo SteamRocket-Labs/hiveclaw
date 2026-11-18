@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -13,7 +12,6 @@ from app.kernel.contracts import (
     SessionRestartRecoveryRequired,
     ToolLifecyclePersistenceError,
 )
-from app.kernel.reminder_scheduler import _ledger_eligible
 
 if TYPE_CHECKING:
     from app.kernel.engine import (
@@ -276,6 +274,10 @@ def _bind_system_prompt_suffix_sections(
     return build
 
 
+def _bind_work_ledger_view_provider(request: Any, *, enabled_key: str, logger: Any) -> Any:
+    return lambda: _load_work_ledger_view(request, enabled_key=enabled_key, logger=logger)
+
+
 def _provider_response_payload(response: Any) -> dict[str, Any]:
     return {
         "content": response.content or "",
@@ -288,25 +290,24 @@ def _provider_response_payload(response: Any) -> dict[str, Any]:
     }
 
 
-def _load_work_ledger_view(
-    request: Any, *, request_started_at: datetime, logger: Any,
-) -> dict[str, Any] | None:
-    if not request.agent_id or not _ledger_eligible(request.session_context):
+def _load_work_ledger_view(request: Any, *, enabled_key: str, logger: Any) -> dict[str, Any] | None:
+    if not request.agent_id or request.session_context is None:
         return None
-    metadata = request.session_context.metadata
+    metadata = getattr(request.session_context, "metadata", None)
+    if not isinstance(metadata, dict) or not metadata.get(enabled_key):
+        return None
     try:
-        from app.services.agent_work_ledger import read_work_ledger_prompt_view
+        from app.services.agent_work_ledger import read_agent_work_ledger_view
 
         plan_state = getattr(request.session_context, "plan_mode", None)
         plan_id = metadata.get("plan_id") or getattr(plan_state, "plan_id", None)
         runtime_task_id = metadata.get("runtime_task_id") or metadata.get("task_id")
         session_id = request.memory_session_id or getattr(request.session_context, "session_id", None)
-        return read_work_ledger_prompt_view(
+        return read_agent_work_ledger_view(
             agent_id=request.agent_id,
             plan_id=plan_id,
             runtime_task_id=runtime_task_id,
-            session_id=session_id,
-            request_started_at=metadata.get("runtime_task_started_at") or request_started_at,
+            session_id=None if plan_id or runtime_task_id else session_id,
         )
     except Exception as exc:
         logger.debug("[Kernel] Work Ledger reminder view failed: %s", exc)
@@ -1339,6 +1340,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _PARALLEL_SEMAPHORE_LIMIT = support._PARALLEL_SEMAPHORE_LIMIT
     _PTL_MAX_RETRIES = support._PTL_MAX_RETRIES
     _TOOL_RESULTS_AGGREGATE_BUDGET = support._TOOL_RESULTS_AGGREGATE_BUDGET
+    _WORK_LEDGER_ENABLED_METADATA_KEY = support._WORK_LEDGER_ENABLED_METADATA_KEY
     _apply_mechanical_compaction_with_lifecycle_hooks = support._apply_mechanical_compaction_with_lifecycle_hooks
     _await_with_cancel = support._await_with_cancel
     _build_cancelled_result = support._build_cancelled_result
@@ -1410,7 +1412,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     previous_identity = get_execution_identity()
     trace_token = None
     invocation_started_ms = monotonic_ms()
-    request_started_at = datetime.now(timezone.utc)
     invocation_id = ""
     invocation_span_id = f"invocation-{new_invocation_id()[:16]}"
     span_recorder = _RuntimeSpanRecorder(self._deps, request, invocation_span_id, _record_runtime_span)
@@ -1968,12 +1969,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         reminder_scheduler = ReminderScheduler(build_default_reminder_specs())
         _round_tool_names: list[str] = []
 
-        def _work_ledger_view_provider() -> dict[str, Any] | None:
-            if request.member_authored_turn and round_i == 0 and request.initial_round_index == 0:
-                return None
-            return _load_work_ledger_view(
-                request, request_started_at=request_started_at, logger=logger,
-            )
+        _work_ledger_view_provider = _bind_work_ledger_view_provider(
+            request,
+            enabled_key=_WORK_LEDGER_ENABLED_METADATA_KEY,
+            logger=logger,
+        )
 
         def _work_ledger_snapshot_provider() -> str:
             return _render_work_ledger_snapshot(_work_ledger_view_provider, logger=logger)
@@ -2381,6 +2381,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         "total_tool_calls": loop_guard.total_tool_calls,
                         "failed_tool_calls": loop_guard.failed_tool_calls,
                         "context_tokens": self._deps.estimate_tokens_from_chars(_ctx_chars),
+                        "skip_work_ledger_reminders": request.member_authored_turn and logical_round_index == 1,
                         "work_ledger_snapshot_provider": _work_ledger_snapshot_provider,
                         "work_ledger_progress_review_provider": _work_ledger_progress_review_provider,
                     },
@@ -2429,13 +2430,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     )
                     stream_messages = _clone_api_messages(api_messages)
                     if _transient_reminders:
-                        from app.services.session_model_round import split_context_message
-
-                        for item in _transient_reminder_injections:
-                            reminder_message = support._runtime_reminder_message(request, item)
-                            stream_messages.extend(
-                                split_context_message(reminder_message, item.sections) if item.sections else [reminder_message]
-                            )
+                        stream_messages = stream_messages + [
+                            support._runtime_reminder_message(request, item) for item in _transient_reminder_injections
+                        ]
                     dynamic_notice = _dynamic_suffix_notice(
                         dynamic_prompt_suffix,
                         sections=dynamic_context_section_ledger,
@@ -4091,7 +4088,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     request.agent_id,
                                     session_context=request.session_context,
                                     recovery_result=request.recovery_manifest_result,
-                                    work_ledger_view_provider=_work_ledger_view_provider,
                                 )
                             except Exception as _restore_err:
                                 logger.debug("[Kernel] Post-compact restoration failed: %s", _restore_err)

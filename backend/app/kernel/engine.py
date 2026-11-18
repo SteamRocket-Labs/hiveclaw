@@ -35,6 +35,7 @@ from app.kernel.contracts import (
 )
 from app.kernel.loop_guard import LoopGuard, LoopGuardDecision
 from app.kernel.reminder_scheduler import (
+    _WORK_LEDGER_ENABLED_METADATA_KEY,
     ReminderScheduler,
     build_default_reminder_specs,
 )
@@ -3510,7 +3511,6 @@ def _build_restoration_context(
     agent_id: Any,
     session_context: Any | None = None,
     recovery_result: Any | None = None,
-    work_ledger_view_provider: Callable[[], dict[str, Any] | None] | None = None,
 ) -> str:
     """Build critical context to re-inject after mid-loop compaction.
 
@@ -3603,13 +3603,40 @@ def _build_restoration_context(
             except Exception as exc:
                 logger.warning("[Kernel] post-compaction soul.md restore failed: %s", exc)
 
-    if _resolved_ws and total < _restore_budget and work_ledger_view_provider is not None:
-        from app.services.agent_work_ledger import build_agent_work_ledger_resume_summary, render_work_ledger_resume_block
+    # ── 2.1: Work Ledger reboot (cognitive scaffold 切口②) ──
+    # On complex turns the agent maintains a general Work Ledger as working
+    # memory. Compaction can drop the ledger state it had been tracking, so
+    # re-inject the 5-question reboot (where am I / what's open / what's verified
+    # / what failed / what's pending) from the persisted ledger file. Gated on the
+    # same eligibility flag that allows the scheduler reminder, so simple turns
+    # never pay for the read (cognitive-scaffold doc §5.3 / §9 acceptance 3).
+    if _resolved_ws and total < _restore_budget:
+        _ledger_enabled = False
+        if session_context is not None:
+            _meta = getattr(session_context, "metadata", None)
+            _ledger_enabled = bool(isinstance(_meta, dict) and _meta.get(_WORK_LEDGER_ENABLED_METADATA_KEY))
+        if _ledger_enabled:
+            try:
+                from app.services.agent_work_ledger import (
+                    build_agent_work_ledger_resume_summary,
+                    load_agent_work_ledger,
+                    render_work_ledger_resume_block,
+                )
 
-        _ledger_block = render_work_ledger_resume_block(build_agent_work_ledger_resume_summary(work_ledger_view_provider()))
-        if _ledger_block and total + len(_ledger_block) <= _restore_budget:
-            parts.append(_ledger_block)
-            total += len(_ledger_block)
+                _session_id = getattr(session_context, "session_id", None) if session_context is not None else None
+                _ledger_payload = load_agent_work_ledger(
+                    agent_id=agent_id,
+                    session_id=_session_id,
+                    data_root=settings.AGENT_DATA_DIR,
+                )
+                if isinstance(_ledger_payload, dict):
+                    _ledger_summary = build_agent_work_ledger_resume_summary(_ledger_payload)
+                    _ledger_block = render_work_ledger_resume_block(_ledger_summary)
+                    if _ledger_block and total + len(_ledger_block) <= _restore_budget:
+                        parts.append(_ledger_block)
+                        total += len(_ledger_block)
+            except Exception as _ledger_err:
+                logger.debug("[Kernel] Work Ledger reboot restoration failed: %s", _ledger_err)
 
     # ── 2.25: Structured session continuity artifacts ──
     if _resolved_ws and parts:

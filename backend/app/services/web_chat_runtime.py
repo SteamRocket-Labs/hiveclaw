@@ -2432,13 +2432,11 @@ async def _apply_active_projection_to_history(
     applied_at = _parse_projection_datetime(projection.get("applied_at"))
     projection_reason = str(projection.get("projection_reason") or projection.get("command") or "").strip().lower()
     if projection_reason == "compact":
-        from app.services.session_semantic_history import project_prior_work_ledger_messages
-
-        replacement_messages = project_prior_work_ledger_messages([
+        replacement_messages = [
             normalized
             for raw in projection.get("replacement_messages") or []
             if (normalized := _normalize_projection_message(raw)) is not None
-        ])
+        ]
         if not replacement_messages:
             return history_messages
         return _dedupe_history_projection(

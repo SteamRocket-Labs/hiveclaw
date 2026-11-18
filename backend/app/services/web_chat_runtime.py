@@ -6180,6 +6180,10 @@ async def _load_runtime_context(
             raise RuntimeError(f"RuntimeTask {run_uuid.hex} has no canonical ChatSession")
         from app.services.session_semantic_history import is_member_authored_run, load_session_semantic_history
 
+        # Bootstrap writes must release the task row before turn configuration
+        # and history/recovery reads so the independent lease renewer can write.
+        stored_metadata = dict(runtime_task.metadata_json or {})
+        await db.commit()
         private_web_turn = None
         if (
             isinstance(user, User)
@@ -6192,10 +6196,6 @@ async def _load_runtime_context(
         ):
             private_web_turn = await resolve_private_web_turn(db, agent=agent, requester=user)
 
-        # Bootstrap writes must release the task row before history/recovery
-        # reads: their autoflush otherwise blocks the independent lease renewer.
-        stored_metadata = dict(runtime_task.metadata_json or {})
-        await db.commit()
         metadata = dict(metadata)
         semantic_history = await load_session_semantic_history(
             db,

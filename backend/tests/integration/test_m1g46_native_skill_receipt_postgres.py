@@ -989,6 +989,7 @@ async def test_scoped_native_writer_binds_complete_control_input_once(
             assert working_copy.status_code == 200 and working_copy.json()["content"] == arguments["content"]
             for endpoint in ("/content", "/download"):
                 response = await n.client.get(url + endpoint)
+                # owner 11-18 decision A: the member's own card survives the source grant revocation.
                 assert response.status_code == 200 and arguments["content"] in response.text, response.text
             from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
 
@@ -1007,7 +1008,10 @@ async def test_scoped_native_writer_binds_complete_control_input_once(
                     rebind_existing_to_message=rebind,
                     publication_errors=errors,
                 )
-                assert not parts and errors[0]["status"] == "denied", (parts, errors)
+                # owner 11-18 decision A: rebinding or attaching to the same private chat stays private.
+                assert len(parts) == 1 and not errors, (parts, errors)
+            with pytest.raises(A2AArtifactUnavailable, match="artifact_source_access_denied"):
+                await load_artifact_packet(db, **packet_args, runtime_principal=principal)
             return
         model = await db.scalar(
             select(SessionModelResult).where(SessionModelResult.provider_request_id == invocation.provider_request_id)

@@ -279,7 +279,9 @@ async def _exercise_ordinary_office_work(
     assert requests == before
     async with client(transport=httpx.ASGITransport(app=app), base_url="http://company-work") as api:
         revoked = await api.get(f"/agents/{seed['agent_id']}/files/artifacts/{report.id}/content")
-        assert revoked.status_code == 403, revoked.text
+        # owner 11-18 decision A: disabling Feishu leaves the member's own delivered report readable.
+        assert revoked.status_code == 200, revoked.text
+        assert revoked.json()["content"] == "COMPANY_DOCUMENT_RESULT\nCOMPANY_APPROVAL_RESULT"
     assert requests == before
 
 

@@ -18,11 +18,148 @@ from tests.integration.test_r7b_delivered_artifact_reads import report_history  
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-@pytest.mark.parametrize("role", ["org_admin", "member"])
-async def test_terminal_read_delivery_rechecks_recipient_after_revocation(
-    member_web, owner_sessionmaker, app_user_sessionmaker, monkeypatch, role,  # noqa: F811
+async def test_revoked_company_source_keeps_private_report_but_blocks_email_and_grantee(
+    member_web, owner_sessionmaker, app_user_sessionmaker, monkeypatch,  # noqa: F811
 ):
+    from app.core.resource_authority import workspace_resource_id
+    from app.models.capability_policy import CapabilityPolicy
     from app.models.chat_artifact import ChatArtifact
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.security_audit import ResourcePermission
+    from app.models.session_v2 import SessionToolInvocation
+    from app.models.user import User
+    from app.services import agent_tools, runtime_task_worker
+    from app.services.company_knowledge_gateway import CompanyKnowledgeGateway, CompanyKnowledgeReadRequest
+    from tests.integration.test_artifact_publication_transactions import publish_company_source
+    from tests.integration.test_company_knowledge_direct_import import _member_principal
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient
+
+    n, path = member_web, "workspace/company-report.md"
+    body = "COMPANY_SOURCE_MARKER\nDraft"
+    edited = body.replace("Draft", "Reviewed")
+    publication_id, _ = await publish_company_source(
+        owner_sessionmaker, tenant=n.tenant_id, user=n.user_id, root=n.data_root,
+    )
+    async with owner_sessionmaker() as db:
+        db.add(CapabilityPolicy(tenant_id=n.tenant_id, agent_id=n.agent_id,
+            capability="agent.knowledge.read", allowed=True, requires_approval=False))
+        await db.commit()
+    stream = ScriptedLLMClient.stream
+
+    async def revoke_after_write(self, **kwargs):
+        if len(self.requests) == 2:
+            assert (n.agent_root / path).read_text() == body
+            async with owner_sessionmaker() as db:
+                grant = await db.scalar(select(ResourcePermission).where(
+                    ResourcePermission.principal_id == n.user_id,
+                    ResourcePermission.resource_type == "company_knowledge_scope",
+                ))
+                await db.delete(grant)
+                await db.commit()
+            async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
+                result = await CompanyKnowledgeGateway().read(
+                    db,
+                    principal=_member_principal(tenant_id=n.tenant_id, user_id=n.user_id),
+                    request=CompanyKnowledgeReadRequest(
+                        document_id=None, publication_id=publication_id, segment_ids=(), max_chars=None,
+                        trace_id="revoked-company-source",
+                    ),
+                )
+                assert result.status == "not_found_or_denied", result.as_dict()
+        return await stream(self, **kwargs)
+
+    sink = []
+
+    async def deliver(*args, **kwargs):
+        sink.append((args, kwargs))
+        return "Delivered to the local test sink"
+
+    async def notify(**kwargs):
+        pass
+
+    monkeypatch.setattr(ScriptedLLMClient, "stream", revoke_after_write)
+    monkeypatch.setattr(agent_tools, "_handle_email_tool", deliver)
+    monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", notify)
+    source_args = {"publication_id": str(publication_id)}
+    model = await _run(n, [
+        {"tool_calls": [_call("read_company_kb", "source-before", **source_args)], "finish_reason": "tool_calls"},
+        {"tool_calls": [_call("write_file", "write-report", path=path, content=body)], "finish_reason": "tool_calls"},
+        {"tool_calls": [_call("read_file", "read-report", path=path)], "finish_reason": "tool_calls"},
+        {"tool_calls": [_call("edit_file", "edit-report", path=path, old_text="Draft", new_text="Reviewed")],
+            "finish_reason": "tool_calls"},
+        {"tool_calls": [_call("read_file", "read-edited", path=path)], "finish_reason": "tool_calls"},
+        {"tool_calls": [_call("send_email", "send-report", to="recipient@example.test",
+            subject="Company report", body=edited)], "finish_reason": "tool_calls"},
+    ], monkeypatch)
+    replies = {
+        message["tool_call_id"]: message["content"]
+        for request in model.requests
+        for message in request["messages"]
+        if message["role"] == "tool"
+    }
+    assert "COMPANY_SOURCE_MARKER" in replies["source-before"]
+    # owner 11-18 decision A: the report remains usable inside the member's private session.
+    assert json.loads(replies["read-report"])["content"].startswith(body)
+    assert json.loads(replies["read-edited"])["content"].startswith(edited)
+    assert (n.agent_root / path).read_text() == edited
+
+    async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
+        invocation = await db.scalar(select(SessionToolInvocation).where(
+            SessionToolInvocation.run_id == n.run_id, SessionToolInvocation.tool_name == "send_email",
+        ))
+        assert invocation is not None and invocation.permission_item_id is not None
+        assert invocation.provider_arguments_json["body"] == edited
+        invocation_id, permission_id = invocation.id, invocation.permission_item_id
+    approved = await n.client.post(
+        f"/agents/{n.agent_id}/sessions/{n.session_id}/permissions/{permission_id}/resolve",
+        json={"action": "allow_once"},
+    )
+    assert approved.status_code == 200, approved.text
+    async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
+        invocation = await db.get(SessionToolInvocation, invocation_id)
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        assert sink == []
+        assert invocation.effect_state == "prepared_not_started"
+        assert event.metadata_json["v2_payload"]["outcome"] == "failed"
+
+    grantee = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(User(id=grantee, tenant_id=n.tenant_id, username=grantee.hex,
+            email=f"{grantee.hex}@fixture.test", password_hash="fixture", display_name="Grantee", role="member"))
+        await db.flush()
+        db.add(ResourcePermission(tenant_id=n.tenant_id, principal_type="user", principal_id=grantee,
+            resource_type="workspace_file", resource_id=workspace_resource_id(n.agent_id, path),
+            actions=["read"], conditions={}))
+        await db.commit()
+        card = await db.scalar(select(ChatArtifact).where(
+            ChatArtifact.runtime_task_id == n.run_id, ChatArtifact.path == path,
+            ChatArtifact.snapshot_json["content_hash"].astext == hashlib.sha256(edited.encode()).hexdigest(),
+        ))
+        assert card is not None, "OWN_PRIVATE_EDIT_DID_NOT_DELIVER_A_CARD"
+        card_id = card.id
+        db.add(ResourcePermission(tenant_id=n.tenant_id, principal_type="user", principal_id=grantee,
+            resource_type="chat_artifact", resource_id=card_id, actions=["read", "download"], conditions={}))
+        await db.commit()
+
+    card_url = f"/agents/{n.agent_id}/files/artifacts/{card_id}/content"
+    owner_read = await n.client.get(card_url)
+    assert owner_read.status_code == 200 and owner_read.json()["content"] == edited, owner_read.text
+    n.reader = grantee
+    for url, params in [(card_url, {}), (f"/agents/{n.agent_id}/files/content", {"path": path})]:
+        denied = await n.client.get(url, params=params)
+        assert denied.status_code == 403 and "COMPANY_SOURCE_MARKER" not in denied.text, denied.text
+
+
+@pytest.mark.parametrize("role", ["org_admin", "member"])
+@pytest.mark.parametrize(("owned", "receipted"), [(True, True), (True, False), (False, True)])
+async def test_terminal_read_delivery_keeps_own_card_and_rechecks_granted_report(
+    member_web, owner_sessionmaker, app_user_sessionmaker, monkeypatch, role, owned, receipted,  # noqa: F811
+):
+    from fastapi import HTTPException
+
+    from app.core.resource_authority import authorize_resource_action, workspace_resource_id
+    from app.models.chat_artifact import ChatArtifact
+    from app.models.organization_identity import ContentInputReceipt
     from app.models.security_audit import ResourcePermission
     from app.models.user import User
     from tests.integration.test_artifact_publication_transactions import stage_report
@@ -32,8 +169,16 @@ async def test_terminal_read_delivery_rechecks_recipient_after_revocation(
     async with owner_sessionmaker() as db:
         source = await _foreign_source(n, db)
         (await db.get(User, n.user_id)).role = role
-        await stage_report(db, tenant=n.tenant_id, agent=n.agent_id, user=n.user_id, session=n.session_id,
+        receipt = await stage_report(db, tenant=n.tenant_id, agent=n.agent_id,
+            user=n.user_id if owned else source.owner, session=n.session_id if owned else source.session,
             root=n.agent_root, path=path, dependencies=[source.dependency])
+        if not receipted:
+            await db.flush()
+            await db.execute(delete(ContentInputReceipt).where(ContentInputReceipt.id == receipt.id))
+        if not owned:
+            db.add(ResourcePermission(tenant_id=n.tenant_id, principal_type="user", principal_id=n.user_id,
+                resource_type="workspace_file", resource_id=workspace_resource_id(n.agent_id, path),
+                actions=["read"], conditions={}))
         grant_id = source.grant.id
         await db.commit()
     stream, revoked = ScriptedLLMClient.stream, []
@@ -56,21 +201,34 @@ async def test_terminal_read_delivery_rechecks_recipient_after_revocation(
     async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
         cards = list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == n.run_id,
             ChatArtifact.path == path)))
-    for card in cards:
-        for endpoint in ("content", "download"):
-            response = await n.client.get(f"/agents/{n.agent_id}/files/artifacts/{card.id}/{endpoint}")
-            assert "COMPANY_SOURCE_MARKER" not in response.text, response.text
-    assert cards == [], "REVOKED_READ_BECAME_A_NEW_CARD"
+    if owned:
+        # owner 11-18 decision A: an owned read may become a card in the same private chat.
+        assert len(cards) == 1
+        response = await n.client.get(f"/agents/{n.agent_id}/files/artifacts/{cards[0].id}/content")
+        assert response.status_code == 200 and "COMPANY_SOURCE_MARKER" in response.json()["content"], response.text
+        if not receipted:
+            async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
+                with pytest.raises(HTTPException) as denied:
+                    await authorize_resource_action(db, await db.get(User, n.user_id), agent_id=n.agent_id,
+                        resource_kind="chat_artifact", resource_id=cards[0].id, action="deliver",
+                        owner_user_id=n.user_id, root_session_id=n.session_id, authority_state=cards[0].authority_state)
+                assert denied.value.detail["code"] == "workspace_content_unverified"
+    else:
+        for card in cards:
+            for endpoint in ("content", "download"):
+                response = await n.client.get(f"/agents/{n.agent_id}/files/artifacts/{card.id}/{endpoint}")
+                assert "COMPANY_SOURCE_MARKER" not in response.text, response.text
+        assert cards == [], "REVOKED_GRANTED_READ_BECAME_A_NEW_CARD"
 
 
-@pytest.mark.parametrize("incomplete", [True, False])
-async def test_approved_email_requires_complete_inputs_and_keeps_admin_unreceipted_reads(
-    member_web, owner_sessionmaker, app_user_sessionmaker, monkeypatch, incomplete,  # noqa: F811
+@pytest.mark.parametrize("surface", ["saved_selection", "read_file"])
+async def test_approved_email_requires_complete_inputs(
+    member_web, owner_sessionmaker, app_user_sessionmaker, monkeypatch, surface,  # noqa: F811
 ):
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.organization_identity import ContentInputReceipt
-    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.models.session_v2 import SessionToolInvocation
     from app.models.user import User
     from app.services import agent_tools, runtime_task_worker
     from app.services.session_live_input import submit_live_human_input
@@ -80,14 +238,13 @@ async def test_approved_email_requires_complete_inputs_and_keeps_admin_unreceipt
     async with owner_sessionmaker() as db:
         source = await _foreign_source(n, db)
         receipt = await stage_report(db, tenant=n.tenant_id, agent=n.agent_id,
-            user=n.user_id if incomplete else source.owner, session=n.session_id if incomplete else source.session,
-            root=n.agent_root, path=path, dependencies=[source.dependency] if incomplete else [])
+            user=n.user_id, session=n.session_id, root=n.agent_root, path=path, dependencies=[source.dependency])
+        await db.flush()
         await db.execute(delete(ContentInputReceipt).where(ContentInputReceipt.id == receipt.id))
         await db.delete(source.grant)
-        if not incomplete:
-            (await db.get(User, n.user_id)).role = "org_admin"
         await db.commit()
-    if incomplete:
+    script = []
+    if surface == "saved_selection":
         async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
             await submit_live_human_input(db=db, agent=await db.get(Agent, n.agent_id), user=await db.get(User, n.user_id),
                 session=await db.get(ChatSession, n.session_id), content="Email my selected saved report.",
@@ -96,6 +253,9 @@ async def test_approved_email_requires_complete_inputs_and_keeps_admin_unreceipt
                 source="web", source_channel="web", requested_kind="steer_current_turn",
                 expected_turn_id=n.turn_id, expected_run_id=n.run_id)
             await db.commit()
+    else:
+        script.append({"tool_calls": [_call("read_file", "read-unreceipted-report", path=path)],
+            "finish_reason": "tool_calls"})
 
     async def deliver(*args, **kwargs):
         sink.append((args, kwargs))
@@ -106,31 +266,23 @@ async def test_approved_email_requires_complete_inputs_and_keeps_admin_unreceipt
 
     monkeypatch.setattr(agent_tools, "_handle_email_tool", deliver)
     monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", notify)
-    script = [] if incomplete else [
-        {"tool_calls": [_call("read_file", "admin-unreceipted-read", path=path)], "finish_reason": "tool_calls"}]
     script.append({"tool_calls": [_call("send_email", "send-old-report", to="recipient@example.test",
         subject="Report", body="COMPANY_SOURCE_MARKER")], "finish_reason": "tool_calls"})
     model = await _run(n, script, monkeypatch)
+    # owner 11-18 decision A: an unverifiable source leaves the member's report readable in private.
     assert "COMPANY_SOURCE_MARKER" in json.dumps(model.requests[-1])
     async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
         invocation = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == n.run_id,
             SessionToolInvocation.tool_name == "send_email"))
         assert invocation is not None and invocation.permission_item_id is not None
         permission_id, invocation_id = invocation.permission_item_id, invocation.id
-        rounds = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == n.run_id)))
-        if not incomplete:
-            assert rounds[-1].model_request_snapshot_json["input_bindings"]["dependency_coverage"] == {"complete": True}
     response = await n.client.post(f"/agents/{n.agent_id}/sessions/{n.session_id}/permissions/{permission_id}/resolve",
         json={"action": "allow_once"})
     assert response.status_code == 200, response.text
     async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
         invocation = await db.get(SessionToolInvocation, invocation_id)
-        if incomplete:
-            assert sink == [], "INCOMPLETE_INPUT_REACHED_EMAIL_SINK"
-            assert invocation.effect_state == "prepared_not_started"
-        else:
-            assert len(sink) == 1
-            assert invocation.effect_state == "effect_committed"
+        assert sink == [], "INCOMPLETE_INPUT_REACHED_EMAIL_SINK"
+        assert invocation.effect_state == "prepared_not_started"
 
 
 async def test_nonowner_execution_batch_rechecks_first_source_after_second_validation(

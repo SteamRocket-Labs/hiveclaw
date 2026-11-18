@@ -151,7 +151,7 @@ async def test_delivered_report_reads_have_bounded_latency(
             "timings": timings, "queries": queries}), flush=True)
     assert outcomes == {"download": "ok", "content": "ok"}
 
-    # Revoking an upstream source does not revoke this member's delivered copy.
+    # owner 11-18 decision A: the delivered copy stays readable after losing the source.
     async with owner_sessionmaker() as db:
         source = await db.scalar(select(WorkspaceResourceManifest).where(
             WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == csv_path))
@@ -213,3 +213,37 @@ async def test_workspace_history_read_has_bounded_statements(
         print("R7B_WORKSPACE_READ", json.dumps({"starter": starter, "seconds": time.monotonic() - started,
             "statements": statements}), flush=True)
     assert 0 < statements <= 600
+
+
+@pytest.mark.parametrize("endpoint", ["download", "content"])
+@pytest.mark.parametrize("revocation", ["foreign_owner", "quarantined"])
+async def test_owned_snapshot_survives_upstream_revocation_during_read(
+    report_history, owner_sessionmaker, monkeypatch, endpoint, revocation,
+):
+    from app.api import files
+    from app.models.workspace_resource import WorkspaceResourceManifest
+
+    h, committed = report_history, False
+    load_artifact = files._load_chat_artifact_or_404
+
+    async def revoke_after_artifact_load(**kwargs):
+        nonlocal committed
+        artifact = await load_artifact(**kwargs)
+        async with owner_sessionmaker() as writer:
+            source = await writer.scalar(select(WorkspaceResourceManifest).where(
+                WorkspaceResourceManifest.agent_id == h.n.agent, WorkspaceResourceManifest.path == h.csv_path))
+            if revocation == "foreign_owner":
+                source.owner_user_id, source.root_session_id = h.n.foreign, None
+            else:
+                source.authority_state = "quarantined"
+            await writer.commit()
+        committed = True
+        return artifact
+
+    monkeypatch.setattr(files, "_load_chat_artifact_or_404", revoke_after_artifact_load)
+    response = await asyncio.wait_for(h.n.client.get(
+        f"/agents/{h.n.agent}/files/artifacts/{h.artifact.id}/{endpoint}"), timeout=3)
+    assert committed
+    # owner 11-18 decision A: losing an upstream source mid-read leaves the private snapshot intact.
+    assert response.status_code == 200, response.text
+    assert (response.content if endpoint == "download" else response.json()["content"].encode()) == h.body.encode()

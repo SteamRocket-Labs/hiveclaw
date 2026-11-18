@@ -88,6 +88,7 @@ async def test_owned_working_copy_stays_readable_when_upstream_grant_changes(
     browser = await n.client.get(f"/agents/{n.agent}/files/content", params={"path": path})
     assert browser.status_code == 200 and body in browser.text, browser.text
     read = await _read(n, tool, path)
+    # owner 11-18 decision A: the admin can read their own copy before any member grant.
     assert body in read and "content_source_access_denied" not in read, read
     grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",
         resource_id=document.id, document_id=document.id, grantee_type="user", grantee_id=n.user,
@@ -102,6 +103,7 @@ async def test_owned_working_copy_stays_readable_when_upstream_grant_changes(
         (await db.get(KnowledgeGrant, grant.id)).revoked_at = datetime.now(timezone.utc)
         await db.commit()
     read = await _read(n, tool, path)
+    # owner 11-18 decision A: revoking the member grant leaves their copy readable.
     assert body in read and "content_source_access_denied" not in read, read
     assert (n.root / path).read_text() == body
 

@@ -796,7 +796,7 @@ async def _validate_input_dependencies(
 ) -> None:
     from app.core.source_read_purpose import current_source_recipient
 
-    recipient = current_source_recipient()
+    recipient = current_source_recipient(include_receipt_policy=True)
     if recipient is not None and (runtime_request is not None or str(getattr(user, "id", None)) != recipient[1]):
         raise ContentInputReceiptError(
             "content_source_recipient_mismatch", "The source reader changed its recipient purpose.", 403
@@ -2031,6 +2031,7 @@ async def _validate_session_dependency(
     db, tenant_id, dependency, *, row, model, user, runtime_request, active_workspace_receipts=None,
     reader_facts=None, model_state=None
 ):
+    from app.core.source_read_purpose import current_source_recipient
     from app.models.session_v2 import SessionCommand, SessionToolInvocation
     from app.services.session_model_inputs import _hash
     from app.services.session_semantic_history import _event_payload
@@ -2110,7 +2111,15 @@ async def _validate_session_dependency(
             active_workspace_receipts=active_workspace_receipts or frozenset(),
         )
     if model is SessionToolInvocation:
-        if (payload.get("metadata") or {}).get("native_tool_timeout_receipt") is not None:
+        metadata = payload.get("metadata") or {}
+        workspace_input = metadata.get("workspace_input_receipt")
+        recipient = current_source_recipient(include_receipt_policy=True)
+        if (recipient is not None and recipient[2] and isinstance(workspace_input, dict)
+            and workspace_input.get("status") == "verified" and workspace_input.get("content_input_receipt_id") is None):
+            raise ContentInputReceiptError(
+                "workspace_content_unverified", "The workspace source lacks a receipt for disclosure."
+            )
+        if metadata.get("native_tool_timeout_receipt") is not None:
             from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
 
             if not await native_tool_timeout_bound(db, agent_id=session.agent_id, invocation=source, payload=payload):
@@ -2775,7 +2784,7 @@ def defer_memory_after(db, tenant_id, dependency, recheck):
     point = scope.workspace_read if scope is not None and scope.active else None
     if point is None or point.db is not db or point.tenant_id != tenant_id:
         return False
-    group = SimpleNamespace(recipient=current_source_recipient(), project=_SOURCE_READER.get(),
+    group = SimpleNamespace(recipient=current_source_recipient(include_receipt_policy=True), project=_SOURCE_READER.get(),
         phase=scope.checkpoint[1])
     point.observed.append(SimpleNamespace(kind="explicit_memory", group=group, passed=True,
         dependency=dependency, recheck=recheck, ancestors=tuple(scope.visiting) if point.paths is not None else ()))
@@ -2803,7 +2812,7 @@ def _workspace_reader_group(db, tenant_id, user, runtime_request):
     binding = (type(runtime_request), getattr(context, "agent_id", None),
         str(getattr(context, "session_id", None)), str(getattr(context, "runtime_task_id", None)),
         getattr(context, "purpose", None))
-    recipient, project = current_source_recipient(), _SOURCE_READER.get()
+    recipient, project = current_source_recipient(include_receipt_policy=True), _SOURCE_READER.get()
     key = (db.get_transaction(), reader.id, binding, recipient, project, scope.checkpoint[1])
     if key not in point.groups:
         point.groups[key] = SimpleNamespace(reader=reader, recipient=recipient, project=project,
@@ -3118,19 +3127,9 @@ async def _walk_workspace_receipt_inputs(db, receipt, *, user, runtime_request, 
     )
 
 
-async def _validate_workspace_tool_input(db, request, receipt, *, session=None):
+async def _validate_workspace_tool_input(db, request, receipt):
     """Validate a working copy's source chain as this session's output recipient."""
     from app.core.source_read_purpose import source_recipient_read
-    from app.models.chat_session import ChatSession
-
-    from app.core.resource_authority import is_private_resource_owner
-
-    context, scope = request.context, request.context.workspace_authority_scope
-    if not scope.operator_view and receipt.carrier_ref.partition("\n")[2] in scope.owner_paths:
-        session = session or (await db.get(ChatSession, uuid.UUID(str(context.session_id))) if context.session_id else None)
-        if await is_private_resource_owner(db, session, reader_id=context.user_id, authority_source="resource_owner"):
-            return
-
     tenant_id = uuid.UUID(str(request.context.tenant_id))
     principal, user = await _runtime_input_actor(db, tenant_id, request)
     session = await runtime_actor_session(db, tenant_id, principal)
@@ -3181,20 +3180,14 @@ async def authorize_workspace_execution_inputs(request):
                 .distinct(ContentInputReceipt.carrier_ref)
                 .order_by(ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())
                 .execution_options(populate_existing=True))} if paths else {}
-            owner_paths = paths & scope.owner_paths
-            session = await db.get(ChatSession, uuid.UUID(str(context.session_id))) if owner_paths and context.session_id else None
-            if owner_paths and await is_private_resource_owner(db, session, reader_id=context.user_id,
-                authority_source="resource_owner"):
-                for path in sorted(owner_paths):
-                    receipt = receipts.get(workspace_artifact_ref(context.agent_id, path))
-                    reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
-                        revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
-                        dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
-                paths -= owner_paths
-            if paths:
+            shared_paths = paths
+            if paths & scope.owner_paths and context.session_id:
+                session = await db.get(ChatSession, uuid.UUID(str(context.session_id)))
+                if await is_private_resource_owner(db, session, reader_id=context.user_id, authority_source="resource_owner"):
+                    shared_paths = paths - scope.owner_paths
+            receipt_ids = {ref: receipt.id for ref, receipt in receipts.items() if ref.partition("\n")[2] in shared_paths}
+            if receipt_ids:
                 task = await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id))) if context.runtime_task_id else None
-                receipt_ids = {ref: receipt.id for ref, receipt in receipts.items()
-                    if ref.partition("\n")[2] in paths}
                 with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as frame:
                     from app.services.source_read_queries import transcript_event_columns
 
@@ -3202,35 +3195,30 @@ async def authorize_workspace_execution_inputs(request):
                     source_rows = _preflight_inputs(db)
                     if task is not None:
                         source_rows[(RuntimeTask, task.id)] = task
-                    if receipt_ids:
-                        await _preload_execution_sources(db, tenant_id, [{"source_kind": "workspace_artifact",
-                            "source_id": str(receipt_id)} for receipt_id in receipt_ids.values()], latest_receipts=receipt_ids)
-                        receipts = {ref: source_rows.get((ContentInputReceipt, receipt_id)) for ref, receipt_id in receipt_ids.items()}
-                    else:
-                        receipts = {}
+                    await _preload_execution_sources(db, tenant_id, [{"source_kind": "workspace_artifact",
+                        "source_id": str(receipt_id)} for receipt_id in receipt_ids.values()], latest_receipts=receipt_ids)
                     async with workspace_read_checkpoint(db, tenant_id):
                         point = frame.workspace_read
                         point.paths, point.omitted = {}, omitted
-                        for path in sorted(paths):
-                            point.current_path = path
-                            ref = workspace_artifact_ref(context.agent_id, path)
-                            receipt = receipts.get(ref)
-                            if ref in receipt_ids and (receipt is None or receipt.carrier_kind != "workspace_artifact"
-                                or receipt.carrier_ref != ref):
+                        for ref, receipt_id in sorted(receipt_ids.items()):
+                            path = ref.partition("\n")[2]
+                            receipt = source_rows.get((ContentInputReceipt, receipt_id))
+                            if receipt is None or receipt.carrier_kind != "workspace_artifact" or receipt.carrier_ref != ref:
                                 omitted.add(path)
                                 continue
-                            if receipt is None and path not in scope.full_control_paths:
-                                continue
-                            if receipt is not None:
-                                try:
-                                    await _validate_workspace_tool_input(db, request, receipt)
-                                except ContentInputReceiptError:
-                                    omitted.add(path)
-                                    continue
-                            reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
-                                revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
-                                dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
-        context.workspace_authority_scope = replace(scope, input_reads=tuple(read for read in reads if read.path not in omitted),
+                            point.current_path = path
+                            receipts[ref] = receipt
+                            try:
+                                await _validate_workspace_tool_input(db, request, receipt)
+                            except ContentInputReceiptError:
+                                omitted.add(path)
+            for path in sorted(paths - omitted):
+                receipt = receipts.get(workspace_artifact_ref(context.agent_id, path))
+                if receipt is not None or path in scope.full_control_paths:
+                    reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
+                        revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
+                        dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
+        context.workspace_authority_scope = replace(scope, input_reads=tuple(reads),
             allowed_paths=scope.allowed_paths - omitted)
     except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
         code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
@@ -3301,7 +3289,7 @@ async def authorize_workspace_receipt_read(request):
                                 transcript_event_columns(frame)
                                 await _preload_execution_sources(db, uuid.UUID(str(context.tenant_id)), [{
                                     "source_kind": "workspace_artifact", "source_id": str(receipt.id)}])
-                                await _validate_workspace_tool_input(db, request, receipt, session=session)
+                                await _validate_workspace_tool_input(db, request, receipt)
                     if office_read:
                         return None  # Keep the Office adapter's existing result/source contract.
                     observed = WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
@@ -4191,11 +4179,11 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
     """Retain known and inherited sources for every executor-observed successor."""
     from app.config import get_settings
     from app.models.invocation_span import InvocationSpan
-    from app.services.session_model_inputs import _model_dependencies, _stored_dependencies, _unique_dependencies
+    from app.services.session_model_inputs import _stored_dependencies, _unique_dependencies, model_output_dependencies
     from app.services.skill_source_receipts import SkillInputCapture
     from app.tools.runtime import ToolExecutionRequest
 
-    dependencies, complete = _model_dependencies(model)
+    dependencies, complete = model_output_dependencies(model)
     if not complete:
         from app.services.learned_skill_sources import model_source
 

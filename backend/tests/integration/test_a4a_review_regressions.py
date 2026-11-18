@@ -207,14 +207,16 @@ async def test_revoked_document_cannot_leave_after_working_copy_read(native_work
 
 
 @pytest.mark.parametrize('revoked_member_grant', [False, True])
-async def test_owned_copy_can_be_read_but_agent_grant_cannot_publish_it_to_the_member(
-    native_workspace, owner_sessionmaker, revoked_member_grant,  # noqa: F811
+async def test_agent_only_source_keeps_own_private_copy_and_card_but_blocks_email(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch, revoked_member_grant,  # noqa: F811
 ):
     from datetime import datetime, timedelta, timezone
     from app.models.chat_artifact import ChatArtifact
     from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
     from app.services.content_input_receipts import latest_workspace_receipt, validate_runtime_input_dependencies
+    from app.services.llm_client import LLMMessage
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+    from tests.integration.test_a4a_round3 import _resolve_email
     from tests.integration.test_artifact_publication_transactions import publish_report
 
     n = native_workspace
@@ -253,7 +255,8 @@ async def test_owned_copy_can_be_read_but_agent_grant_cannot_publish_it_to_the_m
         await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name='send_email', arguments={}, context=context),
             [{'source_kind': 'workspace_artifact', 'source_id': str(receipt.id), 'source_version': receipt.content_sha256}])
         await db.commit()
-        result, sources, complete, _invocation = await _read_with_inventory(n, db, tool='read_file', path=path)
+        result, sources, complete, invocation = await _read_with_inventory(n, db, tool='read_file', path=path)
+        # owner 11-18 decision A: an agent-only grant leaves the member's own copy readable.
         assert 'DERIVED_SOURCE_BODY' in str(result), result
         assert 'SOURCE_DOCUMENT' not in str(result), result
         assert 'content_source_access_denied' not in str(result), result
@@ -262,11 +265,17 @@ async def test_owned_copy_can_be_read_but_agent_grant_cannot_publish_it_to_the_m
         publication = SimpleNamespace(tenant=n.tenant, agent=n.agent, users=[n.user], sessions=[n.session],
             paths=[path], root=n.root)
         parts, errors = await publish_report(db, publication, 0)
-        assert parts == []
-        assert [error['reason_code'] for error in errors] == ['content_source_access_denied']
-        assert await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == n.agent, ChatArtifact.path == path)) is None
+        # owner 11-18 decision A: the copy can be attached to the same private chat.
+        assert len(parts) == 1 and not errors
+        artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == n.agent, ChatArtifact.path == path))
+        assert artifact.session_id == n.session and artifact.owner_user_id == n.user
         assert receipt.dependencies_json == [dependency] and grant.revoked_at is None
         await db.commit()
+        response = await n.client.get(f'/agents/{n.agent}/files/artifacts/{artifact.id}/content')
+        assert response.status_code == 200 and response.json()['content'] == 'DERIVED_SOURCE_BODY', response.text
+        message = LLMMessage(role='tool', tool_call_id=invocation.provider_tool_use_id, content=str(result),
+            source_ref=f'session-tool-result:{invocation.id}')
+        await _resolve_email(n, db, app_user_sessionmaker, monkeypatch, message, index=2, body='DERIVED_SOURCE_BODY')
 
 
 @pytest.mark.parametrize('tool', ['read_file', 'grep_search'])

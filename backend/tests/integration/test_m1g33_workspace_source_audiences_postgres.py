@@ -92,6 +92,7 @@ async def test_invalid_source_blocks_outward_use_but_owner_can_read_the_copy(
             await validate_runtime_input_dependencies(db, s.request, [dependency])
         assert error.value.status_code == (503 if change == "cycle" else 403)
     read = await _read(s.n, "read_file", s.derived)
+    # owner 11-18 decision A: upstream failure leaves the member's derived copy readable.
     assert s.body in read, read
     browser = await s.n.client.get(f"/agents/{s.n.agent}/files/content", params={"path": s.derived})
     assert browser.status_code == 200, browser.text

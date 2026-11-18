@@ -68,8 +68,11 @@ async def delegated_permission_execution(db, *, authority, session, invocation, 
 async def validate_permission_input_sources(db, *, authority, session, invocation, model, execution):
     """Recheck captured sources at the shared permission effect boundary."""
     if not execution:
+        from app.core.source_read_purpose import source_recipient_read
         from app.services.personal_knowledge_access import AgentRuntimePrincipal
+        from app.services.runtime_user_identity import load_scoped_runtime_user
         from app.services.source_read_queries import transcript_event_columns
+        from app.tools.registry import tool_execution_policy
 
         dependencies, complete = _model_dependencies(model)
         if not complete:
@@ -81,6 +84,13 @@ async def validate_permission_input_sources(db, *, authority, session, invocatio
             if dependencies:
                 await _preload_execution_sources(db, authority.tenant_id, dependencies)
             await _validate_input_dependencies(db, authority.tenant_id, dependencies, runtime_request=principal)
+            if dependencies and tool_execution_policy(invocation.tool_name).external_visible and (
+                session.user_id is not None and session.user_id == authority.principal_id and session.audience_kind != "group"
+            ):
+                # A session grant can authorize the Agent's work without authorizing disclosure.
+                user = await load_scoped_runtime_user(db, session.user_id, tenant_id=authority.tenant_id)
+                with source_recipient_read(session_id=session.id, user_id=session.user_id, require_workspace_receipts=True):
+                    await _validate_input_dependencies(db, authority.tenant_id, dependencies, user=user)
         return
     from pathlib import Path
     from app.config import get_settings

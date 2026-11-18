@@ -72,9 +72,13 @@ async def test_grant_reader_cannot_send_revoked_private_source_to_provider_or_wi
     assert "COMPANY_SOURCE_MARKER" not in json.dumps(await _wires(n, app_user_sessionmaker))
 
 
-async def test_new_private_publish_cannot_borrow_admin_inspection_after_source_revocation(
+async def test_private_card_after_source_revocation_cannot_be_delivered_using_admin_inspection(
     member_web, owner_sessionmaker, app_user_sessionmaker, monkeypatch,  # noqa: F811
 ):
+    from fastapi import HTTPException
+
+    from app.core.resource_authority import authorize_resource_action
+    from app.core.source_read_purpose import source_recipient_read
     from app.models.chat_artifact import ChatArtifact
     from app.models.user import User
     from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient
@@ -110,14 +114,27 @@ async def test_new_private_publish_cannot_borrow_admin_inspection_after_source_r
     async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
         artifacts = list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == n.run_id,
             ChatArtifact.path == path)))
+        # owner 11-18 decision A: the admin's own private card is available after revocation.
+        assert artifacts
+        user = await db.get(User, n.user_id)
+        for artifact in artifacts:
+            with source_recipient_read(session_id=n.session_id, user_id=n.user_id):
+                with pytest.raises(HTTPException) as denied:
+                    await authorize_resource_action(db, user, agent_id=n.agent_id, resource_kind="chat_artifact",
+                        resource_id=artifact.id, action="deliver", owner_user_id=n.user_id,
+                        root_session_id=n.session_id, authority_state=artifact.authority_state)
+                assert denied.value.status_code == 403
     for artifact in artifacts:
         response = await n.client.get(f"/agents/{n.agent_id}/files/artifacts/{artifact.id}/download")
-        assert response.status_code == 403 and "COMPANY_SOURCE_MARKER" not in response.text, response.text
+        assert response.status_code == 200 and response.content == b"COMPANY_SOURCE_MARKER", response.text
 
 
 async def test_unknown_selected_sources_do_not_become_complete_empty_publish_inputs(
     member_web, owner_sessionmaker, app_user_sessionmaker, monkeypatch,  # noqa: F811
 ):
+    from fastapi import HTTPException
+
+    from app.core.resource_authority import authorize_resource_action
     from app.models.agent import Agent
     from app.models.chat_artifact import ChatArtifact
     from app.models.chat_session import ChatSession
@@ -152,12 +169,23 @@ async def test_unknown_selected_sources_do_not_become_complete_empty_publish_inp
     async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
         artifacts = list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == n.run_id,
             ChatArtifact.path == new)))
-        assert artifacts == [], "UNKNOWN_SELECTED_SOURCES_BECAME_PUBLISHABLE"
+        # owner 11-18 decision A: a local card preserves incomplete provenance and cannot be delivered.
+        assert artifacts
+        user = await db.get(User, n.user_id)
+        for artifact in artifacts:
+            with pytest.raises(HTTPException) as denied:
+                await authorize_resource_action(db, user, agent_id=n.agent_id, resource_kind="chat_artifact",
+                    resource_id=artifact.id, action="deliver", owner_user_id=n.user_id,
+                    root_session_id=n.session_id, authority_state=artifact.authority_state)
+            assert denied.value.detail["code"] == "learned_model_source_unavailable"
         from app.models.session_v2 import SessionModelResult
 
         models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == n.run_id)))
         assert any(m.model_request_snapshot_json["input_bindings"]["dependency_coverage"] == {"complete": False}
             for m in models)
+    for artifact in artifacts:
+        response = await n.client.get(f"/agents/{n.agent_id}/files/artifacts/{artifact.id}/download")
+        assert response.status_code == 200 and response.content == b"COMPANY_SOURCE_MARKER", response.text
 
 
 @pytest.mark.parametrize("action", ["save", "upload", "tool_write", "history", "restore"])

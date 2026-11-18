@@ -151,6 +151,7 @@ async def test_post_tool_statement_cost_is_independent_of_workspace_history(
 
 @pytest.fixture
 async def canonical_publication(native_workspace, owner_sessionmaker):  # noqa: F811
+    from app.core.resource_authority import workspace_resource_id
     from app.models.agent import Agent
     from app.models.security_audit import ResourcePermission
     from tests.integration.test_artifact_publication_transactions import stage_report
@@ -168,8 +169,12 @@ async def canonical_publication(native_workspace, owner_sessionmaker):  # noqa: 
                 root=n.root.parent / str(other), path=f"workspace/source-{index}.md")
             dependencies.append(dict(source_kind="workspace_artifact", source_id=str(receipt.id),
                 source_version=receipt.content_sha256))
-        await stage_report(db, tenant=n.tenant, agent=n.agent, user=n.user, session=n.session,
+        # owner 11-18 decision A: a granted report still exercises both publication source checks.
+        await stage_report(db, tenant=n.tenant, agent=n.agent, user=n.foreign, session=None,
             root=n.root, path=path, dependencies=dependencies)
+        db.add(ResourcePermission(tenant_id=n.tenant, principal_type="user", principal_id=n.user,
+            resource_type="workspace_file", resource_id=workspace_resource_id(n.agent, path),
+            actions=["read"], conditions={}))
         db.add(ResourcePermission(id=grant_id, tenant_id=n.tenant, principal_type="user", principal_id=n.user,
             resource_type="agent", resource_id=other, actions=["manage"], effect="allow", conditions={}))
         await db.commit()

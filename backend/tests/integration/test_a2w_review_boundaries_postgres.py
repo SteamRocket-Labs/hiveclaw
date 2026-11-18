@@ -356,18 +356,14 @@ async def test_execution_capture_keeps_authorized_paths_without_source_replay(
             await stage_report(db, tenant=n.tenant, agent=n.agent, user=n.user, session=n.session, root=n.root,
                 path=path, dependencies=[{"source_kind": "workspace_artifact", "source_id": str(source.id),
                     "source_version": source.content_sha256}])
+        manifest = await db.scalar(select(WorkspaceResourceManifest).where(
+            WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == "workspace/source-0.md"))
+        manifest.authority_state = "quarantined"
         await db.commit()
     original, calls = sources._workspace_checkpoint_rows, []
 
     async def rows(*args, **kwargs):
         calls.append(True)
-        if len(calls) == 2:
-            async with owner_sessionmaker() as writer:
-                manifest = await writer.scalar(select(WorkspaceResourceManifest).where(
-                    WorkspaceResourceManifest.agent_id == n.agent,
-                    WorkspaceResourceManifest.path == "workspace/source-0.md"))
-                manifest.authority_state = "quarantined"
-                await writer.commit()
         return await original(*args, **kwargs)
 
     monkeypatch.setattr(sources, "_workspace_checkpoint_rows", rows)
@@ -375,15 +371,13 @@ async def test_execution_capture_keeps_authorized_paths_without_source_replay(
     request = _request(n, "execute_code", {"language": "python", "code": "print('ok')"}, paths)
     result = await sources.authorize_workspace_execution_inputs(request)
     assert result is None, result
+    # owner 11-18 decision A: neither copy is withheld when one upstream manifest is quarantined.
     assert request.context.workspace_authority_scope.allowed_paths == frozenset(paths)
     assert [row.path for row in request.context.workspace_authority_scope.input_reads] == paths
     assert calls == []
 
-    # A shared upstream source does not remove either authorized working copy.
+    # owner 11-18 decision A: both private copies of the quarantined source remain available.
     async with owner_sessionmaker() as db:
-        manifest = await db.scalar(select(WorkspaceResourceManifest).where(
-            WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == "workspace/source-0.md"))
-        manifest.authority_state = "owned"
         await stage_report(db, tenant=n.tenant, agent=n.agent, user=n.user, session=n.session, root=n.root,
             path="workspace/copy-c.md", dependencies=[{"source_kind": "workspace_artifact",
                 "source_id": str(originals[0].id), "source_version": originals[0].content_sha256}])

@@ -314,7 +314,7 @@ async def _assert_original_read_survives_upstream_revocation(h, owner_sessionmak
         retained = await h.n.client.get(f"/agents/{h.n.agent}/files/artifacts/{h.artifact.id}/{endpoint}")
         retained_responses[endpoint] = retained
         print("R13E_ORIGINAL_REQUEST_RETAINED", endpoint, retained.status_code, flush=True)
-    # Upstream changes leave the already published member snapshot readable.
+    # owner 11-18 decision A: the member's delivered report survives reassignment of its source.
     for endpoint, response in responses.items():
         assert response.status_code == 200, response.text
         assert (response.content if endpoint == "download" else response.json()["content"].encode()) == h.body.encode()

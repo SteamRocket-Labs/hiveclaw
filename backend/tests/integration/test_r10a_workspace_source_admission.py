@@ -51,11 +51,12 @@ async def _unverifiable_history(db, *, tenant, agent, user, session, root):
 async def test_web_report_uses_csv_without_replaying_unselected_history(
     owner_sessionmaker, monkeypatch, tmp_path, continuation,
 ):
-    from fastapi import FastAPI
+    from fastapi import FastAPI, HTTPException
     from httpx import ASGITransport, AsyncClient
 
     from app.api import files, upload
     from app.config import get_settings
+    from app.core.resource_authority import authorize_resource_action
     from app.core.security import get_current_user
     from app.database import get_db
     from app.models.agent import Agent
@@ -162,7 +163,8 @@ async def test_web_report_uses_csv_without_replaying_unselected_history(
         async def execute_in_test_sandbox(command, *, work_dir, env, timeout, **_kwargs):
             assert work_dir.resolve() != (seed["agent_root"] / "workspace").resolve()
             assert (work_dir / "sales-report.md").read_bytes() == body.encode()
-            assert (work_dir / "earlier-report.md").is_file()
+            # owner 11-18 decision A: the member's old report is available to the command.
+            assert (work_dir / "earlier-report.md").read_text() == "# Report\nCOMPANY_SOURCE_MARKER\n"
             process = await asyncio.create_subprocess_exec(*command, cwd=work_dir, env=env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
@@ -174,7 +176,8 @@ async def test_web_report_uses_csv_without_replaying_unselected_history(
 
         monkeypatch.setattr(code_exec, "execute_agent_command", execute_in_test_sandbox)
         model_client.script.insert(2, {"tool_calls": [call("run_command", "report-command", {
-            "command": "cat sales-report.md", "timeout": 10})], "finish_reason": "tool_calls"})
+            "command": "cat sales-report.md && cp earlier-report.md execution-report.md", "timeout": 10})],
+            "finish_reason": "tool_calls"})
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: model_client)
     fence = set_runtime_task_fence(task_id=seed["run_id"], worker_id="kernel-worker-1", claim_version=1)
     try:
@@ -187,7 +190,10 @@ async def test_web_report_uses_csv_without_replaying_unselected_history(
         events = list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == seed["run_id"])))
         print("R10A_RESULT", json.dumps({"run_status": task.status, "artifact_paths": [row.path for row in artifacts]}))
         assert task.status == "completed"
-        assert [row.path for row in artifacts] == ([path, path] if readback else [path])
+        expected_paths = [path, path] if readback else [path]
+        if continuation == "command_workspace":
+            expected_paths.append("workspace/execution-report.md")
+        assert sorted(row.path for row in artifacts) == sorted(expected_paths)
         assert any(part.get("type") == "artifact" and part.get("path") == path
             for row in events for part in (row.parts_json or []))
         assert not any("部分文件未能附在这条回复中" in (row.content or "") for row in events)
@@ -205,19 +211,33 @@ async def test_web_report_uses_csv_without_replaying_unselected_history(
             returned = next(message for message in model_client.requests[3]["messages"]
                 if message.get("tool_call_id") == "report-command")
             assert body in returned["content"], returned
+            derived = next(row for row in artifacts if row.path == "workspace/execution-report.md")
+            with pytest.raises(HTTPException) as denied:
+                await authorize_resource_action(db, await db.get(User, seed["user_id"]), agent_id=seed["agent_id"],
+                    resource_kind="chat_artifact", resource_id=derived.id, action="deliver", owner_user_id=seed["user_id"],
+                    root_session_id=derived.root_session_id, authority_state=derived.authority_state)
+            assert denied.value.detail["code"] == "learned_model_source_unavailable"
         receipt = await latest_workspace_receipt(db, seed["tenant_id"], seed["agent_id"], path)
         assert old_source not in receipt.dependencies_json
-        artifact_id = artifacts[0].id
+        artifact_id = next(row.id for row in artifacts if row.path == path)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local",
         headers={"Authorization": "Bearer fixture-member"}) as client:
         download = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{artifact_id}/download")
+        if continuation == "command_workspace":
+            # owner 11-18 decision A: the command's derived output is available as a private card.
+            output = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{derived.id}/download")
+            assert output.status_code == 200 and output.content == b"# Report\nCOMPANY_SOURCE_MARKER\n", output.text
     assert download.status_code == 200 and download.content == body.encode(), download.text
 
 
-async def test_report_that_inherits_unverifiable_history_is_never_published(
+async def test_report_with_unverifiable_history_keeps_private_card_but_refuses_delivery(
     native_workspace, app_user_sessionmaker,  # noqa: F811
 ):
+    from fastapi import HTTPException
+
+    from app.core.resource_authority import authorize_resource_action
     from app.models.chat_artifact import ChatArtifact
+    from app.models.user import User
     from tests.integration.test_artifact_publication_transactions import publish_report, stage_report
 
     n = native_workspace
@@ -232,11 +252,20 @@ async def test_report_that_inherits_unverifiable_history_is_never_published(
         publication = SimpleNamespace(tenant=n.tenant, agent=n.agent, users=[n.user], sessions=[n.session],
             paths=[path], root=n.root)
         parts, errors = await publish_report(db, publication, 0)
-        assert parts == []
-        assert [error["reason_code"] for error in errors] == ["learned_model_source_unavailable"]
-        assert await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == n.agent, ChatArtifact.path == path)) is None
+        # owner 11-18 decision A: upstream history blocks delivery, while the private card stays readable.
+        assert len(parts) == 1 and not errors
+        artifact = await db.get(ChatArtifact, uuid.UUID(parts[0]["artifact_id"]))
+        assert artifact.session_id == n.session and artifact.owner_user_id == n.user
         assert receipt.dependencies_json == [source]
         await db.commit()
+        await pin_rls_tenant_context(db, n.tenant)
+        with pytest.raises(HTTPException) as denied:
+            await authorize_resource_action(db, await db.get(User, n.user), agent_id=n.agent,
+                resource_kind="chat_artifact", resource_id=artifact.id, action="deliver",
+                owner_user_id=n.user, root_session_id=n.session, authority_state=artifact.authority_state)
+        assert denied.value.detail["code"] == "learned_model_source_unavailable"
+    card = await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")
+    assert card.status_code == 200 and "COMPANY_SOURCE_MARKER" in card.json()["content"], card.text
 
 
 @pytest.mark.parametrize("tool,arguments", [
@@ -264,5 +293,6 @@ async def test_workspace_read_tools_keep_the_owned_working_copy_readable(
             monkeypatch.setattr(OfficeDocumentService, method, adapter)
     result = await n.service.execute(tool, {"path": path, **arguments}, agent_id=n.agent, user_id=n.user,
         session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False)
+    # owner 11-18 decision A: an unverifiable earlier model does not withhold the member's own report.
     assert "COMPANY_SOURCE_MARKER" in str(result), result
     assert "learned_model_source_unavailable" not in str(result), result

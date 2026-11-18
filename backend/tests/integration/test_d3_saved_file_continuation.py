@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import sys
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -240,7 +239,6 @@ async def test_saved_derived_file_uses_the_same_source_reader_as_file_tools(
     from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
     from app.models.session_v2 import SessionModelResult
     from app.models.user import User
-    from app.services import artifact_continuation as continuation
     from app.services.content_input_receipts import latest_workspace_receipt
     from app.services.personal_knowledge_service import PersonalKnowledgeService
     from app.services.session_live_input import submit_live_human_input
@@ -301,17 +299,6 @@ async def test_saved_derived_file_uses_the_same_source_reader_as_file_tools(
         assert accepted["input_id"]
         await db.commit()
 
-    # Observe the exception handled by the real notice path without changing it.
-    caught = []
-    append_events = continuation.append_session_events
-
-    async def observe_notice(*args, **kwargs):
-        error = sys.exception()
-        caught.append({"type": type(error).__name__, "code": getattr(error, "code", None),
-                       "message": str(error), "cause": str(error.__cause__) if error else None})
-        return await append_events(*args, **kwargs)
-
-    n.monkeypatch.setattr(continuation, "append_session_events", observe_notice)
     state = SimpleNamespace(agent=SimpleNamespace(id=n.agent, tenant_id=n.tenant),
         session_id=str(n.session), run_uuid=n.run, actor_user_id=n.user,
         metadata={"turn_id": f"turn-{n.run.hex}"},
@@ -321,18 +308,13 @@ async def test_saved_derived_file_uses_the_same_source_reader_as_file_tools(
     messages = _mid_run_items_to_user_messages(await _bind_session_round_inputs(state, 1))
     selected = [m for m in messages if m.context_origin and m.context_origin.kind == "selected_workspace_file"]
     assert len(selected) == 1
-    allowed = source_access == "member_grant"
     tool_result = str(await n.service.execute("read_file", {"path": path}, agent_id=n.agent, user_id=n.user,
         session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False))
-    assert (saved_text in tool_result.replace("\\n", "\n")) is allowed, tool_result
+    # owner 11-18 decision A: the saved version remains readable in both private entry points.
+    assert saved_text in tool_result.replace("\\n", "\n"), tool_result
     notice = "这个文件目前无法读取，本次未使用它。你可以继续处理其他问题，或选择有权打开的文件。"
-    assert (saved_text in selected[0].content) is allowed, caught
-    assert (notice in selected[0].content) is (not allowed)
-    assert bool(caught) is (not allowed)
-    if not allowed:
-        assert caught[0]["code"] == (
-            "content_source_unavailable" if source_access == "unverifiable" else "content_source_access_denied"
-        )
+    assert saved_text in selected[0].content
+    assert notice not in selected[0].content
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
         request_id = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent,
@@ -341,8 +323,8 @@ async def test_saved_derived_file_uses_the_same_source_reader_as_file_tools(
         await db.commit()
         result = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id))
         snapshot = json.dumps(result.model_request_snapshot_json)
-        assert (saved_text in snapshot.replace("\\n", "\n")) is allowed
+        assert saved_text in snapshot.replace("\\n", "\n")
         assert "also answer my other question" in snapshot
         notices = list(await db.scalars(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.run_id == n.run, ChatTranscriptEvent.item_kind == "assistant_commentary")))
-        assert any(notice in event.content for event in notices) is (not allowed)
+        assert all(notice not in event.content for event in notices)

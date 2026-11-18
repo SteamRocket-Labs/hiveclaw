@@ -492,8 +492,10 @@ async def test_delivered_copy_keeps_its_reader_boundary_without_replaying_deep_l
                     assert response.status_code == 403, response.text
                     assert response.json()["detail"] == "No access to this agent"
                 elif endpoint == "preview":
+                    # owner 11-18 decision A: the owner reaches the renderer even after a source changes.
                     assert response.status_code == 400, response.text
                 else:
+                    # owner 11-18 decision A: mutated upstream leaves do not withhold the private snapshot.
                     assert response.status_code == 200, response.text
                     assert (response.content if endpoint == "download" else response.json()["content"].encode()) == BODY.encode()
         finally:

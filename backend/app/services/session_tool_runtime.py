@@ -991,9 +991,10 @@ async def complete_tool_invocation(
         if paths:
             from app.core.resource_authority import normalize_workspace_resource_path
             from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_execution_evidence
-            from app.services.session_model_inputs import model_output_dependencies
+            from app.services.session_model_inputs import _model_dependencies, model_output_dependencies
 
-            _dependencies, complete = model_output_dependencies(result)
+            _, output_complete = model_output_dependencies(result)
+            permission_withheld = not output_complete and _model_dependencies(result)[1]
             try:
                 workspace_execution_ref, expected_content_hashes = await load_workspace_execution_evidence(
                     db,
@@ -1007,7 +1008,7 @@ async def complete_tool_invocation(
                 expected_content_hashes = {}
             verified_paths = []
             for path in paths:
-                if complete and normalize_workspace_resource_path(path) in expected_content_hashes:
+                if not permission_withheld and normalize_workspace_resource_path(path) in expected_content_hashes:
                     verified_paths.append(path)
                 else:
                     publication_errors.append(

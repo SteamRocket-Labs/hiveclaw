@@ -128,13 +128,29 @@ async def test_reopen_download_and_a2a_consume_distinct_same_stat_versions(deliv
 
 
 async def test_rejected_existing_snapshot_does_not_move_its_message(delivered, app_user_sessionmaker):
+    from app.core.resource_authority import workspace_resource_id
     from app.models.audit import ChatMessage
+    from app.models.security_audit import ResourcePermission
+    from app.models.user import User
+    from app.models.workspace_resource import WorkspaceResourceManifest
     from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
 
     d = delivered
     original_message_id = d.first.message_id
+    colleague = uuid.uuid4()
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, d.tenant)
+        db.add(User(id=colleague, tenant_id=d.tenant, username=colleague.hex,
+            email=f"{colleague.hex}@fixture.test", password_hash="fixture", display_name="Colleague", role="member"))
+        await db.flush()
+        # owner 11-18 decision A: rebinding a granted file still checks the existing snapshot's receipt.
+        path = "workspace/report.txt"
+        manifest = await db.scalar(select(WorkspaceResourceManifest).where(
+            WorkspaceResourceManifest.agent_id == d.agent, WorkspaceResourceManifest.path == path))
+        manifest.owner_user_id, manifest.root_session_id = colleague, None
+        db.add(ResourcePermission(tenant_id=d.tenant, principal_type="user", principal_id=d.user.id,
+            resource_type="workspace_file", resource_id=workspace_resource_id(d.agent, path),
+            actions=["read"], conditions={}))
         existing = await db.get(ChatArtifact, d.first.id)
         existing.snapshot_json = {key: value for key, value in existing.snapshot_json.items() if key != "content_input_receipt_id"}
         message = ChatMessage(tenant_id=d.tenant, agent_id=d.agent, user_id=d.user.id,

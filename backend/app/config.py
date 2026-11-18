@@ -76,7 +76,9 @@ class Settings(BaseSettings):
     # The extra short-lived connection persists upload intent before file effects.
     DB_POOL_SIZE: int = 20
     # PostgreSQL keeps prepared statements per server connection, so memory grows
-    # with pool size × cache size. Lower this value to roll back (0 disables caching).
+    # with (DB_POOL_SIZE + DB_MAX_OVERFLOW) × up to 1.5 × this value (SQLAlchemy
+    # trims its LRU only past 1.5×). 100 restores the previous behavior; 0 makes
+    # every statement prepare and close again (about three round trips each).
     DB_PREPARED_STATEMENT_CACHE_SIZE: int = 1024
     DB_MAX_OVERFLOW: int = 10
     DB_POOL_TIMEOUT: int = 30

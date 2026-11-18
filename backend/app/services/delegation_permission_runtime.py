@@ -110,7 +110,7 @@ async def validate_permission_input_sources(db, *, session, model, runtime_reque
     from app.core.source_read_purpose import source_recipient_read
     from app.services.runtime_user_identity import load_scoped_runtime_user
     from app.services.source_read_queries import transcript_event_columns
-    from app.tools.registry import tool_execution_policy
+    from app.tools.registry import OUTWARD_WORKSPACE_PATH_ARGUMENTS, needs_outward_source_check
 
     context = runtime_request.context
     tenant_id = uuid.UUID(str(context.tenant_id))
@@ -120,10 +120,20 @@ async def validate_permission_input_sources(db, *, session, model, runtime_reque
         raise ContentInputReceiptError('delegation_permission_sources_unavailable', 'Restore the committed tool input inventory.', 503)
     attachments = []
     prepared = None
-    if runtime_request.tool_name == "send_email" and runtime_request.arguments.get("attachments"):
+    tool_name = runtime_request.tool_name
+    path_argument = OUTWARD_WORKSPACE_PATH_ARGUMENTS.get(tool_name)
+    paths = runtime_request.arguments.get(path_argument) if path_argument else None
+    if paths:
         from app.services.email_service import _prepare_email_attachments
 
-        prepared = _prepare_email_attachments(context.workspace, runtime_request.arguments["attachments"],
+        if tool_name == "send_channel_file":
+            from app.services.agent_tools import _resolve_channel_file_path
+
+            target, _ = _resolve_channel_file_path(context.workspace, str(paths))
+            if target is None:
+                raise ContentInputReceiptError("content_source_access_denied", "This file cannot be attached.", 403)
+            paths = target.relative_to(context.workspace.resolve()).as_posix()
+        prepared = _prepare_email_attachments(context.workspace, paths if tool_name == "send_email" else [paths],
             authority_scope=context.workspace_authority_scope, permission_profile=context.permission_profile)
         if isinstance(prepared, str):
             raise ContentInputReceiptError("content_source_access_denied", "This file cannot be attached.", 403)
@@ -136,8 +146,8 @@ async def validate_permission_input_sources(db, *, session, model, runtime_reque
                 "source_version": receipt.content_sha256})
     if not dependencies and not attachments:
         return
-    member = tool_execution_policy(runtime_request.tool_name).external_visible and session is not None and context.user_id is not None and (
-        session.user_id == context.user_id and session.audience_kind != "group" or bool(attachments)
+    member = needs_outward_source_check(tool_name) and context.user_id is not None and (
+        bool(attachments) or (session is not None and session.user_id == context.user_id and session.audience_kind != "group")
     )
     with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as scope:
         scope.share_session_source_facts = member
@@ -150,7 +160,8 @@ async def validate_permission_input_sources(db, *, session, model, runtime_reque
             user = scope.browser_reader
             if user is None or user.id != context.user_id:
                 user = await load_scoped_runtime_user(db, context.user_id, tenant_id=tenant_id)
-            with source_recipient_read(session_id=session.id, user_id=context.user_id, require_workspace_receipts=True):
+            with source_recipient_read(session_id=session.id if session is not None else None,
+                user_id=context.user_id, require_workspace_receipts=True):
                 await _validate_input_dependencies(db, tenant_id, sources, user=user)
-    if prepared is not None:
+    if tool_name == "send_email" and prepared is not None:
         context.prepared_email_attachments = prepared

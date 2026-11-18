@@ -1003,7 +1003,7 @@ async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
 
 
 async def _execute_tool(state: _ToolExecutionState) -> Any:
-    from app.tools.registry import tool_execution_policy
+    from app.tools.registry import needs_outward_source_check, tool_execution_policy
 
     request, ports, service = state.request, state.ports, state.service
     policy = tool_execution_policy(request.tool_name)
@@ -1120,7 +1120,7 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
                 actionable_hint="Restore the schedule authority or revise its declared tool scope.",
                 extra={"outcome": "denied", "reason_code": reason},
             )
-    blocked = await _before_tool_effect(state, outward=policy.external_visible)
+    blocked = await _before_tool_effect(state, outward=needs_outward_source_check(request.tool_name, policy=policy))
     if blocked is not None:
         return blocked
     try:
@@ -1159,7 +1159,7 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
 async def _before_tool_effect(state: _ToolExecutionState, *, outward: bool) -> str | None:
     from app.services.execution_environments import current_command_frame
     from app.services.permission_command_environment import PermissionCommandBinding
-    from app.tools.registry import is_read_only_tool
+    from app.tools.registry import OUTWARD_WORKSPACE_PATH_ARGUMENTS, is_read_only_tool
 
     request, ports, context = state.request, state.ports, state.runtime_context
     payload = {
@@ -1176,9 +1176,8 @@ async def _before_tool_effect(state: _ToolExecutionState, *, outward: bool) -> s
     )
     # Keep the original executor authority check when resuming a delegated write.
     delegated_write = session_approval and context.authority_frame_required and not is_read_only_tool(request.tool_name)
-    outward_sources = outward and (
-        context.runtime_task_id or (request.tool_name == "send_email" and state.arguments.get("attachments"))
-    )
+    path_argument = OUTWARD_WORKSPACE_PATH_ARGUMENTS.get(request.tool_name)
+    outward_sources = outward and (context.runtime_task_id or (path_argument and state.arguments.get(path_argument)))
     if outward_sources or delegated_write:
         from app.database import tenant_scoped_session
         from app.services.content_input_receipts import ContentInputReceiptError

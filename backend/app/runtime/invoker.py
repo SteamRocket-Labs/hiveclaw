@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -38,6 +39,7 @@ from app.kernel import (
 )
 from app.kernel.contracts import (
     ContextDependencyUnavailable,
+    ExecutionAuthorityUnavailable,
     MidRunMessageDrain,
     ModelRequestFail,
     ModelRequestPrepare,
@@ -145,6 +147,7 @@ def _normalize_invocation_session_context(request: AgentInvocationRequest) -> No
 
 
 if TYPE_CHECKING:
+    from app.models.runtime_task import RuntimeTask
     from app.services.exact_secret_boundary import ExactSecretBoundary
 
 
@@ -677,24 +680,32 @@ async def _read_runtime_config(db, agent: Agent, *, tenant_active: bool | None =
     )
 
 
-async def resolve_private_web_turn(db, *, agent: Agent, requester: User) -> PrivateWebTurn:
+async def resolve_private_web_turn(db, *, task: RuntimeTask, agent: Agent, requester: User) -> PrivateWebTurn | None:
+    """Read the turn configuration after the run bootstrap commits."""
     from app.core.permissions import _agent_access_for_live_row, reject_non_executing_agent_access
 
     tenant_active = await db.scalar(select(Tenant.is_active).where(Tenant.id == agent.tenant_id))
-    authorized_agent, access = await _agent_access_for_live_row(db, requester, agent, tenant_active)
-    reject_non_executing_agent_access(access)
-    config = await _read_runtime_config(db, authorized_agent, tenant_active=tenant_active)
+    config = await _read_runtime_config(db, agent, tenant_active=tenant_active)
+    if config.tenant_resolution_error or config.executor_unavailable:
+        return None
+    try:
+        authorized_agent, access = await _agent_access_for_live_row(db, requester, agent, tenant_active)
+        reject_non_executing_agent_access(access)
+    except HTTPException as exc:
+        raise ExecutionAuthorityUnavailable(
+            code="agent_execute_denied", task=task, next_action="restore_authority_or_start_new_work",
+        ) from exc
     try:
         boundary = await _load_invocation_secret_boundary(
             db=db, tenant_id=agent.tenant_id, agent_id=agent.id, requester_user_id=requester.id,
         )
-    except Exception:
-        raise ContextDependencyUnavailable(
-            dependency="credential_authority",
-            code="credential_authority_unavailable",
-            user_message="Credential authority is temporarily unavailable; the agent turn was not started.",
-            retryable=True,
-        ) from None
+    except Exception as exc:
+        logger.warning("[Invoker] Private turn credential pre-load failed (%s)", type(exc).__name__)
+        # A failed SQL read can abort this transaction. Retain the committed
+        # bootstrap values and let invocation load the boundary in its own scope.
+        db.expunge_all()
+        await db.rollback()
+        return None
     tools = await load_agent_tool_configuration(db, authorized_agent)
     return PrivateWebTurn(authorized_agent, requester, config, boundary, tools)
 

@@ -6161,10 +6161,9 @@ async def _load_runtime_context(
         from app.services.native_trigger_frame import load_native_trigger_frame
 
         native_frame = await load_native_trigger_frame(db, task=runtime_task, session=session)
-        runtime_task._native_trigger_frame = native_frame
         from app.services.plan_mode_native_run import load_system_plan_mode
 
-        runtime_task._system_plan_mode = await load_system_plan_mode(db, task=runtime_task, session=session)
+        system_plan_mode = await load_system_plan_mode(db, task=runtime_task, session=session)
         if native_frame is not None and native_frame.model_id is not None:
             metadata = {**metadata, "runtime_model_id": str(native_frame.model_id)}
         try:
@@ -6194,7 +6193,7 @@ async def _load_runtime_context(
             and session.user_id == user.id
             and user.tenant_id == tenant_id
         ):
-            private_web_turn = await resolve_private_web_turn(db, agent=agent, requester=user)
+            private_web_turn = await resolve_private_web_turn(db, task=runtime_task, agent=agent, requester=user)
 
         metadata = dict(metadata)
         semantic_history = await load_session_semantic_history(
@@ -6276,6 +6275,8 @@ async def _load_runtime_context(
             key: value for key, value in metadata.items() if key not in stored_metadata or value != stored_metadata[key]
         }
         runtime_task.metadata_json = {**dict(runtime_task.metadata_json or {}), **updates}
+        runtime_task._native_trigger_frame = native_frame
+        runtime_task._system_plan_mode = system_plan_mode
         runtime_task._private_web_turn = private_web_turn
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 

@@ -17,10 +17,11 @@ import uuid
 from functools import partial
 
 from app.runtime.message_presentation import apply_vision_transform as _apply_vision_transform
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -38,6 +39,7 @@ from app.kernel import (
 )
 from app.kernel.contracts import (
     ContextDependencyUnavailable,
+    ExecutionAuthorityUnavailable,
     MidRunMessageDrain,
     ModelRequestFail,
     ModelRequestPrepare,
@@ -71,11 +73,13 @@ from app.services.agent_context import (
 from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 from app.services.agent_work_ledger import should_enable_work_ledger
 from app.services.agent_tools import (
+    AgentToolConfiguration,
     CORE_TOOL_NAMES,
     discoverable_tool_names_for_query,
     execute_tool,
     get_agent_tools_for_llm,
     get_combined_openai_tools,
+    load_agent_tool_configuration,
 )
 from app.services.feature_flags import is_enabled as is_feature_enabled
 from app.services.llm_client import LLMMessage, create_llm_client, get_max_tokens
@@ -142,6 +146,24 @@ def _normalize_invocation_session_context(request: AgentInvocationRequest) -> No
     ensure_session_key(request.session_context, key)
 
 
+if TYPE_CHECKING:
+    from app.models.runtime_task import RuntimeTask
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateWebTurn:
+    agent: Agent
+    requester: User
+    config: RuntimeConfig
+    credential_boundary: ExactSecretBoundary = field(repr=False)
+    tools: AgentToolConfiguration
+
+    @property
+    def requester_name(self) -> str | None:
+        return self.requester.display_name or self.requester.username
+
+
 @dataclass(slots=True)
 class AgentInvocationRequest:
     model: Any
@@ -199,6 +221,7 @@ class AgentInvocationRequest:
     # set this so long output is not truncated at the model's chat default; the
     # kernel feeds it into get_max_tokens (still clamped to the hard limit).
     max_output_tokens: int | None = None
+    private_web_turn: PrivateWebTurn | None = None
 
 
 @dataclass(slots=True)
@@ -579,73 +602,7 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
                     max_tool_rounds=200,
                     tenant_resolution_error=f"Agent {agent_id} not found",
                 )
-            # Tenant liveness is re-read here — the last trustworthy DB load
-            # before model/tool work — so a company deactivated by the no-body
-            # DELETE or the admin toggle cannot reach runtime even when the
-            # agent→tenant mapping was resolved from a cached value in an
-            # earlier worker. The in-memory lifecycle helper below cannot see
-            # Tenant state.
-            tenant_active = (
-                await db.execute(select(Tenant.is_active).where(Tenant.id == tenant_id))
-            ).scalar_one_or_none()
-            if tenant_active is not True:
-                logger.warning("[Invoker] Agent %s tenant %s is inactive — fail-closed", agent_id, tenant_id)
-                return RuntimeConfig(
-                    tenant_id=agent.tenant_id,
-                    max_tool_rounds=200,
-                    tenant_resolution_error=f"Agent {agent_id} is not executable: tenant is inactive",
-                )
-            lifecycle_reason = get_agent_lifecycle_block_reason(agent)
-            if lifecycle_reason:
-                logger.warning("[Invoker] Agent %s is not active (%s) — fail-closed", agent_id, lifecycle_reason)
-                if lifecycle_reason == "deactivated":
-                    # The one plain word the member sees for a deactivated
-                    # employee (G1), carried verbatim by the existing
-                    # executor field; tenant_resolution_error stays set so
-                    # every fail-closed consumer (evolution maintenance
-                    # included) still skips this employee.
-                    from app.core.permissions import DEACTIVATED_REFUSAL_DETAIL
-
-                    return RuntimeConfig(
-                        tenant_id=agent.tenant_id,
-                        max_tool_rounds=agent.max_tool_rounds or 200,
-                        tenant_resolution_error=f"Agent {agent_id} is not active: {lifecycle_reason}",
-                        executor_unavailable=DEACTIVATED_REFUSAL_DETAIL,
-                    )
-                return RuntimeConfig(
-                    tenant_id=agent.tenant_id,
-                    max_tool_rounds=agent.max_tool_rounds or 200,
-                    tenant_resolution_error=f"Agent {agent_id} is not active: {lifecycle_reason}",
-                )
-            if getattr(agent, "agent_type", None) == "remote_a2a":
-                return RuntimeConfig(
-                    tenant_id=agent.tenant_id,
-                    max_tool_rounds=agent.max_tool_rounds or 200,
-                    executor_unavailable="remote_a2a_runtime_selected: use remote employee delegation or restore the previous executor",
-                )
-
-            # Token quota enforcement is now at User level (quota_guard.check_user_llm_quota)
-            quota_message = None
-            local_default = bool(get_settings().DEBUG)
-
-            async def _resolve_flag(flag_key: str) -> bool:
-                flag_result = await db.execute(select(FeatureFlag).where(FeatureFlag.key == flag_key))
-                flag = flag_result.scalar_one_or_none()
-                if flag is None:
-                    return _RUNTIME_FLAG_DEFAULTS.get(flag_key, local_default)
-                return await is_feature_enabled(db, flag_key, tenant_id=agent.tenant_id)
-
-            runtime_continuity_enabled = await _resolve_flag("runtime_continuity_v1")
-            skill_candidate_loop_enabled = await _resolve_flag("skill_candidate_loop_v1")
-            return RuntimeConfig(
-                tenant_id=agent.tenant_id,
-                max_tool_rounds=agent.max_tool_rounds or 200,
-                quota_message=quota_message,
-                turn_token_budget=_derive_turn_token_budget(agent.max_tool_rounds or 200),
-                execution_mode=getattr(agent, "execution_mode", None),
-                runtime_continuity_enabled=runtime_continuity_enabled,
-                skill_candidate_loop_enabled=skill_candidate_loop_enabled,
-            )
+            return await _read_runtime_config(db, agent)
     except Exception as exc:
         # Log full exception detail server-side for ops; surface only the
         # exception class to the LLM/UI to avoid leaking SQL state, table
@@ -657,6 +614,100 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
             max_tool_rounds=200,
             tenant_resolution_error=f"Runtime config resolution failed for agent {agent_id} ({type(exc).__name__})",
         )
+
+
+async def _read_runtime_config(db, agent: Agent, *, tenant_active: bool | None = None) -> RuntimeConfig:
+    agent_id, tenant_id = agent.id, agent.tenant_id
+    if tenant_active is None:
+        tenant_active = (await db.execute(select(Tenant.is_active).where(Tenant.id == tenant_id))).scalar_one_or_none()
+    if tenant_active is not True:
+        logger.warning("[Invoker] Agent %s tenant %s is inactive — fail-closed", agent_id, tenant_id)
+        return RuntimeConfig(
+            tenant_id=agent.tenant_id,
+            max_tool_rounds=200,
+            tenant_resolution_error=f"Agent {agent_id} is not executable: tenant is inactive",
+        )
+    lifecycle_reason = get_agent_lifecycle_block_reason(agent)
+    if lifecycle_reason:
+        logger.warning("[Invoker] Agent %s is not active (%s) — fail-closed", agent_id, lifecycle_reason)
+        if lifecycle_reason == "deactivated":
+            # The one plain word the member sees for a deactivated
+            # employee (G1), carried verbatim by the existing
+            # executor field; tenant_resolution_error stays set so
+            # every fail-closed consumer (evolution maintenance
+            # included) still skips this employee.
+            from app.core.permissions import DEACTIVATED_REFUSAL_DETAIL
+
+            return RuntimeConfig(
+                tenant_id=agent.tenant_id,
+                max_tool_rounds=agent.max_tool_rounds or 200,
+                tenant_resolution_error=f"Agent {agent_id} is not active: {lifecycle_reason}",
+                executor_unavailable=DEACTIVATED_REFUSAL_DETAIL,
+            )
+        return RuntimeConfig(
+            tenant_id=agent.tenant_id,
+            max_tool_rounds=agent.max_tool_rounds or 200,
+            tenant_resolution_error=f"Agent {agent_id} is not active: {lifecycle_reason}",
+        )
+    if getattr(agent, "agent_type", None) == "remote_a2a":
+        return RuntimeConfig(
+            tenant_id=agent.tenant_id,
+            max_tool_rounds=agent.max_tool_rounds or 200,
+            executor_unavailable="remote_a2a_runtime_selected: use remote employee delegation or restore the previous executor",
+        )
+
+    # Token quota enforcement is now at User level (quota_guard.check_user_llm_quota)
+    quota_message = None
+    local_default = bool(get_settings().DEBUG)
+
+    async def _resolve_flag(flag_key: str) -> bool:
+        flag_result = await db.execute(select(FeatureFlag).where(FeatureFlag.key == flag_key))
+        flag = flag_result.scalar_one_or_none()
+        if flag is None:
+            return _RUNTIME_FLAG_DEFAULTS.get(flag_key, local_default)
+        return await is_feature_enabled(db, flag_key, tenant_id=agent.tenant_id)
+
+    runtime_continuity_enabled = await _resolve_flag("runtime_continuity_v1")
+    skill_candidate_loop_enabled = await _resolve_flag("skill_candidate_loop_v1")
+    return RuntimeConfig(
+        tenant_id=agent.tenant_id,
+        max_tool_rounds=agent.max_tool_rounds or 200,
+        quota_message=quota_message,
+        turn_token_budget=_derive_turn_token_budget(agent.max_tool_rounds or 200),
+        execution_mode=getattr(agent, "execution_mode", None),
+        runtime_continuity_enabled=runtime_continuity_enabled,
+        skill_candidate_loop_enabled=skill_candidate_loop_enabled,
+    )
+
+
+async def resolve_private_web_turn(db, *, task: RuntimeTask, agent: Agent, requester: User) -> PrivateWebTurn | None:
+    """Read the turn configuration after the run bootstrap commits."""
+    from app.core.permissions import _agent_access_for_live_row, reject_non_executing_agent_access
+
+    tenant_active = await db.scalar(select(Tenant.is_active).where(Tenant.id == agent.tenant_id))
+    config = await _read_runtime_config(db, agent, tenant_active=tenant_active)
+    if config.tenant_resolution_error or config.executor_unavailable:
+        return None
+    try:
+        authorized_agent, access = await _agent_access_for_live_row(db, requester, agent, tenant_active)
+        reject_non_executing_agent_access(access)
+    except HTTPException as exc:
+        raise ExecutionAuthorityUnavailable(
+            code="agent_execute_denied", task=task, next_action="restore_authority_or_start_new_work",
+        ) from exc
+    try:
+        boundary = await _load_invocation_secret_boundary(
+            db=db, tenant_id=agent.tenant_id, agent_id=agent.id, requester_user_id=requester.id,
+        )
+    except Exception as exc:
+        logger.warning("[Invoker] Private turn credential pre-load failed (%s)", type(exc).__name__)
+        # A failed SQL read can abort this transaction. Retain the committed
+        # bootstrap values and let invocation load the boundary in its own scope.
+        db.expunge_all()
+        await db.rollback()
+        return None
+    tools = await load_agent_tool_configuration(db, authorized_agent)
+    return PrivateWebTurn(authorized_agent, requester, config, boundary, tools)
 
 
 async def _resolve_current_user_name(user_id: uuid.UUID | None, tenant_id: uuid.UUID | None = None) -> str | None:
@@ -797,6 +848,8 @@ def _resolve_context_budget(request: AgentInvocationRequest) -> ContextBudget:
 async def _resolve_memory_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
+    *,
+    private_web_turn: PrivateWebTurn | None = None,
 ) -> str:
     # ALWAYS load memory context — even when prompt_prefix is cached.
     # The engine injects memory as a dynamic suffix outside the frozen prefix,
@@ -822,7 +875,10 @@ async def _resolve_memory_context(
         _memory_sig = inspect.signature(build_memory_context).parameters
         current_user_name = None
         if request.user_id and ("current_user_id" in _memory_sig or "current_user_name" in _memory_sig):
-            current_user_name = await _resolve_current_user_name(request.user_id, tenant_id)
+            current_user_name = (
+                private_web_turn.requester_name if private_web_turn else
+                await _resolve_current_user_name(request.user_id, tenant_id)
+            )
         if "current_user_id" in _memory_sig:
             _memory_kwargs["current_user_id"] = request.user_id
         if "current_user_name" in _memory_sig:
@@ -1032,6 +1088,8 @@ async def _consume_memory_context_status(
 async def _resolve_runtime_metadata_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
+    *,
+    private_web_turn: PrivateWebTurn | None = None,
 ) -> str:
     if (request.standalone_system_prompt or "").strip():
         return ""  # CC subagent semantics: no host runtime metadata
@@ -1039,7 +1097,10 @@ async def _resolve_runtime_metadata_context(
         return ""
 
     budget_profile = _resolve_context_budget(request)
-    current_user_name = await _resolve_current_user_name(request.user_id, tenant_id) if request.user_id else None
+    current_user_name = (
+        private_web_turn.requester_name if private_web_turn else
+        await _resolve_current_user_name(request.user_id, tenant_id) if request.user_id else None
+    )
     metadata = _session_metadata(request.session_context)
     _runtime_kwargs = {"current_user_name": current_user_name}
     _runtime_sig = inspect.signature(build_agent_runtime_context).parameters
@@ -1553,16 +1614,27 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         )
         return prompt
 
+    private_web_turn = request.private_web_turn if request else None
+
+    async def resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
+        if private_web_turn is not None and agent_id == private_web_turn.agent.id:
+            return private_web_turn.config
+        return await _resolve_runtime_config(agent_id)
+
     async def _kernel_resolve_memory_context(
         request: InvocationRequest,
         tenant_id: uuid.UUID | None,
     ) -> str:
+        if private_web_turn is not None:
+            return await _resolve_memory_context(request, tenant_id, private_web_turn=private_web_turn)
         return await _resolve_memory_context(request, tenant_id)  # type: ignore[arg-type]
 
     async def _kernel_resolve_runtime_metadata_context(
         request: InvocationRequest,
         tenant_id: uuid.UUID | None,
     ) -> str:
+        if private_web_turn is not None:
+            return await _resolve_runtime_metadata_context(request, tenant_id, private_web_turn=private_web_turn)
         return await _resolve_runtime_metadata_context(request, tenant_id)  # type: ignore[arg-type]
 
     async def _kernel_resolve_retrieval_context(
@@ -1598,6 +1670,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
                 agent_id,
                 core_only=core_only,
                 requested_names=_requested_names or None,
+                **({"configuration": private_web_turn.tools} if private_web_turn is not None else {}),
             )
         )
         if allowed_tool_names:
@@ -1657,8 +1730,8 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
 
     return AgentKernel(
         KernelDependencies(
-            resolve_runtime_config=_resolve_runtime_config,
-            resolve_current_user_name=_resolve_current_user_name,
+            resolve_runtime_config=resolve_runtime_config,
+            resolve_current_user_name=(lambda _user_id: private_web_turn.requester_name) if private_web_turn else _resolve_current_user_name,
             build_system_prompt=_kernel_build_system_prompt,
             resolve_memory_context=_kernel_resolve_memory_context,
             resolve_runtime_metadata_context=_kernel_resolve_runtime_metadata_context,
@@ -1864,7 +1937,8 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
     if request.user_id is not None and request.tenant_id is not None:
         try:
             async with tenant_scoped_session(request.tenant_id) as db:
-                user = await db.get(User, request.user_id, populate_existing=True)
+                user = (request.private_web_turn.requester if request.private_web_turn else
+                        await db.get(User, request.user_id, populate_existing=True))
                 if user is not None and user.is_active:
                     identity = request.execution_identity or get_execution_identity()
                     autonomous = getattr(identity, "identity_type", None) == "agent_bot"
@@ -1934,6 +2008,21 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
     """Delegate to the single run_agent_invocation lifecycle owner."""
     from app.runtime.invocation_orchestrator import InvocationPorts, run_agent_invocation
 
+    private_web_turn = request.private_web_turn
+
+    async def load_secret_boundary(**scope):
+        if private_web_turn is not None and (
+            scope.get("tenant_id"), scope.get("agent_id"), scope.get("requester_user_id")
+        ) == (private_web_turn.agent.tenant_id, private_web_turn.agent.id, private_web_turn.requester.id):
+            return private_web_turn.credential_boundary
+        return await _load_invocation_secret_boundary(**scope)
+
+    async def resolve_smart_routing(agent_id: uuid.UUID | None) -> dict[str, Any] | None:
+        if private_web_turn is not None and agent_id == private_web_turn.agent.id:
+            routing = private_web_turn.agent.smart_model_routing
+            return routing if isinstance(routing, dict) else None
+        return await _resolve_agent_smart_model_routing(agent_id)
+
     return await run_agent_invocation(
         request=request,
         ports=InvocationPorts(
@@ -1947,7 +2036,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             latest_user_prompt=_latest_user_prompt,
             maybe_await=_maybe_await,
             normalize_session_context=_normalize_invocation_session_context,
-            resolve_smart_routing=_resolve_agent_smart_model_routing,
+            resolve_smart_routing=resolve_smart_routing,
             resolve_context_budget=_resolve_context_budget,
             resolve_turn_route=_resolve_effective_turn_route,
             resolve_eviction_dir=_resolve_eviction_dir,
@@ -1955,7 +2044,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             skill_ranking_inputs=_skill_catalog_ranking_inputs,
             build_skill_catalog=lambda agent_id, **kwargs: _build_native_skill_catalog(request, agent_id, **kwargs),
             combined_tools=get_combined_openai_tools,
-            load_secret_boundary=_load_invocation_secret_boundary,
+            load_secret_boundary=load_secret_boundary,
             record_skill_usage=record_skill_runtime_usage_for_invocation,
             logger=logger,
         ),
@@ -1968,9 +2057,14 @@ async def _load_invocation_secret_boundary(
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     requester_user_id: uuid.UUID | None = None,
+    db=None,
 ):
     from app.services.credential_boundary_loader import load_requester_exact_secret_boundary
 
+    if db is not None:
+        return await load_requester_exact_secret_boundary(
+            db, tenant_id=tenant_id, agent_id=agent_id, requester_user_id=requester_user_id,
+        )
     async with tenant_scoped_session(
         tenant_id,
         session_factory=async_session,

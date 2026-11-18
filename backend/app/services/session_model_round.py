@@ -1702,6 +1702,7 @@ async def commit_sealed_model_round(
     ]
     obligations = await persist_round_obligations(db, result=result, specs=specs)
     response_ref = str(result.seal_json["provider_response_ref"])
+    drafts: list[SessionEventDraft] = []
     if int(continuation_index) == 0:
         await mark_bound_inputs_applied(
             db,
@@ -1711,6 +1712,7 @@ async def commit_sealed_model_round(
             run_id=run_id,
             round_id=round_id,
             provider_response_ref=response_ref,
+            event_drafts=drafts,
         )
     carries = list(
         (
@@ -1726,9 +1728,9 @@ async def commit_sealed_model_round(
             )
         ).scalars()
     )
-    carry_drafts: list[SessionEventDraft] = []
+    carry_start = len(drafts)
     for carry in carries:
-        carry_drafts.append(
+        drafts.append(
             SessionEventDraft(
                 item_id=carry.context_source_item_id,
                 item_kind="carry_forward",
@@ -1742,44 +1744,37 @@ async def commit_sealed_model_round(
                 },
             )
         )
-    if carry_drafts:
-        carry_events = await append_session_events(
-            db,
-            tenant_id=tenant_id,
-            agent_id=agent_id,
-            session_id=session_id,
-            drafts=carry_drafts,
+    drafts.append(
+        SessionEventDraft(
+            item_id=result.id,
+            item_kind="result_commit",
+            lifecycle="round_committed",
+            scope=_scope(session_id, turn_id, run_id, round_id),
+            actor={"type": "runtime"},
+            payload={
+                "provider_request_id": provider_request_id,
+                "provider_response_ref": response_ref,
+                "obligation_ids": [str(row.id) for row in obligations],
+                "continuation_verdict": (result.seal_json.get("continuation") or {}).get("verdict"),
+            },
+            result_id=result.id,
         )
-        for carry, event in zip(carries, carry_events, strict=True):
-            carry.state = "consumed"
-            carry.consumed_event_id = event.id
-            carry.claim_owner = None
-            carry.claim_lease_expires_at = None
-            carry.version = int(carry.version) + 1
-    committed = await append_session_events(
+    )
+    events = await append_session_events(
         db,
         tenant_id=tenant_id,
         agent_id=agent_id,
         session_id=session_id,
-        drafts=[
-            SessionEventDraft(
-                item_id=result.id,
-                item_kind="result_commit",
-                lifecycle="round_committed",
-                scope=_scope(session_id, turn_id, run_id, round_id),
-                actor={"type": "runtime"},
-                payload={
-                    "provider_request_id": provider_request_id,
-                    "provider_response_ref": response_ref,
-                    "obligation_ids": [str(row.id) for row in obligations],
-                    "continuation_verdict": (result.seal_json.get("continuation") or {}).get("verdict"),
-                },
-                result_id=result.id,
-            )
-        ],
+        drafts=drafts,
     )
+    for carry, event in zip(carries, events[carry_start:-1], strict=True):
+        carry.state = "consumed"
+        carry.consumed_event_id = event.id
+        carry.claim_owner = None
+        carry.claim_lease_expires_at = None
+        carry.version = int(carry.version) + 1
     result.state = "round_committed"
-    result.round_committed_event_id = committed[0].id
+    result.round_committed_event_id = events[-1].id
     result.version = int(result.version) + 1
     return dict(result.seal_json or {})
 

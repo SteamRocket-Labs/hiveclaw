@@ -95,12 +95,26 @@ async def lock_transcript_session(db: AsyncSession, *, session_id: uuid.UUID) ->
     dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
     if dialect_name == "postgresql":
         lock_key = int.from_bytes(session_id.bytes[:8], byteorder="big", signed=True)
+        # The lock survives every statement in the top-level transaction.
+        # A savepoint rollback can release locks acquired inside that savepoint.
+        track = isinstance(db, AsyncSession) and not db.in_nested_transaction()
+        if track:
+            transaction = db.sync_session.get_transaction()
+            locked_tx, locked_keys = db.info.get("transcript_advisories", (None, set()))
+            if transaction is locked_tx and lock_key in locked_keys:
+                return
         # The advisory lock is the first mutation authority for a session.  A
         # caller may already hold dirty RuntimeTask state (for example web-run
         # admission or recovery quarantine); flushing it before this lock would
         # invert the global advisory -> row-lock order and can deadlock.
         with db.no_autoflush:
             await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
+        if track:
+            transaction = db.sync_session.get_transaction()
+            if transaction is not locked_tx:
+                locked_keys = set()
+                db.info["transcript_advisories"] = (transaction, locked_keys)
+            locked_keys.add(lock_key)
 
 
 def _coerce_session_ids(session_ids: Iterable[uuid.UUID | str | None]) -> list[uuid.UUID]:

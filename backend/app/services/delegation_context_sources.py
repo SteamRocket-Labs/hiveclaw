@@ -58,7 +58,10 @@ async def bind_private_session_permission_source(db, *, task, session, invocatio
     from fastapi import HTTPException
     from app.models.session_v2 import SessionCommand, SessionTurnInput
     from app.services.runtime_task_fence import assert_runtime_task_fence
-    from app.services.session_v2_persistence import resolve_session_command_authority
+    from app.services.session_v2_persistence import (
+        SESSION_COMMAND_AUTHORITY_STAMP_KEY,
+        resolve_session_command_authority,
+    )
 
     metadata = invocation.session_context.metadata
     metadata.pop("_session_permission_context_source", None)
@@ -96,11 +99,20 @@ async def bind_private_session_permission_source(db, *, task, session, invocatio
             or command.target_hash != _hash(command.target_json)
         ):
             return
-        authority = await resolve_session_command_authority(
-            db, command=command, session=session, action="mutate_session_input"
+        turn = getattr(invocation, "private_web_turn", None)
+        already_authorized = (
+            turn is not None
+            and turn.agent.id == session.agent_id
+            and command.principal_type == "user"
+            and command.principal_id == turn.requester.id == task.root_user_id
+            and SESSION_COMMAND_AUTHORITY_STAMP_KEY not in (command.target_json or {})
         )
-        if authority.actor.id != task.root_user_id:
-            return
+        if not already_authorized:
+            authority = await resolve_session_command_authority(
+                db, command=command, session=session, action="mutate_session_input"
+            )
+            if authority.actor.id != task.root_user_id:
+                return
     except (AttributeError, KeyError, ValueError, PermissionError, HTTPException):
         return
     frame = dict((command.target_json or {}).get("runtime_metadata") or {})

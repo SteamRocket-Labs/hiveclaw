@@ -501,10 +501,7 @@ def reset_current_tenant(token: Token[str | None]) -> None:
     _current_tenant_id.reset(token)
 
 
-async def pin_rls_tenant_context(session: AsyncSession, tenant_id: str | uuid.UUID | None) -> uuid.UUID | None:
-    """Pin the current transaction and future transactions on this ORM session to a tenant."""
-    pinned_tenant_id = _set_rls_tenant_context(session, tenant_id)
-    _current_tenant_id.set(pinned_tenant_id or None)
+async def _apply_rls_pin(session: AsyncSession, value: str) -> None:
     missing = object()
     previous = session.sync_session.info.get(_RLS_PIN_OBSERVATION_INFO_KEY, missing)
     observation = []
@@ -512,13 +509,20 @@ async def pin_rls_tenant_context(session: AsyncSession, tenant_id: str | uuid.UU
     try:
         # Checkout applies the frame through after_begin only for a new transaction.
         await session.connection()
-        if observation != [pinned_tenant_id]:
-            await session.execute(text(_rls_tenant_statement(pinned_tenant_id)))
+        if observation != [value]:
+            await session.execute(text(_rls_tenant_statement(value)))
     finally:
         if previous is missing:
             session.sync_session.info.pop(_RLS_PIN_OBSERVATION_INFO_KEY, None)
         else:
             session.sync_session.info[_RLS_PIN_OBSERVATION_INFO_KEY] = previous
+
+
+async def pin_rls_tenant_context(session: AsyncSession, tenant_id: str | uuid.UUID | None) -> uuid.UUID | None:
+    """Pin the current transaction and future transactions on this ORM session to a tenant."""
+    pinned_tenant_id = _set_rls_tenant_context(session, tenant_id)
+    _current_tenant_id.set(pinned_tenant_id or None)
+    await _apply_rls_pin(session, pinned_tenant_id)
     return uuid.UUID(pinned_tenant_id) if pinned_tenant_id else None
 
 
@@ -655,7 +659,10 @@ async def enter_rls_bypass(
 
     bypass_guc_set = False
     try:
-        await session.execute(text(_rls_tenant_statement(_RLS_BYPASS_VALUE)))
+        if isinstance(session, AsyncSession):
+            await _apply_rls_pin(session, _RLS_BYPASS_VALUE)
+        else:
+            await session.execute(text(_rls_tenant_statement(_RLS_BYPASS_VALUE)))
         bypass_guc_set = True
         yield session
     finally:
@@ -700,7 +707,14 @@ async def enter_rls_bypass(
                         logger.error("[RLS] Invalid tenant id %r after BYPASS; failing closed to ''", tenant_value)
                         restored = ""
                 restore_session_info()
-                await session.execute(text(_rls_tenant_statement(restored)))
+                if isinstance(session, AsyncSession) and not session.in_transaction():
+                    # COMMIT already cleared SET LOCAL. Re-pin at the first
+                    # statement of the next transaction, if there is one.
+                    if not had_previous_session_info:
+                        had_previous_session_info = True
+                        previous_session_info = restored
+                else:
+                    await session.execute(text(_rls_tenant_statement(restored)))
         except Exception as exc:  # noqa: BLE001 - never mask the body's exception from finally
             logger.error("[RLS] Failed to restore tenant scope after BYPASS: %s", exc)
         finally:

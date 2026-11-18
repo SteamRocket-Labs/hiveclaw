@@ -26,8 +26,8 @@ from tests.integration.test_web_chat_worker_restart_kernel_recovery import (
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 # The observed cost in each segment plus ten percent, rounded up.
 CEILINGS = {
-    "warm": ((112, 10), (148, 26), (17, 3)),
-    "second": ((107, 10), (157, 26), (17, 3)),
+    "warm": ((114, 10), (150, 26), (17, 3)),
+    "second": ((109, 10), (159, 26), (17, 3)),
 }
 
 

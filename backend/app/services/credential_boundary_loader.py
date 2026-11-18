@@ -122,29 +122,57 @@ async def load_exact_secret_boundary(
             )
         )
 
-    tool_query = (
-        select(Tool, TenantToolConfig.config)
-        .outerjoin(
-            TenantToolConfig,
-            (TenantToolConfig.tenant_id == tenant_id)
-            & (TenantToolConfig.tool_id == Tool.id)
-            & TenantToolConfig.enabled.is_(True),
+    tools = (
+        (
+            await db.execute(
+                select(Tool).where(
+                    Tool.enabled.is_(True),
+                    or_(Tool.tenant_id.is_(None), Tool.tenant_id == tenant_id),
+                )
+            )
         )
-        .where(Tool.enabled.is_(True), or_(Tool.tenant_id.is_(None), Tool.tenant_id == tenant_id))
+        .scalars()
+        .all()
     )
-    if agent_id is not None:
-        tool_query = tool_query.add_columns(AgentTool.config).outerjoin(
-            AgentTool,
-            (AgentTool.tenant_id == tenant_id)
-            & (AgentTool.agent_id == agent_id)
-            & (AgentTool.tool_id == Tool.id)
-            & AgentTool.enabled.is_(True),
+    tool_ids = [tool.id for tool in tools]
+    tenant_overrides: dict[uuid.UUID, dict] = {}
+    agent_overrides: dict[uuid.UUID, dict] = {}
+    if tool_ids:
+        tenant_rows = (
+            (
+                await db.execute(
+                    select(TenantToolConfig).where(
+                        TenantToolConfig.tenant_id == tenant_id,
+                        TenantToolConfig.tool_id.in_(tool_ids),
+                        TenantToolConfig.enabled.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
         )
-    for tool, tenant_config, *agent_config in (await db.execute(tool_query)).all():
+        tenant_overrides = {row.tool_id: dict(row.config or {}) for row in tenant_rows}
+        if agent_id is not None:
+            agent_rows = (
+                (
+                    await db.execute(
+                        select(AgentTool).where(
+                            AgentTool.tenant_id == tenant_id,
+                            AgentTool.agent_id == agent_id,
+                            AgentTool.tool_id.in_(tool_ids),
+                            AgentTool.enabled.is_(True),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            agent_overrides = {row.tool_id: dict(row.config or {}) for row in agent_rows}
+
+    for tool in tools:
         merged = dict(tool.config or {})
-        merged.update(tenant_config or {})
-        if agent_config and agent_config[0]:
-            merged.update(agent_config[0])
+        merged.update(tenant_overrides.get(tool.id, {}))
+        merged.update(agent_overrides.get(tool.id, {}))
         runtime_config = decrypt_tool_config_secrets(merged, tool.config_schema)
         _collect_tool_secret_pairs(
             runtime_config,

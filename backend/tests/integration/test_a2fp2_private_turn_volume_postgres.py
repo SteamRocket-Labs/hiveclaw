@@ -18,10 +18,13 @@ from sqlalchemy.engine import Engine
 
 from app.core import request_timing
 from app.models.agent import Agent
+from app.models.config_revision import ConfigRevision
 from app.models.knowledge import KnowledgeDocument
 from app.models.skill import Skill
 from app.runtime import hooks, invocation_orchestrator, invoker
 from app.services import agent_tools
+from app.services.config_versioning import canonical_content_hash
+from app.services.learned_skill_sources import CANDIDATE_ENTITY, CANDIDATE_SCHEMA, _candidate_entity
 from tests.integration import conftest as pg_fixtures
 from tests.integration.test_a2fp1_private_turn_budget_postgres import (
     HelloTransport,
@@ -37,6 +40,7 @@ from tests.integration.test_sp3b_run_timing_postgres import summaries
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 SEGMENTS = ("send", "pre", "post")
+RETAINED_CANDIDATES = 200
 LAB_ROWS = {
     "agents": 69,
     "chat_sessions": 26774,
@@ -49,8 +53,8 @@ LAB_ROWS = {
     "skills": 9,
 }
 CEILINGS = {
-    "warm": ((134, 13), (212, 36), (125, 14)),
-    "second": ((129, 13), (218, 36), (125, 14)),
+    "warm": ((134, 13), (209, 36), (125, 14)),
+    "second": ((129, 13), (216, 36), (125, 14)),
 }
 _METER_CONTEXT = ContextVar("volume_meter_context", default=None)
 
@@ -184,6 +188,24 @@ async def seed_history(owner, seed):
         """), {**params, "document": doc.id})
         for i in range(9):
             db.add(Skill(tenant_id=seed.tenant_id, name=f"Volume reference {i}", folder_name=f"volume-reference-{i}"))
+        origins = (await db.execute(text("""
+            SELECT id, parent_session_id FROM runtime_tasks
+            WHERE tenant_id = :tenant AND child_agent_id = :agent AND task_type = 'heartbeat' AND status = 'completed'
+            ORDER BY id LIMIT :count
+        """), {**params, "count": RETAINED_CANDIDATES})).all()
+        assert len(origins) == RETAINED_CANDIDATES
+        for i, (run_id, session_id) in enumerate(origins, start=1):
+            # A retained candidate with lost source dependencies remains unavailable as a skill.
+            candidate_id = str(i)
+            content = {"schema": CANDIDATE_SCHEMA, "agent_id": str(seed.agent_id), "candidate_id": candidate_id,
+                "origin_kind": "distillation", "authority": {"source_session_id": session_id,
+                    "owner_user_id": str(seed.user_id)}, "source_principal": {"runtime_task_id": str(run_id),
+                    "session_id": session_id, "agent_id": str(seed.agent_id), "requester_user_id": str(seed.user_id)},
+                "dependencies": []}
+            db.add(ConfigRevision(tenant_id=seed.tenant_id, entity_type=CANDIDATE_ENTITY, version=1,
+                entity_id=_candidate_entity(seed.agent_id, candidate_id), content=content,
+                content_hash=canonical_content_hash(content), change_source="evolve",
+                changed_by_user_id=seed.user_id, changed_by_agent_id=seed.agent_id))
         await db.commit()
     async with owner() as db:
         for table, expected in LAB_ROWS.items():
@@ -198,7 +220,7 @@ def seed_files(root):
     layouts = (
         ("runtime_artifacts/traces/{}.jsonl", 3541, 60_000_000),
         ("workspace/retained/report-{}.md", 159, 174_000_000),
-        ("evolution/skill_candidates/{}/review.md", 200, 4_300_000),
+        ("evolution/skill_candidates/{}/review.md", RETAINED_CANDIDATES, 4_300_000),
         ("skills/references/volume-{}.md", 48, 280_000),
     )
     paths = []

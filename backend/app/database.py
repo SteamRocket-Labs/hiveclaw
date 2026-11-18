@@ -229,8 +229,8 @@ def _engine_pool_kwargs(settings) -> dict[str, Any]:
     }
 
 
-def _engine_connect_args(settings) -> dict[str, dict[str, str]]:
-    """Build asyncpg startup settings that a non-superuser may set itself.
+def _engine_connect_args(settings) -> dict[str, int | dict[str, str]]:
+    """Build asyncpg connect arguments and non-superuser startup settings.
 
     ``temp_file_limit`` and ``log_temp_files`` are privileged PostgreSQL
     parameters. They are intentionally installed as ``app_rls`` role defaults
@@ -241,6 +241,7 @@ def _engine_connect_args(settings) -> dict[str, dict[str, str]]:
 
     process_role = str(getattr(settings, "HIVE_PROCESS_ROLE", "runtime") or "runtime").strip().lower()
     return {
+        "prepared_statement_cache_size": settings.DB_PREPARED_STATEMENT_CACHE_SIZE,
         "server_settings": {
             "application_name": f"hive-{process_role}",
             "jit": "off",

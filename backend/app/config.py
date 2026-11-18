@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # and reserve workers × (DB_POOL_SIZE + DB_MAX_OVERFLOW + 1) connections.
     # The extra short-lived connection persists upload intent before file effects.
     DB_POOL_SIZE: int = 20
+    # PostgreSQL keeps prepared statements per server connection, so memory grows
+    # with pool size × cache size. Lower this value to roll back (0 disables caching).
+    DB_PREPARED_STATEMENT_CACHE_SIZE: int = 1024
     DB_MAX_OVERFLOW: int = 10
     DB_POOL_TIMEOUT: int = 30
     # Per-connection query guards. The two USERSET timeouts are also sent in

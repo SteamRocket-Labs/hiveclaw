@@ -1067,7 +1067,12 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land44 (SP4a) versus land44 RL1: 808 entries and 123 callsites unchanged;
 # only the module source hash of session_model_round changes (private rounds
 # withhold and order without replaying sources). No new key or bypass scope.
-RLS_BYPASS_SCOPES_SHA256 = "adebd253520474b7470d7a90a8fd8f3dd2db94b87babc00bafe24f0920bf7a4d"
+# Land45 (SP5a + HB1) versus land44: 123 callsites unchanged, 809 entries.
+# SP5a changes only the database.py module source hash. HB1 changes heartbeat.py:
+# _heartbeat_tick now calls _load_heartbeat_failure_streaks, one read of
+# runtime_tasks inside the existing heartbeat tick bypass (heartbeat.py:1541).
+# No new bypass scope or write.
+RLS_BYPASS_SCOPES_SHA256 = "bb69b3f277b0ba610b63661da357bdbc9044d1971f7c226e362997cb1749afff"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

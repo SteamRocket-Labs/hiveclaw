@@ -908,7 +908,7 @@ function receiveLiveMessage(data: any) {
 function activeRunEvent(sequence: number, kind: string, lifecycle: string, runId: string | null,
   payload: Record<string, unknown> = {}, itemId = `${kind}-${sequence}`) {
   const sessionId = 'owned-artifact-work';
-  const round = kind.startsWith('assistant_');
+  const round = kind.startsWith('assistant_') || kind === 'tool_call' || kind === 'tool_result';
   const timestamp = new Date(Date.UTC(2026, 10, 10, 0, 0, sequence)).toISOString();
   return {
     schema: 'hive.session_event', schema_version: 2, event_id: `active-run-event-${sequence}`, sequence,
@@ -983,6 +983,76 @@ it('R16a.3 round2 adopts the 201 run and its later terminal after a pending send
   await receiveRunEvents(nextEvents, [...history, ...nextEvents]);
   expectMemberRunState('失败');
   expect(disclosureStates().at(-1)).toBe('failed');
+});
+
+it.each(['completed', 'failed', 'cancelled'] as const)('X9a.3 keeps Stop after stream done until the run is %s', async lifecycle => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  mocks.activeSessionRun = { run_id: 'tail-run', status: 'running' };
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  await mountOwnedArtifactWork();
+  const history = completedRunEvents(1, 'tail-run').slice(0, 4);
+  await receiveRunEvents(history);
+  expect(mocks.chatProps.activeRunId).toBe('tail-run');
+  expectMemberRunState('运行中');
+  const fresh = deferred<typeof history>();
+  mocks.getSessionTranscript.mockReturnValue(fresh.promise);
+  await act(async () => { receiveLiveMessage({ type: 'done', run_id: 'tail-run', content: '' }); });
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBeNull());
+  expect(mocks.chatProps.isStreaming).toBe(false);
+  expect(mocks.chatProps.isWaiting).toBe(false);
+  expectMemberRunState('运行中');
+  fireEvent.click(screen.getByTestId('session-composer-stop'));
+  await waitFor(() => expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith(
+    'agent-1', 'owned-artifact-work', 'tail-run'));
+  const terminal = activeRunEvent(5, 'run', lifecycle, 'tail-run');
+  mocks.activeSessionRun = null;
+  await receiveRunEvents([terminal], [...history, terminal]);
+  await act(async () => fresh.resolve([...history, terminal]));
+  expectMemberRunState(lifecycle === 'completed' ? '完成' : lifecycle === 'failed' ? '失败' : '已停止');
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
+});
+
+it('X9a.3 keeps Stop across a parent stream end while its colleague is still working', async () => {
+  mocks.realChat = true;
+  mocks.language = 'zh';
+  mocks.userRole = 'member';
+  const parentRunId = 'parent-run';
+  const progress = colleagueRows.events.find(event => event.payload.member_summary?.kind === 'colleague_result')!;
+  const call = colleagueRows.events.find(event => event.sequence === progress.sequence - 1)!;
+  mocks.activeSessionRun = { run_id: parentRunId, status: 'running' };
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  await mountOwnedArtifactWork();
+  const history = [...completedRunEvents(1, parentRunId).slice(0, 3),
+    activeRunEvent(4, 'tool_call', 'started', parentRunId, call.payload, call.item_id),
+    activeRunEvent(5, 'tool_result', 'completed', parentRunId, progress.payload, progress.item_id),
+    activeRunEvent(6, 'assistant_commentary', 'completed', parentRunId, { content: 'Waiting for the colleague.' })];
+  await receiveRunEvents(history);
+  expect(mocks.chatProps.chatMessages.some((message: any) => message.toolMemberSummary?.kind === 'colleague_result'
+    && message.toolMemberSummary.state === 'in_progress')).toBe(true);
+  expectMemberRunState('运行中');
+  const fresh = deferred<unknown[]>();
+  mocks.getSessionTranscript.mockReturnValue(fresh.promise);
+  await act(async () => { receiveLiveMessage({ type: 'done', run_id: parentRunId, content: '' }); });
+  await waitFor(() => expect(mocks.chatProps.activeRunId).toBeNull());
+  expect(mocks.chatProps.isStreaming).toBe(false);
+  expect(mocks.chatProps.isWaiting).toBe(false);
+  expectMemberRunState('运行中');
+  fireEvent.click(screen.getByTestId('session-composer-stop'));
+  await waitFor(() => expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith(
+    'agent-1', 'owned-artifact-work', parentRunId));
+  const parentEnd = [activeRunEvent(7, 'assistant_final', 'completed', parentRunId, { content: 'The colleague is still working.' }),
+    activeRunEvent(8, 'run', 'completed', parentRunId)];
+  await receiveRunEvents(parentEnd, [...history, ...parentEnd]);
+  expectMemberRunState('运行中');
+  expect(screen.getByTestId('session-composer-stop')).toBeTruthy();
+  const colleagueEnd = { ...colleagueRows.events.find(event => event.legacy_event_type === 'runtime_action_completed'
+    && event.payload.metadata?.action_kind === 'a2a_delegation')!, sequence: 9, tenant_id: 'tenant-1' };
+  await act(async () => { receiveLiveMessage(colleagueEnd); fresh.resolve([...history, ...parentEnd, colleagueEnd]); });
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(false));
+  expectMemberRunState('完成');
+  expect(screen.queryByTestId('session-composer-stop')).toBeNull();
 });
 
 it.each([1, 2])('R16a.9 round2 only announces earlier history after a load failure when the first sequence is %s', async firstSequence => {

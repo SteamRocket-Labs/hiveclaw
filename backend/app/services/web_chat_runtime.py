@@ -5393,12 +5393,13 @@ async def _persist_context_observations(
         if task is None:
             return []
         fence = current_runtime_task_fence()
-        if fence is not None and task.id == fence.task_id and task.claim_version != fence.claim_version:
-            # The terminal commit advances the version and releases the claim.
-            # Its sealed eligibility must still identify this worker's claim.
+        if task.status in _TERMINAL_STATUSES:
+            # RuntimeTask fallback boundaries depend on the transcript
+            # frontier remaining fixed. Only a canonical completion pins
+            # its own terminal event independently of later diagnostics.
             outcome_ref = (task.metadata_json or {}).get("session_v2_outcome") or {}
             outcome_id = _uuid_or_none(outcome_ref.get("outcome_id"))
-            if task.status != "completed" or task.claim_version != fence.claim_version + 1 or outcome_id is None:
+            if task.status != "completed" or outcome_id is None:
                 return []
             outcome = await db.get(SessionRunOutcome, outcome_id)
             if (
@@ -5407,9 +5408,12 @@ async def _persist_context_observations(
                 or outcome.session_id != session_uuid
                 or outcome.run_id != run_id
                 or outcome.state != "terminal_committed"
-                or (outcome.seal_json or {}).get("eligibility", {}).get("task_claim_version") != fence.claim_version
             ):
                 return []
+            if fence is not None and task.id == fence.task_id:
+                version = (outcome.seal_json or {}).get("eligibility", {}).get("task_claim_version")
+                if version != fence.claim_version or task.claim_version != fence.claim_version + 1:
+                    return []
         session = await db.get(ChatSession, session_uuid)
         if session is None or session.tenant_id != tenant_id or session.agent_id != agent_id:
             raise ValueError("runtime_event_session_unavailable")

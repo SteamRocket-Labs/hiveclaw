@@ -209,6 +209,7 @@ async def run_web_chat_task(
     try:
         await _run_web_chat_stages(state)
     except Exception as exc:
+        await _flush_context_observations(state)
         await _handle_web_chat_failure(state, exc)
     finally:
         await _cleanup_web_chat_run(state)
@@ -238,6 +239,7 @@ async def _run_web_chat_stages(state: _WebChatRunState) -> None:
     with observation_scope:
         result = await _invoke_model(state, callbacks, pending_suffix)
     if state.provider_reconciliation is not None:
+        await _flush_context_observations(state)
         state.terminal_phase_hint = RuntimePhase.FAILED
         await _handle_provider_reconciliation_required(state, state.provider_reconciliation)
         return
@@ -736,6 +738,7 @@ class _WebChatCallbacks:
         state = self.state
         if state.terminal_tool_card_finalized:
             return True
+        await _flush_context_observations(state)
         cancelled = bool(state.cancel_event.is_set())
         state.terminal_phase_hint = state.ports.terminal.phase_for_pause(summary, cancelled=cancelled)
         metadata = _interactive_pause_metadata(state, summary)
@@ -1525,7 +1528,7 @@ async def _commit_session_model_response(state: _WebChatRunState, **payload: Any
 
 
 async def _flush_context_observations(state: _WebChatRunState) -> None:
-    if not state.context_observations:
+    if not getattr(state, "context_observations", None):
         return
     events = state.ports.events
     pending, state.context_observations = state.context_observations, []
@@ -1693,6 +1696,7 @@ def _file_change_kwargs(state: _WebChatRunState) -> dict[str, Any]:
 
 
 async def _finalize_interactive_pause(state: _WebChatRunState, summary: str) -> None:
+    await _flush_context_observations(state)
     cancelled = bool(state.cancel_event.is_set())
     state.terminal_phase_hint = state.ports.terminal.phase_for_pause(summary, cancelled=cancelled)
     metadata = _interactive_pause_metadata(state, summary)
@@ -1725,6 +1729,7 @@ async def _finalize_empty_interactive_response(
     status: str,
     metadata: dict[str, Any],
 ) -> None:
+    await _flush_context_observations(state)
     summary = state.interactive_pause_summary or "interactive_pause"
     finalized = await state.ports.terminal.finalize_without_assistant(
         run_uuid=state.run_uuid,
@@ -1793,6 +1798,9 @@ async def _finalize_assistant_response(
                 exc,
             )
         return
+    # RuntimeTask-only boundaries bind their latest transcript sequence.
+    # Only a canonical outcome carries a stable terminal event of its own.
+    await _flush_context_observations(state)
     if status != "completed":
         failure = _terminal_failure_payload(result, status, metadata)
         if failure is not None and failure["failure_code"]:
@@ -1923,6 +1931,7 @@ async def _commit_canonical_terminal_outcome(
         )
         return None
     except TerminalOutcomeNeedsReconciliation as exc:
+        await _flush_context_observations(state)
         await state.ports.terminal.update_runtime_task(
             state.run_uuid,
             status="needs_reconciliation",

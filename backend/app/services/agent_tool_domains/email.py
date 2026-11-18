@@ -49,9 +49,11 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
 
     try:
         if tool_name == "send_email":
-            files = _prepare_email_attachments(ws, arguments.get("attachments"),
-                authority_scope=getattr(context, "workspace_authority_scope", None),
-                permission_profile=getattr(context, "permission_profile", None))
+            files = getattr(context, "prepared_email_attachments", None)
+            if files is None:
+                files = _prepare_email_attachments(ws, arguments.get("attachments"),
+                    authority_scope=getattr(context, "workspace_authority_scope", None),
+                    permission_profile=getattr(context, "permission_profile", None))
             if isinstance(files, str):
                 return files
             return await send_email(

@@ -20,6 +20,5 @@ def business_inspection_allowed():
     return _RECIPIENT_READ.get() is None
 
 
-def current_source_recipient(*, include_receipt_policy=False):
-    recipient = _RECIPIENT_READ.get()
-    return recipient if include_receipt_policy or recipient is None else recipient[:2]
+def current_source_recipient():
+    return _RECIPIENT_READ.get()

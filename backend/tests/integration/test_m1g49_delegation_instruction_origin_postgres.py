@@ -4787,7 +4787,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         monkeypatch.setattr(runtime_result_sources, "_validate_input_dependencies", observe_member_read)
     delivered = await read_return()
     if colleague_source_case:
-        assert member_reads and all(recipient == (str(seed["session_id"]), str(seed["user_id"])) and not inspection
+        assert member_reads and all(recipient == (str(seed["session_id"]), str(seed["user_id"]), False) and not inspection
             for recipient, inspection in member_reads), member_reads
     if office_denial_case:
         denied_message = next(message for message in client.requests[1]["messages"]

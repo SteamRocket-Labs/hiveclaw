@@ -420,6 +420,7 @@ async def test_unreceipted_input_keeps_delegated_approval_and_sandbox_artifact_u
     from app.services.session_permission_runtime import _execution_evidence
     from app.services.web_chat_runtime import _persist_tool_call
     from app.services.workspace_resource_authority import register_workspace_path
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
     from tests.integration.test_m1g24_workspace_artifact_authority_postgres import _prepare_write
 
     n = native_workspace
@@ -442,8 +443,12 @@ async def test_unreceipted_input_keeps_delegated_approval_and_sandbox_artifact_u
             permission_profile=PermissionProfileV1(), budget_run_id=str(n.run))
         from app.database import pin_rls_tenant_context
         await pin_rls_tenant_context(db, n.tenant)
-        await validate_permission_input_sources(db, authority=SimpleNamespace(tenant_id=n.tenant, agent_id=n.agent, principal_id=n.user),
-            session=await db.get(ChatSession, n.session), invocation=invocation, model=model, execution={'authority_frame': frame})
+        context = ToolExecutionContext(agent_id=n.agent, user_id=n.user, tenant_id=n.tenant, workspace=n.root,
+            session_id=str(n.session), runtime_task_id=str(n.run), tool_call_id=invocation.provider_tool_use_id,
+            execution_principal=frame.principal, execution_identity=frame.execution_identity,
+            authority_frame_required=True, budget_run_id=frame.budget_run_id, permission_profile=frame.permission_profile)
+        await validate_permission_input_sources(db, session=await db.get(ChatSession, n.session), model=model,
+            runtime_request=ToolExecutionRequest('run_command', arguments, context))
         await db.commit()
         async def process(_command, *, work_dir, **kwargs):
             content = (work_dir / 'own-note.md').read_text()

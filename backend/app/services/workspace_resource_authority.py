@@ -870,8 +870,8 @@ async def _canonical_root_session(
     user: User,
     resource_tenant_id: uuid.UUID | None,
     session_id: uuid.UUID | None,
-) -> uuid.UUID | None:
-    """Resolve the canonical root session binding one workspace operation.
+) -> tuple[uuid.UUID | None, bool]:
+    """Resolve the workspace root and whether the reader owns this private session.
 
     The session owner always binds directly. A scoped business administrator
     (PDEC-013) may bind through an employee's exact session without owning it;
@@ -879,7 +879,7 @@ async def _canonical_root_session(
     never reassigns the employee's resource ownership.
     """
     if session_id is None:
-        return None
+        return None, False
     from app.services.content_input_receipts import _preflight_inputs
 
     rows = _preflight_inputs(db, authority=True)
@@ -939,10 +939,10 @@ async def _canonical_root_session(
             "workspace_session_authority_mismatch",
             "The workspace operation is not bound to a session owned by the requester.",
         )
-    root = session.root_session_id or session.id
+    binding = session.root_session_id or session.id, user.id is not None and session.user_id == user.id and not shared_member
     if rows is not None:
-        rows[key] = root
-    return root
+        rows[key] = binding
+    return binding
 
 
 async def authorize_workspace_path(
@@ -988,7 +988,7 @@ async def authorize_workspace_path(
     )
     if action == "read" and path_exists and manifest is not None and manifest.deleted_at is not None:
         raise WorkspaceAuthorityError("workspace_resource_not_found", "The workspace resource was deleted.")
-    root_session_id = await _canonical_root_session(
+    root_session_id, _ = await _canonical_root_session(
         db,
         agent_id=agent_id,
         user=user,
@@ -1187,7 +1187,7 @@ async def load_workspace_authority_scope(
     )
     if str(resolved_agent_access[0].id) != str(agent_id):
         raise HTTPException(status_code=403, detail="Agent authority context mismatch")
-    canonical_root = await _canonical_root_session(
+    canonical_root, owns_private_session = await _canonical_root_session(
         db,
         agent_id=agent_id,
         user=user,
@@ -1272,7 +1272,7 @@ async def load_workspace_authority_scope(
             authority_sources.add(decision.authority_source)
         if decision.full_control:
             full_control_paths.add(manifest.path)
-            if decision.authority_source in {"resource_owner", "root_session_owner"}:
+            if owns_private_session and not operator_view and decision.authority_source in {"resource_owner", "root_session_owner"}:
                 owner_paths.add(manifest.path)
             action_permissions.update((manifest.path, action) for action in _WORKSPACE_EFFECT_ACTIONS)
     grant_candidates = [

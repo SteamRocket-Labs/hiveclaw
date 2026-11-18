@@ -1,12 +1,19 @@
-"""Carry an authenticated native permission effect through its delegated frame."""
+"""Carry approved delegation authority and recheck sources for outward tools."""
 
+import hashlib
 import uuid
 
+from sqlalchemy import select
+from sqlalchemy.orm import load_only
+
 from app.core.execution_context import A2AToolAuthorityFrame, ExecutionIdentity, ExecutionPrincipal
+from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
+from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.runtime.ccplus_contracts import build_permission_profile, permission_profile_snapshot, permission_profile_snapshot_hash
 from app.services.content_input_receipts import (
     ContentInputReceiptError, _preload_execution_sources, _validate_input_dependencies, group_source_read,
+    latest_workspace_receipt,
 )
 from app.services.session_model_inputs import _hash, _model_dependencies, model_output_dependencies
 
@@ -65,47 +72,85 @@ async def delegated_permission_execution(db, *, authority, session, invocation, 
         't0_refs': (f'session-model-result:{model.id}',)}
 
 
-async def validate_permission_input_sources(db, *, authority, session, invocation, model, execution):
-    """Recheck captured sources at the shared permission effect boundary."""
-    if not execution:
-        from app.core.source_read_purpose import source_recipient_read
-        from app.services.personal_knowledge_access import AgentRuntimePrincipal
-        from app.services.runtime_user_identity import load_scoped_runtime_user
-        from app.services.source_read_queries import transcript_event_columns
-        from app.tools.registry import tool_execution_policy
+async def load_outward_tool_round(db, *, runtime_request, approval):
+    """Resolve the exact calling round, or only attachments for a call without a model run."""
+    context = runtime_request.context
+    session_id = uuid.UUID(str(context.session_id)) if context.session_id else None
+    if context.runtime_task_id:
+        run_id = uuid.UUID(str(context.runtime_task_id))
+        statement = select(SessionModelResult, ChatSession).join(SessionToolInvocation,
+            (SessionToolInvocation.provider_request_id == SessionModelResult.provider_request_id)
+            & (SessionToolInvocation.round_id == SessionModelResult.round_id)).join(
+                ChatSession, ChatSession.id == SessionModelResult.session_id
+            ).options(load_only(SessionModelResult.id, SessionModelResult.state,
+                SessionModelResult.model_request_hash, SessionModelResult.model_request_snapshot_json)).where(
+                    SessionModelResult.tenant_id == context.tenant_id, SessionModelResult.run_id == run_id,
+                    SessionModelResult.session_id == session_id, SessionToolInvocation.tenant_id == context.tenant_id,
+                    SessionToolInvocation.session_id == session_id, SessionToolInvocation.run_id == run_id,
+                    SessionToolInvocation.provider_tool_use_id == context.tool_call_id,
+                    SessionToolInvocation.tool_name == runtime_request.tool_name,
+                    SessionToolInvocation.effect_state == "prepared_not_started",
+            )
+        if approval is not None:
+            statement = statement.where(SessionToolInvocation.effective_args_hash == approval.input_hash)
+        else:
+            statement = statement.where(SessionToolInvocation.result_event_id.is_(None))
+        rows = (await db.execute(statement.limit(2))).all()
+        if len(rows) != 1:
+            raise ContentInputReceiptError('delegation_permission_sources_unavailable',
+                'Restore the committed tool input inventory.', 503)
+        model, session = rows[0]
+        return session, model
+    session = await db.get(ChatSession, session_id) if session_id is not None else None
+    return session, None
 
-        dependencies, complete = _model_dependencies(model)
-        if not complete:
-            raise ContentInputReceiptError('delegation_permission_sources_unavailable', 'Restore the committed tool input inventory.', 503)
-        principal = AgentRuntimePrincipal(agent_id=authority.agent_id, requester_user_id=authority.principal_id,
-            session_id=str(session.id), runtime_task_id=str(invocation.run_id))
-        with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as scope:
-            transcript_event_columns(scope)
-            if dependencies:
-                await _preload_execution_sources(db, authority.tenant_id, dependencies)
-            await _validate_input_dependencies(db, authority.tenant_id, dependencies, runtime_request=principal)
-            if dependencies and tool_execution_policy(invocation.tool_name).external_visible and (
-                session.user_id is not None and session.user_id == authority.principal_id and session.audience_kind != "group"
-            ):
-                # A session grant can authorize the Agent's work without authorizing disclosure.
-                user = await load_scoped_runtime_user(db, session.user_id, tenant_id=authority.tenant_id)
-                with source_recipient_read(session_id=session.id, user_id=session.user_id, require_workspace_receipts=True):
-                    await _validate_input_dependencies(db, authority.tenant_id, dependencies, user=user)
-        return
-    from pathlib import Path
-    from app.config import get_settings
-    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
-    frame = execution['authority_frame']
-    context = ToolExecutionContext(agent_id=authority.agent_id, user_id=authority.principal_id,
-        tenant_id=authority.tenant_id, workspace=Path(get_settings().AGENT_DATA_DIR) / str(authority.agent_id),
-        session_id=str(session.id), runtime_task_id=str(invocation.run_id), tool_call_id=invocation.provider_tool_use_id,
-        execution_principal=frame.principal, execution_identity=frame.execution_identity,
-        delegation_token=frame.delegation_token, authority_frame_required=True,
-        budget_run_id=frame.budget_run_id, permission_profile=frame.permission_profile)
-    dependencies, complete = model_output_dependencies(model)
+async def validate_permission_input_sources(db, *, session, model, runtime_request):
+    """An executor grant permits private work without granting outward disclosure."""
+    from app.core.source_read_purpose import source_recipient_read
+    from app.services.runtime_user_identity import load_scoped_runtime_user
+    from app.services.source_read_queries import transcript_event_columns
+    from app.tools.registry import tool_execution_policy
+
+    context = runtime_request.context
+    tenant_id = uuid.UUID(str(context.tenant_id))
+    dependencies, complete = (model_output_dependencies(model) if context.authority_frame_required
+        else _model_dependencies(model)) if model is not None else ([], not context.runtime_task_id)
     if not complete:
         raise ContentInputReceiptError('delegation_permission_sources_unavailable', 'Restore the committed tool input inventory.', 503)
-    await _validate_input_dependencies(db, authority.tenant_id, dependencies,
-        runtime_request=ToolExecutionRequest(tool_name=invocation.tool_name,
-            arguments=invocation.effective_arguments_json, context=context))
+    attachments = []
+    prepared = None
+    if runtime_request.tool_name == "send_email" and runtime_request.arguments.get("attachments"):
+        from app.services.email_service import _prepare_email_attachments
+
+        prepared = _prepare_email_attachments(context.workspace, runtime_request.arguments["attachments"],
+            authority_scope=context.workspace_authority_scope, permission_profile=context.permission_profile)
+        if isinstance(prepared, str):
+            raise ContentInputReceiptError("content_source_access_denied", "This file cannot be attached.", 403)
+        for target, content in prepared:
+            receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id,
+                target.relative_to(context.workspace.resolve()).as_posix())
+            if receipt is None or receipt.content_sha256 != hashlib.sha256(content).hexdigest():
+                raise ContentInputReceiptError("workspace_content_unverified", "This file cannot be attached.")
+            attachments.append({"source_kind": "workspace_artifact", "source_id": str(receipt.id),
+                "source_version": receipt.content_sha256})
+    if not dependencies and not attachments:
+        return
+    member = tool_execution_policy(runtime_request.tool_name).external_visible and session is not None and context.user_id is not None and (
+        session.user_id == context.user_id and session.audience_kind != "group" or bool(attachments)
+    )
+    with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as scope:
+        scope.share_session_source_facts = member
+        transcript_event_columns(scope)
+        sources = dependencies + attachments
+        await _preload_execution_sources(db, tenant_id, sources)
+        await _validate_input_dependencies(db, tenant_id, dependencies if member else sources,
+            runtime_request=runtime_request)
+        if member:
+            user = scope.browser_reader
+            if user is None or user.id != context.user_id:
+                user = await load_scoped_runtime_user(db, context.user_id, tenant_id=tenant_id)
+            with source_recipient_read(session_id=session.id, user_id=context.user_id, require_workspace_receipts=True):
+                await _validate_input_dependencies(db, tenant_id, sources, user=user)
+    if prepared is not None:
+        context.prepared_email_attachments = prepared

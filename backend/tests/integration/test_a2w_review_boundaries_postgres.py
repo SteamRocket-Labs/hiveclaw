@@ -440,6 +440,6 @@ async def test_root_sessions_share_the_loaded_workspace_checkpoint(
                             for identity in identities[:count]:
                                 actual = await _canonical_root_session(db, agent_id=n.agent, user=user,
                                     resource_tenant_id=n.tenant, session_id=identity)
-                                assert actual == identity
+                                assert actual == (identity, True)
                         totals.append(sum(row["statements"] for row in profile.values()))
     assert totals == [1, 1], totals

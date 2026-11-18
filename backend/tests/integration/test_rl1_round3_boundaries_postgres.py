@@ -3,7 +3,8 @@
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import delete, select
@@ -148,6 +149,266 @@ async def test_revoked_company_source_keeps_private_report_but_blocks_email_and_
     for url, params in [(card_url, {}), (f"/agents/{n.agent_id}/files/content", {"path": path})]:
         denied = await n.client.get(url, params=params)
         assert denied.status_code == 403 and "COMPANY_SOURCE_MARKER" not in denied.text, denied.text
+
+
+@pytest.fixture
+async def feishu_effects(member_web, owner_sessionmaker, monkeypatch):  # noqa: F811
+    from app.models.capability_policy import CapabilityPolicy
+    from app.models.channel_config import ChannelConfig
+    from app.models.org import OrgMember
+    from app.services.feishu_service import FeishuService
+
+    n = member_web
+    recipient, config_id = f"ou_{n.user_id.hex}", uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(ChannelConfig(id=config_id, tenant_id=n.tenant_id, agent_id=n.agent_id, channel_type="feishu",
+            app_id="local-feishu-app", app_secret="local-feishu-secret", is_configured=True))
+        db.add(OrgMember(tenant_id=n.tenant_id, name="Fixture recipient", feishu_open_id=recipient))
+        for capability in ("channel.feishu.message", "channel.feishu.document"):
+            db.add(CapabilityPolicy(tenant_id=n.tenant_id, agent_id=n.agent_id, capability=capability,
+                allowed=True, requires_approval=False))
+        await db.commit()
+    messages = []
+
+    async def send_message(_self, *_args, receive_id, content, **_kwargs):
+        messages.append((receive_id, json.loads(content)["text"]))
+        return {"code": 0}
+
+    monkeypatch.setattr(FeishuService, "send_message", send_message)
+    return SimpleNamespace(recipient=recipient, config_id=config_id, messages=messages)
+
+
+@pytest.mark.parametrize(("tool_name", "mode", "use_attachment", "source"), [
+    ("send_email", "full_authority", False, "revoked"),
+    ("send_email", "full_authority", False, "agent_only"),
+    ("send_email", "full_authority", False, "missing_receipt"),
+    ("send_email", "full_authority", True, "revoked"),
+    ("send_email", "confirm_first", True, "revoked"),
+    ("send_email", "full_authority", True, "missing_receipt"),
+    ("send_email", "confirm_first", True, "missing_receipt"),
+    ("send_email", "full_authority", True, "intact"),
+    ("send_email", "confirm_first", True, "intact"),
+    ("send_email", "full_authority", True, "changed_after_check"),
+    ("send_feishu_message", "confirm_first", False, "revoked"),
+    ("send_feishu_message", "confirm_first", False, "intact"),
+])
+async def test_outward_effect_requires_authorized_body_and_attachment_sources(
+    member_web, feishu_effects, owner_sessionmaker, app_user_sessionmaker, monkeypatch,  # noqa: F811
+    tool_name, mode, use_attachment, source,
+):
+    from app.models.capability_policy import CapabilityPolicy
+    from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
+    from app.models.organization_identity import ContentInputReceipt
+    from app.models.security_audit import ResourcePermission
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services import email_accounts, email_service, runtime_task_worker
+    from app.services.owner_action_policy import save_owner_action_policy
+    from tests.integration.test_artifact_publication_transactions import publish_company_source, stage_report
+
+    n, path = member_web, "workspace/company-report.md"
+    dependencies = []
+    if source in {"revoked", "intact", "changed_after_check"}:
+        publication, version = await publish_company_source(
+            owner_sessionmaker, tenant=n.tenant_id, user=n.user_id, root=n.data_root,
+        )
+        dependencies.append({"source_kind": "company_knowledge_publication",
+            "source_id": str(publication), "source_version": version})
+    async with owner_sessionmaker() as db:
+        db.add(CapabilityPolicy(tenant_id=n.tenant_id, agent_id=n.agent_id, capability="channel.email.send",
+            allowed=True, requires_approval=False))
+        await save_owner_action_policy(db, tenant_id=n.tenant_id, agent_id=n.agent_id,
+            actions={"tool.external_effect": mode, "tool.local_read": "full_authority",
+                "tool.local_write": "confirm_first"}, changed_by_user_id=n.user_id)
+        if source == "agent_only":
+            owner = uuid.uuid4()
+            original = n.data_root / "agent-only-source.md"
+            original.write_text("Fixture source granted to the agent")
+            version = hashlib.sha256(original.read_bytes()).hexdigest()
+            document = KnowledgeDocument(id=uuid.uuid4(), tenant_id=n.tenant_id, scope_type="person", scope_id=owner,
+                source_kind="text", source_sha256=version, canonical_md_path=original.name,
+                canonical_md_sha256=version, title="Fixture source", status="ready")
+            db.add(document)
+            await db.flush()
+            db.add(KnowledgeGrant(tenant_id=n.tenant_id, scope_id=owner, resource_type="document",
+                resource_id=document.id, document_id=document.id, grantee_type="agent", grantee_id=n.agent_id,
+                requester_user_id=n.user_id, session_id=str(n.session_id), purpose="interactive_session",
+                permission="read", expires_at=datetime.now(timezone.utc) + timedelta(hours=1)))
+            dependencies.append({"source_kind": "knowledge_document",
+                "source_id": str(document.id), "source_version": version})
+        report = await stage_report(db, tenant=n.tenant_id, agent=n.agent_id, user=n.user_id,
+            session=n.session_id, root=n.agent_root, path=path, dependencies=dependencies)
+        if source == "missing_receipt":
+            await db.flush()
+            await db.execute(delete(ContentInputReceipt).where(ContentInputReceipt.id == report.id))
+        if source == "revoked":
+            grant = await db.scalar(select(ResourcePermission).where(
+                ResourcePermission.principal_id == n.user_id,
+                ResourcePermission.resource_type == "company_knowledge_scope",
+            ))
+            await db.delete(grant)
+        await db.commit()
+
+    sink = []
+
+    async def mailbox(*args, **kwargs):
+        if source == "changed_after_check":
+            (n.agent_root / path).write_text("A newer file without a matching receipt")
+        return {"email_address": "sender@example.test", "auth_code": "local-test-only"}
+
+    async def deliver(*, body, _prepared_attachments, **kwargs):
+        sink.append((body, _prepared_attachments))
+        return "Delivered to the local test sink"
+
+    async def notify(**kwargs):
+        pass
+
+    monkeypatch.setattr(email_accounts, "resolve_email_config", mailbox)
+    monkeypatch.setattr(email_service, "send_email", deliver)
+    monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", notify)
+
+    body = (n.agent_root / path).read_text()
+    arguments = ({"to": "recipient@example.test", "subject": "Fixture report", "body": body}
+        if tool_name == "send_email" else {"open_id": feishu_effects.recipient, "message": body})
+    script = []
+    if use_attachment:
+        arguments.update(body="See attached report.", attachments=[path])
+    else:
+        script.append({"tool_calls": [_call("read_file", "read-report", path=path)], "finish_reason": "tool_calls"})
+    script.extend([
+        {"tool_calls": [_call(tool_name, "send-report", **arguments)], "finish_reason": "tool_calls"},
+        {"content": "Finished."},
+    ])
+    model = await _run(n, script, monkeypatch)
+    if not use_attachment:
+        read = next(message for message in model.requests[1]["messages"] if message.get("tool_call_id") == "read-report")
+        # owner 11-18 decision A: reading the report in private succeeds before the send is refused.
+        assert json.loads(read["content"])["content"].startswith(body)
+    async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
+        invocation = await db.scalar(select(SessionToolInvocation).where(
+            SessionToolInvocation.run_id == n.run_id, SessionToolInvocation.tool_name == tool_name,
+        ))
+        assert invocation is not None
+        invocation_id, permission_id = invocation.id, invocation.permission_item_id
+    assert (permission_id is not None) == (mode == "confirm_first" and tool_name == "send_email")
+    if permission_id is not None:
+        response = await n.client.post(f"/agents/{n.agent_id}/sessions/{n.session_id}/permissions/{permission_id}/resolve",
+            json={"action": "allow_once"})
+        assert response.status_code == 200, response.text
+
+    if source in {"intact", "changed_after_check"}:
+        if tool_name == "send_email":
+            assert sink == [(arguments["body"], [(n.agent_root.resolve() / path, body.encode())])]
+        else:
+            assert feishu_effects.messages == [(feishu_effects.recipient, body.strip())]
+    else:
+        assert sink == [], "UNAUTHORIZED_SOURCE_REACHED_EMAIL_SINK"
+        assert feishu_effects.messages == [], "UNAUTHORIZED_SOURCE_REACHED_FEISHU_CHANNEL"
+    async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
+        invocation = await db.get(SessionToolInvocation, invocation_id)
+        assert invocation.effect_state == (
+            "effect_committed" if source in {"intact", "changed_after_check"} else "prepared_not_started"
+        )
+        assert invocation.result_event_id is not None
+
+
+@pytest.mark.parametrize("tool_name", ["send_feishu_message", "feishu_doc_share"])
+async def test_revoked_group_memory_cannot_reach_feishu_effects(
+    member_web, feishu_effects, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tool_name,  # noqa: F811
+):
+    from httpx import AsyncClient, Response
+
+    from app.memory.write_gate import MemoryWriteDecision
+    from app.models.capability_policy import CapabilityPolicy
+    from app.models.channel_config import ChannelConfig
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.services import agent_tools
+    from app.services.agent_tool_domains import feishu_sharing
+    from app.services.channel_session import find_or_create_shared_group_session
+    from app.services.external_principal_service import bind_authenticated_self_channel_principal
+    from app.services.feishu_service import FeishuService
+    from tests.integration.test_m4d_group_memory_postgres import save_group
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient
+
+    n = member_web
+    members = {feishu_effects.recipient}
+    doc_requests = []
+
+    async def current_members(_self, *_args, **_kwargs):
+        return set(members)
+
+    async def review(content, *, category, **_kwargs):
+        return MemoryWriteDecision(original_content=content, content=content, category=category,
+            sensitivity="PL1_public", metadata={})
+
+    async def token(_agent_id):
+        return "local-feishu-app", "local-feishu-token"
+
+    async def wiki_node(_document_token, _token):
+        return None
+
+    async def share(_self, url, *, json, **_kwargs):
+        doc_requests.append((url, json))
+        return Response(200, json={"code": 0})
+
+    async def notify(**_kwargs):
+        pass
+
+    monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", current_members)
+    monkeypatch.setattr("app.memory.explicit_overlay.prepare_memory_write_with_llm", review)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", notify)
+    monkeypatch.setattr(feishu_sharing, "_get_feishu_token", token)
+    monkeypatch.setattr(feishu_sharing, "_feishu_wiki_get_node", wiki_node)
+    monkeypatch.setattr(AsyncClient, "post", share)
+    async with owner_sessionmaker() as db:
+        config = await db.get(ChannelConfig, feishu_effects.config_id)
+        for capability in ("agent.memory.read", "agent.memory.write"):
+            db.add(CapabilityPolicy(tenant_id=n.tenant_id, agent_id=n.agent_id, capability=capability,
+                allowed=True, requires_approval=False))
+        bound = await bind_authenticated_self_channel_principal(db, tenant_id=n.tenant_id, config=config,
+            provider_subject_id=feishu_effects.recipient, user_id=n.user_id, actor_user_id=n.user_id)
+        assert bound.actor.id == n.user_id
+        group = await find_or_create_shared_group_session(db, tenant_id=n.tenant_id, agent_id=n.agent_id,
+            installation_ref=str(config.id), chat_id="rl1-fixture-group", first_message_title="Group memory work")
+        await db.commit()
+
+    group_memory = SimpleNamespace(n=SimpleNamespace(tenant=n.tenant_id, user=n.user_id, agent=n.agent_id,
+        service=agent_tools._get_tool_runtime_service()), session=group.id, runs={}, rounds={})
+    await save_group(group_memory, app_user_sessionmaker)
+
+    stream = ScriptedLLMClient.stream
+
+    async def revoke_after_admission(self, **kwargs):
+        if len(self.requests) == 1:
+            members.remove(feishu_effects.recipient)
+        return await stream(self, **kwargs)
+
+    monkeypatch.setattr(ScriptedLLMClient, "stream", revoke_after_admission)
+    marker = "GROUP_RELEASE_MARKER"
+    arguments = ({"open_id": feishu_effects.recipient, "message": marker} if tool_name == "send_feishu_message"
+        else {"document_token": marker, "action": "add", "member_open_ids": [feishu_effects.recipient]})
+    model = await _run(n, [
+        {"tool_calls": [_call("search_memory", "recall-group", query="release", scope="facts")],
+            "finish_reason": "tool_calls"},
+        {"tool_calls": [_call(tool_name, "outward-group", **arguments)], "finish_reason": "tool_calls"},
+        {"content": "Finished."},
+    ], monkeypatch)
+    recalled = next(message["content"] for message in model.requests[1]["messages"]
+        if message.get("tool_call_id") == "recall-group")
+    assert marker in recalled, recalled
+    async with tenant_scoped_session(n.tenant_id, session_factory=app_user_sessionmaker) as db:
+        invocation = await db.scalar(select(SessionToolInvocation).where(
+            SessionToolInvocation.run_id == n.run_id, SessionToolInvocation.tool_name == tool_name,
+        ))
+        assert invocation is not None and invocation.permission_item_id is None
+        result = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.provider_request_id == invocation.provider_request_id,
+        ))
+        assert str(group_memory.source_id) in {
+            dependency["source_id"] for dependency in result.model_request_snapshot_json["input_bindings"]["dependencies"]
+        }
+        assert feishu_effects.messages == [], "REVOKED_GROUP_MEMORY_REACHED_FEISHU_CHANNEL"
+        assert doc_requests == [], "REVOKED_GROUP_MEMORY_REACHED_FEISHU_DOCUMENT_CLIENT"
+        assert invocation.effect_state == "prepared_not_started" and invocation.result_event_id is not None
 
 
 @pytest.mark.parametrize("role", ["org_admin", "member"])

@@ -60,6 +60,7 @@ async def test_delegated_permission_keeps_read_separate_from_authority(model, mo
     from app.core.execution_context import ExecutionPrincipal
     from app.runtime.ccplus_contracts import build_permission_profile, permission_profile_snapshot, permission_profile_snapshot_hash
     from app.services import delegation_permission_runtime as delegation
+    from app.tools.runtime import ToolExecutionRequest
 
     parent, child, user = uuid4(), uuid4(), uuid4()
     session = NS(id=model.session_id, runtime_task_id=model.run_id, user_id=user)
@@ -84,10 +85,9 @@ async def test_delegated_permission_keeps_read_separate_from_authority(model, mo
         if gate == "frame":
             return await delegation.delegated_permission_execution(db, authority=authority, session=session,
                 invocation=invocation, profile=profile, control_id=uuid4(), model=model)
-        frame = NS(principal=ExecutionPrincipal.from_evidence(original["execution_principal"]), execution_identity=None,
-            delegation_token=None, budget_run_id=None, permission_profile=profile)
-        return await delegation.validate_permission_input_sources(db, authority=authority, session=session,
-            invocation=invocation, model=model, execution={"authority_frame": frame} if gate == "sources" else {})
+        context = NS(tenant_id=model.tenant_id, runtime_task_id=model.run_id, authority_frame_required=gate == "sources")
+        return await delegation.validate_permission_input_sources(db, session=session, model=model,
+            runtime_request=ToolExecutionRequest(invocation.tool_name, invocation.effective_arguments_json, context))
 
     if denied(model) and gate != "read":
         with pytest.raises(ContentInputReceiptError) as error:

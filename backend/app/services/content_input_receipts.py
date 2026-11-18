@@ -127,6 +127,7 @@ class _DisclosureSourceValidations:
         self.source_ids = {}
         self.retained = {}
         self.checkpoint = (None, None)
+        self.share_session_source_facts = False
         self.workspace_read = None
 
 
@@ -255,7 +256,10 @@ def _checkpoint_key(scope, point, binding):
     from app.core.source_read_purpose import current_source_recipient
     from app.services.project_context import _SOURCE_READER
 
-    return ("checkpoint", scope.checkpoint, point, binding, current_source_recipient(), _SOURCE_READER.get() is not None)
+    # At outward execution the same member's two readers share the SQL facts,
+    # while each still applies its own session and source permissions.
+    recipient = None if scope.share_session_source_facts and point == "session_source" else current_source_recipient()
+    return ("checkpoint", scope.checkpoint, point, binding, recipient, _SOURCE_READER.get() is not None)
 
 
 def _checkpoint_scope():
@@ -796,7 +800,7 @@ async def _validate_input_dependencies(
 ) -> None:
     from app.core.source_read_purpose import current_source_recipient
 
-    recipient = current_source_recipient(include_receipt_policy=True)
+    recipient = current_source_recipient()
     if recipient is not None and (runtime_request is not None or str(getattr(user, "id", None)) != recipient[1]):
         raise ContentInputReceiptError(
             "content_source_recipient_mismatch", "The source reader changed its recipient purpose.", 403
@@ -2113,7 +2117,7 @@ async def _validate_session_dependency(
     if model is SessionToolInvocation:
         metadata = payload.get("metadata") or {}
         workspace_input = metadata.get("workspace_input_receipt")
-        recipient = current_source_recipient(include_receipt_policy=True)
+        recipient = current_source_recipient()
         if (recipient is not None and recipient[2] and isinstance(workspace_input, dict)
             and workspace_input.get("status") == "verified" and workspace_input.get("content_input_receipt_id") is None):
             raise ContentInputReceiptError(
@@ -2784,7 +2788,7 @@ def defer_memory_after(db, tenant_id, dependency, recheck):
     point = scope.workspace_read if scope is not None and scope.active else None
     if point is None or point.db is not db or point.tenant_id != tenant_id:
         return False
-    group = SimpleNamespace(recipient=current_source_recipient(include_receipt_policy=True), project=_SOURCE_READER.get(),
+    group = SimpleNamespace(recipient=current_source_recipient(), project=_SOURCE_READER.get(),
         phase=scope.checkpoint[1])
     point.observed.append(SimpleNamespace(kind="explicit_memory", group=group, passed=True,
         dependency=dependency, recheck=recheck, ancestors=tuple(scope.visiting) if point.paths is not None else ()))
@@ -2812,7 +2816,7 @@ def _workspace_reader_group(db, tenant_id, user, runtime_request):
     binding = (type(runtime_request), getattr(context, "agent_id", None),
         str(getattr(context, "session_id", None)), str(getattr(context, "runtime_task_id", None)),
         getattr(context, "purpose", None))
-    recipient, project = current_source_recipient(include_receipt_policy=True), _SOURCE_READER.get()
+    recipient, project = current_source_recipient(), _SOURCE_READER.get()
     key = (db.get_transaction(), reader.id, binding, recipient, project, scope.checkpoint[1])
     if key not in point.groups:
         point.groups[key] = SimpleNamespace(reader=reader, recipient=recipient, project=project,
@@ -3152,8 +3156,6 @@ async def authorize_workspace_execution_inputs(request):
     from app.services.session_tool_runtime import _sha256
     from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
     from app.models.runtime_task import RuntimeTask
-    from app.models.chat_session import ChatSession
-    from app.core.resource_authority import is_private_resource_owner
     from sqlalchemy.exc import SQLAlchemyError
 
     context, scope = request.context, request.context.workspace_authority_scope
@@ -3180,11 +3182,7 @@ async def authorize_workspace_execution_inputs(request):
                 .distinct(ContentInputReceipt.carrier_ref)
                 .order_by(ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())
                 .execution_options(populate_existing=True))} if paths else {}
-            shared_paths = paths
-            if paths & scope.owner_paths and context.session_id:
-                session = await db.get(ChatSession, uuid.UUID(str(context.session_id)))
-                if await is_private_resource_owner(db, session, reader_id=context.user_id, authority_source="resource_owner"):
-                    shared_paths = paths - scope.owner_paths
+            shared_paths = paths - scope.owner_paths
             receipt_ids = {ref: receipt.id for ref, receipt in receipts.items() if ref.partition("\n")[2] in shared_paths}
             if receipt_ids:
                 task = await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id))) if context.runtime_task_id else None
@@ -3275,21 +3273,14 @@ async def authorize_workspace_receipt_read(request):
                     receipt = await latest_workspace_receipt(db, uuid.UUID(str(context.tenant_id)), context.agent_id, path)
                     if receipt is None and path not in scope.full_control_paths:
                         return None
-                    if receipt is not None:
-                        from app.core.resource_authority import is_private_resource_owner
-                        from app.models.chat_session import ChatSession
+                    if receipt is not None and path not in scope.owner_paths:
+                        with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as frame:
+                            from app.services.source_read_queries import transcript_event_columns
 
-                        session = await db.get(ChatSession, uuid.UUID(str(context.session_id))) if context.session_id else None
-                        owned = path in scope.owner_paths and not scope.operator_view
-                        if not await is_private_resource_owner(db, session, reader_id=context.user_id,
-                            authority_source="resource_owner" if owned else ""):
-                            with group_source_read(batch_inputs=True, cache_authority=False, source_catalog=True) as frame:
-                                from app.services.source_read_queries import transcript_event_columns
-
-                                transcript_event_columns(frame)
-                                await _preload_execution_sources(db, uuid.UUID(str(context.tenant_id)), [{
-                                    "source_kind": "workspace_artifact", "source_id": str(receipt.id)}])
-                                await _validate_workspace_tool_input(db, request, receipt)
+                            transcript_event_columns(frame)
+                            await _preload_execution_sources(db, uuid.UUID(str(context.tenant_id)), [{
+                                "source_kind": "workspace_artifact", "source_id": str(receipt.id)}])
+                            await _validate_workspace_tool_input(db, request, receipt)
                     if office_read:
                         return None  # Keep the Office adapter's existing result/source contract.
                     observed = WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,

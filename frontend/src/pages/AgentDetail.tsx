@@ -70,6 +70,7 @@ import { autonomyApi } from '../api/domains/autonomy';
 import { chatApi, type ChatSession, type ConversationBranchMode, type SessionHumanInputReceipt, type SessionRun, type SessionStartResponse, type StartSessionRunInput } from '../api/domains/chat';
 import { ccParityApi } from '../api/domains/ccParity';
 import { ApiError } from '../api/core';
+import { useSidebarConversationRefresh } from './agent-detail/useSidebarConversationRefresh';
 import { useChatAttachments } from './agent-detail/useChatAttachments';
 import { useAuthStore } from '../stores';
 import { useOriginalDraftRemoval } from './agent-detail/useOriginalDraftRemoval';
@@ -2341,6 +2342,7 @@ function AgentDetailInner() {
             hasLocalSessionRuntimeState(activeRunStateRef.current, sessionUiStateRef.current, id && activeSession?.id ? buildSessionRuntimeKey(id, String(activeSession.id)) : ''),
         ),
     });
+    useSidebarConversationRefresh(queryClient, currentUser?.id, activeSession, activeSessionRun, activePhase);
 
     const observedColleagueHandoff = React.useMemo(() => {
         if (!activeSessionRun || chatMessagesSessionId !== String(activeSession?.id)) return false;

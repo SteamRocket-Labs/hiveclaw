@@ -43,9 +43,12 @@ it('R15f.3 reuses a resolved sidebar GET and still opens automatically once', as
 
 it('R15f.3 keeps sidebar links usable through a foreign stored tenant 409 and recovery', async () => {
   localStorage.setItem('current_tenant_id', 'foreign');
-  const fetcher = vi.fn(async (url: string) => url.includes('expected_tenant_id=foreign')
-    ? new Response(JSON.stringify({ detail: { state: 'scope_changed', message: 'scope changed' } }), { status: 409 })
-    : new Response(JSON.stringify(active), { status: 200 }));
+  const fetcher = vi.fn(async (url: string) => {
+    if (url === '/api/agents/sessions/sidebar') return new Response(JSON.stringify([]), { status: 200 });
+    return url.includes('expected_tenant_id=foreign')
+      ? new Response(JSON.stringify({ detail: { state: 'scope_changed', message: 'scope changed' } }), { status: 409 })
+      : new Response(JSON.stringify(active), { status: 200 });
+  });
   vi.stubGlobal('fetch', fetcher);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const props = {
@@ -72,7 +75,11 @@ it('R15f.3 keeps sidebar links usable through a foreign stored tenant 409 and re
   localStorage.setItem('current_tenant_id', 'company');
   view.rerender(tree('company'));
   await waitFor(() => expect(links()).toEqual(['/agents/assistant#chat', '/agents/recent#chat']));
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher.mock.calls.map(([url]) => url).sort()).toEqual([
+    '/api/agents/sessions/sidebar',
+    '/api/assistant?expected_user_id=member&expected_tenant_id=company',
+    '/api/assistant?expected_user_id=member&expected_tenant_id=foreign',
+  ]);
   expect(client.getQueryState(['assistant', 'member', 'company', 'member'])?.status).toBe('success');
   expect(screen.queryByRole('alert')).toBeNull();
 });

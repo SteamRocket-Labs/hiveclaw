@@ -67,7 +67,7 @@ function mount(children = <AssistantEntry mode="entry" />, client = new QueryCli
 }
 function transport(read: unknown = unbound, open: unknown = own, available: unknown[] = bots) {
   return vi.stubGlobal('fetch', vi.fn(async (url: string) => response(
-    url === '/api/assistant/open' ? open : url.startsWith('/api/assistant') ? read
+    url === '/api/agents/sessions/sidebar' ? [] : url === '/api/assistant/open' ? open : url.startsWith('/api/assistant') ? read
       : url.startsWith('/api/agents/') ? available : [],
   )));
 }
@@ -150,7 +150,7 @@ describe('NM round 2 landing regressions', () => {
     client.setQueryData(['agents', 'company'], bots);
     transport(unbound, { ...own, state: 'provision_incomplete', entry: unbound.entry });
     const original = vi.mocked(fetch).getMockImplementation()!;
-    vi.mocked(fetch).mockImplementation((...args) => String(args[0]).startsWith('/api/agents/')
+    vi.mocked(fetch).mockImplementation((...args) => String(args[0]).startsWith('/api/agents/?')
       ? refreshed.promise : original(...args));
     function Sidebar() {
       const { data: agents = [] } = useQuery({

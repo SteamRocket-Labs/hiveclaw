@@ -1322,7 +1322,12 @@
     "switchTenant": "切换公司",
     "expandSidebar": "展开侧栏",
     "collapseSidebar": "收起侧栏",
-    "openNamed": "打开 {{name}}"
+    "openNamed": "打开 {{name}}",
+    "sidebarConversation": {
+      "running": "运行中…",
+      "waiting": "等你决定",
+      "yesterday": "昨天"
+    }
   },
   "dashboard": {
     "greeting": {

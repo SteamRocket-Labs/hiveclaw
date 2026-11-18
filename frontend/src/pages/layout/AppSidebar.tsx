@@ -20,8 +20,10 @@ import {
 } from '@tabler/icons-react';
 import { type HrAgentInfo } from '../../api/domains/agents';
 import { isActiveCompany } from '../../api/domains/admin';
+import { chatApi } from '../../api/domains/chat';
 import { isManagedEmployeeAgent } from '../../roles';
 import { assistantBindingQuery, assistantNameForDisplay, sidebarAgentLink, sortSidebarAgents } from '../assistant/assistantScope';
+import { SIDEBAR_CONVERSATIONS_QUERY_KEY } from './sidebarConversationQuery';
 
 const sidebarIcons = {
   user: <IconUser size={16} stroke={1.5} />,
@@ -99,6 +101,17 @@ function getActiveAgentId(pathname: string): string | null {
   }
 }
 
+function sidebarTime(timestamp: string, yesterday: string): string {
+  const messageDate = new Date(timestamp);
+  if (!Number.isFinite(messageDate.getTime())) return '';
+  const now = new Date();
+  if (messageDate.toDateString() === now.toDateString()) {
+    return `${String(messageDate.getHours()).padStart(2, '0')}:${String(messageDate.getMinutes()).padStart(2, '0')}`;
+  }
+  now.setDate(now.getDate() - 1);
+  return messageDate.toDateString() === now.toDateString() ? yesterday : `${messageDate.getMonth() + 1}-${messageDate.getDate()}`;
+}
+
 export default function AppSidebar({
   user,
   theme,
@@ -142,6 +155,22 @@ export default function AppSidebar({
   const sortedAgents = sortSidebarAgents(
     agents.filter((agent) => agent.agent_class !== 'internal_system' || agent.name !== '__system_hr__'), assistantAgentId,
   );
+  const sidebarAgentIds = new Set(sortedAgents.map(agent => String(agent.id)));
+  const sidebarTenantId = user?.role === 'platform_admin' ? currentTenant : user?.tenant_id;
+  const { data: conversations } = useQuery({
+    queryKey: [...SIDEBAR_CONVERSATIONS_QUERY_KEY, user?.id, sidebarTenantId],
+    queryFn: ({ signal }) => chatApi.listSidebarConversations({ signal }),
+    enabled: Boolean(user?.id && sidebarTenantId && (!currentTenant || currentTenant === sidebarTenantId) && sortedAgents.length),
+    refetchOnWindowFocus: true,
+    refetchInterval: query => query.state.data?.some(row => sidebarAgentIds.has(row.agent_id)
+      && (row.state === 'running' || row.state === 'waiting')) ? 15000 : false,
+  });
+  const conversationByAgent = new Map(conversations?.map(row => [row.agent_id, row]));
+  const stateLabels = {
+    running: t('layout.sidebarConversation.running', 'Working…'),
+    waiting: t('layout.sidebarConversation.waiting', 'Needs you'),
+    failed: t('agent.runtimeStatus.failed', 'Failed'),
+  };
 
   const canSeeControlPlane = user && ['platform_admin', 'org_admin'].includes(user.role);
   // Only active companies may ever be selected or shown as the current
@@ -241,6 +270,12 @@ export default function AppSidebar({
           {sortedAgents.map((agent) => {
             const badge = getAgentBadgeStatus(agent);
             const sourceBadge = getAgentSourceBadge(agent, t, user);
+            const conversation = isSidebarCollapsed ? undefined : conversationByAgent.get(String(agent.id));
+            const state = conversation?.state;
+            const secondLine = state ? stateLabels[state] : conversation?.preview;
+            const time = conversation?.last_message_at
+              ? sidebarTime(conversation.last_message_at, t('layout.sidebarConversation.yesterday', 'Yesterday')) : '';
+            const previewId = secondLine ? `sidebar-agent-preview-${agent.id}` : undefined;
             const name = String(agent.id) === assistantAgentId
               ? assistantNameForDisplay(agent.name, t('assistant.title')) || t('assistant.title')
               : assistantNameForDisplay(agent.name, t('assistant.title', 'My Assistant'));
@@ -259,6 +294,7 @@ export default function AppSidebar({
                 className={() => `sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
                 title={name}
                 aria-label={t('layout.openNamed', 'Open {{name}}', { name })}
+                aria-describedby={previewId}
                 style={{ visibility: isAssistantLoading && sortedAgents.length > 1 ? 'hidden' : undefined }}
               >
                 <span className="sidebar-item-icon" style={{ position: 'relative' }}>
@@ -270,8 +306,18 @@ export default function AppSidebar({
                   )}
                   {badge && <span className={`agent-avatar-badge ${badge}`} />}
                 </span>
-                <span className="sidebar-item-text">{name}</span>
-                {sourceBadge && !isSidebarCollapsed && <span className="sidebar-agent-source-badge">{sourceBadge}</span>}
+                <span className="sidebar-agent-content">
+                  <span className="sidebar-agent-heading">
+                    <span className="sidebar-item-text">{name}</span>
+                    {sourceBadge && !isSidebarCollapsed && <span className="sidebar-agent-source-badge">{sourceBadge}</span>}
+                    {time && <time className="sidebar-agent-time" dateTime={conversation?.last_message_at ?? undefined}>{time}</time>}
+                  </span>
+                  {secondLine && (
+                    <span id={previewId} className="sidebar-agent-preview" data-state={state ?? undefined}>
+                      {secondLine}
+                    </span>
+                  )}
+                </span>
               </NavLink>
             );
           })}

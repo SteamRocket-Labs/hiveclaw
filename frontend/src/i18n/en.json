@@ -1322,7 +1322,12 @@
     "switchTenant": "Switch company",
     "expandSidebar": "Expand Sidebar",
     "collapseSidebar": "Collapse Sidebar",
-    "openNamed": "Open {{name}}"
+    "openNamed": "Open {{name}}",
+    "sidebarConversation": {
+      "running": "Working…",
+      "waiting": "Needs you",
+      "yesterday": "Yesterday"
+    }
   },
   "dashboard": {
     "greeting": {

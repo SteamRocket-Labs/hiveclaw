@@ -57,3 +57,37 @@ def test_loop_profile_sampler(caplog, monkeypatch, loop_kind, busy):
     assert set(profile) == {"window_ms", "busy_ms", "gc_ms", "entries", "leaves"}
     assert profile["busy_ms"] >= 600
     assert profile["entries"][0][0] == profile["leaves"][0][0] == f"{module.__name__}:_spin"
+
+
+async def test_profile_sampler_keeps_running_after_capture_fails(caplog, monkeypatch):
+    monkeypatch.setattr(event_loop_monitor, "_PROFILE_WINDOW_SECONDS", 0.2)
+    module_name = "app.loop_profile_test"
+    spin = FunctionType(_spin.__code__, {"__name__": module_name, "time": time})
+    stack_keys = event_loop_monitor._profile_stack_keys
+    loop = asyncio.get_running_loop()
+    failed_capture = asyncio.Event()
+    first_capture = True
+
+    def fail_first_capture(frame):
+        nonlocal first_capture
+        if first_capture:
+            first_capture = False
+            loop.call_soon_threadsafe(failed_capture.set)
+            raise RuntimeError("synthetic stack capture failure")
+        return stack_keys(frame)
+
+    monkeypatch.setattr(event_loop_monitor, "_profile_stack_keys", fail_first_capture)
+    monitor = event_loop_monitor.EventLoopLagMonitor()
+    monitor.start()
+    try:
+        await asyncio.wait_for(failed_capture.wait(), timeout=2)
+        spin()
+    finally:
+        await monitor.stop()
+
+    profiles = [
+        json.loads(message.removeprefix("loop_profile "))
+        for message in caplog.messages
+        if message.startswith("loop_profile ")
+    ]
+    assert any(key == f"{module_name}:_spin" for profile in profiles for key, _ in profile["leaves"]), profiles

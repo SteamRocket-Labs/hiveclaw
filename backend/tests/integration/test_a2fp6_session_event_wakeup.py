@@ -116,6 +116,56 @@ async def test_commits_during_session_event_drain_share_one_follow_up(monkeypatc
             await asyncio.wait_for(drains.get(), 0.05)
 
 
+async def test_burst_of_commits_bounds_woken_session_event_drains(monkeypatch, owner_sessionmaker):
+    seed = await _seed_terminal_task(owner_sessionmaker, tenant_name="Session event burst")
+    loop = asyncio.get_running_loop()
+    published = asyncio.Queue()
+
+    async def publish(payload):
+        published.put_nowait((payload["event_id"], loop.time()))
+
+    async with _run_event_lane(monkeypatch, owner_sessionmaker, seed.tenant_id, publish) as (idle, drains):
+        await asyncio.wait_for(idle.wait(), 1)
+        event_ids = []
+        async with owner_sessionmaker() as db:
+            start = loop.time()
+            for index in range(15):
+                await asyncio.sleep(max(0, start + index * 0.02 - loop.time()))
+                event_ids.append(await _append(db, seed))
+                await db.commit()
+            last_commit = loop.time()
+
+        deadline = last_commit + 0.25
+        async with asyncio.timeout_at(deadline):
+            publications = [await published.get() for _ in event_ids]
+        assert [event_id for event_id, _ in publications] == event_ids
+        assert publications[-1][1] < deadline
+
+        # Count any follow-up drain too, even if it finds the last row already published.
+        await asyncio.sleep(max(0, deadline - loop.time()))
+        assert drains.qsize() <= 4
+
+
+async def test_commit_after_quiet_period_wakes_session_event_lane_immediately(monkeypatch, owner_sessionmaker):
+    seed = await _seed_terminal_task(owner_sessionmaker, tenant_name="Session event quiet wake")
+    published = asyncio.Queue()
+
+    async def publish(payload):
+        published.put_nowait(payload["event_id"])
+
+    async with _run_event_lane(monkeypatch, owner_sessionmaker, seed.tenant_id, publish) as (idle, _):
+        await asyncio.wait_for(idle.wait(), 1)
+        async with owner_sessionmaker() as db:
+            first = await _append(db, seed)
+            await db.commit()
+            assert await asyncio.wait_for(published.get(), 0.5) == first
+
+            await asyncio.sleep(0.12)
+            event_id = await _append(db, seed)
+            await db.commit()
+            assert await asyncio.wait_for(published.get(), 0.05) == event_id
+
+
 async def test_rolled_back_outbox_rows_do_not_wake_lane(monkeypatch, owner_sessionmaker):
     seed = await _seed_terminal_task(owner_sessionmaker, tenant_name="Session event rollback")
     published = asyncio.Queue()

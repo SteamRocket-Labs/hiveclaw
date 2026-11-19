@@ -15,13 +15,15 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.ext.asyncio import async_object_session
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database import Base
+from app.database import Base, schedule_after_commit
 
 
 class SessionEventCursor(Base):
@@ -74,6 +76,19 @@ class SessionEventOutbox(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+async def _wake_session_event_outbox() -> None:
+    from app.services.runtime_task_worker import notify_session_event_outbox
+
+    await notify_session_event_outbox()
+
+
+@event.listens_for(SessionEventOutbox, "after_insert")
+def _schedule_session_event_outbox_wake(_mapper, _connection, row: SessionEventOutbox) -> None:
+    session = async_object_session(row)
+    if session is not None:
+        schedule_after_commit(session, _wake_session_event_outbox, description="session-events", coalesce=True)
 
 
 class SessionCommand(Base):

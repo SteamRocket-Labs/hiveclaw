@@ -3,6 +3,7 @@
 import hashlib
 import uuid
 from dataclasses import dataclass, field, replace
+from functools import cache
 from pathlib import Path
 
 from sqlalchemy import select, text
@@ -168,17 +169,10 @@ async def load_skill_input_snapshot(capture, tenant_id, *, runtime_request=None,
         capture.unbound.append("skill_installation_snapshot_unavailable")
 
 
-def _bundled_platform_skill_hashes(*, source_path=None):
+def _load_bundled_platform_skill_hashes(backend, pack_dirs):
     from app.services.skill_installation import collect_skill_package_files
-    from app.services.skill_seeder import DEFAULT_PACK_SKILL_FOLDERS, builtin_skill_definitions
+    from app.services.skill_seeder import builtin_skill_definitions
 
-    backend = Path(__file__).resolve().parents[2]
-    pack_dirs = (
-        (backend / "packs",)
-        if source_path is None
-        or any(source_path.startswith(f"skills/{folder}/") for folder in DEFAULT_PACK_SKILL_FOLDERS)
-        else ()
-    )
     hashes = {
         f"skills/{skill['folder_name']}/{file['path']}": hashlib.sha256(file["content"].encode("utf-8")).hexdigest()
         for skill in builtin_skill_definitions(pack_dirs=pack_dirs)
@@ -194,9 +188,31 @@ def _bundled_platform_skill_hashes(*, source_path=None):
                     for file in collect_skill_package_files(folder)
                 }
             )
+    return hashes
+
+
+_cached_bundled_platform_skill_hashes = cache(_load_bundled_platform_skill_hashes)
+
+
+def _bundled_platform_skill_hashes(*, source_path=None):
+    from app.services import skill_seeder
+
+    source = Path(__file__)
+    backend = source.resolve().parents[2]
+    pack_dirs = (
+        (backend / "packs",)
+        if source_path is None
+        or any(source_path.startswith(f"skills/{folder}/") for folder in skill_seeder.DEFAULT_PACK_SKILL_FOLDERS)
+        else ()
+    )
+    # Only the running application's package is immutable for the life of the process.
+    load = _cached_bundled_platform_skill_hashes
+    if Path(skill_seeder.__file__).parent != source.parent:
+        load = _load_bundled_platform_skill_hashes
+    hashes = load(backend, pack_dirs)
     if source_path is not None:
         return {source_path: hashes[source_path]} if source_path in hashes else {}
-    return hashes
+    return hashes.copy()
 
 
 def original_platform_skill_hashes(workspace, *, bundled=None):

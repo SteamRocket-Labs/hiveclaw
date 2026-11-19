@@ -1078,7 +1078,12 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # session_input_dispatch, session_model_round and web_chat_runtime, and the
 # functions lock_transcript_session, mark_bound_inputs_applied and
 # commit_sealed_model_round. No new bypass scope or write.
-RLS_BYPASS_SCOPES_SHA256 = "588514cd4c9f0323f0eea12443ef73a0870cb2015c085ab38f481c304916171e"
+# Land47 (A2fp2) versus land46: 123 callsites and 809 entries unchanged; no key
+# added or removed. Changed hashes only: module sources of
+# workspace_resource_authority and credential_boundary_loader, and the function
+# load_exact_secret_boundary (assigned MCP secrets in one statement under the
+# same tenant session). No new bypass scope or write.
+RLS_BYPASS_SCOPES_SHA256 = "64a1cfc1f77977ebf88bd76320ec8f3e319111e7ed316f7cc8fe62d445394cbf"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -20,6 +20,7 @@ from app.core import request_timing
 from app.models.agent import Agent
 from app.models.config_revision import ConfigRevision
 from app.models.knowledge import KnowledgeDocument
+from app.models.runtime_task import RuntimeTask
 from app.models.skill import Skill
 from app.runtime import hooks, invocation_orchestrator, invoker
 from app.services import agent_tools
@@ -290,15 +291,19 @@ def watch_phases(monkeypatch, probe):
     return recorded
 
 
-async def test_private_turn_volume_budget(member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog):  # noqa: F811
+async def measure_private_turn_volume(
+    member_fixture, owner_sessionmaker, monkeypatch, tmp_path, caplog, *,
+    probe=None, provider_type=HelloTransport, include_tool_turn=False, volumes=("empty", "lab"),
+    drain_boundary_for_task=None,
+):
     from app.core.events import close_redis
     from app.runtime.hooks_setup import register_memory_hooks
     from app.services import llm_client, runtime_task_worker as worker
     from app.services import web_chat_run_orchestrator as orchestrator, web_chat_runtime as runtime
     from app.services.web_terminal_boundary_processor import _SUMMARY_PROJECTION_TASKS
 
-    _, _, _, factory = member_request
-    seed, client = await configure(member_request, owner_sessionmaker, factory, monkeypatch, tmp_path)
+    _, _, _, factory = member_fixture
+    seed, client = await configure(member_fixture, owner_sessionmaker, factory, monkeypatch, tmp_path)
     for name, function in vars(worker).copy().items():
         if inspect.iscoroutinefunction(function) and function.__module__ == worker.__name__:
             arg = inspect.signature(function).parameters.get("session_factory")
@@ -309,14 +314,14 @@ async def test_private_turn_volume_budget(member_request, owner_sessionmaker, mo
     monkeypatch.setattr(agent_tools, "_always_core_tools", None)
     monkeypatch.setattr(llm_client, "create_llm_client", lambda **_kwargs: LocalAuxTransport([]))
     caplog.set_level(logging.INFO, logger="app.core.request_timing")
-    probe = VolumeProbe()
+    probe = probe if probe is not None else VolumeProbe()
     diagnostics = watch_phases(monkeypatch, probe)
     original_execute = runtime.execute_web_chat_run
     trial = session_id = None
 
     def mark_terminal():
         request_timing.mark_run_terminal()
-        if probe.phase is not None and probe.phase.name == f"{trial}-post":
+        if probe.phase is not None and probe.phase.name in {f"{trial}-post", f"{trial}-visible-to-terminal"}:
             probe.phase.wall_ms = (time.perf_counter() - probe.phase.wall_start) * 1000
             probe.switch(f"{trial}-after")
 
@@ -330,13 +335,17 @@ async def test_private_turn_volume_budget(member_request, owner_sessionmaker, mo
     session_url = f"/api/agents/{seed.agent_id}/sessions"
     root = tmp_path / str(seed.agent_id)
     try:
-        for volume in ("empty", "lab"):
+        for volume in volumes:
             if volume == "lab":
                 await seed_history(owner_sessionmaker, seed)
                 seed_files(root)
-            for turn in ("warmup", "warm", "second"):
+            turns = ("warmup", "warm", "second")
+            if volume == "lab" and include_tool_turn:
+                turns += ("tool",)
+            for turn in turns:
                 trial = f"{volume}-{turn}"
-                provider = HelloTransport(trial, probe)
+                provider = provider_type(trial, probe)
+                rounds = 2 if turn == "tool" else 1
                 monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: provider)
                 url = f"{session_url}/{session_id}/runs" if turn == "second" else f"{session_url}/runs"
                 with probe.meter():
@@ -350,21 +359,43 @@ async def test_private_turn_volume_budget(member_request, owner_sessionmaker, mo
                     session_id = uuid.UUID(body["session"]["id"])
                 run_id = uuid.UUID((body if turn == "second" else body["run"])["run_id"])
                 await claim(seed, run_id, owner_sessionmaker)
+                async with owner_sessionmaker() as db:
+                    task = await db.get(RuntimeTask, run_id)
                 with probe.meter():
-                    assert runtime.dispatch_web_chat_run(run_id, claim_version=1, worker_id="rl0c")
+                    assert worker._dispatch_claimed_task(task)
                     await runtime._TASKS[run_id.hex]
                     assert probe.phase.name == f"{trial}-after"
-                    assert len(provider.requests) == 1
-                await assert_committed_reply(owner_sessionmaker, run_id, session_id, seed)
+                    assert len(provider.requests) == rounds
+                if turn == "tool":
+                    assert any(
+                        message["role"] == "tool" and message["tool_call_id"] == "volume-list-files"
+                        for message in provider.requests[1]["messages"]
+                    )
+                else:
+                    await assert_committed_reply(owner_sessionmaker, run_id, session_id, seed)
                 timing, = [line for line in summaries(caplog) if line["run_id"] == str(run_id)]
-                assert timing["rounds"] == 1 and timing["instrumentation_errors"] == 0
+                assert timing["rounds"] == rounds and timing["instrumentation_errors"] == 0
                 probe.phases[f"{trial}-pre"].wall_ms = timing["pre_model_ms"]
-                counts = await worker.drain_web_terminal_boundary_outbox_once(worker_id="volume-boundary")
-                assert counts["delivered"] == 1, counts
+                if drain_boundary_for_task is None:
+                    counts = await worker.drain_web_terminal_boundary_outbox_once(worker_id="volume-boundary")
+                    assert counts["delivered"] == 1, counts
+                else:
+                    counts = await drain_boundary_for_task(
+                        worker.drain_web_terminal_boundary_outbox_once, task_id=run_id,
+                        worker_id="volume-boundary", session_factory=factory,
+                    )
+                    assert counts["target_delivered"] == 1, counts
                 await asyncio.gather(*tuple(_SUMMARY_PROJECTION_TASKS))
     finally:
         await close_redis()
 
+    return probe, diagnostics
+
+
+async def test_private_turn_volume_budget(member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog):  # noqa: F811
+    probe, diagnostics = await measure_private_turn_volume(
+        member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog,
+    )
     measurements = {}
     for volume in ("empty", "lab"):
         for turn in CEILINGS:

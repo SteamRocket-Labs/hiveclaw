@@ -84,14 +84,17 @@ async def bind_private_session_permission_source(db, *, task, session, invocatio
             or invocation.session_context.session_id != str(session.id)
         ):
             return
-        row = await db.get(SessionTurnInput, input_id)
-        command = await db.get(SessionCommand, command_id)
+        rows = (await db.execute(
+            select(SessionTurnInput, SessionCommand)
+            .join(SessionCommand, SessionTurnInput.command_id == SessionCommand.id)
+            .where(SessionTurnInput.id == input_id, SessionCommand.id == command_id)
+        )).one_or_none()
+        if rows is None:
+            return
+        row, command = rows
         if (
-            row is None
-            or command is None
-            or row.tenant_id != session.tenant_id
+            row.tenant_id != session.tenant_id
             or row.session_id != session.id
-            or row.command_id != command.id
             or row.target_run_id not in {None, task.id}
             or command.tenant_id != session.tenant_id
             or command.session_id != session.id

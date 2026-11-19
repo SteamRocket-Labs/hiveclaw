@@ -2501,6 +2501,8 @@ def dispatch_web_chat_run(
     cancel_event: asyncio.Event | None = None,
     claim_version: int | None = None,
     worker_id: str | None = None,
+    tenant_id: uuid.UUID | None = None,
+    session_id: str | None = None,
 ) -> bool:
     run_uuid = _run_id(run_id)
     run_key = run_uuid.hex
@@ -2514,7 +2516,11 @@ def dispatch_web_chat_run(
         async def claimed_work() -> None:
             try:
                 await run_claimed_runtime_task(
-                    execute_web_chat_run(run_uuid, cancel_event=cancel_event),
+                    execute_web_chat_run(
+                        run_uuid,
+                        cancel_event=cancel_event,
+                        **({"tenant_id": tenant_id, "session_id": session_id} if tenant_id else {}),
+                    ),
                     task_id=run_uuid,
                     claim_version=claim_version,
                     worker_id=worker_id or "unknown",
@@ -5355,41 +5361,100 @@ async def _persist_runtime_event(
     data: dict[str, Any],
     external_principal_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
-    from app.services.session_event_contract import serialize_session_event
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
     tenant_id = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tenant_id) as db:
-        event_type = _runtime_event_storage_type(data)
         event_session = await db.get(ChatSession, uuid.UUID(str(session_id)))
         if event_session is None or event_session.tenant_id != tenant_id or event_session.agent_id != agent_id:
             raise ValueError("runtime_event_session_unavailable")
-        event_payload = build_session_native_event(data) if event_type in SESSION_NATIVE_EVENT_TYPES else data
-        event_parts = [event_payload["part"]] if isinstance(event_payload.get("part"), dict) else None
-        event_metadata = {
-            "source": "web_chat_runtime",
-            "runtime_event_type": event_type,
-            **{key: value for key, value in data.items() if value is not None},
-        }
-        result = await append_session_event(
-            db=db,
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            session_id=session_id,
-            run_id=data.get("runtime_task_id") or data.get("run_id"),
-            actor_type="system",
-            event_type=event_type,
-            role="system",
-            listed_surface=event_session.listed_surface,
-            user_id=user_id,
-            external_principal_id=external_principal_id,
-            content=json.dumps(data, ensure_ascii=False),
-            source="web_chat_runtime",
-            parts=event_parts,
-            metadata=event_metadata,
-        )
+        envelope = await _append_runtime_event(db, event_session, data, user_id, external_principal_id)
         await db.commit()
-        return serialize_session_event(result.transcript_event, audience="user")
+        return envelope
+
+
+async def _persist_context_observations(
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_id: str,
+    run_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+    observations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    from app.models.session_v2 import SessionRunOutcome
+    from app.services.runtime_task_fence import current_runtime_task_fence
+
+    session_uuid = uuid.UUID(session_id)
+    async with tenant_scoped_session(tenant_id) as db:
+        task = await _lock_runtime_task_for_session_mutation(
+            db, run_uuid=run_id, tenant_id=tenant_id, agent_id=agent_id, session_id=session_uuid,
+        )
+        if task is None:
+            return []
+        fence = current_runtime_task_fence()
+        if task.status in _TERMINAL_STATUSES:
+            # RuntimeTask fallback boundaries depend on the transcript
+            # frontier remaining fixed. Only a canonical completion pins
+            # its own terminal event independently of later diagnostics.
+            outcome_ref = (task.metadata_json or {}).get("session_v2_outcome") or {}
+            outcome_id = _uuid_or_none(outcome_ref.get("outcome_id"))
+            if task.status != "completed" or outcome_id is None:
+                return []
+            outcome = await db.get(SessionRunOutcome, outcome_id)
+            if (
+                outcome is None
+                or outcome.tenant_id != tenant_id
+                or outcome.session_id != session_uuid
+                or outcome.run_id != run_id
+                or outcome.state != "terminal_committed"
+            ):
+                return []
+            if fence is not None and task.id == fence.task_id:
+                version = (outcome.seal_json or {}).get("eligibility", {}).get("task_claim_version")
+                if version != fence.claim_version or task.claim_version != fence.claim_version + 1:
+                    return []
+        session = await db.get(ChatSession, session_uuid)
+        if session is None or session.tenant_id != tenant_id or session.agent_id != agent_id:
+            raise ValueError("runtime_event_session_unavailable")
+        return [await _append_runtime_event(db, session, event, user_id, None) for event in observations]
+
+
+async def _append_runtime_event(
+    db: AsyncSession,
+    session: ChatSession,
+    data: dict[str, Any],
+    user_id: uuid.UUID | None,
+    external_principal_id: uuid.UUID | None,
+) -> dict[str, Any]:
+    from app.services.session_event_contract import serialize_session_event
+
+    event_type = _runtime_event_storage_type(data)
+    event_payload = build_session_native_event(data) if event_type in SESSION_NATIVE_EVENT_TYPES else data
+    event_parts = [event_payload["part"]] if isinstance(event_payload.get("part"), dict) else None
+    event_metadata = {
+        "source": "web_chat_runtime",
+        "runtime_event_type": event_type,
+        **{key: value for key, value in data.items() if value is not None},
+    }
+    result = await append_session_event(
+        db=db,
+        agent_id=session.agent_id,
+        tenant_id=session.tenant_id,
+        session_id=str(session.id),
+        run_id=data.get("runtime_task_id") or data.get("run_id"),
+        actor_type="system",
+        event_type=event_type,
+        role="system",
+        listed_surface=session.listed_surface,
+        user_id=user_id,
+        external_principal_id=external_principal_id,
+        content=json.dumps(data, ensure_ascii=False),
+        source="web_chat_runtime",
+        parts=event_parts,
+        metadata=event_metadata,
+    )
+    return serialize_session_event(result.transcript_event, audience="user")
 
 
 def _runtime_event_storage_type(data: dict[str, Any]) -> str:
@@ -6407,6 +6472,7 @@ def _web_chat_run_ports(*, tenant_id: uuid.UUID | None = None) -> Any:
             stream_retry_tombstone=STREAM_RETRY_TOMBSTONE,
             stream_batcher_type=_WebChatStreamMicroBatcher,
             terminal_signal_type=_TerminalToolCardSignal,
+            persist_context_observations=_persist_context_observations,
         ),
         terminal=WebChatTerminalPorts(
             finalize_with_assistant=_finalize_web_chat_run_with_assistant,
@@ -6964,32 +7030,39 @@ async def _retry_pending_session_run_settlements(
 
 
 @timed_web_chat_run
-async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> None:
+async def execute_web_chat_run(
+    run_id: str | uuid.UUID,
+    *,
+    cancel_event: asyncio.Event | None = None,
+    tenant_id: uuid.UUID | None = None,
+    session_id: str | None = None,
+) -> None:
     """Delegate to the single run_web_chat_task lifecycle owner."""
     from app.services.web_chat_run_orchestrator import run_web_chat_task
     from app.services.runtime_task_fence import current_runtime_task_fence
 
     run_uuid = _run_id(run_id)
-    retry_tenant = None
+    retry_tenant = tenant_id
     try:
         # Reachable retry for prior runs of this session whose committed-round
         # charges stayed suppressed (bounded, idempotent, keyed).
         try:
-            retry_tenant = await resolve_tenant_for_runtime_task(run_uuid, session_factory=_async_session)
-            if retry_tenant is not None:
+            if retry_tenant is None:
+                retry_tenant = await resolve_tenant_for_runtime_task(run_uuid, session_factory=_async_session)
+            if retry_tenant is not None and session_id is None:
                 async with tenant_scoped_session(
                     retry_tenant,
                     session_factory=_async_session,
                     require_tenant=True,
                     source="pending_session_token_settlement_preflight",
                 ) as db:
-                    prior = await db.scalar(
+                    session_id = await db.scalar(
                         select(RuntimeTask.parent_session_id).where(
                             RuntimeTask.id == run_uuid, RuntimeTask.tenant_id == retry_tenant
                         )
                     )
-                if prior:
-                    await _retry_pending_session_run_settlements(prior, retry_tenant)
+            if retry_tenant is not None and session_id:
+                await _retry_pending_session_run_settlements(session_id, retry_tenant)
         except Exception as exc:
             logger.warning(
                 "[WebChatRuntime] pending session token settlement preflight failed for run {}: {}",

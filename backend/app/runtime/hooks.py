@@ -1663,6 +1663,7 @@ async def emit_hook(
     if evidence_db is None and evidence_mode == "caller_transaction":
         raise ValueError("evidence_mode='caller_transaction' requires evidence_db")
     ctx = HookContext(event=event, _evidence_db=evidence_db, **kwargs)
+    defer_observation = event == HookEvent.USER_PROMPT_SUBMIT and hook_registry.handler_count(event) == 0
     started = time.perf_counter()
     result = await hook_registry.emit(ctx)
     try:
@@ -1670,6 +1671,7 @@ async def emit_hook(
             ctx,
             result=result,
             duration_ms=(time.perf_counter() - started) * 1000,
+            defer_observation=defer_observation,
         )
     except Exception as exc:  # evidence projection cannot become a runtime availability dependency
         logger.warning("[Hooks] Failed to persist boundary evidence for %s: %s", event.value, exc)
@@ -1736,6 +1738,7 @@ async def _persist_hook_boundary_evidence(
     *,
     result: HookResult | None,
     duration_ms: float,
+    defer_observation: bool = False,
 ) -> None:
     metadata = dict(ctx.metadata or {})
     try:
@@ -1808,4 +1811,5 @@ async def _persist_hook_boundary_evidence(
             "evidence_transaction": "caller_transaction" if ctx._evidence_db is not None else "independent",
         },
         error=result.reason if result and result.failure else None,
+        defer_observation=defer_observation,
     )

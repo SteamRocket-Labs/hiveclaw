@@ -346,7 +346,7 @@ async def _build_runtime_metadata_sections(
                 )
             )
             triggers = result.scalars().all()
-            if runtime_principal is not None:
+            if triggers and runtime_principal is not None:
                 from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor
                 from app.services.trigger_resource_authority import filter_authorized_triggers
                 from app.services.trigger_context_sources import observe_trigger_context

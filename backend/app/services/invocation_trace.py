@@ -389,6 +389,7 @@ async def persist_invocation_span(
     usage: dict[str, Any] | None = None,
     error: str | None = None,
     timeout_seconds: float = INVOCATION_SPAN_PERSIST_TIMEOUT_SECONDS,
+    defer_observation: bool = False,
 ) -> None:
     """Best-effort production writer used by the kernel.
 
@@ -429,7 +430,8 @@ async def persist_invocation_span(
     if (
         db is None and batch is not None and (row["tenant_id"], row["runtime_task_id"]) == batch[:2]
         and (
-            span_type in {"generation", "invocation"}
+            defer_observation
+            or span_type in {"generation", "invocation"}
             or (span_type == "hook" and name in {"hook.setup", "hook.session_start", "hook.instructions_loaded"})
         )
     ):

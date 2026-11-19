@@ -39,7 +39,9 @@ def tool_result_source_hash(payload: dict[str, Any]) -> str | None:
     return content_hash
 
 
-async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id, run_id, result_id, messages) -> None:
+async def capture_context_message_origins(
+    db, *, tenant_id, agent_id, session_id, run_id, result_id, messages, locked_session: ChatSession | None = None,
+) -> None:
     """Persist only compiler-created origins, without declaring their leaves authorized."""
     from datetime import datetime, timezone
     from app.models.invocation_span import InvocationSpan
@@ -52,11 +54,16 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
         for message in messages
     ):
         return
-    owner_id = await db.scalar(
-        select(ChatSession.user_id).where(
-            ChatSession.id == session_id, ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id
+    if locked_session is not None:
+        if (locked_session.id, locked_session.tenant_id, locked_session.agent_id) != (session_id, tenant_id, agent_id):
+            return
+        owner_id = locked_session.user_id
+    else:
+        owner_id = await db.scalar(
+            select(ChatSession.user_id).where(
+                ChatSession.id == session_id, ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id
+            )
         )
-    )
     machine_actor = None
     external_actor = None
     if owner_id is None:
@@ -320,12 +327,17 @@ async def _build_model_input_bindings(
     }
     if not any(isinstance(ref, str) and ref for ref in refs):
         return manifest
-    session = await db.scalar(
-        select(ChatSession.id).where(
-            ChatSession.id == session_id, ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id
-        )
-    )
-    if session is None:
+    if locked_session is not None:
+        session_matches = (
+            locked_session.id, locked_session.tenant_id, locked_session.agent_id
+        ) == (session_id, tenant_id, agent_id)
+    else:
+        session_matches = await db.scalar(
+            select(ChatSession.id).where(
+                ChatSession.id == session_id, ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id
+            )
+        ) is not None
+    if not session_matches:
         for entry in entries:
             entry["code"] = "source_scope_mismatch"
         return manifest

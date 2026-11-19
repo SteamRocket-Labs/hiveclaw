@@ -15,7 +15,8 @@ import logging
 import sys
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
+from collections.abc import Callable
 from types import FrameType
 from typing import Any
 
@@ -27,6 +28,11 @@ _STALL_SECONDS = 0.25
 _MAX_FRAMES = 12
 _stall_log_times: deque[float] = deque()
 _stall_log_lock = threading.Lock()
+_PROFILE_SAMPLE_MS = 20
+_PROFILE_WINDOW_SECONDS = 60.0
+_PROFILE_TOP_KEYS = 12
+_profile_log_lock = threading.Lock()
+_last_profile_log_at = float("-inf")
 
 
 def freeze_startup_heap() -> int:
@@ -62,6 +68,81 @@ def _log_stall(ms: float, frames: list[str], gc_ms: float) -> None:
     logger.warning("loop_stall %s", json.dumps({"ms": round(ms, 3), "frames": frames, "gc_ms": round(gc_ms, 3)}))
 
 
+def _profile_stack_keys(frame: FrameType | None) -> tuple[str, str] | None:
+    if frame is None:
+        return None
+    module = frame.f_globals.get("__name__", "")
+    code = frame.f_code
+    # uvloop waits in native code below asyncio's Runner.run.
+    if module == "asyncio.runners" and code.co_qualname == "Runner.run":
+        return None
+    if module == "selectors" and code.co_name == "select":
+        caller = frame.f_back
+        if caller is not None and caller.f_code.co_qualname == "BaseEventLoop._run_once":
+            return None
+
+    entry = leaf = None
+    while frame is not None:
+        location_module = frame.f_globals.get("__name__", "")
+        if location_module.startswith("app."):
+            entry = f"{location_module}:{frame.f_code.co_name}"
+            if leaf is None:
+                leaf = entry
+        frame = frame.f_back
+    if leaf is None:
+        leaf = f"{module}:{code.co_name}"
+    return entry or leaf, leaf
+
+
+def _log_loop_profile(window_ms: int, entries: Counter[str], leaves: Counter[str], window_seconds: float) -> None:
+    global _last_profile_log_at
+    with _profile_log_lock:
+        now = time.monotonic()
+        if now - _last_profile_log_at < window_seconds:
+            return
+        _last_profile_log_at = now
+    logger.warning("loop_profile %s", json.dumps({
+        "window_ms": window_ms,
+        "busy_ms": entries.total() * _PROFILE_SAMPLE_MS,
+        "gc_ms": entries["gc"] * _PROFILE_SAMPLE_MS,
+        "entries": [(key, count * _PROFILE_SAMPLE_MS) for key, count in entries.most_common(_PROFILE_TOP_KEYS)],
+        "leaves": [(key, count * _PROFILE_SAMPLE_MS) for key, count in leaves.most_common(_PROFILE_TOP_KEYS)],
+    }))
+
+
+def _watch_loop_profile(
+    loop: asyncio.AbstractEventLoop, loop_thread: int, stop: threading.Event, is_collecting: Callable[[], bool],
+) -> None:
+    try:
+        window_seconds = _PROFILE_WINDOW_SECONDS
+        sample_seconds = _PROFILE_SAMPLE_MS / 1000
+        window_started = time.monotonic()
+        sample_at = window_started + sample_seconds
+        entries: Counter[str] = Counter()
+        leaves: Counter[str] = Counter()
+        while not stop.wait(max(0.0, sample_at - time.monotonic())) and loop.is_running():
+            now = time.monotonic()
+            sample_at += sample_seconds
+            if sample_at <= now:
+                # A late wake cannot recover the stacks from missed samples.
+                sample_at = now + sample_seconds
+            keys = ("gc", "gc") if is_collecting() else _profile_stack_keys(sys._current_frames().get(loop_thread))
+            if keys is not None:
+                entry, leaf = keys
+                entries[entry] += 1
+                leaves[leaf] += 1
+            elapsed = now - window_started
+            if elapsed >= window_seconds:
+                if entries:
+                    _log_loop_profile(round(elapsed * 1000), entries, leaves, window_seconds)
+                    entries.clear()
+                    leaves.clear()
+                window_started = time.monotonic()
+    except Exception:
+        # Profiling is best-effort and independent of stall detection.
+        pass
+
+
 def _watch_loop_stalls(loop: asyncio.AbstractEventLoop, loop_thread: int, stop: threading.Event) -> None:
     heartbeat = threading.Event()
     heartbeat_pending = False
@@ -93,6 +174,16 @@ def _watch_loop_stalls(loop: asyncio.AbstractEventLoop, loop_thread: int, stop: 
         # The collection may have been committed while this thread waited for the clock.
         return gc_total if gc_total_minus_start is None else started + now
 
+    try:
+        threading.Thread(
+            target=_watch_loop_profile,
+            name="loop_profile_sampler",
+            args=(loop, loop_thread, stop, lambda: gc_total_minus_start is not None),
+            daemon=True,
+        ).start()
+    except Exception:
+        # Stall detection remains available if the profiler cannot start.
+        pass
     gc.callbacks.append(record_gc)
     try:
         while not stop.is_set():
@@ -135,6 +226,7 @@ def _watch_loop_stalls(loop: asyncio.AbstractEventLoop, loop_thread: int, stop: 
                     return
                 time.sleep(_HEARTBEAT_SECONDS)
     finally:
+        stop.set()
         gc.callbacks.remove(record_gc)
 
 

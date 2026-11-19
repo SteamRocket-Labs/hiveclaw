@@ -113,14 +113,14 @@ def _log_loop_profile(window_ms: int, entries: Counter[str], leaves: Counter[str
 def _watch_loop_profile(
     loop: asyncio.AbstractEventLoop, loop_thread: int, stop: threading.Event, is_collecting: Callable[[], bool],
 ) -> None:
-    try:
-        window_seconds = _PROFILE_WINDOW_SECONDS
-        sample_seconds = _PROFILE_SAMPLE_MS / 1000
-        window_started = time.monotonic()
-        sample_at = window_started + sample_seconds
-        entries: Counter[str] = Counter()
-        leaves: Counter[str] = Counter()
-        while not stop.wait(max(0.0, sample_at - time.monotonic())) and loop.is_running():
+    window_seconds = _PROFILE_WINDOW_SECONDS
+    sample_seconds = _PROFILE_SAMPLE_MS / 1000
+    window_started = time.monotonic()
+    sample_at = window_started + sample_seconds
+    entries: Counter[str] = Counter()
+    leaves: Counter[str] = Counter()
+    while not stop.wait(max(0.0, sample_at - time.monotonic())) and loop.is_running():
+        try:
             now = time.monotonic()
             sample_at += sample_seconds
             if sample_at <= now:
@@ -133,14 +133,16 @@ def _watch_loop_profile(
                 leaves[leaf] += 1
             elapsed = now - window_started
             if elapsed >= window_seconds:
-                if entries:
-                    _log_loop_profile(round(elapsed * 1000), entries, leaves, window_seconds)
+                try:
+                    if entries:
+                        _log_loop_profile(round(elapsed * 1000), entries, leaves, window_seconds)
+                finally:
                     entries.clear()
                     leaves.clear()
-                window_started = time.monotonic()
-    except Exception:
-        # Profiling is best-effort and independent of stall detection.
-        pass
+                    window_started = time.monotonic()
+        except Exception:
+            # Profiling is best-effort and independent of stall detection.
+            continue
 
 
 def _watch_loop_stalls(loop: asyncio.AbstractEventLoop, loop_thread: int, stop: threading.Event) -> None:

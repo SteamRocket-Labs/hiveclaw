@@ -49,6 +49,7 @@ if (*EXECUTABLE_CHAT_TASK_TYPES, *DIRECT_INVOCATION_TASK_TYPES) != TERMINAL_BOUN
 _LOCAL_WAKEUP_EVENT: asyncio.Event | None = None
 _SESSION_EVENT_WAKEUP: asyncio.Future[None] | None = None
 _SESSION_EVENT_WAKE_MESSAGE = "session-events"
+_SESSION_EVENT_WAKE_INTERVAL_SECONDS = 0.1
 SUPPORTED_RUNTIME_TASK_TYPES = (
     "remote_a2a",
     "readiness_probe",
@@ -1495,10 +1496,14 @@ async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -
     due = dict.fromkeys(consumers, False)
     loop = asyncio.get_running_loop()
     session_event_wakeup = None
+    next_session_event_wake_at = 0.0
     if "session-events" in consumers:
         session_event_wakeup = _SESSION_EVENT_WAKEUP = loop.create_future()
 
-    async def tick(lane):
+    async def tick(lane, *, woken):
+        nonlocal next_session_event_wake_at
+        if woken:
+            next_session_event_wake_at = loop.time() + _SESSION_EVENT_WAKE_INTERVAL_SECONDS
         try:
             await _terminal_boundary_lane_loop(worker_id=exact_worker_id, lane=lane, once=True)
         finally:
@@ -1535,15 +1540,20 @@ async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -
                 if lane in running and not running[lane].done():
                     continue
                 wakeup = session_event_wakeup if lane == "session-events" else None
+                woken = False
                 if wakeup is not None and wakeup.done():
-                    session_event_wakeup = _SESSION_EVENT_WAKEUP = loop.create_future()
-                else:
+                    if now < next_session_event_wake_at:
+                        next_tick = min(next_tick, next_session_event_wake_at)
+                    else:
+                        session_event_wakeup = _SESSION_EVENT_WAKEUP = loop.create_future()
+                        woken = True
+                if not woken:
                     if not due.get(lane, True):
                         continue
                     if next_at[lane] > now:
                         next_tick = min(next_tick, next_at[lane])
                         continue
-                running[lane] = asyncio.create_task(tick(lane), name=f"runtime-terminal-boundary-{lane}")
+                running[lane] = asyncio.create_task(tick(lane, woken=woken), name=f"runtime-terminal-boundary-{lane}")
             # Start cached due work before waiting for a refresh. Lane deadlines
             # neither start a probe nor wait for its result before dispatching.
             timeout = max(0, next_tick - loop.time())
@@ -1551,9 +1561,12 @@ async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -
             if probe is not None and now < probe_at:
                 waiting.add(probe)
             if session_event_wakeup is not None:
-                # While draining, leave any pending wake set and wait for the tick to end.
+                # A pending wake waits for the running tick or the next eligible start.
                 session_tick = running.get("session-events")
-                waiting.add(session_tick if session_tick is not None and not session_tick.done() else session_event_wakeup)
+                if session_tick is not None and not session_tick.done():
+                    waiting.add(session_tick)
+                elif not session_event_wakeup.done():
+                    waiting.add(session_event_wakeup)
             if waiting:
                 await asyncio.wait(waiting, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
             else:

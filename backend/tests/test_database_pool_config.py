@@ -44,7 +44,8 @@ def test_engine_pool_kwargs_reads_settings() -> None:
         "pool_size": settings.DB_POOL_SIZE,
         "max_overflow": settings.DB_MAX_OVERFLOW,
         "pool_timeout": settings.DB_POOL_TIMEOUT,
-        "pool_pre_ping": True,
+        "pool_pre_ping": False,
+        "pool_recycle": 300,
     }
 
 

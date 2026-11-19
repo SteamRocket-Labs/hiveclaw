@@ -1817,7 +1817,7 @@ async def _enforce_invocation_quota(request: AgentInvocationRequest) -> AgentInv
         ):
             quota_scope["agent_id"] = request.agent_id
         turn = request.private_web_turn
-        if turn is not None and "tenant_id" in quota_check_params:
+        if turn is not None and request.agent_id == turn.agent.id and "tenant_id" in quota_check_params:
             quota_scope["tenant_id"] = turn.agent.tenant_id
         await check_user_token_quota(quota_user_id, **quota_scope)
         return None

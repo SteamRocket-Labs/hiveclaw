@@ -960,6 +960,7 @@ async def prepare_model_request(
         run_id=run_id,
         result_id=result_id,
         messages=messages,
+        locked_session=locked_session,
     )
     input_bindings = await build_model_input_bindings(
         db,

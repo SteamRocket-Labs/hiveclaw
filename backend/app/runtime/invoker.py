@@ -1809,12 +1809,15 @@ async def _enforce_invocation_quota(request: AgentInvocationRequest) -> AgentInv
         if quota_user_id is None and request.agent_id is None:
             return None
         quota_check_params = inspect.signature(check_user_token_quota).parameters
+        quota_scope = {}
         if "agent_id" in quota_check_params or any(
             param.kind is inspect.Parameter.VAR_KEYWORD for param in quota_check_params.values()
         ):
-            await check_user_token_quota(quota_user_id, agent_id=request.agent_id)
-        else:
-            await check_user_token_quota(quota_user_id)
+            quota_scope["agent_id"] = request.agent_id
+        turn = request.private_web_turn
+        if turn is not None and request.agent_id == turn.agent.id and "tenant_id" in quota_check_params:
+            quota_scope["tenant_id"] = turn.agent.tenant_id
+        await check_user_token_quota(quota_user_id, **quota_scope)
         return None
     except QuotaExceeded as exc:
         event = {

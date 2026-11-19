@@ -706,14 +706,16 @@ class RuntimeBudgetService:
             )
             db.add(run)
             await db.commit()
-            await db.refresh(run)
+            if db.sync_session.expire_on_commit:
+                await db.refresh(run)
             return run
 
     async def reserve(self, reservation: RuntimeBudgetReservation) -> RuntimeBudgetReservationResult:
         amounts = _positive_amounts(reservation)
         async with self._budget_session("reserve") as db:
             run = await self._lock_run(db, reservation.budget_run_id)
-            existing = await self._existing_event(db, run.id, reservation.reservation_key, "reservation")
+            events = await self._existing_events(db, run.id, reservation.reservation_key, "reservation", "denial")
+            existing = events.get("reservation")
             if existing is not None:
                 existing_amounts = {
                     key: max(0, int((existing.amounts_json or {}).get(key) or 0)) for key in _DIMENSIONS
@@ -732,7 +734,7 @@ class RuntimeBudgetService:
                     idempotent=True,
                     budget_run_id=run.id,
                 )
-            pending_denial = await self._existing_event(db, run.id, reservation.reservation_key, "denial")
+            pending_denial = events.get("denial")
             if pending_denial is not None:
                 denied_amounts = {
                     key: max(0, int((pending_denial.amounts_json or {}).get(key) or 0)) for key in _DIMENSIONS
@@ -953,17 +955,13 @@ class RuntimeBudgetService:
         actual = _positive_amounts(settlement)
         async with self._budget_session("settle") as db:
             run = await self._lock_run(db, settlement.budget_run_id)
-            reservation_event = await self._existing_event(db, run.id, settlement.reservation_key, "reservation")
+            events = await self._existing_events(db, run.id, settlement.reservation_key, "reservation", "settlement")
+            reservation_event = events.get("reservation")
             if reservation_event is None:
                 raise RuntimeBudgetSettlementConflict(
                     f"reservation missing for settlement {run.id}:{settlement.reservation_key}"
                 )
-            existing_settlement = await self._existing_event(
-                db,
-                run.id,
-                settlement.reservation_key,
-                "settlement",
-            )
+            existing_settlement = events.get("settlement")
             if existing_settlement is not None:
                 if existing_settlement.runtime_task_id != settlement.runtime_task_id:
                     raise RuntimeBudgetSettlementConflict(
@@ -2457,14 +2455,24 @@ class RuntimeBudgetService:
         reservation_key: str | None,
         event_type: str,
     ) -> RuntimeBudgetEvent | None:
+        events = await self._existing_events(db, budget_run_id, reservation_key, event_type)
+        return events.get(event_type)
+
+    async def _existing_events(
+        self,
+        db: AsyncSession,
+        budget_run_id: uuid.UUID,
+        reservation_key: str | None,
+        *event_types: str,
+    ) -> dict[str, RuntimeBudgetEvent]:
         if not reservation_key:
-            return None
+            return {}
         stmt: Select = select(RuntimeBudgetEvent).where(
             RuntimeBudgetEvent.budget_run_id == budget_run_id,
             RuntimeBudgetEvent.reservation_key == reservation_key,
-            RuntimeBudgetEvent.event_type == event_type,
+            RuntimeBudgetEvent.event_type.in_(event_types),
         )
-        return (await db.execute(stmt)).scalar_one_or_none()
+        return {event.event_type: event for event in await db.scalars(stmt)}
 
     def _denied_dimensions(self, run: RuntimeBudgetRun, amounts: dict[str, int]) -> list[str]:
         denied: list[str] = []

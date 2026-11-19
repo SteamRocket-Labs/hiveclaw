@@ -1083,7 +1083,17 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # workspace_resource_authority and credential_boundary_loader, and the function
 # load_exact_secret_boundary (assigned MCP secrets in one statement under the
 # same tenant session). No new bypass scope or write.
-RLS_BYPASS_SCOPES_SHA256 = "64a1cfc1f77977ebf88bd76320ec8f3e319111e7ed316f7cc8fe62d445394cbf"
+# Land48 (A2fp3) versus land47: 123 callsites unchanged; 810 entries (+1).
+# Added: database._apply_rls_pin (the pin helper now shared by
+# pin_rls_tenant_context and enter_rls_bypass; it skips the SET only when
+# after_begin already applied the same value in this transaction) and
+# RuntimeBudgetService._existing_events (the budget's two event reads in one
+# statement under the same bypass session). No longer reachable from a bypass
+# scope: session_input_admission.current_input_admission (_locked_admission
+# now reads admission, input and command in one locked query, with the same
+# tenant and session filters, instead of calling it). The other changed hashes are
+# module sources and functions of the same files. No new bypass scope or write.
+RLS_BYPASS_SCOPES_SHA256 = "e9078a6a7e2533d717f6d1f72302356696ec7f2d1be4198f29f0dea6cd3133eb"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

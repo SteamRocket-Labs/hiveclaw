@@ -215,6 +215,34 @@ async def test_invoke_agent_passes_agent_to_token_quota_before_kernel(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_invoke_agent_ignores_private_turn_tenant_from_another_agent(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+    from app.services.quota_guard import QuotaExceeded
+
+    user_id, requested_agent_id = uuid4(), uuid4()
+    turn = SimpleNamespace(agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4()))
+    quota_calls = []
+
+    async def check_quota(checked_user_id, *, agent_id=None, tenant_id=None):
+        quota_calls.append((checked_user_id, agent_id, tenant_id))
+        raise QuotaExceeded("Agent daily token limit reached.", quota_type="agent_tokens_daily")
+
+    monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", check_quota)
+    result = await invoke_agent(AgentInvocationRequest(
+        model=None,
+        messages=[{"role": "user", "content": "hello"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=requested_agent_id,
+        user_id=user_id,
+        private_web_turn=turn,
+    ))
+
+    assert quota_calls == [(user_id, requested_agent_id, None)]
+    assert result.terminal_reason.value == "quota_denied"
+
+
+@pytest.mark.asyncio
 async def test_invoke_agent_does_not_prefetch_or_inject_personal_kb_before_kernel(monkeypatch):
     from app.kernel import InvocationResult
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent

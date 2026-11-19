@@ -117,7 +117,7 @@ async def sweep_t2_jobs(
     max_retries: int = DEFAULT_MAX_RETRIES,
     max_jobs_per_sweep: int | None = None,
 ) -> T2JobSweepReport:
-    """Full sweep: stale recovery + bounded retry of held/failed jobs."""
+    """Recover stale jobs and retry within the budget without waiting for the packaging lock."""
 
     if max_jobs_per_sweep is not None and max_jobs_per_sweep <= 0:
         raise ValueError("max_jobs_per_sweep must be positive or None")
@@ -154,30 +154,38 @@ async def sweep_t2_jobs(
         )
         if not stale and status not in _RETRYABLE_STATUSES:
             continue
-        # An earlier await can outlive this scan's snapshot. Don't overwrite a newer attempt.
-        if _read_job_manifest(manifest_path) != manifest:
-            continue
-        if stale:
-            manifest = _recover_stale_manifest(manifest_path, manifest, from_status=status, now=current)
-            recovered.append(job_id)
-        manifest = _repair_tenant_authority(
-            manifest_path,
-            manifest,
-            authoritative_tenant_id=authoritative_tenant_id,
-            now=current,
-        )
-        if _retry_count(manifest) >= max_retries:
-            exhausted.append(job_id)
-            if not str(manifest.get("retry_exhausted_alerted_at") or "").strip():
-                await _emit_retry_exhausted_alert(manifest_path, manifest, now=current)
-                alerted.append(job_id)
-            continue
-        if max_jobs_per_sweep is not None and retry_attempts >= max_jobs_per_sweep:
+        # asyncio.Lock reserves the released slot for the next waiter before it resumes.
+        if T2_PACKAGE_JOB_LOCK.locked() or any(
+            not waiter.cancelled() for waiter in T2_PACKAGE_JOB_LOCK._waiters or ()
+        ):
             deferred.append(job_id)
             continue
         async with T2_PACKAGE_JOB_LOCK:
-            # Even another held/failed result supersedes the attempt we queued.
-            if _read_job_manifest(manifest_path) != manifest:
+            manifest = _read_job_manifest(manifest_path)
+            if manifest is None:
+                continue
+            status = str(manifest.get("status") or "").strip().lower()
+            if status in _INFLIGHT_STATUSES and _is_stale(
+                manifest, now=current, stale_after_seconds=stale_after_seconds
+            ):
+                manifest = _recover_stale_manifest(manifest_path, manifest, from_status=status, now=current)
+                recovered.append(job_id)
+            elif status not in _RETRYABLE_STATUSES:
+                continue
+            manifest = _repair_tenant_authority(
+                manifest_path,
+                manifest,
+                authoritative_tenant_id=authoritative_tenant_id,
+                now=current,
+            )
+            if _retry_count(manifest) >= max_retries:
+                exhausted.append(job_id)
+                if not str(manifest.get("retry_exhausted_alerted_at") or "").strip():
+                    await _emit_retry_exhausted_alert(manifest_path, manifest, now=current)
+                    alerted.append(job_id)
+                continue
+            if max_jobs_per_sweep is not None and retry_attempts >= max_jobs_per_sweep:
+                deferred.append(job_id)
                 continue
             retry_attempts += 1
             result_status = await _retry_job(manifest_path, manifest, root=root, now=current)

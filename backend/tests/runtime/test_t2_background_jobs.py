@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from app.memory.t2 import job_sweep, segment_package
 from app.runtime import hooks_setup
 
+# The module-level lock binds to the first event loop that has a waiter.
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
@@ -56,7 +58,7 @@ def _recover(job):
     )
 
 
-async def test_detached_jobs_and_sweep_retry_share_fifo_slot(tmp_path, packaging):
+async def test_detached_jobs_run_fifo_before_next_sweep_retry(tmp_path, packaging):
     release, events = packaging
     queued_ids = ["first", "second", "third"]
     tasks = [_schedule(_enqueue(tmp_path, job_id)[0]) for job_id in queued_ids]
@@ -71,6 +73,9 @@ async def test_detached_jobs_and_sweep_retry_share_fifo_slot(tmp_path, packaging
     *_, report = await asyncio.wait_for(asyncio.gather(*tasks, sweep), timeout=10)
 
     assert before_release == [("start", "first")]
+    assert report.deferred == ("sweep",)
+    assert report.retried == ()
+    report = await job_sweep.sweep_t2_jobs(agent_id=retry["agent_id"], data_root=tmp_path)
     assert events == [(event, job_id) for job_id in [*queued_ids, "sweep"] for event in ("start", "finish")]
     assert report.committed == ("sweep",)
 
@@ -91,27 +96,28 @@ async def test_recovered_waiting_job_runs_only_once_even_if_retry_remains_held(t
     _, _, first, second = await asyncio.wait_for(asyncio.gather(blocker, waiting, *sweeps), timeout=10)
 
     assert recovery.recovered_stale == ("recovered",)
+    assert first.deferred == second.deferred == ("recovered",)
+    assert first.retried == second.retried == ()
+    report = await job_sweep.sweep_t2_jobs(agent_id=job["agent_id"], data_root=tmp_path)
     assert events == [("start", "first"), ("finish", "first"), ("start", "recovered"), ("finish", "recovered")]
-    assert first.retried == first.still_held == ("recovered",)
-    assert second.retried == ()
+    assert report.retried == report.still_held == ("recovered",)
     manifest = json.loads(path.read_text())
     assert manifest["recovered_from"] == "queued"
     assert manifest["retry_count"] == 1
 
 
-async def test_sweep_does_not_recover_a_stale_snapshot_after_detached_job_commits(tmp_path, packaging):
+async def test_sweep_defers_stale_snapshot_during_lock_handoff(tmp_path, packaging):
     release, events = packaging
     earlier, _ = _enqueue(tmp_path, "a")
     _recover(earlier)
     later, path = _enqueue(tmp_path, "b", agent_id=earlier["agent_id"])
-    detached = _schedule(later)
-
-    await asyncio.sleep(0)
     sweep = asyncio.create_task(
         job_sweep.sweep_t2_jobs(
             agent_id=earlier["agent_id"], data_root=tmp_path, now=datetime.now(UTC) + timedelta(hours=2)
         )
     )
+    await asyncio.sleep(0)
+    detached = _schedule(later)
     await asyncio.sleep(0)
     release.set()
     _, report = await asyncio.wait_for(asyncio.gather(detached, sweep), timeout=10)
@@ -119,6 +125,7 @@ async def test_sweep_does_not_recover_a_stale_snapshot_after_detached_job_commit
     assert events.count(("start", "b")) == 1
     assert report.retried == ("a",)
     assert report.recovered_stale == ()
+    assert report.deferred == ("b",)
     assert json.loads(path.read_text())["status"] == "committed"
 
 
@@ -147,3 +154,80 @@ async def test_cancelled_waiters_stay_queued_for_crash_recovery(tmp_path, packag
         manifest = json.loads(path.read_text())
         assert manifest["status"] == "held"
         assert manifest["recovered_from"] == "queued"
+
+
+@pytest.fixture
+def sweep_candidates(tmp_path):
+    job, held = _enqueue(tmp_path, "held")
+    _recover(job)
+    _, queued = _enqueue(tmp_path, "queued", agent_id=job["agent_id"])
+    return job["agent_id"], (held, queued)
+
+
+async def test_busy_lock_defers_both_jobs_without_writing(tmp_path, monkeypatch, sweep_candidates):
+    agent_id, paths = sweep_candidates
+    before = [path.read_bytes() for path in paths]
+    retry = AsyncMock(return_value="committed")
+    monkeypatch.setattr(job_sweep, "_retry_job", retry)
+
+    async with job_sweep.T2_PACKAGE_JOB_LOCK:
+        async with asyncio.timeout(1):
+            report = await job_sweep.sweep_t2_jobs(
+                agent_id=agent_id, data_root=tmp_path, now=datetime.now(UTC) + timedelta(hours=2)
+            )
+
+    assert report.deferred == ("held", "queued")
+    assert report.recovered_stale == report.retried == ()
+    retry.assert_not_called()
+    assert [path.read_bytes() for path in paths] == before
+
+
+async def test_free_lock_covers_recovery_and_retry(tmp_path, monkeypatch, sweep_candidates):
+    agent_id, (_, queued) = sweep_candidates
+    recover = job_sweep._recover_stale_manifest
+
+    def recover_under_lock(*args, **kwargs):
+        assert job_sweep.T2_PACKAGE_JOB_LOCK.locked()
+        return recover(*args, **kwargs)
+
+    async def retry_under_lock(path, manifest, **_kwargs):
+        assert job_sweep.T2_PACKAGE_JOB_LOCK.locked()
+        assert json.loads(path.read_text())["status"] == manifest["status"] == "held"
+        return "committed"
+
+    monkeypatch.setattr(job_sweep, "_recover_stale_manifest", recover_under_lock)
+    monkeypatch.setattr(job_sweep, "_retry_job", retry_under_lock)
+
+    report = await job_sweep.sweep_t2_jobs(
+        agent_id=agent_id, data_root=tmp_path, now=datetime.now(UTC) + timedelta(hours=2)
+    )
+
+    assert report.recovered_stale == ("queued",)
+    assert report.retried == report.committed == ("held", "queued")
+    assert report.deferred == ()
+    assert json.loads(queued.read_text())["recovered_from"] == "queued"
+
+
+async def test_detached_waiter_runs_after_stale_sweep_defers(tmp_path, packaging):
+    release, events = packaging
+    release.set()
+    job, path = _enqueue(tmp_path, "queued")
+
+    async with job_sweep.T2_PACKAGE_JOB_LOCK:
+        detached = _schedule(job)
+        await asyncio.sleep(0)
+        sweep = asyncio.create_task(
+            job_sweep.sweep_t2_jobs(
+                agent_id=job["agent_id"], data_root=tmp_path, now=datetime.now(UTC) + timedelta(hours=2)
+            )
+        )
+        await asyncio.sleep(0)
+        if not sweep.done():
+            # Simulate heartbeat cancellation if the sweep got stuck waiting.
+            sweep.cancel()
+            await asyncio.gather(sweep, return_exceptions=True)
+
+    await asyncio.wait_for(detached, timeout=10)
+    assert events == [("start", "queued"), ("finish", "queued")]
+    assert sweep.result().deferred == ("queued",)
+    assert json.loads(path.read_text())["status"] == "committed"

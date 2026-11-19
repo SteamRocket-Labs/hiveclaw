@@ -1093,7 +1093,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # now reads admission, input and command in one locked query, with the same
 # tenant and session filters, instead of calling it). The other changed hashes are
 # module sources and functions of the same files. No new bypass scope or write.
-RLS_BYPASS_SCOPES_SHA256 = "e9078a6a7e2533d717f6d1f72302356696ec7f2d1be4198f29f0dea6cd3133eb"
+# Land49 (A2fp4) versus land48: 123 callsites and 810 entries unchanged. The only
+# changed hash is the app/database.py module source (pool_pre_ping=False,
+# pool_recycle=300 in _engine_pool_kwargs). No new bypass scope or write.
+RLS_BYPASS_SCOPES_SHA256 = "dd656717990bb3fd825b47f15afd3d61a1f63b8a6b9d9cba9e42e464ddd81f5d"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

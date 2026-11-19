@@ -13,6 +13,32 @@ from app.services import event_loop_monitor
 from app.services.event_loop_monitor import EventLoopLagMonitor
 
 
+def test_freeze_startup_heap_reports_frozen_objects():
+    try:
+        frozen_count = event_loop_monitor.freeze_startup_heap()
+        assert frozen_count > 0
+        assert frozen_count == gc.get_freeze_count()
+    finally:
+        gc.unfreeze()
+
+
+def test_freeze_startup_heap_shortens_full_collection():
+    startup_objects = [{"items": [[], []]} for _ in range(100_000)]
+    try:
+        started = time.perf_counter()
+        gc.collect(2)
+        before = time.perf_counter() - started
+
+        event_loop_monitor.freeze_startup_heap()
+
+        started = time.perf_counter()
+        gc.collect(2)
+        after = time.perf_counter() - started
+        assert after < before / 2, f"{after:.6f}s vs {before:.6f}s for {len(startup_objects)} retained roots"
+    finally:
+        gc.unfreeze()
+
+
 def _block_loop():
     time.sleep(0.4)
 

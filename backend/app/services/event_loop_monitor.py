@@ -29,6 +29,12 @@ _stall_log_times: deque[float] = deque()
 _stall_log_lock = threading.Lock()
 
 
+def freeze_startup_heap() -> int:
+    gc.collect()
+    gc.freeze()
+    return gc.get_freeze_count()
+
+
 def _stack_locations(frame: FrameType | None) -> list[str]:
     application = []
     library = None

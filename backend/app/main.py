@@ -356,7 +356,7 @@ async def lifespan(app: FastAPI):
     intercept_standard_logging()
     logger.info("[startup] Logging configured")
 
-    from app.services.event_loop_monitor import event_loop_lag_monitor
+    from app.services.event_loop_monitor import event_loop_lag_monitor, freeze_startup_heap
 
     event_loop_lag_monitor.start()
 
@@ -782,6 +782,9 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("[startup] ss-local proxy skipped for no-volume API role")
 
+    # Cycles made only of frozen objects are never collected.
+    # They are bounded by the startup heap.
+    logger.info("[startup] froze {} objects for garbage collection", freeze_startup_heap())
     yield
 
     # Shutdown

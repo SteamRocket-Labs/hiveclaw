@@ -237,6 +237,36 @@ async def test_bypass_scope_restores_previous_session_info_after_exit():
 
 
 @pytest.mark.asyncio
+async def test_bypass_exit_after_commit_leaves_unscoped_session_unpinned(monkeypatch):
+    from app import database
+
+    connection = _FakeConnection()
+    async with database.AsyncSession() as session:
+        async def get_connection():
+            if not session.in_transaction():
+                await session.begin()
+                database._apply_rls_tenant_for_transaction(session.sync_session, None, connection)
+            return connection
+
+        async def execute(statement):
+            connection.exec_driver_sql(str(statement))
+
+        monkeypatch.setattr(session, "connection", get_connection)
+        monkeypatch.setattr(session, "execute", execute)
+        token = database.set_current_tenant(str(uuid4()))
+        try:
+            async with database.enter_rls_bypass(session, reason="unit-test unscoped bypass commit"):
+                await session.commit()
+
+            assert not session.in_transaction()
+            await session.connection()
+            assert connection.statements == ["SET LOCAL app.current_tenant_id = 'BYPASS'"]
+            assert database._RLS_TENANT_INFO_KEY not in session.sync_session.info
+        finally:
+            database.reset_current_tenant(token)
+
+
+@pytest.mark.asyncio
 async def test_nested_bypass_exit_restores_outer_bypass_database_scope():
     """RLS-BYPASS-NESTED-RESTORE-001: the inner audited scope must restore the
     persisted outer BYPASS (both the GUC statement and session info), not the

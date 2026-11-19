@@ -683,6 +683,10 @@ async def enter_rls_bypass(
                     "the caller's rollback clears the scope. (reason=%r)",
                     reason,
                 )
+            elif isinstance(session, AsyncSession) and not session.in_transaction():
+                # COMMIT cleared SET LOCAL. Only a previously stored scope
+                # is re-applied by after_begin on the next transaction.
+                restore_session_info()
             else:
                 # Restore the scope that actually existed before entry. When
                 # this scope was nested on a session that already persisted a
@@ -707,14 +711,7 @@ async def enter_rls_bypass(
                         logger.error("[RLS] Invalid tenant id %r after BYPASS; failing closed to ''", tenant_value)
                         restored = ""
                 restore_session_info()
-                if isinstance(session, AsyncSession) and not session.in_transaction():
-                    # COMMIT already cleared SET LOCAL. Re-pin at the first
-                    # statement of the next transaction, if there is one.
-                    if not had_previous_session_info:
-                        had_previous_session_info = True
-                        previous_session_info = restored
-                else:
-                    await session.execute(text(_rls_tenant_statement(restored)))
+                await session.execute(text(_rls_tenant_statement(restored)))
         except Exception as exc:  # noqa: BLE001 - never mask the body's exception from finally
             logger.error("[RLS] Failed to restore tenant scope after BYPASS: %s", exc)
         finally:

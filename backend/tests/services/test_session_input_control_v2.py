@@ -191,6 +191,49 @@ async def test_live_rest_ws_adapter_persists_full_human_input_authority(owner_se
         assert outbox_count == len(events)
 
 
+async def test_live_input_replays_default_hook_result_after_settlement_crash(owner_sessionmaker, monkeypatch) -> None:
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.models.user import User
+    from app.runtime import hooks
+    from app.services import session_input_admission
+    from app.services.session_live_input import submit_live_human_input
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import SimulatedWorkerCrash
+
+    monkeypatch.setattr(hooks, "hook_registry", hooks.HookRegistry())
+    _tenant_id, user_id, agent_id, session_id, _ = await _seed_session(owner_sessionmaker)
+    input_id = uuid.uuid4()
+
+    async def submit():
+        async with owner_sessionmaker() as db:
+            return await submit_live_human_input(
+                db=db,
+                agent=await db.get(Agent, agent_id),
+                user=await db.get(User, user_id),
+                session=await db.get(ChatSession, session_id),
+                content="Replay after settlement crash",
+                source="test_live_rest",
+                input_id=input_id,
+                idempotency_key=f"live:{input_id}",
+            )
+
+    async def crash_during_settlement(*_args, **_kwargs):
+        raise SimulatedWorkerCrash()
+
+    with monkeypatch.context() as crash:
+        crash.setattr(session_input_admission, "settle_user_prompt_admission", crash_during_settlement)
+        with pytest.raises(SimulatedWorkerCrash):
+            await submit()
+
+    receipt = await submit()
+    assert receipt["admission_state"] == "admitted", receipt
+    assert receipt["replayed"]
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, uuid.UUID(receipt["run"]["run_id"]))
+        assert task is not None and task.parent_session_id == str(session_id)
+
+
 async def test_new_start_turn_waits_for_previous_terminal_boundary_sidecars(owner_sessionmaker) -> None:
     """A committed input waits durably until the prior terminal boundary is acked."""
 

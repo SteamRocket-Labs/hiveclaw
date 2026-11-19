@@ -769,7 +769,6 @@ async def run_user_prompt_admission(
         await db.commit()
         input_row = await db.get(SessionTurnInput, input_uuid)
         assert input_row is not None
-        independent_result_commit = True
         try:
             from app.services.execution_environments import command_environment_context
             from app.services.session_input_environment import admission_command_frame
@@ -778,14 +777,6 @@ async def run_user_prompt_admission(
                 db, authority=authority, input_row=input_row, claim=claim, worker_id=worker_id
             )
             with command_environment_context(frame):
-                from app.runtime.hooks import hook_registry
-
-                # A result from an observed external handler needs its own
-                # checkpoint. An empty dispatch can settle with that result.
-                independent_result_commit = (
-                    hook_executor is not _default_user_prompt_hook_executor
-                    or hook_registry.handler_count(HookEvent.USER_PROMPT_SUBMIT) != 0
-                )
                 result = await hook_executor(
                     hook_run_id=str(claim.hook_run_id),
                     agent_id=authority.agent_id,
@@ -814,8 +805,8 @@ async def run_user_prompt_admission(
             worker_id=worker_id,
             result=result,
         )
-        if independent_result_commit:
-            await db.commit()
+        # Immutable result is authoritative before settlement/Turn admission.
+        await db.commit()
     elif claim.state == "hook_running":
         admission, input_row, _command = await _locked_admission(db, authority=authority, input_id=input_uuid)
         now = datetime.now(timezone.utc)

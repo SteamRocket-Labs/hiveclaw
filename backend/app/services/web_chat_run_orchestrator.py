@@ -1542,6 +1542,9 @@ async def _flush_context_observations(state: _WebChatRunState) -> None:
             observations=pending,
         )
         for envelope in envelopes:
+            audience = str((envelope.get("visibility") or {}).get("audience") or "")
+            if audience and audience not in {"direct_user", "participants"}:
+                continue
             await events.broadcast(state.agent.id, state.session_id, envelope)
     except Exception as exc:
         state.ports.runtime.logger.warning("[WebChatRun] Could not persist context observations: {}", exc)

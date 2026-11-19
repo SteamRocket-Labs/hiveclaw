@@ -23,6 +23,7 @@ manifest itself; the job runner carries these fields across re-runs.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -40,6 +41,7 @@ DEFAULT_STALE_AFTER_SECONDS = 3600.0
 
 _INFLIGHT_STATUSES = {"queued", "running"}
 _RETRYABLE_STATUSES = {"held", "failed"}
+T2_PACKAGE_JOB_LOCK = asyncio.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +117,7 @@ async def sweep_t2_jobs(
     max_retries: int = DEFAULT_MAX_RETRIES,
     max_jobs_per_sweep: int | None = None,
 ) -> T2JobSweepReport:
-    """Full sweep: stale recovery + bounded retry of held/failed jobs."""
+    """Recover stale jobs and retry within the budget without waiting for the packaging lock."""
 
     if max_jobs_per_sweep is not None and max_jobs_per_sweep <= 0:
         raise ValueError("max_jobs_per_sweep must be positive or None")
@@ -144,32 +146,49 @@ async def sweep_t2_jobs(
         scanned += 1
         job_id = str(manifest.get("job_id") or manifest_path.parent.name)
         status = str(manifest.get("status") or "").strip().lower()
-        if status in _INFLIGHT_STATUSES and _is_stale(manifest, now=current, stale_after_seconds=stale_after_seconds):
-            manifest = _recover_stale_manifest(manifest_path, manifest, from_status=status, now=current)
-            recovered.append(job_id)
-            status = "held"
         if status == "not_applicable":
             not_applicable.append(job_id)
             continue
-        if status not in _RETRYABLE_STATUSES:
-            continue
-        manifest = _repair_tenant_authority(
-            manifest_path,
-            manifest,
-            authoritative_tenant_id=authoritative_tenant_id,
-            now=current,
+        stale = status in _INFLIGHT_STATUSES and _is_stale(
+            manifest, now=current, stale_after_seconds=stale_after_seconds
         )
-        if _retry_count(manifest) >= max_retries:
-            exhausted.append(job_id)
-            if not str(manifest.get("retry_exhausted_alerted_at") or "").strip():
-                await _emit_retry_exhausted_alert(manifest_path, manifest, now=current)
-                alerted.append(job_id)
+        if not stale and status not in _RETRYABLE_STATUSES:
             continue
-        if max_jobs_per_sweep is not None and retry_attempts >= max_jobs_per_sweep:
+        # asyncio.Lock reserves the released slot for the next waiter before it resumes.
+        if T2_PACKAGE_JOB_LOCK.locked() or any(
+            not waiter.cancelled() for waiter in T2_PACKAGE_JOB_LOCK._waiters or ()
+        ):
             deferred.append(job_id)
             continue
-        retry_attempts += 1
-        result_status = await _retry_job(manifest_path, manifest, root=root, now=current)
+        async with T2_PACKAGE_JOB_LOCK:
+            manifest = _read_job_manifest(manifest_path)
+            if manifest is None:
+                continue
+            status = str(manifest.get("status") or "").strip().lower()
+            if status in _INFLIGHT_STATUSES and _is_stale(
+                manifest, now=current, stale_after_seconds=stale_after_seconds
+            ):
+                manifest = _recover_stale_manifest(manifest_path, manifest, from_status=status, now=current)
+                recovered.append(job_id)
+            elif status not in _RETRYABLE_STATUSES:
+                continue
+            manifest = _repair_tenant_authority(
+                manifest_path,
+                manifest,
+                authoritative_tenant_id=authoritative_tenant_id,
+                now=current,
+            )
+            if _retry_count(manifest) >= max_retries:
+                exhausted.append(job_id)
+                if not str(manifest.get("retry_exhausted_alerted_at") or "").strip():
+                    await _emit_retry_exhausted_alert(manifest_path, manifest, now=current)
+                    alerted.append(job_id)
+                continue
+            if max_jobs_per_sweep is not None and retry_attempts >= max_jobs_per_sweep:
+                deferred.append(job_id)
+                continue
+            retry_attempts += 1
+            result_status = await _retry_job(manifest_path, manifest, root=root, now=current)
         retried.append(job_id)
         if result_status == "committed":
             committed.append(job_id)
@@ -319,16 +338,28 @@ def _iter_job_manifests(root: Path, agent_id: uuid.UUID | str) -> list[tuple[Pat
         manifest_path = job_dir / JOB_MANIFEST_FILENAME
         if not manifest_path.exists():
             continue
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError) as exc:
-            logger.warning("T2 job sweep skipped unreadable manifest %s: %s", manifest_path, exc)
-            continue
-        if not isinstance(manifest, dict):
-            logger.warning("T2 job sweep skipped non-object manifest %s", manifest_path)
-            continue
-        manifests.append((manifest_path, manifest))
+        manifest = _read_job_manifest(manifest_path)
+        if manifest is not None:
+            manifests.append((manifest_path, manifest))
     return manifests
+
+
+def is_t2_job_queued(root: Path, agent_id: uuid.UUID | str, job_id: str) -> bool:
+    """Read the persisted status without creating a job."""
+    manifest = _read_job_manifest(_jobs_dir(root, agent_id) / job_id / JOB_MANIFEST_FILENAME)
+    return manifest is not None and manifest.get("status") == "queued"
+
+
+def _read_job_manifest(path: Path) -> dict[str, Any] | None:
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning("T2 job sweep skipped unreadable manifest %s: %s", path, exc)
+        return None
+    if not isinstance(manifest, dict):
+        logger.warning("T2 job sweep skipped non-object manifest %s", path)
+        return None
+    return manifest
 
 
 def _is_stale(manifest: dict[str, Any], *, now: datetime, stale_after_seconds: float) -> bool:

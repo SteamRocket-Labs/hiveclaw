@@ -1015,17 +1015,21 @@ def _schedule_t2_segment_package_job(
         return
 
     async def _run() -> None:
+        from app.memory.t2.job_sweep import T2_PACKAGE_JOB_LOCK, is_t2_job_queued
         from app.memory.t2.segment_package import run_t2_segment_package_job
 
-        result = await run_t2_segment_package_job(
-            data_root=data_root,
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            session_id=session_id,
-            t0_segment_id=t0_segment_id,
-            job_id=job_id,
-            session_lineage=dict(session_lineage or {}),
-        )
+        async with T2_PACKAGE_JOB_LOCK:
+            if not is_t2_job_queued(data_root, agent_id, job_id):
+                return
+            result = await run_t2_segment_package_job(
+                data_root=data_root,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                t0_segment_id=t0_segment_id,
+                job_id=job_id,
+                session_lineage=dict(session_lineage or {}),
+            )
         logger.info(
             "[Hooks] Detached T0->T2 job %s agent=%s session=%s segment=%s job=%s path=%s",
             result.status,

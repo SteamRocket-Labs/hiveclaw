@@ -77,18 +77,24 @@ def _watch_loop_stalls(loop: asyncio.AbstractEventLoop, loop_thread: int, stop: 
             gc_total = gc_total_minus_start + time.monotonic()
             gc_total_minus_start = None
 
+    def gc_seconds() -> float:
+        # A collection that holds the GIL ends inside its "stop" callback, where the
+        # sampler regains the GIL; count the collection still in progress.
+        started = gc_total_minus_start
+        return gc_total if started is None else started + time.monotonic()
+
     gc.callbacks.append(record_gc)
     try:
         while not stop.is_set():
             try:
-                gc_before_wait = gc_total
+                gc_before_wait = gc_seconds()
                 slept_at = time.monotonic()
                 if stop.wait(_HEARTBEAT_SECONDS) or not loop.is_running():
                     return
                 overslept = time.monotonic() - slept_at - _HEARTBEAT_SECONDS
                 if overslept >= _STALL_SECONDS:
                     frames = _stack_locations(sys._current_frames().get(loop_thread))
-                    _log_stall(overslept * 1000, frames, (gc_total - gc_before_wait) * 1000)
+                    _log_stall(overslept * 1000, frames, (gc_seconds() - gc_before_wait) * 1000)
                     continue
 
                 # Keep a single heartbeat pending, even when the loop cannot run it.
@@ -96,7 +102,7 @@ def _watch_loop_stalls(loop: asyncio.AbstractEventLoop, loop_thread: int, stop: 
                     continue
                 heartbeat_pending = False
                 heartbeat.clear()
-                gc_before_wait = gc_total
+                gc_before_wait = gc_seconds()
                 sent_at = time.monotonic()
                 loop.call_soon_threadsafe(acknowledge)
                 heartbeat_pending = True
@@ -112,9 +118,11 @@ def _watch_loop_stalls(loop: asyncio.AbstractEventLoop, loop_thread: int, stop: 
                 if elapsed >= _STALL_SECONDS and not stop.is_set():
                     if frames is None:
                         frames = _stack_locations(sys._current_frames().get(loop_thread))
-                    _log_stall(elapsed * 1000, frames, (gc_total - gc_before_wait) * 1000)
+                    _log_stall(elapsed * 1000, frames, (gc_seconds() - gc_before_wait) * 1000)
             except Exception:
                 # The loop can close during sampling. Diagnostics must stay isolated.
+                if stop.is_set():
+                    return
                 time.sleep(_HEARTBEAT_SECONDS)
     finally:
         gc.callbacks.remove(record_gc)

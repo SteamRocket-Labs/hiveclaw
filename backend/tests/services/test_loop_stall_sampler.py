@@ -49,16 +49,19 @@ async def test_monitor_reports_only_blocked_loop_stacks(caplog, blocked):
         assert any(f":{_block_loop.__name__}:" in location for location in sample["frames"])
 
 
-async def test_monitor_reports_gil_holding_regex(caplog):
+def _gil_holding_regex_text() -> str:
     size = 18
     while True:
         text = "a" * size + "b"
         started = time.perf_counter()
         re.match(r"(a+)+$", text)
         if time.perf_counter() - started >= 0.4:
-            break
+            return text
         size += 1
 
+
+async def test_monitor_reports_gil_holding_regex(caplog):
+    text = _gil_holding_regex_text()
     monitor = EventLoopLagMonitor()
     monitor.start()
     try:
@@ -71,6 +74,30 @@ async def test_monitor_reports_gil_holding_regex(caplog):
     sample, = _stall_samples(caplog)
     assert sample["ms"] >= 300
     assert any(location.startswith("re:match:") for location in sample["frames"])
+
+
+async def test_monitor_reports_gil_holding_collection(caplog):
+    text = _gil_holding_regex_text()
+
+    def hold_gil(phase, _info):
+        if phase == "start":
+            re.match(r"(a+)+$", text)
+
+    monitor = EventLoopLagMonitor()
+    monitor.start()
+    try:
+        await asyncio.sleep(0.075)
+        gc.callbacks.append(hold_gil)
+        try:
+            gc.collect()
+        finally:
+            gc.callbacks.remove(hold_gil)
+        await asyncio.sleep(0.1)
+    finally:
+        await monitor.stop()
+
+    sample, = _stall_samples(caplog)
+    assert 300 <= sample["gc_ms"] <= sample["ms"] + 50
 
 
 async def test_monitor_reports_collection_time(caplog, monkeypatch):

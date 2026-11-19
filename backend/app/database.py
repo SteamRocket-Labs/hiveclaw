@@ -318,7 +318,7 @@ _RLS_PIN_OBSERVATION_INFO_KEY = "hive_rls_pin_observation"
 _RLS_BYPASS_VALUE = "BYPASS"
 _AFTER_COMMIT_CALLBACKS_KEY = "hive_after_commit_callbacks"
 AfterCommitCallback = Callable[[], Awaitable[None]]
-AfterCommitEntry = tuple[object, str, AfterCommitCallback]
+AfterCommitEntry = tuple[object, str, AfterCommitCallback, bool]
 _after_commit_tasks: set[asyncio.Task[None]] = set()
 
 
@@ -334,12 +334,14 @@ def schedule_after_commit(
     callback: AfterCommitCallback,
     *,
     description: str,
+    coalesce: bool = False,
 ) -> bool:
     """Run an async side effect only after the caller's outer commit succeeds.
 
     The callback must carry immutable identifiers, never ORM instances or the
     live session. Outer rollback discards it. Nested savepoint commits do not
     dispatch it, which prevents consumers from observing uncommitted rows.
+    Coalesced callbacks with the same description dispatch once per outer commit.
     """
     sync_session = getattr(session, "sync_session", None)
     if sync_session is None:
@@ -355,7 +357,9 @@ def schedule_after_commit(
         )
         return False
     callbacks: list[AfterCommitEntry] = sync_session.info.setdefault(_AFTER_COMMIT_CALLBACKS_KEY, [])
-    callbacks.append((transaction, str(description), callback))
+    entry = (transaction, str(description), callback, coalesce)
+    if not coalesce or entry not in callbacks:
+        callbacks.append(entry)
     return True
 
 
@@ -373,7 +377,12 @@ def _dispatch_after_outer_commit(session: SyncSession) -> None:
     except RuntimeError:
         logger.error("[DB] cannot dispatch %s after-commit callback(s): no running event loop", len(callbacks))
         return
-    for _transaction, description, callback in callbacks:
+    dispatched = set()
+    for _transaction, description, callback, coalesce in callbacks:
+        if coalesce:
+            if description in dispatched:
+                continue
+            dispatched.add(description)
         task = loop.create_task(
             _run_after_commit_callback(callback, description),
             name=f"db-after-commit:{description}"[:100],
@@ -382,10 +391,16 @@ def _dispatch_after_outer_commit(session: SyncSession) -> None:
         task.add_done_callback(_after_commit_tasks.discard)
 
 
-@event.listens_for(SyncSession, "after_soft_rollback")
-def _discard_after_outer_rollback(session: SyncSession, previous_transaction) -> None:
-    if previous_transaction.parent is None:
+@event.listens_for(SyncSession, "after_transaction_end")
+def _discard_after_outer_transaction(session: SyncSession, transaction) -> None:
+    # Closing a session with flushed rows can end the transaction without a rollback event.
+    if transaction.parent is None:
         session.info.pop(_AFTER_COMMIT_CALLBACKS_KEY, None)
+
+
+@event.listens_for(SyncSession, "after_soft_rollback")
+def _discard_after_savepoint_rollback(session: SyncSession, previous_transaction) -> None:
+    if previous_transaction.parent is None:
         return
 
     callbacks: list[AfterCommitEntry] = session.info.get(_AFTER_COMMIT_CALLBACKS_KEY, [])

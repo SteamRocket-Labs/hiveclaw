@@ -81,7 +81,11 @@ def _watch_loop_stalls(loop: asyncio.AbstractEventLoop, loop_thread: int, stop: 
         # A collection that holds the GIL ends inside its "stop" callback, where the
         # sampler regains the GIL; count the collection still in progress.
         started = gc_total_minus_start
-        return gc_total if started is None else started + time.monotonic()
+        if started is None:
+            return gc_total
+        now = time.monotonic()
+        # The collection may have been committed while this thread waited for the clock.
+        return gc_total if gc_total_minus_start is None else started + now
 
     gc.callbacks.append(record_gc)
     try:

@@ -83,10 +83,14 @@ async def test_monitor_reports_gil_holding_collection(caplog):
         if phase == "start":
             re.match(r"(a+)+$", text)
 
+    registered = len(gc.callbacks)
     monitor = EventLoopLagMonitor()
     monitor.start()
     try:
-        await asyncio.sleep(0.075)
+        # Collect inside the sampler's first 50 ms wait, after its callback is registered:
+        # a collection during a heartbeat wait is also logged by the old code.
+        while len(gc.callbacks) == registered:
+            await asyncio.sleep(0.001)
         gc.callbacks.append(hold_gil)
         try:
             gc.collect()

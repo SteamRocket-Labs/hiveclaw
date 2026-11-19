@@ -47,6 +47,8 @@ if (*EXECUTABLE_CHAT_TASK_TYPES, *DIRECT_INVOCATION_TASK_TYPES) != TERMINAL_BOUN
 
 
 _LOCAL_WAKEUP_EVENT: asyncio.Event | None = None
+_SESSION_EVENT_WAKEUP: asyncio.Future[None] | None = None
+_SESSION_EVENT_WAKE_MESSAGE = "session-events"
 SUPPORTED_RUNTIME_TASK_TYPES = (
     "remote_a2a",
     "readiness_probe",
@@ -246,11 +248,29 @@ async def notify_runtime_task_worker(*, reason: str, runtime_task_id: UUID | str
         "runtime_task_id": str(runtime_task_id) if runtime_task_id else None,
         "created_at": _utcnow().isoformat(),
     }
+    await _publish_runtime_wakeup(json.dumps(payload, ensure_ascii=False))
+
+
+def _wake_local_session_events() -> bool:
+    wakeup = _SESSION_EVENT_WAKEUP
+    if wakeup is None:
+        return False
+    if not wakeup.done():
+        wakeup.set_result(None)
+    return True
+
+
+async def notify_session_event_outbox() -> None:
+    if not _wake_local_session_events():
+        await _publish_runtime_wakeup(_SESSION_EVENT_WAKE_MESSAGE)
+
+
+async def _publish_runtime_wakeup(payload: str) -> None:
     try:
         from app.core.events import get_redis
 
         redis = await get_redis()
-        await redis.publish(_settings().RUNTIME_TASK_WAKEUP_CHANNEL, json.dumps(payload, ensure_ascii=False))
+        await redis.publish(_settings().RUNTIME_TASK_WAKEUP_CHANNEL, payload)
     except Exception as exc:  # noqa: BLE001 - local event + polling are fallback paths.
         logger.debug("[RuntimeTaskWorker] Redis wakeup publish failed: {}", exc)
 
@@ -266,7 +286,10 @@ async def _redis_wakeup_listener() -> None:
             if message.get("type") != "message":
                 continue
             _STATE["wakeup_received"] = int(_STATE.get("wakeup_received") or 0) + 1
-            _wakeup_event().set()
+            if message.get("data") == _SESSION_EVENT_WAKE_MESSAGE:
+                _wake_local_session_events()
+            else:
+                _wakeup_event().set()
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - polling remains the fallback.
@@ -1452,7 +1475,8 @@ async def _terminal_boundary_lane_loop(*, worker_id: str, lane: str, once: bool 
 
 
 async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -> None:
-    """Gate polling lanes independently; the claim loop owns its own wakeup."""
+    """Gate polling lanes independently and accept wakes for committed session events."""
+    global _SESSION_EVENT_WAKEUP
     exact_worker_id = worker_id or _worker_id()
     lanes = _terminal_boundary_lanes(exact_worker_id)
     gated = _runtime_work_candidates(now=_utcnow())
@@ -1470,6 +1494,9 @@ async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -
     probe_at = 0.0
     due = dict.fromkeys(consumers, False)
     loop = asyncio.get_running_loop()
+    session_event_wakeup = None
+    if "session-events" in consumers:
+        session_event_wakeup = _SESSION_EVENT_WAKEUP = loop.create_future()
 
     async def tick(lane):
         try:
@@ -1505,20 +1532,35 @@ async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -
                 probe = asyncio.create_task(_has_due_runtime_work(worker_id=exact_worker_id))
             next_tick = probe_at if now < probe_at else now + poll
             for lane in consumers:
-                if not due.get(lane, True) or (lane in running and not running[lane].done()):
+                if lane in running and not running[lane].done():
                     continue
-                if next_at[lane] > now:
-                    next_tick = min(next_tick, next_at[lane])
-                    continue
+                wakeup = session_event_wakeup if lane == "session-events" else None
+                if wakeup is not None and wakeup.done():
+                    session_event_wakeup = _SESSION_EVENT_WAKEUP = loop.create_future()
+                else:
+                    if not due.get(lane, True):
+                        continue
+                    if next_at[lane] > now:
+                        next_tick = min(next_tick, next_at[lane])
+                        continue
                 running[lane] = asyncio.create_task(tick(lane), name=f"runtime-terminal-boundary-{lane}")
             # Start cached due work before waiting for a refresh. Lane deadlines
             # neither start a probe nor wait for its result before dispatching.
             timeout = max(0, next_tick - loop.time())
+            waiting = set()
             if probe is not None and now < probe_at:
-                await asyncio.wait({probe}, timeout=timeout)
+                waiting.add(probe)
+            if session_event_wakeup is not None:
+                # While draining, leave any pending wake set and wait for the tick to end.
+                session_tick = running.get("session-events")
+                waiting.add(session_tick if session_tick is not None and not session_tick.done() else session_event_wakeup)
+            if waiting:
+                await asyncio.wait(waiting, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
             else:
                 await asyncio.sleep(timeout)
     finally:
+        if _SESSION_EVENT_WAKEUP is session_event_wakeup:
+            _SESSION_EVENT_WAKEUP = None
         _STATE["terminal_boundary_worker_running"] = False
         owned = [*tasks, *running.values(), *([probe] if probe is not None else [])]
         for task in owned:

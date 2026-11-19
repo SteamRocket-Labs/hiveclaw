@@ -23,6 +23,7 @@ manifest itself; the job runner carries these fields across re-runs.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -40,6 +41,7 @@ DEFAULT_STALE_AFTER_SECONDS = 3600.0
 
 _INFLIGHT_STATUSES = {"queued", "running"}
 _RETRYABLE_STATUSES = {"held", "failed"}
+T2_PACKAGE_JOB_LOCK = asyncio.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,15 +146,20 @@ async def sweep_t2_jobs(
         scanned += 1
         job_id = str(manifest.get("job_id") or manifest_path.parent.name)
         status = str(manifest.get("status") or "").strip().lower()
-        if status in _INFLIGHT_STATUSES and _is_stale(manifest, now=current, stale_after_seconds=stale_after_seconds):
-            manifest = _recover_stale_manifest(manifest_path, manifest, from_status=status, now=current)
-            recovered.append(job_id)
-            status = "held"
         if status == "not_applicable":
             not_applicable.append(job_id)
             continue
-        if status not in _RETRYABLE_STATUSES:
+        stale = status in _INFLIGHT_STATUSES and _is_stale(
+            manifest, now=current, stale_after_seconds=stale_after_seconds
+        )
+        if not stale and status not in _RETRYABLE_STATUSES:
             continue
+        # An earlier await can outlive this scan's snapshot. Don't overwrite a newer attempt.
+        if _read_job_manifest(manifest_path) != manifest:
+            continue
+        if stale:
+            manifest = _recover_stale_manifest(manifest_path, manifest, from_status=status, now=current)
+            recovered.append(job_id)
         manifest = _repair_tenant_authority(
             manifest_path,
             manifest,
@@ -168,8 +175,12 @@ async def sweep_t2_jobs(
         if max_jobs_per_sweep is not None and retry_attempts >= max_jobs_per_sweep:
             deferred.append(job_id)
             continue
-        retry_attempts += 1
-        result_status = await _retry_job(manifest_path, manifest, root=root, now=current)
+        async with T2_PACKAGE_JOB_LOCK:
+            # Even another held/failed result supersedes the attempt we queued.
+            if _read_job_manifest(manifest_path) != manifest:
+                continue
+            retry_attempts += 1
+            result_status = await _retry_job(manifest_path, manifest, root=root, now=current)
         retried.append(job_id)
         if result_status == "committed":
             committed.append(job_id)
@@ -319,16 +330,28 @@ def _iter_job_manifests(root: Path, agent_id: uuid.UUID | str) -> list[tuple[Pat
         manifest_path = job_dir / JOB_MANIFEST_FILENAME
         if not manifest_path.exists():
             continue
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError) as exc:
-            logger.warning("T2 job sweep skipped unreadable manifest %s: %s", manifest_path, exc)
-            continue
-        if not isinstance(manifest, dict):
-            logger.warning("T2 job sweep skipped non-object manifest %s", manifest_path)
-            continue
-        manifests.append((manifest_path, manifest))
+        manifest = _read_job_manifest(manifest_path)
+        if manifest is not None:
+            manifests.append((manifest_path, manifest))
     return manifests
+
+
+def is_t2_job_queued(root: Path, agent_id: uuid.UUID | str, job_id: str) -> bool:
+    """Read the persisted status without creating a job."""
+    manifest = _read_job_manifest(_jobs_dir(root, agent_id) / job_id / JOB_MANIFEST_FILENAME)
+    return manifest is not None and manifest.get("status") == "queued"
+
+
+def _read_job_manifest(path: Path) -> dict[str, Any] | None:
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning("T2 job sweep skipped unreadable manifest %s: %s", path, exc)
+        return None
+    if not isinstance(manifest, dict):
+        logger.warning("T2 job sweep skipped non-object manifest %s", path)
+        return None
+    return manifest
 
 
 def _is_stale(manifest: dict[str, Any], *, now: datetime, stale_after_seconds: float) -> bool:

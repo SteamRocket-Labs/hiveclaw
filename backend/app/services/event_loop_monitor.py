@@ -56,36 +56,51 @@ def _log_stall(ms: float, frames: list[str]) -> None:
 
 
 def _watch_loop_stalls(loop: asyncio.AbstractEventLoop, loop_thread: int, stop: threading.Event) -> None:
-    try:
-        heartbeat = threading.Event()
-        answered_at = 0.0
+    heartbeat = threading.Event()
+    heartbeat_pending = False
+    answered_at = 0.0
 
-        def acknowledge():
-            nonlocal answered_at
-            # Timestamp recovery on the loop, before the sampler wakes.
-            answered_at = time.monotonic()
-            heartbeat.set()
+    def acknowledge():
+        nonlocal answered_at
+        # Timestamp recovery on the loop, before the sampler wakes.
+        answered_at = time.monotonic()
+        heartbeat.set()
 
-        while not stop.wait(_HEARTBEAT_SECONDS) and loop.is_running():
+    while not stop.is_set():
+        try:
+            slept_at = time.monotonic()
+            if stop.wait(_HEARTBEAT_SECONDS) or not loop.is_running():
+                return
+            overslept = time.monotonic() - slept_at - _HEARTBEAT_SECONDS
+            if overslept >= _STALL_SECONDS:
+                frames = _stack_locations(sys._current_frames().get(loop_thread))
+                _log_stall(overslept * 1000, frames)
+                continue
+
             # Keep a single heartbeat pending, even when the loop cannot run it.
+            if heartbeat_pending and not heartbeat.is_set():
+                continue
+            heartbeat_pending = False
             heartbeat.clear()
             sent_at = time.monotonic()
             loop.call_soon_threadsafe(acknowledge)
-            if heartbeat.wait(_STALL_SECONDS):
-                continue
-            if stop.is_set():
-                return
-            frames = _stack_locations(sys._current_frames().get(loop_thread))
-            if heartbeat.is_set():
-                continue
-            while not heartbeat.wait(_HEARTBEAT_SECONDS):
+            heartbeat_pending = True
+            frames = None
+            if not heartbeat.wait(_STALL_SECONDS):
                 if stop.is_set() or not loop.is_running():
                     return
-            if not stop.is_set():
-                _log_stall((answered_at - sent_at) * 1000, frames)
-    except Exception:
-        # The loop can close during sampling. Diagnostics must stay isolated.
-        return
+                frames = _stack_locations(sys._current_frames().get(loop_thread))
+                while not heartbeat.wait(_HEARTBEAT_SECONDS):
+                    if stop.is_set() or not loop.is_running():
+                        return
+            elapsed = answered_at - sent_at
+            if elapsed >= _STALL_SECONDS and not stop.is_set():
+                if frames is None:
+                    frames = _stack_locations(sys._current_frames().get(loop_thread))
+                _log_stall(elapsed * 1000, frames)
+        except Exception:
+            # The loop can close during sampling. Diagnostics must stay isolated.
+            time.sleep(_HEARTBEAT_SECONDS)
 
 
 def _start_loop_stall_sampler() -> threading.Event | None:

@@ -553,14 +553,17 @@ async def test_reaper_conflict_rolls_back_chat_outbox_transcript_and_callbacks(
                             .select_from(ChatTranscriptEvent)
                             .where(ChatTranscriptEvent.session_id == session_id)
                         ),
-                        len(db.sync_session.info.get(_AFTER_COMMIT_CALLBACKS_KEY, [])),
+                        sorted(entry[1] for entry in db.sync_session.info.get(_AFTER_COMMIT_CALLBACKS_KEY, [])),
                     )
                 )
                 raise
 
         monkeypatch.setattr(case.service, "_cancel_pending_unclaimed_tasks", inspect_partial_effects)
         assert await case.service.reap_expired_runs(now=case.now, limit=2) == 1
-        assert observed == [(1, 1, 1)]
+        # A2fp6: the V2 transcript append also adds a SessionEventOutbox row, whose
+        # after_insert hook registers the coalesced "session-events" wake. Both
+        # pending callbacks must be discarded by the same rollback.
+        assert observed == [(1, 1, ["BF2 row rollback test", "session-events"])]
         assert await case.snapshot(case.run_ids[0]) == before
         callback.assert_not_awaited()
         async with owner_sessionmaker() as db:

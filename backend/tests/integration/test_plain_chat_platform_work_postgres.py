@@ -261,6 +261,58 @@ async def test_plain_chat_platform_work(hello_work, app_user_sessionmaker, monke
         assert totals["between_rounds"] <= 161, totals
 
 
+async def test_workspace_revocation_during_recall_withholds_only_dependent_memories(
+    hello_work, owner_sessionmaker, monkeypatch,
+):
+    from app.models.organization_identity import ContentInputReceipt
+    from app.runtime import invoker
+    from app.services import content_input_receipts, web_chat_runtime
+    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+    from app.services.workspace_resource_authority import mark_workspace_path_deleted, register_workspace_path
+    from tests.integration.test_memory_source_read_work_postgres import dependency, digest
+
+    n = hello_work
+    path, body = "workspace/retained-convention.md", "The shared source for two recall entries."
+    (n.root / path).write_text(body, encoding="utf-8")
+    async with owner_sessionmaker() as writer:
+        await register_workspace_path(writer, tenant_id=n.tenant, agent_id=n.agent, path=path,
+            owner_user_id=n.user, root_session_id=n.session, source="native_tool", content_hash=digest(body))
+        artifact = content_input_receipts.record_workspace_receipt(
+            writer, n.tenant, n.agent, path, digest(body), None, additional_dependencies=(n.shared[-1],))
+        for memory in n.receipts[8:10]:
+            row = await writer.get(ContentInputReceipt, memory.id)
+            row.dependencies_json = [*row.dependencies_json,
+                dependency("workspace_artifact", artifact.id, artifact.content_sha256)]
+        await writer.commit()
+
+    validate = content_input_receipts._walk_workspace_receipt_inputs
+    revoked = False
+
+    async def revoke_after_workspace_check(db, receipt, **kwargs):
+        nonlocal revoked
+        await validate(db, receipt, **kwargs)
+        if receipt.id == artifact.id and not revoked:
+            async with owner_sessionmaker() as writer:
+                await mark_workspace_path_deleted(writer, agent_id=n.agent, path=path)
+                await writer.commit()
+            revoked = True
+
+    monkeypatch.setattr(content_input_receipts, "_walk_workspace_receipt_inputs", revoke_after_workspace_check)
+    client = ScriptedLLMClient([{"content": "Hello!", "stream_text": "Hello!"}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    fence = set_runtime_task_fence(task_id=n.web_run, worker_id="a2d-worker", claim_version=1)
+    try:
+        await web_chat_runtime.execute_web_chat_run(n.web_run)
+    finally:
+        reset_runtime_task_fence(fence)
+
+    assert revoked
+    request, = client.requests
+    messages = json.dumps(request["messages"])
+    assert "MEMORY_DAG_4" in messages
+    assert all(f"MEMORY_DAG_{index}" not in messages for index in (8, 9))
+
+
 async def test_later_memory_source_refreshes_platform_skill_lineage(
     hello_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 ):

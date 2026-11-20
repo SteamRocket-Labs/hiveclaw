@@ -48,7 +48,6 @@ def source_dependency(receipt):
 
 
 async def _actor(db, tenant_id, request):
-    from app.models.chat_session import ChatSession
     from app.services.content_input_receipts import runtime_actor_session
     from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -191,7 +190,7 @@ async def latest_memory_receipt(db, tenant_id, agent_id, entry_id):
 
 
 async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, active_receipts=frozenset(),
-    final_receipt_check=True):
+    final_receipt_check=True, defer_after=False):
     authority = receipt.authority_json if receipt is not None else {}
     from app.services.content_input_receipts import source_read_checkpoint
 
@@ -210,20 +209,27 @@ async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, 
             "This memory has no current source receipt for this reader. Preserve it for source confirmation.", 403)
     if receipt.id in active_receipts:
         raise ContentInputReceiptError("explicit_memory_source_cycle", "The memory source chain is cyclic.")
-    version = _sha256(authority)
+    version = _sha256(authority) if final_receipt_check and not defer_after else None
     path = Path(str(agent_id)) / f"memory/explicit/entries/{entry.entry_id}.md"
     _validate_source_bytes(path, receipt.content_sha256)
     await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, runtime_request=request,
         active_workspace_receipts=active_receipts | {receipt.id})
+    if not defer_after:
+        await _recheck_entry_source(db, tenant_id, agent_id, request, entry, receipt, authority=authority, version=version)
+    return receipt
+
+
+async def _recheck_entry_source(db, tenant_id, agent_id, request, entry, receipt, *, authority, version=None):
+    from app.services.content_input_receipts import source_read_checkpoint
+
     with source_read_checkpoint(phase="memory_audience_after"):
         await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
-    if final_receipt_check:
+    if version is not None:
         with source_read_checkpoint(kind="explicit_memory", phase="memory_entry_latest"):
             latest = await latest_memory_receipt(db, tenant_id, agent_id, entry.entry_id)
         if latest is None or latest.id != receipt.id or _sha256(latest.authority_json) != version:
             raise ContentInputReceiptError("explicit_memory_source_changed", "The memory authority changed while reading.", 403)
-    _validate_source_bytes(path, receipt.content_sha256)
-    return receipt
+    _validate_source_bytes(Path(str(agent_id)) / f"memory/explicit/entries/{entry.entry_id}.md", receipt.content_sha256)
 
 
 async def _latest_entry_receipts(db, tenant_id, agent_id, entries):
@@ -311,23 +317,41 @@ async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, 
             actor_id = actor.id
             current_audience = audience_for_session(_session)
             latest = await _latest_entry_receipts(db, tenant_id, agent_id, entries)
-            rows = _preflight_inputs(db)
-            from app.services.content_input_receipts import _preload_execution_sources
+            from app.services.content_input_receipts import _preload_execution_sources, workspace_read_checkpoint
 
             await _preload_execution_sources(db, tenant_id, [source_dependency(receipt) for receipt in latest.values()])
             checked_entries = []
             versions = {}
-            for entry in entries:
-                receipt = None
+            dependency_denials = {}
+            # The same source may support several entries. Read each set of live
+            # dependency facts together and reject only its dependent entries.
+            async with workspace_read_checkpoint(db, tenant_id):
+                point = frame.workspace_read
+                point.paths, point.omitted, point.on_denial = {}, set(), dependency_denials.__setitem__
+                for index, entry in enumerate(entries):
+                    receipt = None
+                    point.current_path = index
+                    try:
+                        receipt = latest.get(memory_ref(agent_id, entry.entry_id))
+                        versions[entry.entry_id] = _sha256(receipt.authority_json) if receipt is not None else None
+                        await _authorize_entry(db, tenant_id=tenant_id, agent_id=agent_id, request=request,
+                            entry=entry, receipt=receipt, defer_after=True)
+                    except ContentInputReceiptError as exc:
+                        point.omitted.add(index)
+                        checked_entries.append((entry, receipt, exc))
+                    else:
+                        checked_entries.append((entry, receipt, None))
+            for index, (entry, receipt, error) in enumerate(checked_entries):
+                if error is not None:
+                    continue
+                if index in dependency_denials:
+                    checked_entries[index] = (entry, receipt, dependency_denials[index])
+                    continue
                 try:
-                    receipt = latest.get(memory_ref(agent_id, entry.entry_id))
-                    versions[entry.entry_id] = _sha256(receipt.authority_json) if receipt is not None else None
-                    await _authorize_entry(db, tenant_id=tenant_id, agent_id=agent_id, request=request,
-                        entry=entry, receipt=receipt, final_receipt_check=False)
+                    await _recheck_entry_source(db, tenant_id, agent_id, request, entry, receipt,
+                        authority=receipt.authority_json)
                 except ContentInputReceiptError as exc:
-                    checked_entries.append((entry, receipt, exc))
-                else:
-                    checked_entries.append((entry, receipt, None))
+                    checked_entries[index] = (entry, receipt, exc)
             # Refresh every admitted entry together after all source walks;
             # a newer revision or changed authority still withholds that entry.
             refreshed = await _latest_entry_receipts(db, tenant_id, agent_id,

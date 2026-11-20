@@ -2763,7 +2763,7 @@ async def workspace_read_checkpoint(db, tenant_id):
         yield
         return
     point = SimpleNamespace(db=db, tenant_id=tenant_id, groups={}, observed=[], phase=object(),
-        verified=set(scope.verified), paths=None, current_path=None, omitted=None, node_boundary=None)
+        verified=set(scope.verified), paths=None, current_path=None, omitted=None, on_denial=None, node_boundary=None)
     scope.workspace_read = point
     try:
         yield
@@ -2945,6 +2945,9 @@ async def _recheck_workspace_checkpoint(point):
                         exc.dependency = observation.dependency
                     if point.omitted is None or not affected:
                         raise
+                    if point.on_denial is not None:
+                        for path in affected - point.omitted:
+                            point.on_denial(path, exc)
                     point.omitted.update(affected)
                     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
                     scope.verified = {key: value for key, value in scope.verified.items() if key in point.verified}

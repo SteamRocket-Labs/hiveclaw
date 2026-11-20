@@ -4,6 +4,7 @@ import hashlib
 import heapq
 import json
 import logging
+import re
 import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -13,11 +14,17 @@ from inspect import iscoroutinefunction
 from time import perf_counter, thread_time
 
 from greenlet import getcurrent
+from loguru import logger as _sink_logger
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 logger = logging.getLogger(__name__)
+_MAX_PHASE_SITE_KEYS = 2000
+_MAX_PHASE_SITES_PER_PHASE = 30
+_MAX_PHASE_LINE_BYTES = 15_000
+_APP_LOCATION = r"app\.[A-Za-z0-9_.]+:[A-Za-z0-9_<>]+:[0-9]+"
+_SITE_SIGNATURE = re.compile(rf"{_APP_LOCATION}( < {_APP_LOCATION}){{0,2}}")
 
 
 @dataclass
@@ -34,6 +41,7 @@ class RequestTiming:
 
 
 request_timing: ContextVar[RequestTiming | None] = ContextVar("request_timing", default=None)
+_current_phase: ContextVar[str | None] = ContextVar("run_timing_phase", default=None)
 
 
 @dataclass
@@ -45,6 +53,44 @@ class _PhaseTiming:
     db_seconds: float = 0.0
     pool_seconds: float = 0.0
     cpu_seconds: float = 0.0
+
+
+@dataclass
+class _SiteTiming:
+    n: int = 0
+    db_seconds: float = 0.0
+    merged_into: "_SiteTiming | None" = None
+
+    def merge_into(self, target: "_SiteTiming") -> None:
+        target.n += self.n
+        target.db_seconds += self.db_seconds
+        # An in-flight cursor can still finish after the next model request.
+        self.merged_into = target
+
+
+@dataclass
+class _PhaseSites:
+    sites: dict[str, _SiteTiming] = field(default_factory=dict)
+    other: _SiteTiming = field(default_factory=_SiteTiming)
+
+    def summaries(self):
+        ranked = heapq.nlargest(_MAX_PHASE_SITES_PER_PHASE, (
+            (key, stat) for key, stat in self.sites.items() if _SITE_SIGNATURE.fullmatch(key)
+        ), key=lambda item: item[1].n)
+        sites = {key: {"n": stat.n, "db_ms": round(stat.db_seconds * 1000, 3)} for key, stat in ranked}
+        other_n, other_seconds = self.other.n, self.other.db_seconds
+        for key, stat in self.sites.items():
+            if key not in sites:
+                other_n += stat.n
+                other_seconds += stat.db_seconds
+        while True:
+            yield {"sites": sites, "other_n": other_n, "other_db_ms": round(other_seconds * 1000, 3)}
+            if not ranked:
+                return
+            key, stat = ranked.pop()
+            del sites[key]
+            other_n += stat.n
+            other_seconds += stat.db_seconds
 
 
 @dataclass
@@ -67,6 +113,8 @@ class RunTiming(RequestTiming):
     slow_statements: list = field(default_factory=list)
     slow_gaps: list = field(default_factory=list)
     phases: dict[str, _PhaseTiming] = field(default_factory=dict)
+    phase_sites: dict[str, _PhaseSites] = field(default_factory=dict)
+    phase_site_keys: int = 0
 
     def summary(self, finished: float) -> dict:
         end = self.terminal_at or finished
@@ -119,19 +167,25 @@ def _observe(timing, operation, *args):
         return None
 
 
-def _application_frame() -> str:
+def _application_frame(limit: int = 1) -> str:
     current, frame = getcurrent(), sys._getframe(1)
+    locations = []
     while current is not None:
         while frame is not None:
             module = frame.f_globals.get("__name__", "")
             if module.startswith("app.") and module != __name__:
-                return f"{module}:{frame.f_code.co_name}:{frame.f_lineno}"
+                location = f"{module}:{frame.f_code.co_name}:{frame.f_lineno}"
+                if limit == 1:
+                    return location
+                locations.append(location)
+                if len(locations) == limit:
+                    return " < ".join(locations)
             frame = frame.f_back
         # SQLAlchemy's async bridge puts the application await in the parent
         # greenlet. Walk its existing frames without building a stack snapshot.
         current = current.parent
         frame = current.gr_frame if current is not None else None
-    return "unknown"
+    return " < ".join(locations) or "unknown"
 
 
 def _top_ten(entries, entry):
@@ -162,6 +216,19 @@ def run_timing_scope(run_id, *, task_type="web_chat_turn"):
 
 def _emit_run_timing(timing, finished):
     logger.info("run_timing %s", json.dumps(timing.summary(finished), separators=(",", ":")))
+    _observe(timing, _emit_run_phase_sites, timing)
+
+
+def _emit_run_phase_sites(timing):
+    for phase, group in timing.phase_sites.items():
+        identity = {"run_id": timing.run_id, "phase": phase}
+        for summary in group.summaries():
+            message = "run_phase_sites " + json.dumps({**identity, **summary}, separators=(",", ":"))
+            # The serialized sink line repeats the escaped message (text and
+            # record.message) plus about 0.7 KB of record fields.
+            if 2 * len(json.dumps(message)) + 2_000 < _MAX_PHASE_LINE_BYTES:
+                _sink_logger.info("{}", message)
+                break
 
 
 def timed_web_chat_run(function):
@@ -198,8 +265,26 @@ def _provider_started(timing):
         timing.first_provider_at = started
     if timing.last_provider_end is not None:
         timing.between_seconds += started - timing.last_provider_end
+    if timing.rounds:
+        _observe(timing, _move_post_model_sites_between_rounds, timing)
     timing.rounds += 1
     return started
+
+
+def _move_post_model_sites_between_rounds(timing):
+    # Unphased work after a model request is post-model until another round starts.
+    pending = timing.phase_sites.pop("post_model_other", None)
+    if pending is None:
+        return
+    between = timing.phase_sites.setdefault("between_rounds_other", pending)
+    if between is pending:
+        return
+    for signature, stats in pending.sites.items():
+        previous = between.sites.setdefault(signature, stats)
+        if previous is not stats:
+            stats.merge_into(previous)
+            timing.phase_site_keys -= 1
+    pending.other.merge_into(between.other)
 
 
 def _provider_finished(timing, started):
@@ -236,9 +321,11 @@ def timed_phase(name):
             if timing is None:
                 return await function(*args, **kwargs)
             started = _observe(timing, start, timing)
+            token = _current_phase.set(name)
             try:
                 return await function(*args, **kwargs)
             finally:
+                _current_phase.reset(token)
                 if started is not None and timing.active:
                     _observe(timing, finish, timing, started)
 
@@ -248,9 +335,11 @@ def timed_phase(name):
             if timing is None:
                 return function(*args, **kwargs)
             started = _observe(timing, start, timing)
+            token = _current_phase.set(name)
             try:
                 return function(*args, **kwargs)
             finally:
+                _current_phase.reset(token)
                 if started is not None and timing.active:
                     _observe(timing, finish, timing, started)
 
@@ -277,14 +366,17 @@ def _cursor_started(_connection, _cursor, _statement, _parameters, context, _man
     timing = request_timing.get()
     if timing is not None and timing.active:
         timing.statements += 1
-        attribution = None
+        attribution = site = None
         if isinstance(timing, RunTiming):
             attribution = _observe(timing, _statement_attribution, timing, _connection, _statement)
-        context._hive_request_timing = timing, perf_counter(), attribution
+            signature = attribution[3] if attribution is not None else "unknown"
+            site = _observe(timing, _count_statement_site, timing, signature)
+        context._hive_request_timing = timing, perf_counter(), attribution, site
 
 
 def _statement_attribution(timing, connection, statement):
-    frame = _application_frame()
+    signature = _application_frame(3)
+    frame = signature.partition(" < ")[0]
     # Match PostgreSQL's activity-query truncation at a complete UTF-8
     # character, as used by the production sampler (1023 bytes).
     prefix = statement[:1023].encode("utf-8")[:1023].decode("utf-8", errors="ignore").encode("utf-8")
@@ -293,23 +385,47 @@ def _statement_attribution(timing, connection, statement):
     if transaction is not None and transaction[0] is timing and transaction[1] is not None:
         ended, previous = transaction[1]
         _top_ten(timing.slow_gaps, (perf_counter() - ended, timing.statements, previous, frame))
-    return connection, sql_hash, frame
+    return connection, sql_hash, frame, signature
+
+
+def _count_statement_site(timing, signature):
+    name = _current_phase.get()
+    if name is None:
+        name = "pre_model_other" if timing.first_provider_at is None else "post_model_other"
+    group = timing.phase_sites.get(name)
+    if group is None:
+        group = timing.phase_sites[name] = _PhaseSites()
+    site = group.other
+    if signature != "unknown":
+        known = group.sites.get(signature)
+        if known is not None:
+            site = known
+        elif timing.phase_site_keys < _MAX_PHASE_SITE_KEYS:
+            site = group.sites[signature] = _SiteTiming()
+            timing.phase_site_keys += 1
+        else:
+            timing.instrumentation_errors += 1
+    site.n += 1
+    return site
 
 
 def _finish_cursor(context) -> None:
     started = getattr(context, "_hive_request_timing", None)
     if started is not None:
-        timing, clock, attribution = started
+        timing, clock, attribution, site = started
         if timing.active:
             ended = perf_counter()
             timing.db_seconds += ended - clock
+            if site is not None:
+                target = site.merged_into or site
+                target.db_seconds += ended - clock
             if isinstance(timing, RunTiming) and attribution is not None:
                 _observe(timing, _finish_attribution, timing, clock, ended, attribution)
         context._hive_request_timing = None
 
 
 def _finish_attribution(timing, started, ended, attribution):
-    connection, sql_hash, frame = attribution
+    connection, sql_hash, frame, _signature = attribution
     _top_ten(timing.slow_statements, (ended - started, timing.statements, sql_hash, frame))
     transaction = connection.info.get("_hive_run_transaction")
     if transaction is not None and transaction[0] is timing:

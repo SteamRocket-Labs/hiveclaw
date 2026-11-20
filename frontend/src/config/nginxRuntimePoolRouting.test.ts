@@ -8,9 +8,27 @@ describe('runtime pool nginx routing', () => {
         expect(nginxConf).toContain('set $backend_runtime_upstream backend:8000;');
         expect(nginxConf).toContain('location ~ ^/api/(v1/)?auth/');
         expect(nginxConf).toContain('notifications');
-        expect(nginxConf).toContain('location ~ ^/api/(v1/)?agents/[^/]+/sessions/[^/]+/runs');
+        // P3a1 routes new-session sends through the same API upstream as existing-session sends.
+        expect(nginxConf).toContain('location ~ ^/api/(v1/)?agents/[^/]+/sessions/(runs/?$|[^/]+/runs) {');
         expect(nginxConf).toContain('location /api/');
         expect(nginxConf).toContain('proxy_pass http://$backend_runtime_upstream;');
+    });
+
+    it('matches both send routes without admitting new-session subpaths', () => {
+        const match = nginxConf.match(/^\s*location ~ (\^\/api\/\S+\/sessions\/\S*runs\S*) \{/m);
+        expect(match).not.toBeNull();
+        const location = new RegExp(match![1]);
+
+        for (const prefix of ['/api', '/api/v1']) {
+            const sessions = `${prefix}/agents/x/sessions`;
+            expect(location.test(`${sessions}/runs`)).toBe(true);
+            expect(location.test(`${sessions}/runs/`)).toBe(true);
+            expect(location.test(`${sessions}/y/runs`)).toBe(true);
+            expect(location.test(sessions)).toBe(false);
+            expect(location.test(`${sessions}/y/messages`)).toBe(false);
+            expect(location.test(`${sessions}/y`)).toBe(false);
+            expect(location.test(`${sessions}/runs/extra`)).toBe(false);
+        }
     });
 
     it('lets production set different internal hosts for api and runtime planes', () => {

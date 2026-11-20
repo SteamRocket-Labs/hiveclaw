@@ -255,9 +255,8 @@ async def test_index_authority_rechecks_current_sources(memory_dag, owner_sessio
     await apply_change()
     result = await resolve(n)
     assert "MEMORY_DAG_9" not in result.content, result.content
-    # Revoked entries are deliberately omitted without an availability issue;
-    # changed or cyclic sources retain their existing degraded classification.
-    assert ("explicit_memory_source_authority" in result.degraded_components) == (change != "revoked"), result
+    # Source-rule withholding is a governed outcome (owner 2026-11-10). Production labelled 131/131 turns degraded.
+    assert "explicit_memory_source_authority" not in result.degraded_components, result
     # A4c in the prompt: entries dropped by the recheck are named by count;
     # a revoked (owner-withdrawn) entry stays silently omitted.
     if change == "revoked":

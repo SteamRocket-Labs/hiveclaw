@@ -306,7 +306,8 @@ async def test_revoked_recall_preserves_valid_resident_memory(monkeypatch, tmp_p
         unbound_reasons = result.source_unbound
     else:
         # The dropped entry leaves no preview; the A4c note names it by count.
-        assert result.status == "degraded", result
+        # Source-rule withholding is a governed outcome (owner 2026-11-10). Production labelled 131/131 turns degraded.
+        assert result.status == "ready", result
         assert "REVOKED_RECALL_SECRET" not in result.content
         note = "有1 条记忆暂时无法核实，已略过，可继续使用其余内容。"
         assert result.content.rsplit("\n\n", 1)[-1] == note, result.content

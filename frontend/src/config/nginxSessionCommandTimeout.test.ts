@@ -15,7 +15,7 @@ describe('synchronous session command gateway', () => {
       ['~ ^/api/(v1/)?agents/?$', '30s', '30s'],
       ['~ ^/api/(v1/)?agents/[^/]+/?$', '30s', '30s'],
       ['~ ^/api/(v1/)?agents/[^/]+/sessions/?$', '30s', '30s'],
-      ['~ ^/api/(v1/)?agents/[^/]+/sessions/[^/]+/runs', '120s', '30s'],
+      ['~ ^/api/(v1/)?agents/[^/]+/sessions/(runs/?$|[^/]+/runs)', '120s', '30s'],
       ['= /api/health', '5s', '5s'],
       [executeRoute, '600s', '600s'],
       ['/api/', '120s', '120s'],

@@ -79,14 +79,35 @@ def test_api_role_path_boundary_allows_control_plane_and_rejects_volume_paths():
     assert main_mod._api_role_allows_path("/api/agents/") is True
     assert main_mod._api_role_allows_path("/api/v1/agents/") is True
     assert main_mod._api_role_allows_path("/api/agents/agent-1/sessions/session-1/runs") is True
+    assert main_mod._api_role_allows_path("/api/agents/agent-1/sessions/runs") is True
+    assert main_mod._api_role_allows_path("/api/v1/agents/agent-1/sessions/runs") is True
     assert main_mod._api_role_allows_path("/ws/chat/agent-1") is True
 
+    assert main_mod._api_role_allows_path("/api/agents/agent-1/sessions/runs/x") is False
+    assert main_mod._api_role_allows_path("/api/agents/agent-1/sessions/transcript") is False
     assert main_mod._api_role_allows_path("/api/agents/agent-1/sessions/session-1/transcript") is False
     assert main_mod._api_role_allows_path("/api/agents/agent-1/sessions/session-1/workbench") is False
     assert main_mod._api_role_allows_path("/api/agents/agent-1/files/download") is False
     assert main_mod._api_role_allows_path("/api/enterprise/knowledge-base/files") is False
     assert main_mod._api_role_allows_path("/api/v1/enterprise/knowledge-base/upload") is False
     assert main_mod._api_role_allows_path("/api/tools/execute") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["/api", "/api/v1"])
+async def test_api_role_new_session_send_reaches_authentication(monkeypatch, prefix):
+    from httpx import ASGITransport, AsyncClient
+
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod.settings, "HIVE_PROCESS_ROLE", "api")
+    async with AsyncClient(transport=ASGITransport(app=main_mod.app), base_url="http://local-asgi") as client:
+        response = await client.post(
+            f"{prefix}/agents/00000000-0000-0000-0000-000000000001/sessions/runs",
+            json={"content": "Local route check"},
+        )
+    assert response.status_code == 401, response.text
+    assert response.headers["www-authenticate"] == "Bearer"
 
 
 def test_runtime_resume_runs_as_background_startup_task_not_lifespan_blocker():

@@ -21,8 +21,7 @@ from sqlalchemy.pool import AsyncAdaptedQueuePool
 logger = logging.getLogger(__name__)
 _MAX_PHASE_SITE_KEYS = 2000
 _MAX_PHASE_SITES_PER_PHASE = 30
-# The JSON logging sink includes both the rendered line and the message.
-_MAX_ESCAPED_RUN_ROW_BYTES = 30_000
+_MAX_PHASE_LINE_BYTES = 15_000
 _APP_LOCATION = r"app\.[A-Za-z0-9_.]+:[A-Za-z0-9_<>]+:[0-9]+"
 _SITE_SIGNATURE = re.compile(rf"{_APP_LOCATION}( < {_APP_LOCATION}){{0,2}}")
 
@@ -73,8 +72,8 @@ class _PhaseSites:
     sites: dict[str, _SiteTiming] = field(default_factory=dict)
     other: _SiteTiming = field(default_factory=_SiteTiming)
 
-    def summary(self, limit: int) -> dict:
-        ranked = heapq.nlargest(limit, (
+    def summaries(self):
+        ranked = heapq.nlargest(_MAX_PHASE_SITES_PER_PHASE, (
             (key, stat) for key, stat in self.sites.items() if _SITE_SIGNATURE.fullmatch(key)
         ), key=lambda item: item[1].n)
         sites = {key: {"n": stat.n, "db_ms": round(stat.db_seconds * 1000, 3)} for key, stat in ranked}
@@ -83,7 +82,14 @@ class _PhaseSites:
             if key not in sites:
                 other_n += stat.n
                 other_seconds += stat.db_seconds
-        return {"sites": sites, "other_n": other_n, "other_db_ms": round(other_seconds * 1000, 3)}
+        while True:
+            yield {"sites": sites, "other_n": other_n, "other_db_ms": round(other_seconds * 1000, 3)}
+            if not ranked:
+                return
+            key, stat = ranked.pop()
+            del sites[key]
+            other_n += stat.n
+            other_seconds += stat.db_seconds
 
 
 @dataclass
@@ -144,20 +150,6 @@ class RunTiming(RequestTiming):
                 for name, phase in sorted(self.phases.items(), key=lambda item: item[1].wall_seconds, reverse=True)[:10]
             ],
         }
-
-    def phase_sites_summary(self, legacy_row: dict) -> dict:
-        groups = dict.fromkeys(self.phases, _PhaseSites())
-        groups.update(self.phase_sites)
-        limit = _MAX_PHASE_SITES_PER_PHASE
-        while True:
-            sites = {name: group.summary(limit) for name, group in groups.items()}
-            # json.dumps emits ASCII. Escaping these bytes for the outer JSON
-            # adds one byte per quote or backslash.
-            row = json.dumps({**legacy_row, "phase_sites": sites}, separators=(",", ":"))
-            escaped_bytes = len(row) + row.count('"') + row.count("\\")
-            if escaped_bytes <= _MAX_ESCAPED_RUN_ROW_BYTES or not limit:
-                return sites
-            limit = limit * _MAX_ESCAPED_RUN_ROW_BYTES // escaped_bytes
 
 
 def _run_timing() -> RunTiming | None:
@@ -223,6 +215,19 @@ def run_timing_scope(run_id, *, task_type="web_chat_turn"):
 
 def _emit_run_timing(timing, finished):
     logger.info("run_timing %s", json.dumps(timing.summary(finished), separators=(",", ":")))
+    _observe(timing, _emit_run_phase_sites, timing)
+
+
+def _emit_run_phase_sites(timing):
+    from app.core.logging_config import log_bounded_info
+
+    for phase, group in timing.phase_sites.items():
+        identity = {"run_id": timing.run_id, "phase": phase}
+        messages = (
+            "run_phase_sites " + json.dumps({**identity, **summary}, separators=(",", ":"))
+            for summary in group.summaries()
+        )
+        log_bounded_info(messages, max_bytes=_MAX_PHASE_LINE_BYTES)
 
 
 def timed_web_chat_run(function):

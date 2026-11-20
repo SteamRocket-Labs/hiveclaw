@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Iterable
 from contextvars import ContextVar
 from typing import Any
 from uuid import uuid4
@@ -80,6 +81,23 @@ def configure_logging(*, sink: Any = sys.stdout, enqueue: bool = True):
         )
 
     return _logger
+
+
+def log_bounded_info(messages: Iterable[str], *, max_bytes: int) -> None:
+    """Log the first candidate that fits in the serialized Loguru record."""
+    from loguru._handler import Handler
+
+    def fit(record):
+        for message in messages:
+            record["message"] = message + "\n"
+            enrich_log_record(record)
+            # Raw formatting gives the sink the same text as record.message.
+            line = Handler._serialize_record(record["message"], record)
+            if len(line.encode("utf-8")) < max_bytes:
+                return
+        raise ValueError("Log record exceeds its byte budget")
+
+    _logger.patch(fit).opt(depth=1, raw=True).info("")
 
 
 def sanitize_standard_log_message(message: str) -> str:

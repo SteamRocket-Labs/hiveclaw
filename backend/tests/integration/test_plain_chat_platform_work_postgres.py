@@ -313,6 +313,75 @@ async def test_workspace_revocation_during_recall_withholds_only_dependent_memor
     assert all(f"MEMORY_DAG_{index}" not in messages for index in (8, 9))
 
 
+async def test_workspace_revocation_during_recall_withholds_cross_parent_memories(
+    hello_work, owner_sessionmaker, monkeypatch,
+):
+    from app.models.organization_identity import ContentInputReceipt
+    from app.runtime import invoker
+    from app.services import content_input_receipts, web_chat_runtime
+    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+    from app.services.workspace_resource_authority import mark_workspace_path_deleted, register_workspace_path
+    from tests.integration.test_memory_source_read_work_postgres import dependency, digest
+
+    n, probe = hello_work, PlatformWork()
+    source_path = "workspace/reference.md"
+    first_parent = "workspace/earlier-summary.md"
+    shared_parent = "workspace/shared-summary.md"
+    async with owner_sessionmaker() as writer:
+        sources = {}
+        for path, body in (
+            (source_path, "The original reference."),
+            (first_parent, "An earlier summary derived from the reference."),
+            (shared_parent, "A shared summary derived from the reference."),
+        ):
+            (n.root / path).write_text(body, encoding="utf-8")
+            sha = digest(body)
+            await register_workspace_path(writer, tenant_id=n.tenant, agent_id=n.agent, path=path,
+                owner_user_id=n.user, root_session_id=n.session, source="native_tool", content_hash=sha)
+            artifact = content_input_receipts.record_workspace_receipt(
+                writer, n.tenant, n.agent, path, sha, None,
+                additional_dependencies=(sources[source_path],) if path != source_path else ())
+            sources[path] = dependency("workspace_artifact", artifact.id, sha)
+        # Exercise the reference both as a top-level read and with the reader used by nested files.
+        for index, paths in ((7, (source_path, first_parent)), (8, (shared_parent,)), (9, (shared_parent,))):
+            row = await writer.get(ContentInputReceipt, n.receipts[index].id)
+            row.dependencies_json = [*row.dependencies_json, *(sources[path] for path in paths)]
+        await writer.commit()
+
+    validate = content_input_receipts._walk_workspace_receipt_inputs
+    revoked = False
+
+    async def revoke_after_workspace_check(db, receipt, **kwargs):
+        nonlocal revoked
+        await validate(db, receipt, **kwargs)
+        if str(receipt.id) == sources[source_path]["source_id"] and not revoked:
+            with probe.stage("fixture_revocation"):
+                async with owner_sessionmaker() as writer:
+                    await mark_workspace_path_deleted(writer, agent_id=n.agent, path=source_path)
+                    await writer.commit()
+            revoked = True
+
+    monkeypatch.setattr(content_input_receipts, "_walk_workspace_receipt_inputs", revoke_after_workspace_check)
+    probe.wrap(monkeypatch, invoker, "_resolve_memory_context", "memory_authorization")
+    client = ScriptedLLMClient([{"content": "Hello!", "stream_text": "Hello!"}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    fence = set_runtime_task_fence(task_id=n.web_run, worker_id="a2d-worker", claim_version=1)
+    try:
+        with probe.counting():
+            await web_chat_runtime.execute_web_chat_run(n.web_run)
+    finally:
+        reset_runtime_task_fence(fence)
+
+    print("A2FP11_CROSS_PARENT_MEMORY_SQL", len(probe.sql["before_first_model", "memory_authorization"]), flush=True)
+    assert revoked
+    request, = client.requests
+    messages = json.dumps(request["messages"])
+    assert "MEMORY_DAG_4" in messages
+    for index in (7, 8, 9):
+        marker = f"MEMORY_DAG_{index}"
+        assert marker not in messages, marker
+
+
 async def test_later_memory_source_refreshes_platform_skill_lineage(
     hello_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 ):

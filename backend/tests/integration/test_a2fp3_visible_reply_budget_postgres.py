@@ -49,8 +49,8 @@ CEILINGS = {
     "warm": ((116, 11), (150, 26), (17, 3)),
     "second": ((112, 11), (159, 26), (17, 3)),
 }
-# Exclusive memory SQL and transactions, 14/1 plus ten percent rounded up.
-MEMORY_CEILING = (16, 2)
+# The observed memory authorization cost of 14 statements plus ten percent, rounded up.
+MEMORY_SQL_CEILING = 16
 
 
 class MeasuredTransport(ScriptedLLMClient):
@@ -315,10 +315,11 @@ async def test_private_turn_memory_authorization_budget(
             sql, tx = costs[f"{trial}-pre"]
             statements[entries] = sql
             print("A2FP11_MEMORY_SQL", trial, sql, tx, flush=True)
-            if volume == "lab" and (sql > MEMORY_CEILING[0] or tx > MEMORY_CEILING[1] or sql > 15):
+            if not entries:
+                # The existing verified empty index opens no authorization transaction.
+                assert (sql, tx) == (0, 0)
+            elif sql > MEMORY_SQL_CEILING or tx != 1:
                 exceeded.append((trial, "memory budget", sql, tx))
-        # The existing verified empty index opens no authorization transaction.
-        assert statements[0] == 0
         if abs(statements[9] - statements[30]) > 2:
             exceeded.append((turn, "memory scaling", statements))
     assert not exceeded, exceeded

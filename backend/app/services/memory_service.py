@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Awaitable, Callable, Literal
@@ -225,14 +226,16 @@ async def _build_memory_context_result(
         entries = load_explicit_overlay_entries(data_root, agent_id)
         authorized = await authorized_explicit_entries(tenant_id=tenant_id, agent_id=agent_id, request=principal,
             entries=entries, issue_observer=issues) if entries or not verified else []
-        if issues:
+        if any(issue["status"] == "unavailable" for issue in issues):
             degraded_components.append("explicit_memory_source_authority")
-            # A4c in the prompt: only the requester's own entries (issues that
-            # carry a memory_id) are named by count. An id-less group-outage
-            # issue may belong to another member and stays silently omitted.
-            own_issues = [issue for issue in issues if issue.get("memory_id")]
-            if own_issues:
-                withheld_note = f"有{len(own_issues)} 条记忆暂时无法核实，已略过，可继续使用其余内容。"
+        # A4c in the prompt: only the requester's own entries (issues that
+        # carry a memory_id) are named by count. An id-less group-outage
+        # issue may belong to another member and stays silently omitted.
+        own_issues = [issue for issue in issues if issue.get("memory_id")]
+        if own_issues:
+            withheld_note = f"有{len(own_issues)} 条记忆暂时无法核实，已略过，可继续使用其余内容。"
+            # A governed (4xx) withhold leaves the turn ready; keep its codes visible to operators.
+            logger.info("Explicit memory withheld: %s", sorted(Counter(issue["code"] for issue in own_issues).items()))
         overlay_sources = {entry.entry_id: (source_dependency(receipt),) for entry, receipt in authorized}
         resident = with_explicit_memory_index(base_resident, [entry for entry, _receipt in authorized],
             overlay_sources,

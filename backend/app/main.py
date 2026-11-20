@@ -202,6 +202,7 @@ _API_ROLE_EXACT_PATHS = {
 _API_ROLE_AGENT_PATTERNS = (
     re.compile(r"^/api/(v1/)?agents/[^/]+/?$"),
     re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/?$"),
+    re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/runs/?$"),
     re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/[^/]+/runs(?:/.*)?$"),
     re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/[^/]+/turns/steer/?$"),
     re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/[^/]+/permissions/[^/]+/resolve/?$"),

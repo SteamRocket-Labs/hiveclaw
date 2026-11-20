@@ -156,12 +156,12 @@ async def test_private_turn_visible_reply_budget(
     assert not exceeded, exceeded
 
 
-async def seed_workspace_revisions(work, owner_sessionmaker):
+async def seed_workspace_revisions(work, owner_sessionmaker, *, count=78):
     artifacts = []
     async with owner_sessionmaker() as db:
         actor, _proof = await record_session_actor_identity(db, tenant_id=work.tenant, agent_id=work.agent,
             session_id=work.session, user_id=work.user, display_name=None, runtime_task_id=work.run)
-        for index in range(78):
+        for index in range(count):
             path = f"workspace/retained/source-{index}.md"
             receipt = None
             for revision in range(1 if index < 3 else 2):
@@ -232,7 +232,7 @@ def observe_memory_authorization(monkeypatch, probe):
         event.listen(Engine, "before_cursor_execute", count_sql)
         event.listen(Engine, "begin", count_tx)
         try:
-            yield costs
+            yield costs, scoped
         finally:
             event.remove(Engine, "before_cursor_execute", count_sql)
             event.remove(Engine, "begin", count_tx)
@@ -294,9 +294,11 @@ async def test_private_turn_memory_authorization_budget(
             return await super().stream(**kwargs)
 
     visible = observe_visible_replies(monkeypatch, probe)
-    with observe_memory_authorization(monkeypatch, probe) as costs:
+    # Patch the phase wrappers on the same scoped MonkeyPatch: a separate one would restore
+    # this test's memory wrapper into the module at teardown and leak it into later tests.
+    with observe_memory_authorization(monkeypatch, probe) as (costs, scoped):
         await measure_private_turn_volume(
-            member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog, probe=probe,
+            member_request, owner_sessionmaker, scoped, tmp_path, caplog, probe=probe,
             provider_type=MemoryTransport, volumes=volumes, prepare_volume=prepare_volume,
             drain_boundary_for_task=drain_terminal_boundary_for_task,
         )
@@ -323,6 +325,83 @@ async def test_private_turn_memory_authorization_budget(
         if abs(statements[9] - statements[30]) > 2:
             exceeded.append((turn, "memory scaling", statements))
     assert not exceeded, exceeded
+
+
+@pytest.mark.parametrize(
+    ("source_unavailable", "expected_status", "diagnostic_count"),
+    [(False, "ready", 0), (True, "degraded", 1)],
+    ids=["changed-source-bytes", "source-unavailable-503"],
+)
+async def test_private_turn_with_one_withheld_memory(
+    member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog,  # noqa: F811
+    drain_terminal_boundary_for_task, source_unavailable, expected_status, diagnostic_count,
+):
+    from app.runtime import invoker
+
+    probe = VolumeProbe()
+    visible = observe_visible_replies(monkeypatch, probe)
+    providers = {}
+    statuses = {}
+    marker = ""
+    consume_status = invoker._consume_memory_context_status
+
+    async def observe_status(request, tenant_id, result, **kwargs):
+        statuses[probe.phase.name] = result.status
+        await consume_status(request, tenant_id, result, **kwargs)
+
+    def provider_for(trial, probe):
+        provider = MeasuredTransport(trial, probe)
+        providers[trial] = provider
+        return provider
+
+    async def review(content, *, category, **_kwargs):
+        return MemoryWriteDecision(original_content=content, content=content, category=category, sensitivity="PL1_public")
+
+    async def prepare_volume(_volume, seed, factory):
+        nonlocal marker
+        session, run = await new_work(seed, owner_sessionmaker)
+        work = SimpleNamespace(tenant=seed.tenant_id, agent=seed.agent_id, user=seed.user_id, session=session,
+            run=run, root=tmp_path / str(seed.agent_id))
+        directory = work.root / "workspace/retained"
+        directory.mkdir()
+        source, = await seed_workspace_revisions(work, owner_sessionmaker, count=1)
+        _, marker = await write_volume_memory(work, factory, index=0, source=source)
+        source_path = directory / "source-0.md"
+        if source_unavailable:
+            source_path.unlink()
+        else:
+            source_path.write_text("The report was edited after the memory was written.\n")
+
+    monkeypatch.setattr(invoker, "_consume_memory_context_status", observe_status)
+    monkeypatch.setattr("app.memory.explicit_overlay.prepare_memory_write_with_llm", review)
+    await measure_private_turn_volume(
+        member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog, probe=probe,
+        provider_type=provider_for, volumes=("withheld",), prepare_volume=prepare_volume,
+        drain_boundary_for_task=drain_terminal_boundary_for_task,
+    )
+
+    diagnostics = {}
+    for turn in ("warm", "second"):
+        trial = f"withheld-{turn}"
+        run_id = UUID(visible[trial]["run_id"])
+        messages = json.dumps(providers[trial].requests[0]["messages"], ensure_ascii=False)
+        assert marker not in messages
+        assert "有1 条记忆暂时无法核实，已略过，可继续使用其余内容。" in messages
+        async with owner_sessionmaker() as db:
+            spans = await db.scalar(select(func.count(InvocationSpan.id)).where(
+                InvocationSpan.runtime_task_id == run_id, InvocationSpan.name == "memory.context.resolve"))
+            events = await db.scalar(select(func.count(ChatTranscriptEvent.id)).where(
+                ChatTranscriptEvent.run_id == run_id, ChatTranscriptEvent.event_type == "memory_context_degraded"))
+        diagnostics[turn] = (statuses[f"{trial}-pre"], spans, events)
+        stages = (*SEGMENTS, "visible-to-terminal", "after")
+        statements = {stage: probe.phases[f"{trial}-{stage}"].sql.total() for stage in stages}
+        print("P3A1_WITHHELD_MEMORY", trial, json.dumps({
+            "statements": statements,
+            "through_first_visible": sum(statements[stage] for stage in SEGMENTS),
+            "through_worker_return": sum(statements.values()),
+            "status": diagnostics[turn][0], "spans": spans, "events": events,
+        }), flush=True)
+    assert diagnostics == dict.fromkeys(("warm", "second"), (expected_status, diagnostic_count, diagnostic_count))
 
 
 @pytest.mark.parametrize("crash_before_write", [None, "context_observations", "hook_span"])

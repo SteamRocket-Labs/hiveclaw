@@ -131,7 +131,7 @@ def test_phase_emission_failure_preserves_run_timing(monkeypatch, caplog):
     def fail(*_args, **_kwargs):
         raise RuntimeError("phase emission failed")
 
-    monkeypatch.setattr(logging_config, "log_bounded_info", fail, raising=False)
+    monkeypatch.setattr(rt._PhaseSites, "summaries", fail)
     caplog.set_level(logging.INFO, logger=rt.__name__)
     with rt.run_timing_scope(uuid4()) as timing:
         finish_statement()

@@ -14,6 +14,7 @@ from inspect import iscoroutinefunction
 from time import perf_counter, thread_time
 
 from greenlet import getcurrent
+from loguru import logger as _sink_logger
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
@@ -219,15 +220,15 @@ def _emit_run_timing(timing, finished):
 
 
 def _emit_run_phase_sites(timing):
-    from app.core.logging_config import log_bounded_info
-
     for phase, group in timing.phase_sites.items():
         identity = {"run_id": timing.run_id, "phase": phase}
-        messages = (
-            "run_phase_sites " + json.dumps({**identity, **summary}, separators=(",", ":"))
-            for summary in group.summaries()
-        )
-        log_bounded_info(messages, max_bytes=_MAX_PHASE_LINE_BYTES)
+        for summary in group.summaries():
+            message = "run_phase_sites " + json.dumps({**identity, **summary}, separators=(",", ":"))
+            # The serialized sink line repeats the escaped message (text and
+            # record.message) plus about 0.7 KB of record fields.
+            if 2 * len(json.dumps(message)) + 2_000 < _MAX_PHASE_LINE_BYTES:
+                _sink_logger.info("{}", message)
+                break
 
 
 def timed_web_chat_run(function):

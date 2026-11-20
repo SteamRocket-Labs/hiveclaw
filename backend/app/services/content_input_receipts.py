@@ -127,6 +127,7 @@ class _DisclosureSourceValidations:
         self.source_ids = {}
         self.retained = {}
         self.checkpoint = (None, None)
+        self.bundled_platform_skill_hashes = None
         self.share_session_source_facts = False
         self.workspace_read = None
 
@@ -179,6 +180,7 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
         scope.source_ids.clear()
         scope.retained.clear()
         scope.checkpoint = (None, None)
+        scope.bundled_platform_skill_hashes = None
         scope.workspace_read = None
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
 

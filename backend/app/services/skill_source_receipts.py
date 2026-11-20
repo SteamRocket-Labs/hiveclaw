@@ -169,16 +169,31 @@ async def load_skill_input_snapshot(capture, tenant_id, *, runtime_request=None,
 
 
 def _bundled_platform_skill_hashes(*, source_path=None):
+    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
+    from app.services.skill_seeder import DEFAULT_PACK_SKILL_FOLDERS
+
+    include_packs = source_path is None or any(
+        source_path.startswith(f"skills/{folder}/") for folder in DEFAULT_PACK_SKILL_FOLDERS
+    )
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    memo = scope.bundled_platform_skill_hashes if scope is not None and scope.active else None
+    if memo is None:
+        hashes = _read_bundled_platform_skill_hashes(include_packs=include_packs)
+    else:
+        if include_packs not in memo:
+            memo[include_packs] = _read_bundled_platform_skill_hashes(include_packs=include_packs)
+        hashes = memo[include_packs]
+    if source_path is not None:
+        return {source_path: hashes[source_path]} if source_path in hashes else {}
+    return hashes.copy() if memo is not None else hashes
+
+
+def _read_bundled_platform_skill_hashes(*, include_packs):
     from app.services.skill_installation import collect_skill_package_files
-    from app.services.skill_seeder import DEFAULT_PACK_SKILL_FOLDERS, builtin_skill_definitions
+    from app.services.skill_seeder import builtin_skill_definitions
 
     backend = Path(__file__).resolve().parents[2]
-    pack_dirs = (
-        (backend / "packs",)
-        if source_path is None
-        or any(source_path.startswith(f"skills/{folder}/") for folder in DEFAULT_PACK_SKILL_FOLDERS)
-        else ()
-    )
+    pack_dirs = (backend / "packs",) if include_packs else ()
     hashes = {
         f"skills/{skill['folder_name']}/{file['path']}": hashlib.sha256(file["content"].encode("utf-8")).hexdigest()
         for skill in builtin_skill_definitions(pack_dirs=pack_dirs)
@@ -194,8 +209,6 @@ def _bundled_platform_skill_hashes(*, source_path=None):
                     for file in collect_skill_package_files(folder)
                 }
             )
-    if source_path is not None:
-        return {source_path: hashes[source_path]} if source_path in hashes else {}
     return hashes
 
 
@@ -296,25 +309,25 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
     if rows is not None:
         source_path = None
 
-    lineage = None
-    statement = (select(ConfigRevision, Agent).select_from(Agent)
-        .outerjoin(ConfigRevision, (ConfigRevision.tenant_id == tenant_id)
-            & (ConfigRevision.entity_type == "agent_bootstrap") & (ConfigRevision.entity_id == Agent.id)
-            & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
-        .where(Agent.id == agent_id).options(load_only(Agent.id, Agent.tenant_id, Agent.creator_id))
-        .execution_options(populate_existing=True))
-    if source_path is not None and len(Path(source_path).parts) >= 3:
-        from sqlalchemy.orm import aliased
-
-        installation = aliased(ConfigRevision)
-        lineage = _installation_id(agent_id, Path(source_path).parts[1])
-        statement = statement.add_columns(select(installation.id).where(installation.tenant_id == tenant_id,
-            installation.entity_type == "agent_skill_install", installation.entity_id == lineage).exists())
+    parts = Path(source_path).parts if source_path is not None else ()
+    lineage = _installation_id(agent_id, parts[1]) if len(parts) >= 3 else None
     vector = await _platform_package_checkpoint(db, tenant_id, agent_id, source_path)
     if vector is not None:
         loaded = vector.get(agent_id)
         row = (loaded[0], loaded[1], str(lineage) in (loaded[2] or [])) if loaded is not None else None
     else:
+        statement = (select(ConfigRevision, Agent).select_from(Agent)
+            .outerjoin(ConfigRevision, (ConfigRevision.tenant_id == tenant_id)
+                & (ConfigRevision.entity_type == "agent_bootstrap") & (ConfigRevision.entity_id == Agent.id)
+                & (ConfigRevision.version == 1) & ConfigRevision.is_active.is_(True))
+            .where(Agent.id == agent_id).options(load_only(Agent.id, Agent.tenant_id, Agent.creator_id))
+            .execution_options(populate_existing=True))
+        if lineage is not None:
+            from sqlalchemy.orm import aliased
+
+            installation = aliased(ConfigRevision)
+            statement = statement.add_columns(select(installation.id).where(installation.tenant_id == tenant_id,
+                installation.entity_type == "agent_skill_install", installation.entity_id == lineage).exists())
         row = (await db.execute(statement)).first()
     revision, agent = row[:2] if row is not None else (None, None)
     content = revision.content if revision is not None and isinstance(revision.content, dict) else {}

@@ -253,7 +253,7 @@ async def record_original_platform_skill_sources(db, *, agent, workspace):
 
 
 async def _platform_package_checkpoint(db, tenant_id, agent_id, source_path):
-    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS, checkpoint_query
+    from app.services.content_input_receipts import checkpoint_query
 
     from sqlalchemy import column, values, func
     from sqlalchemy.dialects.postgresql import UUID
@@ -262,24 +262,16 @@ async def _platform_package_checkpoint(db, tenant_id, agent_id, source_path):
     from app.services.content_input_receipts import checkpoint_source_ids, checkpoint_rows
     from app.services.source_read_queries import fact_columns
 
-    source_ids = checkpoint_source_ids("agent_platform_skill_file")
-    if source_path is None or not source_ids:
-        return None
-    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    parsed = scope.statements.get("platform_package_source_ids")
-    if parsed is None or parsed[0] != source_ids:
-        paths, installations = set(), set()
-        for raw in source_ids:
-            try:
-                raw_agent, path, _revision = raw.split("\n")
-                identity = uuid.UUID(raw_agent)
-                folder = _safe_folder_name(Path(path).parts[1])
-                paths.add((identity, path))
-                installations.add((identity, _installation_id(identity, folder)))
-            except (ValueError, IndexError):
-                pass
-        parsed = scope.statements["platform_package_source_ids"] = (source_ids.copy(), paths, installations)
-    _, paths, installations = parsed
+    paths, installations = set(), set()
+    for raw in checkpoint_source_ids("agent_platform_skill_file"):
+        try:
+            raw_agent, path, _revision = raw.split("\n")
+            identity = uuid.UUID(raw_agent)
+            folder = _safe_folder_name(Path(path).parts[1])
+            paths.add((identity, path))
+            installations.add((identity, _installation_id(identity, folder)))
+        except (ValueError, IndexError):
+            pass
     if (agent_id, source_path) not in paths:
         return None
     async def read():
@@ -401,15 +393,7 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
         if source_path is None
         else _bundled_platform_skill_hashes(source_path=source_path)
     )
-    if source_path is not None:
-        files = {source_path: files[source_path]} if source_path in files else {}
-    # An exact stored claim already supplies the package witness. The validator
-    # still checks the current workspace bytes at its existing boundary.
-    if (scope is not None and scope.active and scope.bundled_platform_skill_hashes is not None
-        and source_path in bundled and files.get(source_path) == bundled[source_path]):
-        matching = {}
-    else:
-        matching = original_platform_skill_hashes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id), bundled=bundled)
+    matching = original_platform_skill_hashes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id), bundled=bundled)
     files = {**files, **matching}
     candidates = {}
     for path, digest in files.items():

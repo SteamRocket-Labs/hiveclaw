@@ -4,12 +4,22 @@ import uuid
 import time
 
 from fastapi import Request, Response
+from starlette.background import BackgroundTask
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.routing import compile_path
 
 from app.config import get_settings
 from app.core.logging_config import set_trace_id
-from app.core.request_timing import RequestTiming, install_cursor_timing, request_timing
+from app.core.request_timing import RequestTiming, emit_request_phase_sites, install_cursor_timing, request_timing
 from loguru import logger
+
+
+_SEND_REQUEST_PATHS = tuple((compile_path(template)[0], template) for template in (
+    "/api/agents/{agent_id}/sessions/runs",
+    "/api/agents/{agent_id}/sessions/{session_id}/runs",
+    "/api/v1/agents/{agent_id}/sessions/runs",
+    "/api/v1/agents/{agent_id}/sessions/{session_id}/runs",
+))
 
 
 class TraceIdMiddleware(BaseHTTPMiddleware):
@@ -29,6 +39,14 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
 
         start_time = time.perf_counter()
         timing = RequestTiming()
+        path_template = None
+        if request.method == "POST" and request.scope["path"].endswith("/runs"):
+            # The app is served without a root_path, so the scope path is the route path.
+            for pattern, template in _SEND_REQUEST_PATHS:
+                if pattern.fullmatch(request.scope["path"]):
+                    path_template = template
+                    timing.phase_sites = {}
+                    break
         timing_token = request_timing.set(timing)
 
         # Log request
@@ -45,6 +63,8 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
             # In-app duration for public-probe attribution: total minus this
             # header value is edge/network transit.
             response.headers["Server-Timing"] = timing.header(duration)
+            if path_template is not None and timing.phase_sites:
+                response.background = BackgroundTask(emit_request_phase_sites, timing, path_template)
 
             slow_threshold = get_settings().SLOW_REQUEST_WARN_SECONDS
             if duration >= slow_threshold:

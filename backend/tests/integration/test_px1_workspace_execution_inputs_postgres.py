@@ -84,8 +84,10 @@ async def test_shared_execution_inputs_require_live_sources(
         denial = await sources.authorize_workspace_execution_inputs(request)
         assert withdrawn
     else:
-        denial, _ = await _measure("px1_shared_execution_unchanged",
+        denial, row = await _measure("px1_shared_execution_unchanged",
             lambda: sources.authorize_workspace_execution_inputs(request), monkeypatch, delay=0)
+        # With no change during the walk the batch pass keeps the base count (7 at a1cf34d4).
+        assert row["statements"] == 7, row
 
     expected = paths[3:] if withdraw_source else paths
     assert denial is None

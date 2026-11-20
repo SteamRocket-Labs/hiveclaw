@@ -1096,7 +1096,11 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land49 (A2fp4) versus land48: 123 callsites and 810 entries unchanged. The only
 # changed hash is the app/database.py module source (pool_pre_ping=False,
 # pool_recycle=300 in _engine_pool_kwargs). No new bypass scope or write.
-RLS_BYPASS_SCOPES_SHA256 = "0e6b9e8a8fc318010b6211ea70d5176fb05ce54d861a8880c1bbe7899d2bc381"
+# Land54 (A2fp12 + PX1) versus land53: 123 callsites and 810 entries unchanged.
+# The only changed hash is the app/services/content_input_receipts.py module
+# source (PX1: shared execution inputs recheck each file after a post-walk
+# denial; the path-attribution fields are removed). No new bypass scope or write.
+RLS_BYPASS_SCOPES_SHA256 = "365300b13ba63343c518ff22888daccbe4f1ba061234b36dc737cec24984ecd8"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

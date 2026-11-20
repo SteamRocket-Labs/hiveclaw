@@ -4,7 +4,6 @@ import uuid
 import time
 
 from fastapi import Request, Response
-from starlette._utils import get_route_path
 from starlette.background import BackgroundTask
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path
@@ -42,9 +41,9 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
         timing = RequestTiming()
         path_template = None
         if request.method == "POST" and request.scope["path"].endswith("/runs"):
-            route_path = get_route_path(request.scope)
+            # The app is served without a root_path, so the scope path is the route path.
             for pattern, template in _SEND_REQUEST_PATHS:
-                if pattern.fullmatch(route_path):
+                if pattern.fullmatch(request.scope["path"]):
                     path_template = template
                     timing.phase_sites = {}
                     break

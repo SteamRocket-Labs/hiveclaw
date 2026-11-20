@@ -25,6 +25,7 @@
 | 2026-11-18 | 对照六个 Grok Bot 开源平替（Rakazo、OpenMausBot、OpenTeam、Lorca、Rerun、OpenBot）：只做侧栏 bot 行（最近一句、时间、运行中/等你决定/失败，UX1）和 SP4d 两句（跟成员语言、先说结果；工具检索类内部步骤不进「本次操作」）；bot 常驻电脑与接管（内核，且属「本轮冻结」）、多 bot 群聊（P5）、总管式引导、needs-you 汇总不做。证据 ~/hiveclaw-evidence/p1/ref-grokbot-alts/COMPARISON.md | Claude（owner “改不改、改多少由你决定”“按你推荐的来，继续推进”） |
 | 2026-11-18 | Railway 停读 railway.json（2026-12-01）前，把 backend、backend-api 的 Dockerfile 构建与健康检查写进服务设置；不启用 IaC 文件，railway.json 暂留 | owner（“可以，按你推荐的改”） |
 | 2026-11-20 | P1 后半：记忆召回时的撤权、当前读者、防篡改复核（P3a0 的 R05–R11）按 11-10 裁定保留在私人回合里（撤权来源派生的记忆之后各轮不进模型；11-18 RL1 的 A 只放开自己的派生文件，派生记忆仍扣住）。删光读取层也只省 ≤0.46 秒，到不了 1 秒；下一步先在实验室量清重复读取，再定快路径 | Claude（推荐即默认决定；证据 /tmp/hc-p1/review/p3a0.report.md 第 2、3 节，生产只读 run40_memory_status_readonly.py） |
+| 2026-11-20 | P1 快路径分三段，每段后实测：MF1 记忆授权去重 → F2 回合内事务合并 → F3 发送 POST 事务合并；准备回合期间发生的撤权从下一轮起生效（与 11-10、11-13 裁定一致）。不采纳写入时传播撤权、钩子封存与结算合并、未剖析前的进程缓存。按规定扣下的本人记忆不再记为降级，改为按码记日志 | Claude（推荐即默认决定；证据 /tmp/hc-p1/review/p3a2.report.md、~/hiveclaw-evidence/p1/p1-fastpath-judgment-2026-11-20.md、Grok 独立方案 p1fast-grok.answer.md） |
 
 ## 进度
 
@@ -232,11 +233,26 @@
   - 原因：成员有本人记忆因来源变更或撤权被按规定扣下，之后每一轮都被当成“辅助记忆组件暂时故障”。
   - 每轮因此多写一条诊断和一条事件，约 16–18 条语句、0.11–0.16 秒，步骤里还会多一句英文 “temporarily degraded”。
   - 扣留本身是对的，错的是标签。
-- [进行中] P3a1（r7c p1-p3a1 起于 daa8226f，11-20 10:44Z 起，Codex）。
-  - 按规定扣下的本人记忆不再把回合标成降级：内容照扣，提示里“有 N 条记忆无法核实”照留；真正的不可用（5xx）仍标降级。
-  - 新会话 POST 改走 backend-api。
-  - 审查：Grok + reviewer xhigh。
-- [进行中] P3a2（r7a 分离在 daa8226f，11-20 10:46Z 起，Codex，只读）：在实验室抓一个暖回合从发送到首个模型请求的全部语句，按语句形状和参数分组，找完全重复的读取、同一行换形状的读取、逐条循环和事务开销。目的是量出“同样的东西读了几遍”有多大，再定快路径。
+- [已并入 land56] P3a1（r7c p1-p3a1 起于 daa8226f，Codex 两轮 + 控制方一处小改）。
+  - 按规定扣下的本人记忆不再把回合标成降级：内容照扣，提示里“有 N 条记忆无法核实”照留；真正的不可用（5xx）仍标降级。每次扣留按错误码记一行日志，只有码和条数。
+  - 新会话 POST 改走 backend-api：nginx 一行加 API 角色白名单一行。
+  - 红绿：白名单测试改动后 11 过、基线 3 败；nginx 测试 6 过、基线 3 败；扣留用例 2 过、基线 1 败。四个记忆集成文件 49 过。RLS 指纹不变。
+  - 审查：Grok 无阻断无应修；reviewer xhigh 无阻断，应修一条（扣留后服务端零痕迹）已采纳，补了上面那行日志。
+- [完成] P3a2 只读量重复（Codex，/tmp/hc-p1/review/p3a2.report.md）：实验室一个暖回合约 330 次数据库往返；把能去的重复全去掉，上限仍约 170 次。逐点去重到不了 1 秒，要“每回合一次授权快照”这类结构性改法。
+  - 快路径分三段，每段后实测：MF1 记忆授权一次走查内去重；F2 回合内的事务合并，Agent、Session、User 往下传；F3 发送 POST 的事务合并。不采纳：写入时传播撤权、钩子封存与结算合并、未剖析前的工具清单进程缓存。
+  - 对照：控制方判断 ~/hiveclaw-evidence/p1/p1-fastpath-judgment-2026-11-20.md，Grok 独立方案 /tmp/hc-p1/review/p1fast-grok.answer.md。
+- [完成] land56 = land55 + P3a1（main = backup 14697c9b；11-20 12:43Z 两后端 SUCCESS，运行身份 34dfefa0…/1287 = 预期；12:49Z 前端 SUCCESS，index-zX5yAwPw 不变；无迁移，RLS 指纹不变 365300b1）。
+  - 定向门禁 50 过（A4v、A2fp2 回合量、R10a、会话发送 API、启动配置）。
+  - 上线顺序：后端先、前端后（反过来新会话发送会 404）。回滚：先前端，再两后端回 41745939（land55 代码，b3dd4a92…/1287）。
+- [完成] E2E 第 41 轮（生产 14697c9b = land56，11-20 12:56:13–12:59:37Z，同第 40 轮 5 次 hello + 1 次 DeepWiki）：6/6 有回复，6 次发送全部 201，6 条都没有记忆警告。
+  - 自己的消息与「思考中」在 Enter 后 2.8–4.1 ms 出现。
+  - 首字减模型：首轮 7.09 秒，暖轮 1.93、2.66、3.09、3.62 秒，中位 2.87 秒（第 40 轮 3.64），降约 0.76 秒，仍未到 1 秒。
+  - 新会话发送 POST 474–716 ms（冷启 1188 ms），每条语句 2.4–3.9 ms（第 40 轮在 runtime 上约 7.1 ms），确认已走 backend-api。
+  - 记忆上下文从 50 条 / 7 个事务降到 32–33 条 / 5 个事务；墙钟仍 0.49–1.26 秒，主要是 CPU，正是 MF1 的目标。
+  - 生产只读：第 40 轮窗口降级 span 和事件各 6，第 41 轮窗口和部署后至今都是 0。
+  - 新日志显示每轮扣下 1 条（explicit_memory_source_unverified）：该助理有一条记忆的改动已准备好、还没生效，收据状态不是 active，所以按设计扣下。不属于 P1，之后查它是在等确认还是卡住了。
+  - 证据：~/hiveclaw-evidence/p1/e2e/run41/、run41-ops/（first_text_minus_model.txt、phase_table.txt、memory_status_windows.txt、memory_withheld_log.txt、memory_state_keys.txt）。
+- [进行中] MF1（r7a p1-mf1 起于 daa8226f，11-20 11:42Z 起，Codex）：生产记忆上下文 CPU 0.3–1.0 秒。假设是该助理 9 条记忆有 72 个平台技能文件依赖，每个依赖都重做一次内置包发现与哈希。按生产形状建夹具剖析，确认后在一次走查内去重。
 - [完成] land54 = land53 + A2fp12 + PX1（main = backup c9405f40；11-20 07:44Z 两后端 SUCCESS，运行身份 8e0fa8d3…/1287 = 预期，前端不变，无迁移）。
   - RLS 指纹 0e6b9e8a→365300b1：123 调用点、810 条，只变 content_input_receipts.py 模块源码。
   - 回滚：两后端回 03bee6c9（land53 代码，521a8429…/1287）。

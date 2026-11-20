@@ -294,7 +294,8 @@ async def test_private_turn_memory_authorization_budget(
             return await super().stream(**kwargs)
 
     visible = observe_visible_replies(monkeypatch, probe)
-    # Unwind the phase wrappers before removing the SQL observer they wrap.
+    # Patch the phase wrappers on the same scoped MonkeyPatch: a separate one would restore
+    # this test's memory wrapper into the module at teardown and leak it into later tests.
     with observe_memory_authorization(monkeypatch, probe) as (costs, scoped):
         await measure_private_turn_volume(
             member_request, owner_sessionmaker, scoped, tmp_path, caplog, probe=probe,

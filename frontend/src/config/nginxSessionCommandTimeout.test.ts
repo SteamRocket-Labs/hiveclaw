@@ -15,6 +15,7 @@ describe('synchronous session command gateway', () => {
       ['~ ^/api/(v1/)?agents/?$', '30s', '30s'],
       ['~ ^/api/(v1/)?agents/[^/]+/?$', '30s', '30s'],
       ['~ ^/api/(v1/)?agents/[^/]+/sessions/?$', '30s', '30s'],
+      // P3a1: new-session sends share the existing-session send location and its timeouts.
       ['~ ^/api/(v1/)?agents/[^/]+/sessions/(runs/?$|[^/]+/runs)', '120s', '30s'],
       ['= /api/health', '5s', '5s'],
       [executeRoute, '600s', '600s'],

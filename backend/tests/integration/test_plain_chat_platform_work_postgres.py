@@ -236,7 +236,8 @@ async def test_plain_chat_platform_work(hello_work, app_user_sessionmaker, monke
     if case == "unverifiable_source":
         assert all(f"MEMORY_DAG_{index}" not in json.dumps(request["messages"])
             for request in client.requests for index in range(4, 10))
-        assert "explicit_memory_source_authority" in probe.memory[0]["components"]
+        # Source-rule withholding is a governed outcome (owner 2026-11-10). Production labelled 131/131 turns degraded.
+        assert "explicit_memory_source_authority" not in probe.memory[0]["components"]
         assert issues and all(issue["code"] == "content_source_changed" for issue in issues), issues
     else:
         assert all("MEMORY_DAG_9" in json.dumps(request["messages"]) for request in client.requests)
@@ -452,7 +453,8 @@ async def test_recovered_memory_source_restores_the_ready_index(
 
     withheld = await resolve(n)
     assert "MEMORY_DAG_9" not in withheld.content, withheld.content
-    assert "explicit_memory_source_authority" in withheld.degraded_components, withheld
+    # Source-rule withholding is a governed outcome (owner 2026-11-10). Production labelled 131/131 turns degraded.
+    assert "explicit_memory_source_authority" not in withheld.degraded_components, withheld
 
     async with owner_sessionmaker() as writer:
         (await writer.get(ContentInputReceipt, n.receipts[9].id)).dependencies_json = original

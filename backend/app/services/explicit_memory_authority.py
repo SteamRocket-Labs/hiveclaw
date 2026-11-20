@@ -366,7 +366,7 @@ async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, 
                 and authority.get("tenant_id") == str(tenant_id) and authority.get("agent_id") == str(agent_id)
                 and authority.get("schema") == AUTHORITY_SCHEMA and authority.get("state") not in {"retired", "revoked"}
                 and (_session.audience_kind in {None, "private"} or _same_group(authority, _session))):
-                issues.append({"memory_id": entry.entry_id, "status": "denied" if exc.status_code == 403 else "unavailable",
+                issues.append({"memory_id": entry.entry_id, "status": "denied" if 400 <= exc.status_code < 500 else "unavailable",
                     "code": exc.code})
             elif (authority.get("schema") == AUTHORITY_SCHEMA and authority.get("audience_kind") == "group"
                 and exc.status_code >= 500):

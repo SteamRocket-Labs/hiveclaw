@@ -850,11 +850,6 @@ async def _walk_input_dependencies(db, tenant_id, dependencies, *, scope, recipi
                 recipient,
                 source_key,
             )
-            point = scope.workspace_read
-            if point is not None and point.paths is not None:
-                # Attribute shared descendants even when the round's existing
-                # successful-source decision skips a repeated subtree.
-                point.paths.setdefault(reader_key, set()).add(point.current_path)
             if reader_key in scope.visiting:
                 # Re-enter a gray source once so its own active-chain check can classify
                 # the cycle; a second re-entry means no kind check fires on this cycle.
@@ -2763,7 +2758,7 @@ async def workspace_read_checkpoint(db, tenant_id):
         yield
         return
     point = SimpleNamespace(db=db, tenant_id=tenant_id, groups={}, observed=[], phase=object(),
-        verified=set(scope.verified), paths=None, current_path=None, omitted=None, node_boundary=None)
+        verified=set(scope.verified), node_boundary=None)
     scope.workspace_read = point
     try:
         yield
@@ -2793,7 +2788,7 @@ def defer_memory_after(db, tenant_id, dependency, recheck):
     group = SimpleNamespace(recipient=current_source_recipient(), project=_SOURCE_READER.get(),
         phase=scope.checkpoint[1])
     point.observed.append(SimpleNamespace(kind="explicit_memory", group=group, passed=True,
-        dependency=dependency, recheck=recheck, ancestors=tuple(scope.visiting) if point.paths is not None else ()))
+        dependency=dependency, recheck=recheck))
     return True
 
 
@@ -2918,9 +2913,6 @@ async def _recheck_workspace_checkpoint(point):
     for observation in point.observed:
         if not observation.passed:
             continue
-        affected = set().union(*(point.paths.get(key, ()) for key in observation.ancestors)) if point.paths is not None else set()
-        if affected and affected <= point.omitted:
-            continue
         group = observation.group
         recipient = _RECIPIENT_READ.set(group.recipient)
         project = _SOURCE_READER.set(group.project)
@@ -2943,11 +2935,7 @@ async def _recheck_workspace_checkpoint(point):
                 except ContentInputReceiptError as exc:
                     if exc.dependency is None:
                         exc.dependency = observation.dependency
-                    if point.omitted is None or not affected:
-                        raise
-                    point.omitted.update(affected)
-                    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-                    scope.verified = {key: value for key, value in scope.verified.items() if key in point.verified}
+                    raise
         finally:
             _SOURCE_READER.reset(project)
             _RECIPIENT_READ.reset(recipient)
@@ -3020,7 +3008,7 @@ async def _validate_workspace_node(db, tenant_id, dependency, *, user, runtime_r
     if group is not None:
         point = _DISCLOSURE_SOURCE_VALIDATIONS.get().workspace_read
         observation = SimpleNamespace(kind="workspace_artifact", group=group, arguments=arguments, passed=False,
-            dependency=dependency, ancestors=tuple(_DISCLOSURE_SOURCE_VALIDATIONS.get().visiting) if point.paths is not None else ())
+            dependency=dependency)
         point.observed.append(observation)
     user = await _validate_workspace_live(db, tenant_id, **arguments)
     # A later write is not a source of the previously observed version.
@@ -3197,21 +3185,36 @@ async def authorize_workspace_execution_inputs(request):
                         source_rows[(RuntimeTask, task.id)] = task
                     await _preload_execution_sources(db, tenant_id, [{"source_kind": "workspace_artifact",
                         "source_id": str(receipt_id)} for receipt_id in receipt_ids.values()], latest_receipts=receipt_ids)
-                    async with workspace_read_checkpoint(db, tenant_id):
-                        point = frame.workspace_read
-                        point.paths, point.omitted = {}, omitted
+
+                    async def walk_shared_inputs(*, independent=False):
+                        excluded = set()
                         for ref, receipt_id in sorted(receipt_ids.items()):
                             path = ref.partition("\n")[2]
                             receipt = source_rows.get((ContentInputReceipt, receipt_id))
                             if receipt is None or receipt.carrier_kind != "workspace_artifact" or receipt.carrier_ref != ref:
-                                omitted.add(path)
+                                excluded.add(path)
                                 continue
-                            point.current_path = path
                             receipts[ref] = receipt
                             try:
-                                await _validate_workspace_tool_input(db, request, receipt)
+                                if independent:
+                                    # Recheck live authority independently for each file.
+                                    with group_source_read(
+                                        batch_inputs=True, cache_authority=False, source_catalog=True,
+                                    ) as file_frame:
+                                        transcript_event_columns(file_frame)
+                                        async with workspace_read_checkpoint(db, tenant_id):
+                                            await _validate_workspace_tool_input(db, request, receipt)
+                                else:
+                                    await _validate_workspace_tool_input(db, request, receipt)
                             except ContentInputReceiptError:
-                                omitted.add(path)
+                                excluded.add(path)
+                        return excluded
+
+                    try:
+                        async with workspace_read_checkpoint(db, tenant_id):
+                            omitted = await walk_shared_inputs()
+                    except ContentInputReceiptError:
+                        omitted = await walk_shared_inputs(independent=True)
             for path in sorted(paths - omitted):
                 receipt = receipts.get(workspace_artifact_ref(context.agent_id, path))
                 if receipt is not None or path in scope.full_control_paths:

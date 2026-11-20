@@ -1,16 +1,32 @@
 """Measure a private Web turn at the first durable member-visible text."""
 import asyncio
+import hashlib
 import json
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import distinct, event, func, select
+from sqlalchemy.engine import Engine
 
+from app.database import tenant_scoped_session
+from app.memory.explicit_overlay import load_explicit_overlay_entries
+from app.memory.write_gate import MemoryWriteDecision
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.invocation_span import InvocationSpan
+from app.models.organization_identity import ContentInputReceipt
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionEventOutbox, SessionModelResult
+from app.runtime.context_candidates import ContextMessageOrigin
+from app.services.content_input_receipts import record_session_actor_identity, record_workspace_receipt
+from app.services.explicit_memory_operations import execute_memory_operation
+from app.services.llm_client import LLMMessage
+from app.services.workspace_resource_authority import register_workspace_path
+from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 from tests.integration import conftest as pg_fixtures
 from tests.integration.test_a2fp1_private_turn_budget_postgres import ANSWER, assert_committed_reply
 from tests.integration.test_a2fp2_private_turn_volume_postgres import (
@@ -19,7 +35,9 @@ from tests.integration.test_a2fp2_private_turn_volume_postgres import (
     measure_private_turn_volume,
 )
 from tests.integration.test_a2p_member_request_cost_postgres import member_request  # noqa: F401
-from tests.integration.test_sp1_send_statement_budget_postgres import claim
+from tests.integration.test_m1g24_workspace_artifact_authority_postgres import _admitted_write_messages, _prepare_write
+from tests.integration.test_sp1_send_statement_budget_postgres import claim, new_work
+from tests.integration.test_sp3b_run_timing_postgres import summaries
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import (
     ScriptedLLMClient,
     SimulatedWorkerCrash,
@@ -31,6 +49,8 @@ CEILINGS = {
     "warm": ((116, 11), (150, 26), (17, 3)),
     "second": ((112, 11), (159, 26), (17, 3)),
 }
+# The observed memory authorization cost of 14 statements plus ten percent, rounded up.
+MEMORY_SQL_CEILING = 16
 
 
 class MeasuredTransport(ScriptedLLMClient):
@@ -133,6 +153,175 @@ async def test_private_turn_visible_reply_budget(
             # From 1.6 × CPU + 2.5 × (SQL + 3 × transactions) using CPU = SQL.
             estimate_tenths = 41 * statement_count + 75 * transaction_count
             print("A2FP3_TURN", trial, f"predicted_ms={estimate_tenths / 10:.1f}", flush=True)
+    assert not exceeded, exceeded
+
+
+async def seed_workspace_revisions(work, owner_sessionmaker):
+    artifacts = []
+    async with owner_sessionmaker() as db:
+        actor, _proof = await record_session_actor_identity(db, tenant_id=work.tenant, agent_id=work.agent,
+            session_id=work.session, user_id=work.user, display_name=None, runtime_task_id=work.run)
+        for index in range(78):
+            path = f"workspace/retained/source-{index}.md"
+            receipt = None
+            for revision in range(1 if index < 3 else 2):
+                body = f"Report {index}, edition {revision}. Use the verified reference figures.\n"
+                digest = hashlib.sha256(body.encode()).hexdigest()
+                (work.root / path).write_text(body)
+                await register_workspace_path(db, tenant_id=work.tenant, agent_id=work.agent, path=path,
+                    owner_user_id=work.user, root_session_id=work.session, source="native_tool", content_hash=digest)
+                receipt = record_workspace_receipt(db, work.tenant, work.agent, path, digest, receipt,
+                    additional_dependencies=(actor,))
+            artifacts.append((body, {"source_kind": "workspace_artifact", "source_id": str(receipt.id),
+                "source_version": receipt.content_sha256}))
+        await db.commit()
+    return artifacts
+
+
+async def write_volume_memory(work, factory, *, index, source, replaces=None):
+    marker = f"MEMORY_VOLUME_{index:02d}"
+    body, dependency = source
+    context = LLMMessage(role="system", content=body, context_origin=ContextMessageOrigin.capture(
+        kind="workspace", role="system", content=body, sources=[dependency], unbound=()))
+    tool_name = "save_memory" if replaces is None else "update_memory"
+    arguments = {"content": f"{marker} records the verified report convention."}
+    if replaces is None:
+        arguments["category"] = "project"
+    else:
+        arguments.update(memory_id=replaces, reason="explicit_user_correction")
+    async with tenant_scoped_session(work.tenant, session_factory=factory) as db:
+        messages = await _admitted_write_messages(db, work, content=arguments["content"], round_index=index + 1)
+        invocation, _, turn = await _prepare_write(db, work, messages=[context, *messages],
+            tool_name=tool_name, arguments=arguments, round_index=index + 1)
+    result = await execute_memory_operation(ToolExecutionRequest(
+        tool_name, arguments, ToolExecutionContext(agent_id=work.agent, user_id=work.user,
+            tenant_id=str(work.tenant), workspace=work.root, session_id=str(work.session),
+            runtime_task_id=str(work.run), turn_id=turn, tool_call_id=invocation.provider_tool_use_id)),
+        data_root=work.root.parent, session_factory=factory)
+    assert result.status == "active", result
+    return result.entry_id, marker
+
+
+@contextmanager
+def observe_memory_authorization(monkeypatch, probe):
+    from app.runtime import invoker
+
+    current = ContextVar("measured_memory_turn", default=None)
+    costs = {}
+    original = invoker._resolve_memory_context
+
+    @wraps(original)
+    async def measure(*args, **kwargs):
+        costs[probe.phase.name] = [0, 0]
+        token = current.set(probe.phase.name)
+        try:
+            return await original(*args, **kwargs)
+        finally:
+            current.reset(token)
+
+    def count_sql(_conn, _cursor, _statement, _params, _context, _many):
+        if turn := current.get():
+            costs[turn][0] += 1
+
+    def count_tx(_conn):
+        if turn := current.get():
+            costs[turn][1] += 1
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(invoker, "_resolve_memory_context", measure)
+        event.listen(Engine, "before_cursor_execute", count_sql)
+        event.listen(Engine, "begin", count_tx)
+        try:
+            yield costs
+        finally:
+            event.remove(Engine, "before_cursor_execute", count_sql)
+            event.remove(Engine, "begin", count_tx)
+
+
+async def test_private_turn_memory_authorization_budget(
+    member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog,  # noqa: F811
+    drain_terminal_boundary_for_task,
+):
+    probe = VolumeProbe()
+    active = {}
+    retired = set()
+    work = None
+    artifacts = []
+    volumes = {"empty": 0, "lab": 9, "scaled": 30}
+
+    async def review(content, *, category, **_kwargs):
+        return MemoryWriteDecision(original_content=content, content=content, category=category, sensitivity="PL1_public")
+
+    monkeypatch.setattr("app.memory.explicit_overlay.prepare_memory_write_with_llm", review)
+
+    async def prepare_volume(volume, seed, factory):
+        nonlocal work, artifacts
+        if volume == "empty":
+            assert not load_explicit_overlay_entries(tmp_path, seed.agent_id)
+            return
+        if volume == "lab":
+            session, run = await new_work(seed, owner_sessionmaker)
+            work = SimpleNamespace(tenant=seed.tenant_id, agent=seed.agent_id, user=seed.user_id, session=session,
+                run=run, root=tmp_path / str(seed.agent_id))
+            artifacts = await seed_workspace_revisions(work, owner_sessionmaker)
+        for index in range(0 if volume == "lab" else 9, volumes[volume]):
+            replaces = next(iter(active)) if 4 <= index < 9 else None
+            entry, marker = await write_volume_memory(work, factory, index=index,
+                source=artifacts[index], replaces=replaces)
+            if replaces is not None:
+                retired.add(active.pop(replaces))
+            active[entry] = marker
+        entries = load_explicit_overlay_entries(tmp_path, work.agent)
+        assert len(entries) == volumes[volume]
+        assert {entry.entry_id for entry in entries if entry.status == "active"} == set(active)
+        async with owner_sessionmaker() as db:
+            counts = {kind: (refs, revisions) for kind, refs, revisions in await db.execute(select(
+                ContentInputReceipt.carrier_kind, func.count(distinct(ContentInputReceipt.carrier_ref)),
+                func.count(ContentInputReceipt.id)).where(ContentInputReceipt.tenant_id == work.tenant,
+                ContentInputReceipt.carrier_ref.startswith(f"{work.agent}\n")).group_by(ContentInputReceipt.carrier_kind))}
+        assert counts == {"explicit_memory": (volumes[volume], volumes[volume] + 5), "workspace_artifact": (78, 153)}
+
+    class MemoryTransport(MeasuredTransport):
+        async def stream(self, **kwargs):
+            contents = (message.content if isinstance(message, LLMMessage) else message["content"]
+                for message in kwargs["messages"])
+            messages = "\n".join(content for content in contents if isinstance(content, str))
+            assert all(marker not in messages for marker in retired), messages
+            if self.trial.startswith("lab-"):
+                assert all(marker in messages for marker in active.values()), messages
+            elif self.trial.startswith("scaled-"):
+                assert f"{len(active)} active entries." in messages, messages
+            return await super().stream(**kwargs)
+
+    visible = observe_visible_replies(monkeypatch, probe)
+    with observe_memory_authorization(monkeypatch, probe) as costs:
+        await measure_private_turn_volume(
+            member_request, owner_sessionmaker, monkeypatch, tmp_path, caplog, probe=probe,
+            provider_type=MemoryTransport, volumes=volumes, prepare_volume=prepare_volume,
+            drain_boundary_for_task=drain_terminal_boundary_for_task,
+        )
+    timings = {timing["run_id"]: {phase["name"]: phase for phase in timing["phases"]} for timing in summaries(caplog)}
+    exceeded = []
+    for turn in CEILINGS:
+        statements = {}
+        for volume, entries in volumes.items():
+            trial = f"{volume}-{turn}"
+            phases = timings[visible[trial]["run_id"]]
+            for stage in (*SEGMENTS, "visible-to-terminal", "after"):
+                phase = probe.phases[f"{trial}-{stage}"]
+                print("A2FP11_SEGMENT", phase.name, json.dumps(phase.metrics()), flush=True)
+            for name in ("memory_context", "skill_catalog", "prompt_build", "hook_dispatch", "secret_boundary"):
+                print("A2FP11_PHASE", trial, name, json.dumps(phases[name]), flush=True)
+            sql, tx = costs[f"{trial}-pre"]
+            statements[entries] = sql
+            print("A2FP11_MEMORY_SQL", trial, sql, tx, flush=True)
+            if not entries:
+                # The existing verified empty index opens no authorization transaction.
+                assert (sql, tx) == (0, 0)
+            elif sql > MEMORY_SQL_CEILING or tx != 1:
+                exceeded.append((trial, "memory budget", sql, tx))
+        if abs(statements[9] - statements[30]) > 2:
+            exceeded.append((turn, "memory scaling", statements))
     assert not exceeded, exceeded
 
 

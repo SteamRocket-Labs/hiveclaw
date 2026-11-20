@@ -294,7 +294,7 @@ def watch_phases(monkeypatch, probe):
 async def measure_private_turn_volume(
     member_fixture, owner_sessionmaker, monkeypatch, tmp_path, caplog, *,
     probe=None, provider_type=HelloTransport, include_tool_turn=False, volumes=("empty", "lab"),
-    drain_boundary_for_task=None,
+    drain_boundary_for_task=None, prepare_volume=None,
 ):
     from app.core.events import close_redis
     from app.runtime.hooks_setup import register_memory_hooks
@@ -339,6 +339,8 @@ async def measure_private_turn_volume(
             if volume == "lab":
                 await seed_history(owner_sessionmaker, seed)
                 seed_files(root)
+            if prepare_volume is not None:
+                await prepare_volume(volume, seed, factory)
             turns = ("warmup", "warm", "second")
             if volume == "lab" and include_tool_turn:
                 turns += ("tool",)

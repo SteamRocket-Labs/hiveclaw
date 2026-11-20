@@ -48,7 +48,6 @@ def source_dependency(receipt):
 
 
 async def _actor(db, tenant_id, request):
-    from app.models.chat_session import ChatSession
     from app.services.content_input_receipts import runtime_actor_session
     from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -311,23 +310,32 @@ async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, 
             actor_id = actor.id
             current_audience = audience_for_session(_session)
             latest = await _latest_entry_receipts(db, tenant_id, agent_id, entries)
-            rows = _preflight_inputs(db)
-            from app.services.content_input_receipts import _preload_execution_sources
+            from app.services.content_input_receipts import _preload_execution_sources, workspace_read_checkpoint
 
             await _preload_execution_sources(db, tenant_id, [source_dependency(receipt) for receipt in latest.values()])
-            checked_entries = []
-            versions = {}
-            for entry in entries:
-                receipt = None
-                try:
-                    receipt = latest.get(memory_ref(agent_id, entry.entry_id))
-                    versions[entry.entry_id] = _sha256(receipt.authority_json) if receipt is not None else None
-                    await _authorize_entry(db, tenant_id=tenant_id, agent_id=agent_id, request=request,
-                        entry=entry, receipt=receipt, final_receipt_check=False)
-                except ContentInputReceiptError as exc:
-                    checked_entries.append((entry, receipt, exc))
-                else:
-                    checked_entries.append((entry, receipt, None))
+
+            async def check_entries():
+                checked_entries = []
+                versions = {}
+                for entry in entries:
+                    receipt = None
+                    try:
+                        receipt = latest.get(memory_ref(agent_id, entry.entry_id))
+                        versions[entry.entry_id] = _sha256(receipt.authority_json) if receipt is not None else None
+                        await _authorize_entry(db, tenant_id=tenant_id, agent_id=agent_id, request=request,
+                            entry=entry, receipt=receipt, final_receipt_check=False)
+                    except ContentInputReceiptError as exc:
+                        checked_entries.append((entry, receipt, exc))
+                    else:
+                        checked_entries.append((entry, receipt, None))
+                return checked_entries, versions
+
+            try:
+                async with workspace_read_checkpoint(db, tenant_id):
+                    checked_entries, versions = await check_entries()
+            except ContentInputReceiptError:
+                # The failed checkpoint resets the successful checks made during the batch.
+                checked_entries, versions = await check_entries()
             # Refresh every admitted entry together after all source walks;
             # a newer revision or changed authority still withholds that entry.
             refreshed = await _latest_entry_receipts(db, tenant_id, agent_id,

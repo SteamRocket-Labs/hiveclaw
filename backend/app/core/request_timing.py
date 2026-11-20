@@ -20,6 +20,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 logger = logging.getLogger(__name__)
+# The envelope must not inherit an inbound X-Trace-Id for these diagnostics.
+_request_phase_logger = _sink_logger.bind(trace_id="")
 _MAX_PHASE_SITE_KEYS = 2000
 _MAX_PHASE_SITES_PER_PHASE = 30
 _MAX_PHASE_LINE_BYTES = 15_000
@@ -33,6 +35,9 @@ class RequestTiming:
     pool_seconds: float = 0.0
     statements: int = 0
     active: bool = True
+    phase_sites: dict[str, "_PhaseSites"] | None = field(default=None, init=False)
+    phase_site_keys: int = field(default=0, init=False)
+    instrumentation_errors: int = field(default=0, init=False)
 
     def header(self, app_seconds: float) -> str:
         return (f'app;dur={app_seconds * 1000:.1f}, '
@@ -158,6 +163,13 @@ def _run_timing() -> RunTiming | None:
     return timing if isinstance(timing, RunTiming) and timing.active else None
 
 
+def _phase_timing() -> RequestTiming | None:
+    timing = request_timing.get()
+    if timing is not None and timing.active and timing.phase_sites is not None:
+        return timing
+    return None
+
+
 def _observe(timing, operation, *args):
     """Keep failures local to optional measurement, including frame/hash failures."""
     try:
@@ -220,14 +232,23 @@ def _emit_run_timing(timing, finished):
 
 
 def _emit_run_phase_sites(timing):
-    for phase, group in timing.phase_sites.items():
-        identity = {"run_id": timing.run_id, "phase": phase}
+    _emit_phase_sites(timing.phase_sites, "run_phase_sites", {"run_id": timing.run_id}, _sink_logger)
+
+
+async def emit_request_phase_sites(timing: RequestTiming, path_template: str) -> None:
+    _observe(timing, _emit_phase_sites, timing.phase_sites, "request_phase_sites",
+        {"path_template": path_template}, _request_phase_logger)
+
+
+def _emit_phase_sites(phase_sites, prefix, identity, sink):
+    for phase, group in phase_sites.items():
         for summary in group.summaries():
-            message = "run_phase_sites " + json.dumps({**identity, **summary}, separators=(",", ":"))
+            payload = {**identity, "phase": phase, **summary}
+            message = prefix + " " + json.dumps(payload, separators=(",", ":"))
             # The serialized sink line repeats the escaped message (text and
             # record.message) plus about 0.7 KB of record fields.
             if 2 * len(json.dumps(message)) + 2_000 < _MAX_PHASE_LINE_BYTES:
-                _sink_logger.info("{}", message)
+                sink.info("{}", message)
                 break
 
 
@@ -295,6 +316,8 @@ def _provider_finished(timing, started):
 def timed_phase(name):
     def decorate(function):
         def start(timing):
+            if not isinstance(timing, RunTiming):
+                return None
             # The shared counters include nested work. Thread time also includes
             # any other tasks that run on this event-loop thread while awaiting.
             return (perf_counter(), thread_time(), timing.statements, timing.transactions,
@@ -317,7 +340,7 @@ def timed_phase(name):
 
         @wraps(function)
         async def measured_async(*args, **kwargs):
-            timing = _run_timing()
+            timing = _phase_timing()
             if timing is None:
                 return await function(*args, **kwargs)
             started = _observe(timing, start, timing)
@@ -331,7 +354,7 @@ def timed_phase(name):
 
         @wraps(function)
         def measured_sync(*args, **kwargs):
-            timing = _run_timing()
+            timing = _phase_timing()
             if timing is None:
                 return function(*args, **kwargs)
             started = _observe(timing, start, timing)
@@ -367,10 +390,13 @@ def _cursor_started(_connection, _cursor, _statement, _parameters, context, _man
     if timing is not None and timing.active:
         timing.statements += 1
         attribution = site = None
-        if isinstance(timing, RunTiming):
-            attribution = _observe(timing, _statement_attribution, timing, _connection, _statement)
-            signature = attribution[3] if attribution is not None else "unknown"
-            site = _observe(timing, _count_statement_site, timing, signature)
+        if timing.phase_sites is not None:
+            if isinstance(timing, RunTiming):
+                attribution = _observe(timing, _statement_attribution, timing, _connection, _statement)
+                signature = attribution[3] if attribution is not None else None
+            else:
+                signature = _observe(timing, _application_frame, 3)
+            site = _observe(timing, _count_statement_site, timing, signature or "unknown")
         context._hive_request_timing = timing, perf_counter(), attribution, site
 
 
@@ -391,7 +417,10 @@ def _statement_attribution(timing, connection, statement):
 def _count_statement_site(timing, signature):
     name = _current_phase.get()
     if name is None:
-        name = "pre_model_other" if timing.first_provider_at is None else "post_model_other"
+        if isinstance(timing, RunTiming):
+            name = "pre_model_other" if timing.first_provider_at is None else "post_model_other"
+        else:
+            name = "request"
     group = timing.phase_sites.get(name)
     if group is None:
         group = timing.phase_sites[name] = _PhaseSites()

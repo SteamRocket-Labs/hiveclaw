@@ -46,7 +46,23 @@ def test_engine_pool_kwargs_reads_settings() -> None:
         "pool_timeout": settings.DB_POOL_TIMEOUT,
         "pool_pre_ping": False,
         "pool_recycle": 300,
+        "pool_use_lifo": True,
     }
+
+
+def test_engine_pool_reuses_most_recent_connection() -> None:
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.config import get_settings
+    from app.database import _engine_pool_kwargs
+
+    # No connection is opened; this only checks the option reaches the queue.
+    engine = create_async_engine("postgresql+asyncpg://nobody@127.0.0.1:1/none",
+                                 **_engine_pool_kwargs(get_settings()))
+    try:
+        assert engine.sync_engine.pool._pool.use_lifo is True
+    finally:
+        engine.sync_engine.dispose()
 
 
 def test_asyncpg_connections_receive_database_resource_guards() -> None:

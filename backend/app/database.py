@@ -227,6 +227,10 @@ def _engine_pool_kwargs(settings) -> dict[str, Any]:
         "pool_timeout": settings.DB_POOL_TIMEOUT,
         "pool_pre_ping": False,
         "pool_recycle": 300,
+        # Reuse the most recently returned connection. FIFO rotated the runtime's
+        # ~24 pooled connections, so most statements met a connection whose
+        # per-connection prepared-statement cache had never seen them.
+        "pool_use_lifo": True,
     }
 
 

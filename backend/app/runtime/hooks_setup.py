@@ -1015,17 +1015,19 @@ def _schedule_t2_segment_package_job(
     if existing is not None and not existing.done():
         return
 
-    async def _run() -> None:
-        from app.memory.t2.job_sweep import T2_PACKAGE_JOB_LOCK, is_t2_job_queued
-        from app.memory.t2.segment_package import T2_JOB_WAIT_BUDGET_SECONDS, run_t2_segment_package_job
+    from app.memory.t2 import segment_package
 
-        wait_budget = BackgroundWaitBudget(T2_JOB_WAIT_BUDGET_SECONDS)
+    async def _run() -> None:
+        wait_budget = BackgroundWaitBudget(segment_package.T2_JOB_WAIT_BUDGET_SECONDS)
+
+        from app.memory.t2.job_sweep import T2_PACKAGE_JOB_LOCK, is_t2_job_queued
+
         await wait_budget.wait()
         with wait_budget.share():
             async with T2_PACKAGE_JOB_LOCK:
                 if not is_t2_job_queued(data_root, agent_id, job_id):
                     return
-                result = await run_t2_segment_package_job(
+                result = await segment_package.run_t2_segment_package_job(
                     data_root=data_root,
                     agent_id=agent_id,
                     tenant_id=tenant_id,

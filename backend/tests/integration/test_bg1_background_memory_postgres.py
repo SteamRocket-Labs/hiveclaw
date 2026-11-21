@@ -206,7 +206,8 @@ async def test_detached_t2_exhausts_one_wait_budget(packaging_work, hold_web_tur
     async with hold_web_turn():
         await asyncio.wait_for(_schedule(args), timeout=15)
         _package_files(job, args["data_root"])
-    assert sum(waited) >= 0.05
+    # BG1 r2: wait budgets are wall-clock deadlines so queued jobs cannot multiply lock hold time.
+    assert sum(waited) >= sum(caps) - 0.001
     assert max(caps) <= 0.02
     assert sum(caps) <= 0.0501
 

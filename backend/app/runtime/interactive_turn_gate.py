@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
 
 BACKGROUND_WAIT_CAP_SECONDS = 15.0
 
@@ -27,9 +26,10 @@ async def interactive_turn() -> AsyncIterator[None]:
             _idle.set()
 
 
-# Continuous turns delay a chunk only up to its cap. Started chunks run
-# uninterrupted. A separate worker process first needs a shared agent data
-# volume because T2 writes package files there.
+# Under continuous multi-user load, each background job yields to turns for at
+# most its budget from when it starts, then runs alongside turns.
+# Started chunks run uninterrupted. A separate worker process first needs a
+# shared agent data volume because T2 writes package files there.
 async def wait_for_no_interactive_turns(cap_seconds: float | None = None) -> float:
     """Wait for a quiet loop and return the elapsed wait in seconds."""
     cap = BACKGROUND_WAIT_CAP_SECONDS if cap_seconds is None else cap_seconds
@@ -46,20 +46,22 @@ async def wait_for_no_interactive_turns(cap_seconds: float | None = None) -> flo
     return loop.time() - started
 
 
-@dataclass(slots=True)
 class BackgroundWaitBudget:
-    remaining_seconds: float
+    __slots__ = ("_deadline",)
+
+    def __init__(self, seconds: float) -> None:
+        self._deadline = asyncio.get_running_loop().time() + seconds
 
     async def wait(self) -> None:
         budgets = (self, *_shared_wait_budgets.get())
-        cap = min(BACKGROUND_WAIT_CAP_SECONDS, *(budget.remaining_seconds for budget in budgets))
-        elapsed = await wait_for_no_interactive_turns(cap)
-        for budget in budgets:
-            budget.remaining_seconds -= elapsed
+        deadline = min(budget._deadline for budget in budgets)
+        cap = min(BACKGROUND_WAIT_CAP_SECONDS, deadline - asyncio.get_running_loop().time())
+        if cap > 0:
+            await wait_for_no_interactive_turns(cap)
 
     @contextmanager
     def share(self) -> Iterator[None]:
-        """Charge nested T2 waits against the enclosing job or heartbeat too."""
+        """Apply this job or heartbeat's deadline to nested T2 waits."""
         token = _shared_wait_budgets.set((*_shared_wait_budgets.get(), self))
         try:
             yield

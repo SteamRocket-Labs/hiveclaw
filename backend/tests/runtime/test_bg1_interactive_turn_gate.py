@@ -32,6 +32,16 @@ async def test_wait_resumes_at_cap_with_turn_still_held(gate, monkeypatch):
         assert elapsed >= 0.019
 
 
+async def test_budget_expired_while_idle_returns_without_yielding(gate):
+    budget = gate.BackgroundWaitBudget(0.02)
+    await asyncio.sleep(0.04)
+    callback = asyncio.Event()
+    async with gate.interactive_turn():
+        asyncio.get_running_loop().call_soon(callback.set)
+        await budget.wait()
+        assert not callback.is_set()
+
+
 async def test_wait_spans_nested_and_concurrent_turns(gate):
     entered, release = asyncio.Event(), asyncio.Event()
 

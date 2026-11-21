@@ -8,7 +8,7 @@ import uuid
 
 from sqlalchemy import cast, null, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, load_only
+from sqlalchemy.orm import aliased
 
 from app.services.exact_secret_boundary import (
     ExactSecretBoundary,
@@ -72,15 +72,12 @@ async def load_requester_exact_secret_boundary(
     from app.services.agent_tool_config_storage import is_agent_tool_credential_key
     from app.services.tool_config_service import MASKED_SECRET_SENTINEL, decrypt_tool_config_secrets
 
-    tools = select(Tool.id, Tool.config, Tool.config_schema).where(
+    tools = select(Tool).where(
         Tool.enabled.is_(True), or_(Tool.tenant_id.is_(None), Tool.tenant_id == tenant_id),
     )
     tool_ids = tools.with_only_columns(Tool.id)
-    channels = select(
-        ChannelConfig.id, ChannelConfig.agent_id, ChannelConfig.channel_type, ChannelConfig.app_secret,
-        ChannelConfig.encrypt_key, ChannelConfig.verification_token, ChannelConfig.extra_config,
-    ).where(ChannelConfig.tenant_id == tenant_id)
-    servers = select(MCPServer.id, MCPServer.config_json).where(MCPServer.tenant_id == tenant_id)
+    channels = select(ChannelConfig).where(ChannelConfig.tenant_id == tenant_id)
+    servers = select(MCPServer).where(MCPServer.tenant_id == tenant_id)
     if agent_id is not None:
         channels = channels.where(ChannelConfig.agent_id == agent_id)
         assigned_ids = select(AgentMCPServerAssignment.mcp_server_id).where(
@@ -91,16 +88,15 @@ async def load_requester_exact_secret_boundary(
         servers = servers.where(MCPServer.id.in_(assigned_ids))
 
     queries = {
-        LLMModel: select(LLMModel.id, LLMModel.api_key_encrypted).where(
+        LLMModel: select(LLMModel).where(
             or_(LLMModel.tenant_id.is_(None), LLMModel.tenant_id == tenant_id), LLMModel.enabled.is_(True),
         ),
         ChannelConfig: channels,
-        TenantChannelConfig: select(
-            TenantChannelConfig.id, TenantChannelConfig.channel_type, TenantChannelConfig.app_secret,
-            TenantChannelConfig.encrypt_key, TenantChannelConfig.verification_token, TenantChannelConfig.extra_config,
-        ).where(TenantChannelConfig.tenant_id == tenant_id, TenantChannelConfig.is_active.is_(True)),
+        TenantChannelConfig: select(TenantChannelConfig).where(
+            TenantChannelConfig.tenant_id == tenant_id, TenantChannelConfig.is_active.is_(True),
+        ),
         Tool: tools,
-        TenantToolConfig: select(TenantToolConfig.id, TenantToolConfig.tool_id, TenantToolConfig.config).where(
+        TenantToolConfig: select(TenantToolConfig).where(
             TenantToolConfig.tenant_id == tenant_id,
             TenantToolConfig.tool_id.in_(tool_ids),
             TenantToolConfig.enabled.is_(True),
@@ -108,7 +104,7 @@ async def load_requester_exact_secret_boundary(
         MCPServer: servers,
     }
     if agent_id is not None:
-        queries[AgentTool] = select(AgentTool.id, AgentTool.tool_id, AgentTool.config).where(
+        queries[AgentTool] = select(AgentTool).where(
             AgentTool.tenant_id == tenant_id,
             AgentTool.agent_id == agent_id,
             AgentTool.tool_id.in_(tool_ids),
@@ -121,10 +117,10 @@ async def load_requester_exact_secret_boundary(
     personal_server = aliased(MCPServer)
     if requester_user_id is not None:
         for account_type, _, _ in account_types:
-            queries[account_type] = select(account_type.id, account_type.config).where(
+            queries[account_type] = select(account_type).where(
                 account_type.tenant_id == tenant_id, account_type.owner_user_id == requester_user_id,
             )
-        queries[personal_server] = select(personal_server.id, personal_server.config_json).where(
+        queries[personal_server] = select(personal_server).where(
             personal_server.tenant_id == tenant_id,
             personal_server.owner_user_id == requester_user_id,
             personal_server.parent_server_id.is_not(None),
@@ -177,8 +173,8 @@ async def load_requester_exact_secret_boundary(
 
 
 async def _read_inventory_rows(db: AsyncSession, queries: dict) -> dict:
-    # Each UNION arm contributes rows for one source. Typed NULLs pad the
-    # other sources without multiplying rows or bypassing ORM decryption.
+    # Keep each source's normal ORM load so the caller can reuse its instances.
+    # Typed NULLs pad the other sources without losing column decryption.
     columns = [tuple(query.selected_columns) for query in queries.values()]
     slots = [tuple(col.label(f"source_{index}_{col.key}") for col in group) for index, group in enumerate(columns)]
     branches = [
@@ -190,10 +186,7 @@ async def _read_inventory_rows(db: AsyncSession, queries: dict) -> dict:
     ]
     packed = union_all(*branches).subquery()
     sources = [aliased(model, packed) for model in queries]
-    statement = select(*sources).options(*(
-        load_only(*(getattr(source, col.key) for col in group), raiseload=True)
-        for source, group in zip(sources, columns, strict=True)
-    ))
+    statement = select(*sources)
     rows = {model: [] for model in queries}
     for row in await db.execute(statement):
         for group, value in zip(rows.values(), row, strict=True):

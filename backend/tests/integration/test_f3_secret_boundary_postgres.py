@@ -8,6 +8,7 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 from app.database import tenant_scoped_session
+from app.models.agent import Agent
 from app.models.channel_config import ChannelConfig
 from app.models.custom_api_account import CustomApiAccount
 from app.models.email_account import EmailAccount
@@ -43,7 +44,7 @@ def count_queries():
 async def populated_boundary(owner_sessionmaker):
     tenant, requester, agent, _, _ = await _seed_session(owner_sessionmaker)
     foreign_tenant, _, _, _, _ = await _seed_session(owner_sessionmaker)
-    model, tool, server, personal, api, email, other_user = (uuid4() for _ in range(7))
+    model, channel, tool, server, personal, api, email, other_user = (uuid4() for _ in range(8))
     shared = "fixture-synthetic-shared-secret"
     provider = get_secrets_provider()
     async with owner_sessionmaker() as db:
@@ -51,12 +52,13 @@ async def populated_boundary(owner_sessionmaker):
             User(id=other_user, tenant_id=tenant, username=other_user.hex,
                  email=f"{other_user.hex}@fixture.test", password_hash="fixture", display_name="Other member"),
             LLMModel(id=model, tenant_id=tenant, provider="fixture", model="fixture", label="Enabled",
-                     api_key_encrypted=provider.encrypt(shared), enabled=True),
+                     api_key_encrypted=provider.encrypt(shared), enabled=True, supports_vision=True),
             LLMModel(tenant_id=tenant, provider="fixture", model="fixture", label="Disabled",
                      api_key_encrypted=provider.encrypt("fixture-disabled-model"), enabled=False),
             LLMModel(tenant_id=foreign_tenant, provider="fixture", model="fixture", label="Foreign",
                      api_key_encrypted=provider.encrypt("fixture-foreign-model"), enabled=True),
-            ChannelConfig(agent_id=agent, tenant_id=tenant, channel_type="feishu", app_secret=shared,
+            ChannelConfig(id=channel, agent_id=agent, tenant_id=tenant, channel_type="feishu", app_secret=shared,
+                          is_configured=True,
                           extra_config={"nested": {"bot_token": "fixture-agent-channel-token"}}),
             TenantChannelConfig(tenant_id=tenant, channel_type="wecom", verification_token="fixture-company-token"),
             TenantChannelConfig(tenant_id=tenant, channel_type="feishu", app_secret="fixture-disabled-channel",
@@ -73,6 +75,7 @@ async def populated_boundary(owner_sessionmaker):
                       }}),
         ])
         await db.flush()
+        (await db.get(Agent, agent)).primary_model_id = model
         db.add_all([
             TenantToolConfig(tenant_id=tenant, tool_id=tool, config={"api_key": "fixture-tenant-tool-key"}),
             AgentTool(tenant_id=tenant, agent_id=agent, tool_id=tool, config={"api_key": "fixture-agent-tool-key"}),
@@ -114,14 +117,14 @@ async def populated_boundary(owner_sessionmaker):
         (f"email-account://{email}/auth_code", "fixture-personal-email-auth"),
         (f"mcp-server://{personal}/oauth/access_token", "fixture-mcp-personal"),
     ]
-    return tenant, agent, requester, shared_bindings, requester_bindings
+    return tenant, agent, requester, shared_bindings, requester_bindings, channel
 
 
 @pytest.mark.parametrize("include_requester", [False, True], ids=["agent", "requester"])
 async def test_populated_secret_boundary_matches_pre_f3_and_uses_one_statement(
     populated_boundary, include_requester, app_user_sessionmaker,
 ):
-    tenant, agent, requester, shared_bindings, requester_bindings = populated_boundary
+    tenant, agent, requester, shared_bindings, requester_bindings, _ = populated_boundary
     expected = ExactSecretBoundary.from_pairs(shared_bindings + (requester_bindings if include_requester else []))
     async with tenant_scoped_session(tenant, session_factory=app_user_sessionmaker) as db:
         with count_queries() as calls:
@@ -132,3 +135,37 @@ async def test_populated_secret_boundary_matches_pre_f3_and_uses_one_statement(
 
     assert boundary._bindings == expected._bindings
     assert len(calls) == 1
+
+
+async def test_inventory_leaves_full_channel_config_in_session(populated_boundary, app_user_sessionmaker):
+    tenant, agent, _, _, _, channel_id = populated_boundary
+    async with tenant_scoped_session(tenant, session_factory=app_user_sessionmaker) as db:
+        loaded_channels = []
+
+        @event.listens_for(db.sync_session, "loaded_as_persistent")
+        def keep_channel_alive(_session, instance):
+            # Keep the first load alive through the identity map's weak reference.
+            if isinstance(instance, ChannelConfig):
+                loaded_channels.append(instance)
+
+        await load_exact_secret_boundary(db, tenant_id=tenant, agent_id=agent)
+        (loaded_channel,) = loaded_channels
+        channel = await db.get(ChannelConfig, channel_id)
+        assert channel is loaded_channel
+        assert channel.tenant_id == tenant
+        assert channel.is_configured is True
+
+
+@pytest.mark.parametrize("expire_on_commit", [False, True], ids=["retained", "expired"])
+async def test_inventory_leaves_full_model_after_commit(populated_boundary, app_user_sessionmaker, expire_on_commit):
+    tenant, agent, *_ = populated_boundary
+    async with tenant_scoped_session(tenant, session_factory=app_user_sessionmaker) as db:
+        db.sync_session.expire_on_commit = expire_on_commit
+        employee = await db.get(Agent, agent)
+        model = await db.get(LLMModel, employee.primary_model_id)
+        await db.commit()
+
+        await load_exact_secret_boundary(db, tenant_id=tenant, agent_id=agent)
+
+        assert model.supports_vision is True
+        assert model.provider == "fixture"

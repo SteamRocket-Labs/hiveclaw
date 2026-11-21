@@ -4,7 +4,7 @@ from collections import defaultdict
 from uuid import UUID
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import delete, event, select, update
 from sqlalchemy.engine import Engine
 
 from app.models.chat_session import ChatSession
@@ -13,10 +13,23 @@ from tests.integration.test_a2p_member_request_cost_postgres import member_reque
 from tests.integration.test_sp1_send_statement_budget_postgres import configure
 
 
+@pytest.fixture
+async def created_policies(owner_sessionmaker):
+    ids = []
+    yield ids
+    # The polluter cleans up: later files delete every policy
+    # (test_runtime_budget_service.py:296), which fails while a budget root
+    # still references one created here.
+    async with owner_sessionmaker() as db:
+        await db.execute(update(RuntimeBudgetRun).where(RuntimeBudgetRun.policy_id.in_(ids)).values(policy_id=None))
+        await db.execute(delete(RuntimeBudgetPolicy).where(RuntimeBudgetPolicy.id.in_(ids)))
+        await db.commit()
+
+
 @pytest.mark.parametrize("existing", [False, True], ids=["new-session", "existing-session"])
 @pytest.mark.parametrize("policy_matches", [True, False], ids=["configured-policy", "builtin-fallback"])
 async def test_send_creates_budget_root_in_the_policy_transaction(
-    existing, policy_matches, member_request, owner_sessionmaker, monkeypatch, tmp_path,  # noqa: F811
+    existing, policy_matches, member_request, owner_sessionmaker, created_policies, monkeypatch, tmp_path,  # noqa: F811
 ):
     *_, factory = member_request
     seed, client = await configure(member_request, owner_sessionmaker, factory, monkeypatch, tmp_path)
@@ -34,6 +47,7 @@ async def test_send_creates_budget_root_in_the_policy_transaction(
         )
         db.add(policy)
         await db.commit()
+    created_policies.append(policy.id)
     url = f"/api/agents/{seed.agent_id}/sessions"
     if existing:
         async with owner_sessionmaker() as db:

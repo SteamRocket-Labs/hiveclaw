@@ -1104,7 +1104,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # changed hash is the app/services/content_input_receipts.py module source (MF1:
 # one frame field for the per-walk bundled Skill hash memo, cleared when the walk
 # ends). No new bypass scope or write.
-RLS_BYPASS_SCOPES_SHA256 = "b8f88abdb86ca27ac6ea13602226aa5a4c1268134b4497ca263624520bfa7c9b"
+# Land58 (PL1) versus land57: 123 callsites and 810 entries unchanged. The only
+# changed hash is the app/database.py module source (pool_use_lifo=True in
+# _engine_pool_kwargs). No new bypass scope or write.
+RLS_BYPASS_SCOPES_SHA256 = "115e215f100378e829379f07c4aec72c032bcc9da850f5e5f3085249c34ecba5"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

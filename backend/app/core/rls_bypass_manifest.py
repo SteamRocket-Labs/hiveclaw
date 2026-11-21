@@ -1115,7 +1115,12 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # create_run_from_policy (twice; policy and budget root in one bypass session).
 # The other changed hashes are module sources and functions of the same files
 # and web_chat_runtime.py. No new bypass scope or write.
-RLS_BYPASS_SCOPES_SHA256 = "99c4e83af29b66b227c171caa78f87264e83de2c325f8199c73a79be3a7f46df"
+# Land61 (BG1) versus land60: 123 callsites and 816 entries unchanged. The only
+# changed hashes are the app/services/heartbeat.py module source (a wait before
+# each maintenance step; the long tenant session split into shorter ones) and the
+# app/services/web_chat_runtime.py module source (the interactive turn scope
+# around execute_web_chat_run). No new bypass scope or write.
+RLS_BYPASS_SCOPES_SHA256 = "fdcc3b57619b0a4f834095d054da645880fed0c65cd88bf4368f3ff40ec0bcbe"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

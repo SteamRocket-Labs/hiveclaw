@@ -55,10 +55,13 @@ async def test_first_models_child_precedes_later_models_failure(monkeypatch, lat
     second.seal_json["content_hash"] = "invalid"
 
     class Database:
-        async def get(self, model_type, source_id, **_kwargs):
-            if model_type is learned.ChatSession:
-                return session
-            return {first.id: first, second.id: second}.get(source_id)
+        async def get(self, _model_type, _source_id, **_kwargs):
+            return session
+
+        async def execute(self, statement):
+            source_id = statement.compile().params["id_1"]
+            result = {first.id: first, second.id: second}.get(source_id)
+            return SimpleNamespace(mappings=lambda: SimpleNamespace(first=lambda: vars(result) if result else None))
 
     async def authorize(*_args, **_kwargs):
         return None

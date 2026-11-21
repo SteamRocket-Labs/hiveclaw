@@ -130,11 +130,11 @@ async def test_compute_refuses_permission_withholding(model, monkeypatch):
 
 
 async def test_learned_model_certification_refuses_permission_withholding(model, monkeypatch):
-    from app.models.session_v2 import SessionModelResult
     from app.services import learned_skill_sources as skills
 
     session = NS(tenant_id=model.tenant_id)
-    db = NS(get=AsyncMock(side_effect=lambda kind, *_args, **_kwargs: model if kind is SessionModelResult else session))
+    selected = NS(mappings=lambda: NS(first=lambda: vars(model)))
+    db = NS(get=AsyncMock(return_value=session), execute=AsyncMock(return_value=selected))
     monkeypatch.setattr("app.services.content_input_receipts._authorize_session_input_source", AsyncMock())
     monkeypatch.setattr(skills, "_validate_input_dependencies", AsyncMock())
     if denied(model):
@@ -190,7 +190,7 @@ async def test_approved_workspace_result_certification_refuses_permission_withho
         status="approved", execution_status="succeeded", consumed_at="consumed", execution_task_id=uuid4(),
         execution_envelope={"session_id": str(model.session_id)}, execution_result="Done.", normalized_arguments={},
         execution_receipt={"runtime_evidence": {"workspace_execution_evidence": {"status": "captured", "receipt_ref": ref}}})
-    db = NS(scalar=AsyncMock(return_value=model), get=AsyncMock(side_effect=lambda kind, *_args, **_kwargs:
+    db = NS(execute=AsyncMock(return_value=NS(first=lambda: model)), get=AsyncMock(side_effect=lambda kind, *_args, **_kwargs:
         NS(id=model.session_id) if kind is ChatSession else job if kind is RuntimeTask else span if kind is InvocationSpan else receipt))
     monkeypatch.setattr("app.services.session_approval.group_approval_origin", AsyncMock(return_value=(original, invocation, NS())))
     monkeypatch.setattr(receipts, "load_workspace_execution_evidence", AsyncMock(return_value=(ref, {path: digest})))
@@ -212,7 +212,8 @@ async def test_artifact_delivery_rechecks_selection_permission(model, monkeypatc
     receipt = NS(tenant_id=model.tenant_id, carrier_kind="workspace_artifact", content_sha256="a" * 64,
         carrier_ref=receipts.workspace_artifact_ref(agent, artifact.path), id=receipt_id)
     session = NS(id=model.session_id, tenant_id=model.tenant_id, agent_id=agent, audience_kind="group")
-    db = NS(get_transaction=lambda: None, scalar=AsyncMock(return_value=artifact), get=AsyncMock(side_effect=lambda kind, *_args, **_kwargs:
+    db = NS(get_transaction=lambda: None, scalar=AsyncMock(return_value=artifact),
+        execute=AsyncMock(return_value=NS(first=lambda: model)), get=AsyncMock(side_effect=lambda kind, *_args, **_kwargs:
         receipt if kind is ContentInputReceipt else session if kind is ChatSession else model))
     # This unit test isolates selection permission; PostgreSQL graph tests
     # cover the immutable catalog query and its real row projections.

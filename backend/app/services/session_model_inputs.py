@@ -9,9 +9,11 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from app.models.chat_session import ChatSession
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation, SessionTurnInput
+from app.services.source_read_queries import SEALED_MODEL_STATES, model_input_statement
 
 
 def message_snapshot(message: Any) -> dict[str, Any]:
@@ -452,23 +454,12 @@ async def _build_model_input_bindings(
         for ref in refs
         if isinstance(ref, str) and ref.startswith(("session-provider-result:", "session-provider-tool-result:"))
     }
-    results = (
-        list(
-            (
-                await db.scalars(
-                    select(SessionModelResult)
-                    .where(
-                        SessionModelResult.tenant_id == tenant_id,
-                        SessionModelResult.session_id == session_id,
-                        SessionModelResult.provider_request_id.in_(provider_ids),
-                    )
-                    .execution_options(populate_existing=True)
-                )
-            ).all()
-        )
-        if provider_ids
-        else []
-    )
+    model = SessionModelResult
+    result_lookup = (model_input_statement(recovery=True).add_columns(model)
+        .options(defer(model.model_request_snapshot_json)).execution_options(populate_existing=True)
+        if locked_session is not None else select(model.id, model.provider_request_id))
+    results = (await db.execute(result_lookup.where(model.tenant_id == tenant_id, model.session_id == session_id,
+        model.provider_request_id.in_(provider_ids)))).all() if provider_ids else []
     result_refs = {row.provider_request_id: f"session-model-result:{row.id}" for row in results}
     model_ids = []
     for ref in refs:
@@ -478,8 +469,8 @@ async def _build_model_input_bindings(
             except ValueError:
                 continue
     if model_ids and locked_session is not None:
-        model_rows = await db.scalars(
-            select(SessionModelResult)
+        model_rows = await db.execute(
+            result_lookup
             .join(ChatSession, ChatSession.id == SessionModelResult.session_id)
             .where(
                 SessionModelResult.id.in_(model_ids),
@@ -488,7 +479,6 @@ async def _build_model_input_bindings(
                 ChatSession.tenant_id == tenant_id,
                 ChatSession.agent_id == agent_id,
             )
-            .execution_options(populate_existing=True)
         )
         origin_rows.update((f"session-model-result:{row.id}", row) for row in model_rows)
     if locked_session is not None:
@@ -597,7 +587,7 @@ def _stored_dependencies(value: Any) -> list[dict[str, str]] | None:
 
 
 def _model_dependencies(result) -> tuple[list[dict[str, str]], bool]:
-    if result is None or result.state not in {"sealed", "round_committed"}:
+    if result is None or result.state not in SEALED_MODEL_STATES:
         return [], False
     return _model_snapshot_dependencies(result)
 
@@ -607,30 +597,34 @@ def model_output_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     dependencies, complete = _model_dependencies(result)
     if not complete:
         return dependencies, False
-    entries = result.model_request_snapshot_json["input_bindings"].get("messages", [])
+    entries = _model_input_bindings(result).get("messages", [])
     return dependencies, not any(
         entry.get("status") == "withheld" and entry.get("code") == "session_permission_frame_unbound"
         for entry in entries
     )
 
 
-def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
+def _model_input_bindings(result):
+    if hasattr(result, "input_bindings") and result.state in SEALED_MODEL_STATES:
+        return result.input_bindings
     snapshot = result.model_request_snapshot_json
-    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS, _immutable_model_digest
+    return snapshot.get("input_bindings") if isinstance(snapshot, dict) else None
 
+
+def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
+    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
+
+    sealed = getattr(result, "state", None) in SEALED_MODEL_STATES
+    bindings = _model_input_bindings(result)
+    snapshot = bindings if sealed else result.model_request_snapshot_json
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     key = ("model_snapshot_dependencies", id(snapshot), result.model_request_hash)
     if scope is not None and scope.active and scope.source_catalog and key in scope.model_inputs:
         retained, value = scope.model_inputs[key]
         if retained is snapshot:
             return value
-    digest = _immutable_model_digest(result) if isinstance(snapshot, dict) else None
-    if (
-        not isinstance(snapshot, dict)
-        or (digest if digest is not None else _hash(snapshot)) != result.model_request_hash
-    ):
+    if not sealed and (not isinstance(snapshot, dict) or _hash(snapshot) != result.model_request_hash):
         return [], False
-    bindings = snapshot.get("input_bindings")
     if not isinstance(bindings, dict) or bindings.get("schema") != "hive.model_input_bindings.v1":
         return [], False
     dependencies = _stored_dependencies(bindings.get("dependencies"))
@@ -1004,8 +998,8 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
             return [], False
         if not sep or not tool_call_id:
             return [], False
-        result = await db.scalar(
-            select(SessionModelResult)
+        result = (await db.execute(
+            select(SessionModelResult.session_id, SessionModelResult.run_id, SessionModelResult.seal_json)
             .join(ChatSession, ChatSession.id == SessionModelResult.session_id)
             .where(
                 SessionModelResult.id == result_id,
@@ -1013,8 +1007,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
                 ChatSession.tenant_id == tenant_id,
                 ChatSession.agent_id == agent_id,
             )
-            .execution_options(populate_existing=True)
-        )
+        )).first()
         if result is None:
             return [], False
         seal = result.seal_json if isinstance(result.seal_json, dict) else {}
@@ -1141,8 +1134,8 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
     if kind == "session-model-result":
         result = (origin_rows or {}).get(ref)
         if result is None:
-            result = await db.scalar(
-                select(SessionModelResult)
+            result = (await db.execute(
+                model_input_statement(recovery=True)
                 .join(ChatSession, ChatSession.id == SessionModelResult.session_id)
                 .where(
                     SessionModelResult.id == source_id,
@@ -1150,8 +1143,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
                     ChatSession.tenant_id == tenant_id,
                     ChatSession.agent_id == agent_id,
                 )
-                .execution_options(populate_existing=True)
-            )
+            )).first()
         return await recover_model_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, result=result)
     if kind not in {"session-tool-result", "session-tool-permission"}:
         return [], False
@@ -1178,8 +1170,8 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
     if invocation is None:
         return [], False
     if kind == "session-tool-permission":
-        model = await db.scalar(
-            select(SessionModelResult)
+        model = (await db.execute(
+            model_input_statement(recovery=True)
             .where(
                 SessionModelResult.tenant_id == tenant_id,
                 SessionModelResult.session_id == invocation.session_id,
@@ -1187,8 +1179,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
                 SessionModelResult.round_id == invocation.round_id,
                 SessionModelResult.provider_request_id == invocation.provider_request_id,
             )
-            .execution_options(populate_existing=True)
-        )
+        )).first()
         dependencies, complete = await recover_model_dependencies(
             db, tenant_id=tenant_id, agent_id=agent_id, result=model
         )
@@ -1255,27 +1246,24 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
     content = payload.get("content")
     if not isinstance(content, str) or payload.get("content_hash") != _hash(content):
         return [], False
+    from app.services.runtime_task_read_sources import TASK_READ_TOOLS, task_read_sources
+    from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS, ledger_result_sources
+
     model_key = (invocation.session_id, invocation.run_id, invocation.provider_request_id)
-    model = (
-        cached["tool_models"][model_key]
-        if cached is not None and model_key in cached.get("tool_models", {})
-        else await db.scalar(
-            select(SessionModelResult)
-            .where(
-                SessionModelResult.tenant_id == tenant_id,
-                SessionModelResult.session_id == invocation.session_id,
-                SessionModelResult.run_id == invocation.run_id,
-                SessionModelResult.provider_request_id == invocation.provider_request_id,
-            )
-            .execution_options(populate_existing=True)
-        )
-    )
-    if (
-        cached is not None
-        and _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog
-        and model_key in cached.get("tool_models", {})
-        and model is not None
-    ):
+    # These receipt validators own an independent request integrity check.
+    full_request = (invocation.tool_name in TASK_READ_TOOLS
+        or (payload.get("metadata") or {}).get("native_tool_timeout_receipt") is not None)
+    cached_models = (cached or {}).get("tool_models", {})
+    if full_request or model_key not in cached_models:
+        statement = (select(SessionModelResult) if full_request else model_input_statement(recovery=True)).where(
+            SessionModelResult.tenant_id == tenant_id, SessionModelResult.session_id == invocation.session_id,
+            SessionModelResult.run_id == invocation.run_id,
+            SessionModelResult.provider_request_id == invocation.provider_request_id)
+        selected = await db.execute(statement.execution_options(populate_existing=True))
+        model = selected.scalar() if full_request else selected.first()
+    else:
+        model = cached_models[model_key]
+    if not full_request and catalog and model_key in cached_models and model is not None:
         from types import SimpleNamespace
 
         from app.services.source_read_queries import model_source_state_columns
@@ -1292,8 +1280,11 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
             ).first()
         )
         values = dict(
-            zip(("state", "reconciliation_owner", "round_committed_event_id", "seal_json"), live or (None,) * 4)
+            zip(("state", "reconciliation_owner", "round_committed_event_id", "seal_json",
+                "model_request_snapshot_json"), live or (None,) * 5)
         )
+        if values["state"] in SEALED_MODEL_STATES:
+            del values["model_request_snapshot_json"]
         model = SimpleNamespace(
             **{**{name: value for name, value in vars(model).items() if not name.startswith("_")}, **values}
         )
@@ -1329,8 +1320,6 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
             db, agent_id=agent_id, invocation=invocation, model_result=model, payload=payload
         )
         return _unique_dependencies(dependencies), inherited_complete and complete
-    from app.services.runtime_task_read_sources import TASK_READ_TOOLS, task_read_sources
-
     if invocation.tool_name in TASK_READ_TOOLS:
         sources, complete = await task_read_sources(
             db,
@@ -1341,8 +1330,6 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
             content_hash=payload["content_hash"],
         )
         return _unique_dependencies([*dependencies, *sources]), inherited_complete and complete
-    from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS, ledger_result_sources
-
     if invocation.tool_name in LEDGER_RESULT_TOOLS:
         sources, complete = await ledger_result_sources(
             db,
@@ -1659,6 +1646,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
                 model_result=model,
                 arguments=arguments,
                 content_hash=payload["content_hash"],
+                trust_sealed_request=True,
             )
             return _unique_dependencies(dependencies), inherited_complete and arguments.get("path") in hashes
         except (ContentInputReceiptError, ValueError, TypeError):
@@ -1693,6 +1681,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
                     model_result=model,
                     arguments=arguments,
                     content_hash=payload["content_hash"],
+                    trust_sealed_request=True,
                 )
                 if (arguments.get("output_path") or arguments.get("path")) not in hashes:
                     return _unique_dependencies(dependencies), False

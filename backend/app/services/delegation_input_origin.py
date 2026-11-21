@@ -15,10 +15,12 @@ from app.models.invocation_span import InvocationSpan
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.runtime.context_candidates import ContextMessageOrigin
 from app.services.session_model_inputs import _hash, model_output_dependencies
+from app.services.source_read_queries import model_input_statement
 from app.tools.runtime import ToolExecutionContext
 
 
-async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id, tool_name="delegate_to_agent"):
+async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id,
+    tool_name="delegate_to_agent", read_inputs=False):
     invocation = (
         await db.scalars(
             select(SessionToolInvocation)
@@ -36,14 +38,10 @@ async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id, 
     ).one_or_none()
     if invocation is None:
         return None
-    model = await db.scalar(
-        select(SessionModelResult).where(
-            SessionModelResult.tenant_id == tenant_id,
-            SessionModelResult.session_id == session_id,
-            SessionModelResult.run_id == run_id,
-            SessionModelResult.provider_request_id == invocation.provider_request_id,
-        )
-    )
+    statement = (model_input_statement() if read_inputs else select(SessionModelResult)).where(
+        SessionModelResult.tenant_id == tenant_id, SessionModelResult.session_id == session_id,
+        SessionModelResult.run_id == run_id, SessionModelResult.provider_request_id == invocation.provider_request_id)
+    model = (await db.execute(statement)).first() if read_inputs else await db.scalar(statement)
     if model is None or model.state not in {"sealed", "round_committed"} or not isinstance(model.seal_json, dict):
         return None
     response = model.seal_json.get("response") or {}
@@ -387,6 +385,7 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
         run_id=row.runtime_task_id,
         call_id=proof.get("call_id"),
         tool_name="create_employee_from_request" if first_task else ("delegate_to_agent", "send_message_to_agent"),
+        read_inputs=True,
     )
     if parent is None:
         return None

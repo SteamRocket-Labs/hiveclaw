@@ -22,7 +22,7 @@ from app.services.explicit_memory_authority import (
 from app.services.session_tool_runtime import _sha256
 
 from app.services.source_read_queries import (
-    SESSION_SOURCE_FIELDS,
+    SESSION_SOURCE_FIELDS, model_input_statement,
 )
 
 CANDIDATE_SCHEMA = "hive.learned_skill_candidate.v1"
@@ -55,10 +55,10 @@ async def validate_model_source(db, tenant_id, dependency, *, request=None, user
 
 
 async def _model_source_checkpoint(db, tenant_id, request, user):
-    from sqlalchemy import case, func
+    from sqlalchemy import func
     from app.models.agent import Agent
     from app.services.content_input_receipts import (
-        checkpoint_rows, checkpoint_query, checkpoint_source_uuids, _preflight_inputs, _source_reader_hint,
+        checkpoint_rows, checkpoint_query, checkpoint_source_uuids, _source_reader_hint,
     )
     from app.services.source_read_queries import fact_columns, source_reader_facts_statement
 
@@ -69,25 +69,15 @@ async def _model_source_checkpoint(db, tenant_id, request, user):
         ids = checkpoint_source_uuids("session_model_result")
         if not ids:
             return None
-        retained = _preflight_inputs(db) or {}
-        known = {key[1] for key in retained if isinstance(key, tuple) and key[0] is SessionModelResult}
         model = fact_columns(SessionModelResult, "id tenant_id session_id run_id provider_request_id "
             "model_request_hash state seal_json")
-        model = model.op("||")(func.jsonb_build_object("model_request_snapshot_json", case((
-            SessionModelResult.id.not_in(known) & SessionModelResult.state.in_(("sealed", "round_committed")),
-            SessionModelResult.model_request_snapshot_json))))
+        model = model.op("||")(func.jsonb_build_object("input_bindings", SessionModelResult.model_request_snapshot_json["input_bindings"]))
         statement = source_reader_facts_statement(reader, ChatSession.agent_id, source=ChatSession).join(
             SessionModelResult, ChatSession.id == SessionModelResult.session_id).add_columns(
                 fact_columns(ChatSession, SESSION_SOURCE_FIELDS), model,
                 SessionModelResult.id).where(SessionModelResult.id.in_(ids), SessionModelResult.tenant_id == tenant_id)
-        vector = await checkpoint_rows(db, "model_source", statement, lambda row: row[7],
+        return await checkpoint_rows(db, "model_source", statement, lambda row: row[7],
             binding=(tenant_id, reader.id), entities={0: Agent, 5: ChatSession, 6: SessionModelResult})
-        if vector is not None:
-            for row in vector.values():
-                original = retained.get((SessionModelResult, row[6].id))
-                if original is not None:
-                    row[6].model_request_snapshot_json = original.model_request_snapshot_json
-        return vector
 
     return await checkpoint_query(db, "model_source", read, binding=(tenant_id, reader.id))
 
@@ -378,7 +368,8 @@ async def _candidate_proof(db, row, *, tenant_id, agent_id, allow_prepared=False
             raise ContentInputReceiptError("learned_skill_sources_unverified", "Restore the original background review inputs.", 403) from exc
     try:
         invocation = await db.get(SessionToolInvocation, uuid.UUID(c["invocation_id"]), populate_existing=True)
-        model = await db.get(SessionModelResult, uuid.UUID(c["model_result_id"]), populate_existing=True)
+        model = (await db.execute(model_input_statement().where(
+            SessionModelResult.id == uuid.UUID(c["model_result_id"])))).first()
         session = await db.get(ChatSession, uuid.UUID(c["authority"]["source_session_id"]), populate_existing=True)
         task = await db.get(RuntimeTask, invocation.run_id, populate_existing=True) if invocation is not None else None
         sources, complete = _model_dependencies(model)
@@ -406,7 +397,6 @@ async def _candidate_proof(db, row, *, tenant_id, agent_id, allow_prepared=False
             and model.run_id == invocation.run_id and model.state in {"sealed", "round_committed"}
             and model.provider_request_id == invocation.provider_request_id
             and model.model_request_hash == c["model_request_hash"]
-            and _sha256(model.model_request_snapshot_json) == model.model_request_hash
             and complete and sources == c["dependencies"])
     except (ValueError, TypeError, KeyError, AttributeError):
         valid = False

@@ -668,7 +668,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             return False
         from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
 
-        if await native_tool_timeout_bound(db, agent_id=agent_id, invocation=call, model_result=model, payload=payload):
+        if await native_tool_timeout_bound(db, agent_id=agent_id, invocation=call, payload=payload):
             return True
         if (
             call.effect_state != "effect_committed"

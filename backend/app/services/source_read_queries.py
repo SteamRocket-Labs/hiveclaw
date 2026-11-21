@@ -11,6 +11,7 @@ from sqlalchemy.orm import joinedload, load_only
 from app.models.agent import Agent, AgentPermission
 from app.models.organization_identity import BusinessTeam, BusinessTeamMembership
 from app.models.security_audit import ResourcePermission
+from app.models.session_v2 import SessionModelResult
 from app.models.tenant import Tenant
 from app.models.user import User
 
@@ -36,6 +37,8 @@ RUNTIME_RESULT_FIELDS = ("id tenant_id task_type status parent_agent_id child_ag
     "parent_session_id child_session_id root_user_id root_session_id root_runtime_task_id root_external_principal_id "
     "machine_credential_id prompt result_summary metadata_json trace_id depth writer_generation "
     "config_snapshot_hash policy_snapshot_hash")
+SEALED_MODEL_STATES = ("sealed", "round_committed")
+MODEL_INPUT_FIELDS = "id tenant_id session_id run_id round_id turn_id provider_request_id state model_request_hash"
 
 
 def _json_rows(model, fields, *where):
@@ -185,8 +188,23 @@ def permission_rows(values):
     return rows
 
 
+def model_request_fallback_column(*, recovery=False):
+    snapshot = SessionModelResult.model_request_snapshot_json
+    required = SessionModelResult.state.not_in(SEALED_MODEL_STATES)
+    if recovery:
+        # Keep the existing request proof before reconstructing incomplete history.
+        required = required | (snapshot[("input_bindings", "dependency_coverage")] == {"complete": False})
+    return case((required, snapshot)).label(snapshot.key)
+
+
+def model_input_statement(*, recovery=False):
+    return select(*(getattr(SessionModelResult, field) for field in MODEL_INPUT_FIELDS.split()),
+        SessionModelResult.reconciliation_owner, SessionModelResult.round_committed_event_id,
+        SessionModelResult.seal_json, SessionModelResult.model_request_snapshot_json["input_bindings"].label("input_bindings"),
+        model_request_fallback_column(recovery=recovery))
+
+
 def model_source_state_columns():
-    from app.models.session_v2 import SessionModelResult
 
     # Reconciliation bookkeeping is live; the immutable request payload is
     # reused separately. Only this one key of the response seal is consulted.
@@ -195,7 +213,8 @@ def model_source_state_columns():
             else_=func.jsonb_build_object("provider_response_ref", SessionModelResult.seal_json["provider_response_ref"]))
     ))
     return (SessionModelResult.state, SessionModelResult.reconciliation_owner,
-        SessionModelResult.round_committed_event_id, seal)
+        SessionModelResult.round_committed_event_id, seal,
+        case((SessionModelResult.state == "needs_reconciliation", SessionModelResult.model_request_snapshot_json)))
 
 
 def reader_columns(*models):
@@ -240,8 +259,7 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
             "permission_expires_at permission_receipt_ref",
         SessionCommand: "id tenant_id session_id namespace principal_type principal_id command_kind "
             "request_json request_hash target_json target_hash",
-        SessionModelResult: "id tenant_id session_id run_id round_id turn_id provider_request_id "
-            "model_request_hash model_request_snapshot_json state",
+        SessionModelResult: MODEL_INPUT_FIELDS,
         ChatTranscriptEvent: "id tenant_id agent_id session_id run_id invocation_id result_id content_hash item_kind lifecycle",
         InvocationSpan: "id tenant_id agent_id user_id runtime_task_id session_id trace_id span_id span_type "
             "name status input_hash metadata_json",
@@ -250,9 +268,9 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
             "manifest_json manifest_sha256",
     }
 
-    def packed(model, alias):
+    def packed(model, alias, extra=""):
         return "jsonb_build_object(" + ",".join("'" + field + "'," + alias + "." + field
-            for field in fields[model].split()) + ")"
+            for field in (fields[model] + " " + extra).split()) + ")"
 
     def columns(model, alias, extra=""):
         return ",".join(f"{alias}.{field}" for field in (fields[model] + " " + extra).split())
@@ -264,9 +282,6 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
     # Both are fixed presentations of the same settled event. Retaining each
     # preserves nested callers' existing raw-path versus ORM-path byte checks.
     metadata_sql = str(metadata.compile(dialect=db.get_bind().dialect, compile_kwargs={"literal_binds": True}))
-    # Full request bytes remain necessary for the existing integrity comparison.
-    # They are fetched once/model, never by the live-state query below. Keeping
-    # that comparison is distinct from trusting the stored hash as its own proof.
     # UUID output is canonical lowercase text. A permissive UUID cast alone
     # would add rows for uppercase/compact IDs that the old text joins missed.
     uuid_text = r"^[0123456789abcdef]{8}(-[0123456789abcdef]{4}){3}-[0123456789abcdef]{12}$"
@@ -296,8 +311,11 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
                 CROSS JOIN LATERAL (SELECT m.id FROM session_model_results m WHERE m.tenant_id=:tenant_id
                     AND (m.session_id,m.run_id,m.provider_request_id)=(t.session_id,t.run_id,t.provider_request_id) LIMIT 1) m
         ), models AS (
-            SELECT {columns(SessionModelResult,'m')} FROM model_ids i CROSS JOIN LATERAL (
-                SELECT {columns(SessionModelResult,'m')} FROM session_model_results m WHERE m.id=i.id
+            SELECT m.* FROM model_ids i CROSS JOIN LATERAL (
+                SELECT {columns(SessionModelResult,'m')},m.model_request_snapshot_json->'input_bindings' AS input_bindings,
+                    CASE WHEN m.model_request_snapshot_json #> '{{input_bindings,dependency_coverage}}' = jsonb_build_object('complete',false)
+                        THEN m.model_request_snapshot_json END AS model_request_snapshot_json
+                FROM session_model_results m WHERE m.id=i.id
                     AND m.tenant_id=:tenant_id AND m.state IN ('sealed','round_committed') LIMIT 1
             ) m
         ), events AS (
@@ -338,7 +356,8 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
         UNION ALL SELECT 'session_command',c.id::text,{packed(SessionCommand,'c')}
             FROM selected_sources s CROSS JOIN LATERAL (SELECT {columns(SessionCommand,'c')} FROM session_commands c
                 WHERE s.kind='session_command' AND c.id=s.uuid_id AND c.tenant_id=:tenant_id LIMIT 1) c
-        UNION ALL SELECT 'session_model_result',m.id::text,{packed(SessionModelResult,'m')} FROM models m
+        UNION ALL SELECT 'session_model_result',m.id::text,
+            {packed(SessionModelResult,'m','input_bindings model_request_snapshot_json')} FROM models m
         UNION ALL SELECT 'event',e.id::text,{packed(ChatTranscriptEvent,'e')} ||
             jsonb_build_object('metadata_json',jsonb_build_object('v2_payload',e.metadata_json->'v2_payload')) FROM events e
         UNION ALL SELECT 'event_orm_projection',e.id::text,{packed(ChatTranscriptEvent,'e')} ||
@@ -381,14 +400,7 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
         if kind == "memory_receipt_binding":
             rows[kind, row.id] = row
             continue
-        if model is SessionModelResult and row.state not in {"sealed", "round_committed"}:
-            # Prepared/streaming/failed retry rows still have snapshot writers.
-            # Their existing live recovery reader must own those observations.
-            continue
         rows[model, row.id] = row
-        if model is SessionModelResult and row.state in {"sealed", "round_committed"}:
-            scope.model_digests["immutable_model_digest", id(row.model_request_snapshot_json)] = (
-                row.model_request_snapshot_json, None)
     index_source_catalogue(rows)
     scope.retained.update({key: set(row) if key == "catalogue_sources" else row
         for key, row in rows.items() if _catalogue_key(key, row)})

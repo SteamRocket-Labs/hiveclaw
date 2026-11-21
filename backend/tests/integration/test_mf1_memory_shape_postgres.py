@@ -187,7 +187,9 @@ async def test_memory_context_discovers_bundled_skills_once_per_walk(mf1_memory_
 
     warm = await build()
     assert {ref["source_id"] for ref in warm.source_refs if ref["source_kind"] == "explicit_memory"} == expected, warm
-    assert warm.degraded_components == ("explicit_memory_source_authority",)
+    # The prepared and reviewing entries are withheld with a 403 source-rule code. Since P3a1 (land56)
+    # a governed withhold leaves the turn ready (owner 2026-11-10); the note below still names both.
+    assert warm.degraded_components == ()
     assert "有2 条记忆暂时无法核实" in warm.content
 
     discoveries = 0

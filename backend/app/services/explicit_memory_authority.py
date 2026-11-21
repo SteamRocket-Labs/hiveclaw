@@ -306,6 +306,7 @@ async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, 
             from app.services.source_read_queries import transcript_event_columns
 
             transcript_event_columns(frame)
+            frame.bundled_platform_skill_hashes = {}
             _principal, actor, _session = await _actor(db, tenant_id, request)
             actor_id = actor.id
             current_audience = audience_for_session(_session)

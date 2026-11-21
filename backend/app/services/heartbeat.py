@@ -21,6 +21,7 @@ from app.services.daemon_concurrency import get_daemon_semaphore
 from app.core.events import get_redis
 from app.database import enter_rls_bypass, tenant_scoped_session
 from app.memory.t2.read_model import load_t2_package_snapshots, render_t2_package_snapshots
+from app.runtime.interactive_turn_gate import BackgroundWaitBudget
 from app.services.heartbeat_t3_core import run_heartbeat_t3_core
 from app.services.heartbeat_policy import managed_heartbeat_interval_minutes
 from app.services.llm_client import LLMError
@@ -42,6 +43,7 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 _HEARTBEAT_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
 _HEARTBEAT_LEASE_TTL_SECONDS = 600
 _HEARTBEAT_TIMEOUT_SECONDS = 300
+_HEARTBEAT_WAIT_BUDGET_SECONDS = 120.0
 _HEARTBEAT_BACKOFF_CAP_MINUTES = 24 * 60
 _heartbeat_leases: dict[uuid.UUID, datetime] = {}
 
@@ -1204,6 +1206,7 @@ async def _execute_heartbeat(
             from app.models.chat_session import ChatSession
             from app.models.participant import Participant
 
+            wait_budget = BackgroundWaitBudget(_HEARTBEAT_WAIT_BUDGET_SECONDS)
             async with get_daemon_semaphore("heartbeat"):
                 async with tenant_scoped_session(tenant_id) as db:
                     result = await db.execute(select(Agent).where(Agent.id == agent_id))
@@ -1223,85 +1226,94 @@ async def _execute_heartbeat(
 
                     set_agent_bot_identity(agent_id, agent.name, source="heartbeat")
 
-                    try:
-                        lifecycle_report = _run_memory_lifecycle_maintenance(agent_id)
-                        if (
-                            lifecycle_report.get("discarded_expired_count")
-                            or lifecycle_report.get("conflict_hold_count")
-                            or lifecycle_report.get("revalidation_hold_count")
-                        ):
-                            logger.info("[Heartbeat] Memory lifecycle maintenance for {}: {}", agent_id, lifecycle_report)
-                    except Exception as _lifecycle_err:
-                        logger.warning("[Heartbeat] Memory lifecycle maintenance failed for {}: {}", agent_id, _lifecycle_err)
+                # Synchronous lifecycle maintenance shares the sweep's scheduling boundary.
+                await wait_budget.wait()
+                try:
+                    lifecycle_report = _run_memory_lifecycle_maintenance(agent_id)
+                    if (
+                        lifecycle_report.get("discarded_expired_count")
+                        or lifecycle_report.get("conflict_hold_count")
+                        or lifecycle_report.get("revalidation_hold_count")
+                    ):
+                        logger.info("[Heartbeat] Memory lifecycle maintenance for {}: {}", agent_id, lifecycle_report)
+                except Exception as _lifecycle_err:
+                    logger.warning("[Heartbeat] Memory lifecycle maintenance failed for {}: {}", agent_id, _lifecycle_err)
 
-                    try:
+                try:
+                    with wait_budget.share():
                         sweep_report = await _run_t2_job_sweep(agent_id, tenant_id)
-                        if sweep_report.recovered_stale or sweep_report.retried or sweep_report.alerted:
-                            logger.info(
-                                "[Heartbeat] T2 job sweep for {}: recovered={} retried={} committed={} exhausted={} deferred={}",
-                                agent_id,
-                                list(sweep_report.recovered_stale),
-                                list(sweep_report.retried),
-                                list(sweep_report.committed),
-                                list(sweep_report.exhausted),
-                                list(sweep_report.deferred),
-                            )
-                    except Exception as _sweep_err:
-                        logger.warning("[Heartbeat] T2 job sweep failed for {}: {}", agent_id, _sweep_err)
+                    if sweep_report.recovered_stale or sweep_report.retried or sweep_report.alerted:
+                        logger.info(
+                            "[Heartbeat] T2 job sweep for {}: recovered={} retried={} committed={} exhausted={} deferred={}",
+                            agent_id,
+                            list(sweep_report.recovered_stale),
+                            list(sweep_report.retried),
+                            list(sweep_report.committed),
+                            list(sweep_report.exhausted),
+                            list(sweep_report.deferred),
+                        )
+                except Exception as _sweep_err:
+                    logger.warning("[Heartbeat] T2 job sweep failed for {}: {}", agent_id, _sweep_err)
 
-                    try:
-                        debt_report = await _run_consolidation_debt_refresh(agent_id)
-                        if debt_report.stalled:
-                            logger.warning(
-                                "[Heartbeat] Memory consolidation stalled for {}: reasons={} pending={} oldest_age_h={}",
-                                agent_id,
-                                list(debt_report.stall_reasons),
-                                debt_report.pending_packages,
-                                debt_report.oldest_pending_age_hours,
-                            )
-                    except Exception as _debt_err:
-                        logger.warning("[Heartbeat] Consolidation debt refresh failed for {}: {}", agent_id, _debt_err)
+                await wait_budget.wait()
+                try:
+                    debt_report = await _run_consolidation_debt_refresh(agent_id)
+                    if debt_report.stalled:
+                        logger.warning(
+                            "[Heartbeat] Memory consolidation stalled for {}: reasons={} pending={} oldest_age_h={}",
+                            agent_id,
+                            list(debt_report.stall_reasons),
+                            debt_report.pending_packages,
+                            debt_report.oldest_pending_age_hours,
+                        )
+                except Exception as _debt_err:
+                    logger.warning("[Heartbeat] Consolidation debt refresh failed for {}: {}", agent_id, _debt_err)
 
-                    try:
-                        retention_report = await _run_t2_retention(agent_id)
-                        if retention_report.archived:
-                            logger.info(
-                                "[Heartbeat] T2 retention for {}: archived={} kept_referenced={} kept_pipeline={}",
-                                agent_id,
-                                list(retention_report.archived),
-                                retention_report.kept_referenced,
-                                retention_report.kept_pipeline,
-                            )
-                    except Exception as _retention_err:
-                        logger.warning("[Heartbeat] T2 retention failed for {}: {}", agent_id, _retention_err)
+                await wait_budget.wait()
+                try:
+                    retention_report = await _run_t2_retention(agent_id)
+                    if retention_report.archived:
+                        logger.info(
+                            "[Heartbeat] T2 retention for {}: archived={} kept_referenced={} kept_pipeline={}",
+                            agent_id,
+                            list(retention_report.archived),
+                            retention_report.kept_referenced,
+                            retention_report.kept_pipeline,
+                        )
+                except Exception as _retention_err:
+                    logger.warning("[Heartbeat] T2 retention failed for {}: {}", agent_id, _retention_err)
 
-                    try:
+                await wait_budget.wait()
+                try:
+                    async with tenant_scoped_session(tenant_id) as db:
                         artifact_gc_report = await _run_chat_artifact_snapshot_retention(agent_id, db=db)
-                        if artifact_gc_report.get("removed_count"):
-                            logger.info(
-                                "[Heartbeat] Chat artifact snapshot retention for {}: removed={} bytes={}",
-                                agent_id,
-                                artifact_gc_report.get("removed_count"),
-                                artifact_gc_report.get("removed_bytes"),
-                            )
-                    except Exception as _artifact_gc_err:
-                        logger.warning(
-                            "[Heartbeat] Chat artifact snapshot retention failed for {}: {}", agent_id, _artifact_gc_err
+                    if artifact_gc_report.get("removed_count"):
+                        logger.info(
+                            "[Heartbeat] Chat artifact snapshot retention for {}: removed={} bytes={}",
+                            agent_id,
+                            artifact_gc_report.get("removed_count"),
+                            artifact_gc_report.get("removed_bytes"),
                         )
+                except Exception as _artifact_gc_err:
+                    logger.warning(
+                        "[Heartbeat] Chat artifact snapshot retention failed for {}: {}", agent_id, _artifact_gc_err
+                    )
 
-                    try:
-                        dirtiness_report = await _run_convergence_dirtiness_refresh(agent_id)
-                        if dirtiness_report.dirty_files:
-                            logger.info(
-                                "[Heartbeat] Convergence needed for {}: {}",
-                                agent_id,
-                                [item["target"] for item in dirtiness_report.dirty_files],
-                            )
-                    except Exception as _convergence_err:
-                        logger.warning(
-                            "[Heartbeat] Convergence dirtiness refresh failed for {}: {}", agent_id, _convergence_err
+                await wait_budget.wait()
+                try:
+                    dirtiness_report = await _run_convergence_dirtiness_refresh(agent_id)
+                    if dirtiness_report.dirty_files:
+                        logger.info(
+                            "[Heartbeat] Convergence needed for {}: {}",
+                            agent_id,
+                            [item["target"] for item in dirtiness_report.dirty_files],
                         )
+                except Exception as _convergence_err:
+                    logger.warning(
+                        "[Heartbeat] Convergence dirtiness refresh failed for {}: {}", agent_id, _convergence_err
+                    )
 
+                async with tenant_scoped_session(tenant_id) as db:
                     if not (agent.primary_model_id or agent.fallback_model_id):
                         logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")
                         await _touch_last_heartbeat(agent_id, tenant_id)
@@ -1405,19 +1417,18 @@ async def _execute_heartbeat(
                         )
                     logger.info("[Heartbeat] Tick #{} direct T3 core for {}", tick_count, agent.name)
 
-                    heartbeat_continuation = _run_heartbeat_core_and_persist(
-                        agent=agent,
-                        tenant_id=tenant_id,
-                        model=model,
-                        session_id=session_id,
-                        runtime_task_id=runtime_task_id,
-                        heartbeat_session_id=heartbeat_session_id,
-                        agent_participant_id=agent_participant_id,
-                        tick_count=tick_count,
-                        effect_user_id=effect_user_id,
-                    )
-
-                await heartbeat_continuation
+                await wait_budget.wait()
+                await _run_heartbeat_core_and_persist(
+                    agent=agent,
+                    tenant_id=tenant_id,
+                    model=model,
+                    session_id=session_id,
+                    runtime_task_id=runtime_task_id,
+                    heartbeat_session_id=heartbeat_session_id,
+                    agent_participant_id=agent_participant_id,
+                    tick_count=tick_count,
+                    effect_user_id=effect_user_id,
+                )
 
     except Exception as e:
         error_text = _format_heartbeat_exception(e)

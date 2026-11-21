@@ -34,6 +34,7 @@ from app.models.llm import LLMModel
 from app.models.runtime_budget import RuntimeBudgetPolicy
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
+from app.runtime.interactive_turn_gate import interactive_turn
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent, resolve_private_web_turn
 from app.runtime.ccplus_contracts import (
     DEFAULT_CCPLUS_PERMISSION_MODE,
@@ -7044,49 +7045,51 @@ async def execute_web_chat_run(
     from app.services.web_chat_run_orchestrator import run_web_chat_task
     from app.services.runtime_task_fence import current_runtime_task_fence
 
-    run_uuid = _run_id(run_id)
-    retry_tenant = tenant_id
+    run_uuid = None
     try:
-        # Reachable retry for prior runs of this session whose committed-round
-        # charges stayed suppressed (bounded, idempotent, keyed).
-        try:
-            if retry_tenant is None:
-                retry_tenant = await resolve_tenant_for_runtime_task(run_uuid, session_factory=_async_session)
-            if retry_tenant is not None and session_id is None:
-                async with tenant_scoped_session(
-                    retry_tenant,
-                    session_factory=_async_session,
-                    require_tenant=True,
-                    source="pending_session_token_settlement_preflight",
-                ) as db:
-                    session_id = await db.scalar(
-                        select(RuntimeTask.parent_session_id).where(
-                            RuntimeTask.id == run_uuid, RuntimeTask.tenant_id == retry_tenant
+        async with interactive_turn():
+            run_uuid = _run_id(run_id)
+            retry_tenant = tenant_id
+            # Reachable retry for prior runs of this session whose committed-round
+            # charges stayed suppressed (bounded, idempotent, keyed).
+            try:
+                if retry_tenant is None:
+                    retry_tenant = await resolve_tenant_for_runtime_task(run_uuid, session_factory=_async_session)
+                if retry_tenant is not None and session_id is None:
+                    async with tenant_scoped_session(
+                        retry_tenant,
+                        session_factory=_async_session,
+                        require_tenant=True,
+                        source="pending_session_token_settlement_preflight",
+                    ) as db:
+                        session_id = await db.scalar(
+                            select(RuntimeTask.parent_session_id).where(
+                                RuntimeTask.id == run_uuid, RuntimeTask.tenant_id == retry_tenant
+                            )
                         )
-                    )
-            if retry_tenant is not None and session_id:
-                await _retry_pending_session_run_settlements(session_id, retry_tenant)
-        except Exception as exc:
-            logger.warning(
-                "[WebChatRuntime] pending session token settlement preflight failed for run {}: {}",
-                run_uuid,
-                exc,
+                if retry_tenant is not None and session_id:
+                    await _retry_pending_session_run_settlements(session_id, retry_tenant)
+            except Exception as exc:
+                logger.warning(
+                    "[WebChatRuntime] pending session token settlement preflight failed for run {}: {}",
+                    run_uuid,
+                    exc,
+                )
+            tenant_scope = {"tenant_id": retry_tenant} if retry_tenant is not None else {}
+            if current_runtime_task_fence() is not None and await _reconcile_claimed_web_chat_terminal_ghost(
+                run_uuid, **tenant_scope
+            ):
+                return
+            return await run_web_chat_task(
+                run_id=run_uuid,
+                cancel_event=cancel_event,
+                ports=_web_chat_run_ports(**tenant_scope),
             )
-        tenant_scope = {"tenant_id": retry_tenant} if retry_tenant is not None else {}
-        if current_runtime_task_fence() is not None and await _reconcile_claimed_web_chat_terminal_ghost(
-            run_uuid, **tenant_scope
-        ):
-            return
-        return await run_web_chat_task(
-            run_id=run_uuid,
-            cancel_event=cancel_event,
-            ports=_web_chat_run_ports(**tenant_scope),
-        )
     finally:
         # The run's own terminal state is durable here and this caller holds
         # no row lock, so the completed-run settlement (own transactions per
         # charge) can never deadlock with the lifecycle that just finished.
-        if current_runtime_task_fence() is None:
+        if run_uuid is not None and current_runtime_task_fence() is None:
             await _settle_completed_run_after_execution(run_uuid)
 
 

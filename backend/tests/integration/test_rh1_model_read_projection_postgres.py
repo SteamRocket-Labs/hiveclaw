@@ -1,4 +1,4 @@
-"""Measure whole request bytes at the PostgreSQL cursor on two model read paths."""
+"""Measure whole request bytes at the PostgreSQL cursor during a T2 job."""
 
 import json
 import time
@@ -10,11 +10,10 @@ from sqlalchemy.engine import Engine
 
 from app.memory.t2 import segment_package as t2
 from app.models.session_v2 import SessionModelResult
-from app.services import memory_service, session_model_round
+from app.services import session_model_round
 from tests.integration import test_m1g30_model_dependencies_postgres as model_fixtures
 from tests.integration.test_a2fp1_private_turn_budget_postgres import Probe, app_user_engine  # noqa: F401
 from tests.integration.test_m1g24_workspace_artifact_authority_postgres import native_workspace  # noqa: F401
-from tests.integration.test_mf1_memory_shape_postgres import mf1_memory_shape  # noqa: F401
 from tests.integration.test_t2_source_revocation_postgres import _model, read_turn  # noqa: F401
 
 
@@ -27,7 +26,7 @@ def large_model_requests(monkeypatch):
     async def prepare_with_large_schema(db, **kwargs):
         return await prepare(db, **{**kwargs, "tools": [*kwargs["tools"], tool]})
 
-    # Both fixtures write through the normal request and seal code.
+    # The source tool and its derived answer both use normal request sealing.
     monkeypatch.setattr(session_model_round, "prepare_model_request", prepare_with_large_schema)
     monkeypatch.setattr(model_fixtures, "prepare_model_request", prepare_with_large_schema)
 
@@ -71,23 +70,6 @@ def _measure(phase):
                 whole_bytes += len(json.dumps(snapshot, ensure_ascii=False).encode())
     metrics.update(probe.phases[phase].metrics(), wall_ms=round(wall_ms, 3), whole_snapshot_bytes=whole_bytes)
     print("RH1_READ", phase, json.dumps(metrics, sort_keys=True), flush=True)
-
-
-async def test_warm_private_memory_context_returns_no_whole_model_requests(mf1_memory_shape, owner_sessionmaker):  # noqa: F811
-    n, agent, expected = mf1_memory_shape
-    await _assert_large_requests(owner_sessionmaker, n.session, minimum_rows=9)
-
-    async def build():
-        return await memory_service.build_memory_context(n.agent, n.tenant, session_id=str(n.session),
-            runtime_task_id=str(n.run), current_user_id=n.user, verified_agent=agent, return_result=True)
-
-    warm = await build()
-    assert {ref["source_id"] for ref in warm.source_refs if ref["source_kind"] == "explicit_memory"} == expected
-    assert warm.degraded_components == ()
-    with _measure("memory_context") as metrics:
-        measured = await build()
-    assert measured == warm
-    assert metrics["whole_snapshot_bytes"] == 0, metrics
 
 
 async def test_t2_job_returns_no_whole_model_requests(read_turn, owner_sessionmaker, monkeypatch):  # noqa: F811

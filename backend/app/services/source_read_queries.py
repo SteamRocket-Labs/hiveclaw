@@ -259,7 +259,7 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
             "permission_expires_at permission_receipt_ref",
         SessionCommand: "id tenant_id session_id namespace principal_type principal_id command_kind "
             "request_json request_hash target_json target_hash",
-        SessionModelResult: MODEL_INPUT_FIELDS,
+        SessionModelResult: MODEL_INPUT_FIELDS + " model_request_snapshot_json",
         ChatTranscriptEvent: "id tenant_id agent_id session_id run_id invocation_id result_id content_hash item_kind lifecycle",
         InvocationSpan: "id tenant_id agent_id user_id runtime_task_id session_id trace_id span_id span_type "
             "name status input_hash metadata_json",
@@ -268,9 +268,9 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
             "manifest_json manifest_sha256",
     }
 
-    def packed(model, alias, extra=""):
+    def packed(model, alias):
         return "jsonb_build_object(" + ",".join("'" + field + "'," + alias + "." + field
-            for field in (fields[model] + " " + extra).split()) + ")"
+            for field in fields[model].split()) + ")"
 
     def columns(model, alias, extra=""):
         return ",".join(f"{alias}.{field}" for field in (fields[model] + " " + extra).split())
@@ -311,11 +311,8 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
                 CROSS JOIN LATERAL (SELECT m.id FROM session_model_results m WHERE m.tenant_id=:tenant_id
                     AND (m.session_id,m.run_id,m.provider_request_id)=(t.session_id,t.run_id,t.provider_request_id) LIMIT 1) m
         ), models AS (
-            SELECT m.* FROM model_ids i CROSS JOIN LATERAL (
-                SELECT {columns(SessionModelResult,'m')},m.model_request_snapshot_json->'input_bindings' AS input_bindings,
-                    CASE WHEN m.model_request_snapshot_json #> '{{input_bindings,dependency_coverage}}' = jsonb_build_object('complete',false)
-                        THEN m.model_request_snapshot_json END AS model_request_snapshot_json
-                FROM session_model_results m WHERE m.id=i.id
+            SELECT {columns(SessionModelResult,'m')} FROM model_ids i CROSS JOIN LATERAL (
+                SELECT {columns(SessionModelResult,'m')} FROM session_model_results m WHERE m.id=i.id
                     AND m.tenant_id=:tenant_id AND m.state IN ('sealed','round_committed') LIMIT 1
             ) m
         ), events AS (
@@ -356,8 +353,7 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
         UNION ALL SELECT 'session_command',c.id::text,{packed(SessionCommand,'c')}
             FROM selected_sources s CROSS JOIN LATERAL (SELECT {columns(SessionCommand,'c')} FROM session_commands c
                 WHERE s.kind='session_command' AND c.id=s.uuid_id AND c.tenant_id=:tenant_id LIMIT 1) c
-        UNION ALL SELECT 'session_model_result',m.id::text,
-            {packed(SessionModelResult,'m','input_bindings model_request_snapshot_json')} FROM models m
+        UNION ALL SELECT 'session_model_result',m.id::text,{packed(SessionModelResult,'m')} FROM models m
         UNION ALL SELECT 'event',e.id::text,{packed(ChatTranscriptEvent,'e')} ||
             jsonb_build_object('metadata_json',jsonb_build_object('v2_payload',e.metadata_json->'v2_payload')) FROM events e
         UNION ALL SELECT 'event_orm_projection',e.id::text,{packed(ChatTranscriptEvent,'e')} ||

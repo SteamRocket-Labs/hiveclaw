@@ -117,28 +117,20 @@ def test_reply_target_boundary_uses_only_typed_channel_secret_fields() -> None:
 
 @pytest.mark.asyncio
 async def test_credential_loader_builds_boundary_from_tenant_tool_password_field() -> None:
+    from sqlalchemy import inspect
+
+    from app.models.tool import Tool
     from app.services.credential_boundary_loader import load_exact_secret_boundary
 
-    class _Scalars:
-        def __init__(self, values):
-            self._values = values
-
-        def all(self):
-            return list(self._values)
-
-    class _Result:
-        def __init__(self, values):
-            self._values = values
-
-        def scalars(self):
-            return _Scalars(self._values)
-
     class _DB:
-        def __init__(self, responses):
-            self._responses = list(responses)
+        def __init__(self, tool):
+            self._tool = tool
 
-        async def execute(self, _statement):
-            return _Result(self._responses.pop(0))
+        async def execute(self, statement):
+            return [tuple(
+                self._tool if inspect(column["entity"]).mapper.class_ is Tool else None
+                for column in statement.column_descriptions
+            )]
 
     tenant_id = uuid4()
     tool_id = uuid4()
@@ -153,16 +145,7 @@ async def test_credential_loader_builds_boundary_from_tenant_tool_password_field
             ]
         },
     )
-    db = _DB(
-        [
-            [],  # enabled tenant LLM models
-            [],  # agent channel configs
-            [],  # tenant channel configs
-            [tool],
-            [],  # tenant tool overrides
-            [],  # MCP servers
-        ]
-    )
+    db = _DB(tool)
 
     boundary = await load_exact_secret_boundary(
         db,

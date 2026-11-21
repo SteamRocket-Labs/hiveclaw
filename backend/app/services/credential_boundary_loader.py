@@ -6,8 +6,9 @@ from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 import uuid
 
-from sqlalchemy import or_, select
+from sqlalchemy import cast, null, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased, load_only
 
 from app.services.exact_secret_boundary import (
     ExactSecretBoundary,
@@ -46,130 +47,98 @@ async def load_exact_secret_boundary(
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID | None,
 ) -> ExactSecretBoundary:
-    """Load exact secrets that the current Agent must never echo or persist.
+    """Load exact secrets that the current Agent must never echo or persist."""
+    return await load_requester_exact_secret_boundary(
+        db, tenant_id=tenant_id, agent_id=agent_id, requester_user_id=None,
+    )
 
-    Every selected row is read inside the caller's tenant-pinned transaction.
-    Returned values remain inside :class:`ExactSecretBoundary`; only opaque
-    source references may leave the boundary in audit evidence.
-    """
 
+async def load_requester_exact_secret_boundary(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID | None,
+    requester_user_id: uuid.UUID | None,
+) -> ExactSecretBoundary:
+    """Read the tenant and requester credentials in the caller's tenant-pinned transaction."""
     from app.models.channel_config import ChannelConfig
+    from app.models.custom_api_account import CustomApiAccount
+    from app.models.email_account import EmailAccount
     from app.models.llm import LLMModel
     from app.models.mcp_server import AgentMCPServerAssignment, MCPServer
     from app.models.tenant_channel_config import TenantChannelConfig
     from app.models.tenant_tool_config import TenantToolConfig
     from app.models.tool import AgentTool, Tool
     from app.services.agent_tool_config_storage import is_agent_tool_credential_key
-    from app.services.mcp_oauth import decrypt_token_set, decrypt_value
-    from app.services.tool_config_service import (
-        MASKED_SECRET_SENTINEL,
-        decrypt_tool_config_secrets,
+    from app.services.tool_config_service import MASKED_SECRET_SENTINEL, decrypt_tool_config_secrets
+
+    tools = select(Tool.id, Tool.config, Tool.config_schema).where(
+        Tool.enabled.is_(True), or_(Tool.tenant_id.is_(None), Tool.tenant_id == tenant_id),
     )
+    tool_ids = tools.with_only_columns(Tool.id)
+    channels = select(
+        ChannelConfig.id, ChannelConfig.agent_id, ChannelConfig.channel_type, ChannelConfig.app_secret,
+        ChannelConfig.encrypt_key, ChannelConfig.verification_token, ChannelConfig.extra_config,
+    ).where(ChannelConfig.tenant_id == tenant_id)
+    servers = select(MCPServer.id, MCPServer.config_json).where(MCPServer.tenant_id == tenant_id)
+    if agent_id is not None:
+        channels = channels.where(ChannelConfig.agent_id == agent_id)
+        assigned_ids = select(AgentMCPServerAssignment.mcp_server_id).where(
+            AgentMCPServerAssignment.tenant_id == tenant_id,
+            AgentMCPServerAssignment.agent_id == agent_id,
+            AgentMCPServerAssignment.enabled.is_(True),
+        )
+        servers = servers.where(MCPServer.id.in_(assigned_ids))
+
+    queries = {
+        LLMModel: select(LLMModel.id, LLMModel.api_key_encrypted).where(
+            or_(LLMModel.tenant_id.is_(None), LLMModel.tenant_id == tenant_id), LLMModel.enabled.is_(True),
+        ),
+        ChannelConfig: channels,
+        TenantChannelConfig: select(
+            TenantChannelConfig.id, TenantChannelConfig.channel_type, TenantChannelConfig.app_secret,
+            TenantChannelConfig.encrypt_key, TenantChannelConfig.verification_token, TenantChannelConfig.extra_config,
+        ).where(TenantChannelConfig.tenant_id == tenant_id, TenantChannelConfig.is_active.is_(True)),
+        Tool: tools,
+        TenantToolConfig: select(TenantToolConfig.id, TenantToolConfig.tool_id, TenantToolConfig.config).where(
+            TenantToolConfig.tenant_id == tenant_id,
+            TenantToolConfig.tool_id.in_(tool_ids),
+            TenantToolConfig.enabled.is_(True),
+        ),
+        MCPServer: servers,
+    }
+    if agent_id is not None:
+        queries[AgentTool] = select(AgentTool.id, AgentTool.tool_id, AgentTool.config).where(
+            AgentTool.tenant_id == tenant_id,
+            AgentTool.agent_id == agent_id,
+            AgentTool.tool_id.in_(tool_ids),
+            AgentTool.enabled.is_(True),
+        )
+    account_types = (
+        (CustomApiAccount, "custom-api-account", ("api_key", "bearer_token", "basic_password")),
+        (EmailAccount, "email-account", ("auth_code",)),
+    )
+    personal_server = aliased(MCPServer)
+    if requester_user_id is not None:
+        for account_type, _, _ in account_types:
+            queries[account_type] = select(account_type.id, account_type.config).where(
+                account_type.tenant_id == tenant_id, account_type.owner_user_id == requester_user_id,
+            )
+        queries[personal_server] = select(personal_server.id, personal_server.config_json).where(
+            personal_server.tenant_id == tenant_id,
+            personal_server.owner_user_id == requester_user_id,
+            personal_server.parent_server_id.is_not(None),
+        )
+    rows = await _read_inventory_rows(db, queries)
 
     pairs: list[tuple[str, str]] = []
-
-    models = (
-        (
-            await db.execute(
-                select(LLMModel).where(
-                    or_(
-                        LLMModel.tenant_id.is_(None),
-                        LLMModel.tenant_id == tenant_id,
-                    ),
-                    LLMModel.enabled.is_(True),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for model in models:
-        value = str(model.api_key or "")
-        if value:
+    for model in rows[LLMModel]:
+        if value := str(model.api_key or ""):
             pairs.append((f"llm-model://{model.id}/api_key", value))
 
-    channel_boundaries: list[ExactSecretBoundary] = []
-    channel_query = select(ChannelConfig).where(ChannelConfig.tenant_id == tenant_id)
-    if agent_id is not None:
-        channel_query = channel_query.where(ChannelConfig.agent_id == agent_id)
-    channels = (await db.execute(channel_query)).scalars().all()
-    for config in channels:
-        channel_boundaries.append(
-            boundary_from_channel_config(
-                config,
-                agent_id=config.agent_id,
-                channel=str(config.channel_type),
-            )
-        )
-    tenant_channels = (
-        (
-            await db.execute(
-                select(TenantChannelConfig).where(
-                    TenantChannelConfig.tenant_id == tenant_id,
-                    TenantChannelConfig.is_active.is_(True),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for config in tenant_channels:
-        channel_boundaries.append(
-            boundary_from_channel_config(
-                config,
-                agent_id=f"tenant-{tenant_id}",
-                channel=str(config.channel_type),
-            )
-        )
-
-    tools = (
-        (
-            await db.execute(
-                select(Tool).where(
-                    Tool.enabled.is_(True),
-                    or_(Tool.tenant_id.is_(None), Tool.tenant_id == tenant_id),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    tool_ids = [tool.id for tool in tools]
-    tenant_overrides: dict[uuid.UUID, dict] = {}
-    agent_overrides: dict[uuid.UUID, dict] = {}
-    if tool_ids:
-        tenant_rows = (
-            (
-                await db.execute(
-                    select(TenantToolConfig).where(
-                        TenantToolConfig.tenant_id == tenant_id,
-                        TenantToolConfig.tool_id.in_(tool_ids),
-                        TenantToolConfig.enabled.is_(True),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        tenant_overrides = {row.tool_id: dict(row.config or {}) for row in tenant_rows}
-        if agent_id is not None:
-            agent_rows = (
-                (
-                    await db.execute(
-                        select(AgentTool).where(
-                            AgentTool.tenant_id == tenant_id,
-                            AgentTool.agent_id == agent_id,
-                            AgentTool.tool_id.in_(tool_ids),
-                            AgentTool.enabled.is_(True),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            agent_overrides = {row.tool_id: dict(row.config or {}) for row in agent_rows}
-
-    for tool in tools:
+    tenant_overrides = {row.tool_id: dict(row.config or {}) for row in rows[TenantToolConfig]}
+    agent_overrides = {row.tool_id: dict(row.config or {}) for row in rows.get(AgentTool, ())}
+    for tool in rows[Tool]:
         merged = dict(tool.config or {})
         merged.update(tenant_overrides.get(tool.id, {}))
         merged.update(agent_overrides.get(tool.id, {}))
@@ -182,88 +151,78 @@ async def load_exact_secret_boundary(
             is_credential_key=is_agent_tool_credential_key,
             pairs=pairs,
         )
+    pairs.extend(_mcp_secret_pairs(rows[MCPServer]))
 
-    server_query = select(MCPServer).where(MCPServer.tenant_id == tenant_id)
-    if agent_id is not None:
-        assigned_ids = select(AgentMCPServerAssignment.mcp_server_id).where(
-            AgentMCPServerAssignment.tenant_id == tenant_id,
-            AgentMCPServerAssignment.agent_id == agent_id,
-            AgentMCPServerAssignment.enabled.is_(True),
-        )
-        server_query = server_query.where(MCPServer.id.in_(assigned_ids))
-    servers = (await db.execute(server_query)).scalars().all()
-    for server in servers:
-        oauth = dict((server.config_json or {}).get("oauth") or {})
-        token = decrypt_token_set(oauth.get("token"))
-        if token is not None:
-            pairs.append((f"mcp-server://{server.id}/oauth/access_token", token.access_token))
-            if token.refresh_token:
-                pairs.append((f"mcp-server://{server.id}/oauth/refresh_token", token.refresh_token))
-        client_secret = decrypt_value(oauth.get("client_secret"))
-        if client_secret:
-            pairs.append((f"mcp-server://{server.id}/oauth/client_secret", client_secret))
-        pending = dict(oauth.get("pending") or {})
-        verifier = decrypt_value(pending.get("verifier"))
-        if verifier:
-            pairs.append((f"mcp-server://{server.id}/oauth/pkce_verifier", verifier))
-        pending_client_secret = decrypt_value(pending.get("client_secret"))
-        if pending_client_secret:
-            pairs.append((f"mcp-server://{server.id}/oauth/pending_client_secret", pending_client_secret))
+    channel_boundaries = [
+        boundary_from_channel_config(config, agent_id=config.agent_id, channel=str(config.channel_type))
+        for config in rows[ChannelConfig]
+    ]
+    channel_boundaries.extend(
+        boundary_from_channel_config(config, agent_id=f"tenant-{tenant_id}", channel=str(config.channel_type))
+        for config in rows[TenantChannelConfig]
+    )
 
+    private_pairs: list[tuple[str, str]] = []
+    for account_type, source_kind, secret_keys in account_types:
+        for account in rows.get(account_type, ()):
+            private_pairs.extend(
+                (f"{source_kind}://{account.id}/{key}", value)
+                for key in secret_keys
+                if isinstance(value := (account.config or {}).get(key), str) and value
+            )
+    private_pairs.extend(_mcp_secret_pairs(rows.get(personal_server, ())))
     return ExactSecretBoundary.combine(
-        ExactSecretBoundary.from_pairs(pairs),
-        *channel_boundaries,
+        ExactSecretBoundary.from_pairs(pairs), *channel_boundaries, ExactSecretBoundary.from_pairs(private_pairs),
     )
 
 
-async def load_requester_exact_secret_boundary(
-    db: AsyncSession,
-    *,
-    tenant_id: uuid.UUID,
-    agent_id: uuid.UUID | None,
-    requester_user_id: uuid.UUID | None,
-) -> ExactSecretBoundary:
-    """Supplement the existing inventory with only this requester's stored secrets."""
-    boundary = await load_exact_secret_boundary(db, tenant_id=tenant_id, agent_id=agent_id)
-    if requester_user_id is None:
-        return boundary
-    from app.models.custom_api_account import CustomApiAccount
-    from app.models.email_account import EmailAccount
-    from app.models.mcp_server import MCPServer
+async def _read_inventory_rows(db: AsyncSession, queries: dict) -> dict:
+    # Each UNION arm contributes rows for one source. Typed NULLs pad the
+    # other sources without multiplying rows or bypassing ORM decryption.
+    columns = [tuple(query.selected_columns) for query in queries.values()]
+    slots = [tuple(col.label(f"source_{index}_{col.key}") for col in group) for index, group in enumerate(columns)]
+    branches = [
+        query.with_only_columns(*(
+            col if owner == source else cast(null(), col.type).label(col.name)
+            for owner, group in enumerate(slots) for col in group
+        ), maintain_column_froms=True)
+        for source, query in enumerate(queries.values())
+    ]
+    packed = union_all(*branches).subquery()
+    sources = [aliased(model, packed) for model in queries]
+    statement = select(*sources).options(*(
+        load_only(*(getattr(source, col.key) for col in group), raiseload=True)
+        for source, group in zip(sources, columns, strict=True)
+    ))
+    rows = {model: [] for model in queries}
+    for row in await db.execute(statement):
+        for group, value in zip(rows.values(), row, strict=True):
+            if value is not None:
+                group.append(value)
+    return rows
+
+
+def _mcp_secret_pairs(servers) -> list[tuple[str, str]]:
     from app.services.mcp_oauth import decrypt_token_set, decrypt_value
 
     pairs: list[tuple[str, str]] = []
-    for account_type, source_kind, secret_keys in (
-        (CustomApiAccount, "custom-api-account", ("api_key", "bearer_token", "basic_password")),
-        (EmailAccount, "email-account", ("auth_code",)),
-    ):
-        accounts = (await db.execute(select(account_type).where(
-            account_type.tenant_id == tenant_id,
-            account_type.owner_user_id == requester_user_id,
-        ))).scalars().all()
-        for account in accounts:
-            pairs.extend((f"{source_kind}://{account.id}/{key}", value)
-                for key in secret_keys
-                if isinstance(value := (account.config or {}).get(key), str) and value)
-    servers = (await db.execute(select(MCPServer).where(
-        MCPServer.tenant_id == tenant_id,
-        MCPServer.owner_user_id == requester_user_id,
-        MCPServer.parent_server_id.is_not(None),
-    ))).scalars().all()
     for server in servers:
         oauth = dict((server.config_json or {}).get("oauth") or {})
         token = decrypt_token_set(oauth.get("token"))
         if token is not None:
-            pairs.extend((f"mcp-server://{server.id}/oauth/{key}", value)
-                for key in ("access_token", "refresh_token") if (value := getattr(token, key)))
+            pairs.extend(
+                (f"mcp-server://{server.id}/oauth/{key}", value)
+                for key in ("access_token", "refresh_token") if (value := getattr(token, key))
+            )
+        pending = dict(oauth.get("pending") or {})
         for path, config, key in (
             ("client_secret", oauth, "client_secret"),
-            ("pkce_verifier", dict(oauth.get("pending") or {}), "verifier"),
-            ("pending_client_secret", dict(oauth.get("pending") or {}), "client_secret"),
+            ("pkce_verifier", pending, "verifier"),
+            ("pending_client_secret", pending, "client_secret"),
         ):
             if value := decrypt_value(config.get(key)):
                 pairs.append((f"mcp-server://{server.id}/oauth/{path}", value))
-    return ExactSecretBoundary.combine(boundary, ExactSecretBoundary.from_pairs(pairs))
+    return pairs
 
 
 async def load_runtime_ingress_secret_boundary(

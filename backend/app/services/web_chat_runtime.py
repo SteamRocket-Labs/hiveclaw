@@ -31,6 +31,7 @@ from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.llm import LLMModel
+from app.models.runtime_budget import RuntimeBudgetPolicy
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent, resolve_private_web_turn
@@ -250,16 +251,9 @@ async def _create_runtime_budget_root_run_for_chat(
     try:
         tenant_id = getattr(agent, "tenant_id", None)
         service = RuntimeBudgetService()
-        policy = await service.resolve_policy(
-            RuntimeBudgetPolicyLookup(
-                tenant_id=tenant_id,
-                source=source,
-                profile=profile,
-                agent_id=getattr(agent, "id", None),
-            )
-        )
-        run = await service.create_run(
-            RuntimeBudgetRunCreate(
+
+        def build_payload(policy: RuntimeBudgetPolicy) -> RuntimeBudgetRunCreate:
+            return RuntimeBudgetRunCreate(
                 tenant_id=tenant_id,
                 root_run_kind="web_chat_turn" if profile == WEB_CHAT_TURN_TASK_TYPE else profile,
                 root_run_key=run_uuid.hex,
@@ -296,6 +290,15 @@ async def _create_runtime_budget_root_run_for_chat(
                     "policy_json": getattr(policy, "policy_json", None),
                 },
             )
+
+        run = await service.create_run_from_policy(
+            RuntimeBudgetPolicyLookup(
+                tenant_id=tenant_id,
+                source=source,
+                profile=profile,
+                agent_id=getattr(agent, "id", None),
+            ),
+            build_payload,
         )
         return bound_runtime_budget_root_binding(run.id)
     except Exception as exc:

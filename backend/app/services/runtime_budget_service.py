@@ -8,7 +8,7 @@ amplify.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -661,54 +661,72 @@ class RuntimeBudgetService:
 
     async def resolve_policy(self, lookup: RuntimeBudgetPolicyLookup) -> RuntimeBudgetPolicy:
         async with self._budget_session("resolve_policy") as db:
-            result = await db.execute(
-                select(RuntimeBudgetPolicy).where(
-                    RuntimeBudgetPolicy.enabled.is_(True),
-                    (RuntimeBudgetPolicy.tenant_id == lookup.tenant_id) | (RuntimeBudgetPolicy.tenant_id.is_(None)),
-                )
+            return await self._resolve_policy(db, lookup)
+
+    async def create_run(self, payload: RuntimeBudgetRunCreate) -> RuntimeBudgetRun:
+        async with self._budget_session("create_run") as db:
+            return await self._create_run(db, payload)
+
+    async def create_run_from_policy(
+        self,
+        lookup: RuntimeBudgetPolicyLookup,
+        build_payload: Callable[[RuntimeBudgetPolicy], RuntimeBudgetRunCreate],
+    ) -> RuntimeBudgetRun:
+        """Resolve the policy and commit its root in one audited budget session."""
+        async with self._budget_session("create_run_from_policy") as db:
+            policy = await self._resolve_policy(db, lookup)
+            return await self._create_run(db, build_payload(policy))
+
+    @staticmethod
+    async def _resolve_policy(db: AsyncSession, lookup: RuntimeBudgetPolicyLookup) -> RuntimeBudgetPolicy:
+        result = await db.execute(
+            select(RuntimeBudgetPolicy).where(
+                RuntimeBudgetPolicy.enabled.is_(True),
+                (RuntimeBudgetPolicy.tenant_id == lookup.tenant_id) | (RuntimeBudgetPolicy.tenant_id.is_(None)),
             )
-            candidates = [policy for policy in result.scalars().all() if _policy_matches(policy, lookup)]
+        )
+        candidates = [policy for policy in result.scalars().all() if _policy_matches(policy, lookup)]
         if not candidates:
             return _builtin_policy(lookup)
         return sorted(candidates, key=_policy_rank, reverse=True)[0]
 
-    async def create_run(self, payload: RuntimeBudgetRunCreate) -> RuntimeBudgetRun:
-        async with self._budget_session("create_run") as db:
-            policy_id, policy_snapshot = _normalize_run_policy_reference(payload.policy_id, payload.policy_snapshot)
-            run = RuntimeBudgetRun(
-                tenant_id=payload.tenant_id,
-                policy_id=policy_id,
-                root_run_kind=payload.root_run_kind,
-                root_run_key=payload.root_run_key,
-                root_runtime_task_id=payload.root_runtime_task_id,
-                root_session_id=payload.root_session_id,
-                root_agent_id=payload.root_agent_id,
-                root_user_id=payload.root_user_id,
-                root_external_principal_id=payload.root_external_principal_id,
-                source=payload.source,
-                profile=payload.profile,
-                enforcement_mode=payload.enforcement_mode,
-                fail_mode=payload.fail_mode,
-                max_tokens=payload.max_tokens,
-                max_cache_miss_tokens=payload.max_cache_miss_tokens,
-                max_subagents=payload.max_subagents,
-                max_team_sessions=payload.max_team_sessions,
-                max_delegations=payload.max_delegations,
-                max_background_tasks=payload.max_background_tasks,
-                max_continuation_wakes=payload.max_continuation_wakes,
-                max_provider_calls=payload.max_provider_calls,
-                max_failures=payload.max_failures,
-                max_needs_reconciliation=payload.max_needs_reconciliation,
-                max_child_failure_ratio=payload.max_child_failure_ratio,
-                max_parent_invocations=payload.max_parent_invocations,
-                expires_at=payload.expires_at,
-                policy_snapshot=policy_snapshot,
-            )
-            db.add(run)
-            await db.commit()
-            if db.sync_session.expire_on_commit:
-                await db.refresh(run)
-            return run
+    @staticmethod
+    async def _create_run(db: AsyncSession, payload: RuntimeBudgetRunCreate) -> RuntimeBudgetRun:
+        policy_id, policy_snapshot = _normalize_run_policy_reference(payload.policy_id, payload.policy_snapshot)
+        run = RuntimeBudgetRun(
+            tenant_id=payload.tenant_id,
+            policy_id=policy_id,
+            root_run_kind=payload.root_run_kind,
+            root_run_key=payload.root_run_key,
+            root_runtime_task_id=payload.root_runtime_task_id,
+            root_session_id=payload.root_session_id,
+            root_agent_id=payload.root_agent_id,
+            root_user_id=payload.root_user_id,
+            root_external_principal_id=payload.root_external_principal_id,
+            source=payload.source,
+            profile=payload.profile,
+            enforcement_mode=payload.enforcement_mode,
+            fail_mode=payload.fail_mode,
+            max_tokens=payload.max_tokens,
+            max_cache_miss_tokens=payload.max_cache_miss_tokens,
+            max_subagents=payload.max_subagents,
+            max_team_sessions=payload.max_team_sessions,
+            max_delegations=payload.max_delegations,
+            max_background_tasks=payload.max_background_tasks,
+            max_continuation_wakes=payload.max_continuation_wakes,
+            max_provider_calls=payload.max_provider_calls,
+            max_failures=payload.max_failures,
+            max_needs_reconciliation=payload.max_needs_reconciliation,
+            max_child_failure_ratio=payload.max_child_failure_ratio,
+            max_parent_invocations=payload.max_parent_invocations,
+            expires_at=payload.expires_at,
+            policy_snapshot=policy_snapshot,
+        )
+        db.add(run)
+        await db.commit()
+        if db.sync_session.expire_on_commit:
+            await db.refresh(run)
+        return run
 
     async def reserve(self, reservation: RuntimeBudgetReservation) -> RuntimeBudgetReservationResult:
         amounts = _positive_amounts(reservation)

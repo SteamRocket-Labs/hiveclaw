@@ -1107,7 +1107,15 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Land58 (PL1) versus land57: 123 callsites and 810 entries unchanged. The only
 # changed hash is the app/database.py module source (pool_use_lifo=True in
 # _engine_pool_kwargs). No new bypass scope or write.
-RLS_BYPASS_SCOPES_SHA256 = "115e215f100378e829379f07c4aec72c032bcc9da850f5e5f3085249c34ecba5"
+# Land59 (F3) versus land58: 123 callsites unchanged; 816 entries (+6). Added:
+# credential_boundary_loader._read_inventory_rows and
+# load_requester_exact_secret_boundary (the credential inventory in one UNION ALL
+# statement under the same tenant session, each source loading the same columns
+# as select(Model)), and RuntimeBudgetService._resolve_policy, _create_run and
+# create_run_from_policy (twice; policy and budget root in one bypass session).
+# The other changed hashes are module sources and functions of the same files
+# and web_chat_runtime.py. No new bypass scope or write.
+RLS_BYPASS_SCOPES_SHA256 = "99c4e83af29b66b227c171caa78f87264e83de2c325f8199c73a79be3a7f46df"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

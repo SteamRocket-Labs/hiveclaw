@@ -91,12 +91,11 @@ async def test_budget_root_creation_exception_becomes_observable_typed_unavailab
     class FakeAsyncSession:
         pass
 
-    class FailingBudgetService:
-        async def resolve_policy(self, _lookup):
-            raise ConnectionError("budget store offline")
+    def budget_store_offline():
+        raise ConnectionError("budget store offline")
 
     monkeypatch.setattr(runtime, "AsyncSession", FakeAsyncSession)
-    monkeypatch.setattr(runtime, "RuntimeBudgetService", FailingBudgetService)
+    monkeypatch.setattr("app.services.runtime_budget_service.async_session", budget_store_offline)
     reset_runtime_budget_failover_metrics()
 
     binding = await runtime._create_runtime_budget_root_run_for_chat(

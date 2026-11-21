@@ -1,6 +1,6 @@
 # HiveClaw 落地进度（WIP）
 
-更新：2026-11-20
+更新：2026-11-21
 
 计划正本：`docs/hiveclaw-complete-plan-2026-11.md`。工作流：AGENTS.md “Delivery loop”。任务记录：`tasks/2026-11-03-codex-loop-recovery.md`。证据：`~/hiveclaw-evidence/p1/`。
 
@@ -26,6 +26,7 @@
 | 2026-11-18 | Railway 停读 railway.json（2026-12-01）前，把 backend、backend-api 的 Dockerfile 构建与健康检查写进服务设置；不启用 IaC 文件，railway.json 暂留 | owner（“可以，按你推荐的改”） |
 | 2026-11-20 | P1 后半：记忆召回时的撤权、当前读者、防篡改复核（P3a0 的 R05–R11）按 11-10 裁定保留在私人回合里（撤权来源派生的记忆之后各轮不进模型；11-18 RL1 的 A 只放开自己的派生文件，派生记忆仍扣住）。删光读取层也只省 ≤0.46 秒，到不了 1 秒；下一步先在实验室量清重复读取，再定快路径 | Claude（推荐即默认决定；证据 /tmp/hc-p1/review/p3a0.report.md 第 2、3 节，生产只读 run40_memory_status_readonly.py） |
 | 2026-11-20 | P1 快路径分三段，每段后实测：MF1 记忆授权去重 → F2 回合内事务合并 → F3 发送 POST 事务合并；准备回合期间发生的撤权从下一轮起生效（与 11-10、11-13 裁定一致）。不采纳写入时传播撤权、钩子封存与结算合并、未剖析前的进程缓存。按规定扣下的本人记忆不再记为降级，改为按码记日志 | Claude（推荐即默认决定；证据 /tmp/hc-p1/review/p3a2.report.md、~/hiveclaw-evidence/p1/p1-fastpath-judgment-2026-11-20.md、Grok 独立方案 p1fast-grok.answer.md） |
+| 2026-11-21 | 快路径改序：F2（worker 模型前）与 F3（发送 POST，含凭据边界一次查）并行先做，F1（记忆目录不整份取回模型快照）第三。起因：第 42 轮显示 MF1 把记忆上下文降了约四成，端到端仍 2.98 秒；worker 未归类段 0.75–1.26 秒、POST 0.58–0.84 秒，都比记忆目录（0.12–0.2 秒）大 | Claude（推荐即默认决定；证据 ~/hiveclaw-evidence/p1/e2e/run42-ops/） |
 
 ## 进度
 
@@ -252,7 +253,17 @@
   - 生产只读：第 40 轮窗口降级 span 和事件各 6，第 41 轮窗口和部署后至今都是 0。
   - 新日志显示每轮扣下 1 条（explicit_memory_source_unverified）：该助理有一条记忆的改动已准备好、还没生效，收据状态不是 active，所以按设计扣下。不属于 P1，之后查它是在等确认还是卡住了。
   - 证据：~/hiveclaw-evidence/p1/e2e/run41/、run41-ops/（first_text_minus_model.txt、phase_table.txt、memory_status_windows.txt、memory_withheld_log.txt、memory_state_keys.txt）。
-- [进行中] MF1（r7a p1-mf1 起于 daa8226f，11-20 11:42Z 起，Codex）：生产记忆上下文 CPU 0.3–1.0 秒。假设是该助理 9 条记忆有 72 个平台技能文件依赖，每个依赖都重做一次内置包发现与哈希。按生产形状建夹具剖析，确认后在一次走查内去重。
+- [已并入 land57] MF1（r7a p1-mf1 起于 daa8226f，Codex + 控制方简化 7d4c4fef）：假设部分成立，每次记忆授权走查里内置技能包发现从 3 次降到 1 次，同机夹具 CPU 约 130→82 ms（−37%，未到 60% 线，接受）。只保留一次走查内的包哈希缓存，不跨回合、不跨进程；允许/拒绝与错误码不变。审查：Grok 无阻断无应修；reviewer xhigh 无阻断，应修一条（重扫跳过）已随简化删掉。
+- [完成] land57 = land56 + MF1（main = backup 78171e2c；11-21 14:13Z 两后端 SUCCESS，运行身份 c461f3ed…/1287 = 预期；前端不变；无迁移）。
+  - RLS 指纹 365300b1→b8f88abd：123 调用点、810 条，只变 content_input_receipts.py 模块源码；allowlist 17 过。
+  - 定向门禁 95 过，1 败为合并语义冲突：MF1 测试写于 P3a1 之前，仍期望按规定扣下标降级；改为 P3a1 后的精确期望（`== ()`，注明 owner 11-10），重跑过。
+  - 部署前只读查实验室：前 2 小时无聊天事件，owner 未回测试时段。回滚：两后端回 274cd304（land56 代码，34dfefa0…/1287）。
+- [完成] E2E 第 42 轮（生产 78171e2c = land57，11-21 14:20:25–14:23:13Z，同第 40/41 轮）：6/6 有回复、全部 201、无记忆警告，自己的消息 3.3–4.5 ms。
+  - 首字减模型：首轮 7.08 秒，暖轮 3.56、2.86、3.11、2.85 秒，中位 2.98 秒（第 41 轮 2.87），端到端没有变化。
+  - MF1 有效但占比小：记忆上下文墙钟 0.37–0.53 秒（第 41 轮 0.49–1.26），CPU 0.24–0.38 秒。
+  - 剩下的大头：worker 模型前未归类的一段 92–103 条语句、0.75–1.26 秒数据库时间（约 14.5 个事务，每轮还先做补结算与两次终态对账）；发送 POST 0.58–0.84 秒、107–111 条。首字前关键路径约 290 条语句。
+  - 证据：~/hiveclaw-evidence/p1/e2e/run42/、run42-ops/（first_text_minus_model.txt、phase_table.txt、phase_sites_table.txt、pre_model_other_sites_warm.txt、catalogue_sizes.txt）。
+- [进行中] F2 与 F3 并行（Codex，11-21 14:35Z 起，各约 3 小时）：F2 worker 模型前事务收到至多 4 个加记忆自身、Agent/Session/User 往下传、恢复杂务移出等待路径，验收要求模型请求字节与基线一致；F3 发送 POST 从 10 个事务收到至多 6 个、凭据边界从约 10 条查询并成一条（worker 也受益）。之后合入、部署、第 43 轮实测，再做 F1（每轮不再整份取回 0.7–2.4 MB 的模型请求快照）。
 - [完成] land54 = land53 + A2fp12 + PX1（main = backup c9405f40；11-20 07:44Z 两后端 SUCCESS，运行身份 8e0fa8d3…/1287 = 预期，前端不变，无迁移）。
   - RLS 指纹 0e6b9e8a→365300b1：123 调用点、810 条，只变 content_input_receipts.py 模块源码。
   - 回滚：两后端回 03bee6c9（land53 代码，521a8429…/1287）。

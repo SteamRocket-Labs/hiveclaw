@@ -13,7 +13,7 @@ from tests.integration.test_m1g24_workspace_artifact_authority_postgres import n
 from tests.integration.test_m4c_explicit_memory_scope_postgres import (
     memory_call,
     new_owner_work,
-    shared_memory,  # noqa: F401
+    shared_memory as shared_memory,
 )
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -163,9 +163,10 @@ async def test_six_round_search_preserves_own_inputs_and_results_but_withholds_f
     assert all("LEGACY_UNVERIFIED_BODY" not in content for content in outputs), outputs
     assert all("## 可用情况\n" in content for content in outputs), outputs
     for content in outputs:
+        # SM1: governed recall is never model input (R1); the scan is skipped.
         assert json.loads(content.split("## 可用情况\n", 1)[1]) == {
             "schema": "hive.explicit_memory_availability.v1", "status": "partial",
-            "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}],
+            "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified"}],
             "message": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。",
         }
 
@@ -193,10 +194,13 @@ async def test_partial_search_keeps_receipted_fact_when_one_owned_source_is_revo
     assert "ORCHID_PRIVATE_MARKER" not in content, content
     availability = json.loads(content.split("## 可用情况\n", 1)[1])
     issues = availability["issues"]
-    assert len(issues) == 1, issues
+    # SM1: governed recall is never model input (R1); the scan is skipped.
+    assert len(issues) == 2, issues
     assert availability["status"] == "partial"
-    assert issues == [{"memory_id": shared_memory.entry_id, "status": "denied",
-        "code": "content_source_access_denied"}]
+    assert issues == [
+        {"memory_id": shared_memory.entry_id, "status": "denied", "code": "content_source_access_denied"},
+        {"status": "unavailable", "code": "session_recall_sources_unverified"},
+    ]
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
         _sources, complete = await _origin_dependencies(db, tenant_id=n.tenant, agent_id=n.agent,

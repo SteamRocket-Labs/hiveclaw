@@ -4,6 +4,7 @@ import json
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 
 import pytest
 
@@ -52,19 +53,25 @@ async def _search(n, **extra):
 
 
 @pytest.fixture
-def recall_results(monkeypatch):
-    from app.tools.handlers import memory
-
+def recall_requests(native_workspace, monkeypatch):  # noqa: F811
+    registry = native_workspace.service.registry
     observed = []
-    original = memory.search_session_history
+    original = registry.try_execute
 
-    async def record(*args, **kwargs):
-        hits = await original(*args, **kwargs)
-        observed.append(hits)
-        return hits
+    async def record(request):
+        if request.tool_name == "search_memory":
+            observed.append(request)
+        return await original(request)
 
-    monkeypatch.setattr(memory, "search_session_history", record)
+    monkeypatch.setattr(registry, "try_execute", record)
     return observed
+
+
+async def _recall_service(n, request, *, issue_observer=None):
+    from app.services.session_recall import search_session_history
+
+    return await search_session_history(n.agent, request.arguments["query"], limit=request.arguments.get("limit"),
+        tenant_id=n.tenant, runtime_request=request, issue_observer=issue_observer)
 
 
 async def _shared_reader(n, owner_sessionmaker, monkeypatch):
@@ -105,30 +112,60 @@ async def _shared_reader(n, owner_sessionmaker, monkeypatch):
 @pytest.mark.parametrize("source", ["ledger", "legacy", "db"])
 @pytest.mark.parametrize("admin", [False, True])
 async def test_each_native_source_filters_authority_before_the_requested_result_limit(
-    native_workspace, owner_sessionmaker, source, admin, recall_results,  # noqa: F811
+    native_workspace, owner_sessionmaker, source, admin, recall_requests,  # noqa: F811
 ):
     n = native_workspace
     await _sources(n, owner_sessionmaker, source=source, admin=admin)
     result = await _search(n)
-    # R1 `9699a491` omits unverified session recall from runtime search results;
-    # before R1 that output was marked unbound and withheld from the model by A4c,
-    # so the model-visible behaviour did not shrink; the authority filter is
-    # asserted where it runs.
-    recalled = str(recall_results[-1])
+    # SM1: governed recall is never model input (R1); the scan is skipped.
+    hits = await _recall_service(n, recall_requests[-1])
+    recalled = str(hits)
     assert "OWN_PRIVATE_EVIDENCE" in recalled and "OWN_PRIVATE_EVIDENCE_TAIL" in recalled, recalled
     assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in recalled and "UNKNOWN_PRIVATE_EVIDENCE" not in recalled
-    assert len(recall_results[-1]) == 1
+    assert len(hits) == 1
     assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in result and "UNKNOWN_PRIVATE_EVIDENCE" not in result
     assert "OWN_PRIVATE_EVIDENCE" not in result and "OWN_PRIVATE_EVIDENCE_TAIL" not in result
     availability = json.loads(result.split("## 可用情况\n", 1)[1])
+    # SM1: governed recall is never model input (R1); the scan is skipped.
     assert availability == {"schema": "hive.explicit_memory_availability.v1", "status": "partial",
-        "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}],
+        "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified"}],
         "message": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"}
+
+
+@pytest.mark.parametrize("scope", ["all", "sessions"])
+@pytest.mark.parametrize("past_sessions", [0, 3])
+async def test_governed_search_never_replays_past_session_ledgers(
+    native_workspace, owner_sessionmaker, monkeypatch, scope, past_sessions,  # noqa: F811
+):
+    from app.services import session_recall
+
+    n = native_workspace
+    session_ids = [uuid.uuid4() for _ in range(past_sessions)]
+    async with owner_sessionmaker() as db:
+        db.add_all(ChatSession(id=session_id, tenant_id=n.tenant, agent_id=n.agent, user_id=n.user,
+            audience_kind="private") for session_id in session_ids)
+        await db.commit()
+    for session_id in [n.session, *session_ids]:
+        append_t0_session_event(agent_id=n.agent, session_id=session_id, event_type="user_message",
+            role="user", content="meeting SM1_TRANSCRIPT_BODY", source="web", data_root=n.root.parent)
+    replay = Mock(wraps=session_recall.replay_t0_session_events)
+    monkeypatch.setattr(session_recall, "replay_t0_session_events", replay)
+
+    result = await _search(n, scope=scope)
+
+    replay.assert_not_called()
+    assert "SM1_TRANSCRIPT_BODY" not in result
+    assert "<tool_error>" not in result, result
+    if past_sessions:
+        availability = json.loads(result.split("## 可用情况\n", 1)[1])
+        assert availability["issues"] == [{"status": "unavailable", "code": "session_recall_sources_unverified"}]
+    else:
+        assert "session_recall_sources_unverified" not in result
 
 
 @pytest.mark.parametrize("case", ["shared_worker", "shared_worker_all", "shared_identity_missing", "outage", "during_read", "during_source_change", "caller_identity"])
 async def test_native_recall_never_falls_back_around_missing_current_authority(
-    native_workspace, owner_sessionmaker, monkeypatch, case,  # noqa: F811
+    native_workspace, owner_sessionmaker, monkeypatch, case, recall_requests,  # noqa: F811
 ):
     from app.services import session_recall
 
@@ -172,9 +209,16 @@ async def test_native_recall_never_falls_back_around_missing_current_authority(
     expected = {"shared_worker": "session_recall_shared_audience_unavailable",
         "shared_worker_all": "session_recall_shared_audience_unavailable",
         "outage": "session_recall_authority_unavailable",
-        "during_read": "session_recall_access_denied", "caller_identity": "session_recall_arguments_invalid"}
+        "caller_identity": "session_recall_arguments_invalid"}
     if case in expected:
         assert expected[case] in result, result
+    # SM1: governed recall is never model input (R1); the scan is skipped.
+    if case == "during_read":
+        with pytest.raises(session_recall.SessionRecallError) as denied:
+            await _recall_service(n, recall_requests[-1])
+        assert denied.value.code == "session_recall_access_denied"
+    elif case == "during_source_change":
+        assert await _recall_service(n, recall_requests[-1]) == []
 
 
 async def test_raw_service_cannot_use_files_as_authority_when_the_reader_is_missing(
@@ -190,7 +234,7 @@ async def test_raw_service_cannot_use_files_as_authority_when_the_reader_is_miss
 
 @pytest.mark.parametrize("source", ["ledger", "legacy", "db"])
 async def test_past_session_recall_never_reingests_the_current_work(
-    native_workspace, owner_sessionmaker, monkeypatch, source, recall_results,  # noqa: F811
+    native_workspace, owner_sessionmaker, monkeypatch, source, recall_requests,  # noqa: F811
 ):
     from app.services import session_recall
 
@@ -221,20 +265,18 @@ async def test_past_session_recall_never_reingests_the_current_work(
         agent_id=n.agent, user_id=n.user, session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False))
     assert body not in result, result
     assert "Complete transcript:" not in result and "session_recall_error" not in result, result
+    # SM1: governed recall is never model input (R1); the scan is skipped.
+    assert await _recall_service(n, recall_requests[-1]) == []
     assert observed and all(str(n.session) not in candidates for candidates in observed)
-    # R1 `9699a491` omits unverified session recall from runtime search results;
-    # before R1 that output was marked unbound and withheld from the model by A4c,
-    # so the model-visible behaviour did not shrink; the authority filter is
-    # asserted where it runs. The actual service must exclude the current work.
-    assert recall_results[-1] == []
     past = await _search(n)
-    recalled = str(recall_results[-1])
+    recalled = str(await _recall_service(n, recall_requests[-1]))
     assert "OWN_PRIVATE_EVIDENCE" in recalled and "OWN_PRIVATE_EVIDENCE_TAIL" in recalled, recalled
     assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in recalled and "UNKNOWN_PRIVATE_EVIDENCE" not in recalled
     assert body not in recalled, recalled
     assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in past and "UNKNOWN_PRIVATE_EVIDENCE" not in past
     assert "OWN_PRIVATE_EVIDENCE" not in past and "OWN_PRIVATE_EVIDENCE_TAIL" not in past
     availability = json.loads(past.split("## 可用情况\n", 1)[1])
+    # SM1: governed recall is never model input (R1); the scan is skipped.
     assert availability == {"schema": "hive.explicit_memory_availability.v1", "status": "partial",
-        "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}],
+        "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified"}],
         "message": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"}

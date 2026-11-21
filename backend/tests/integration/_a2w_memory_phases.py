@@ -58,6 +58,8 @@ def memory_phase_profile(monkeypatch):
         install(patch, explicit_memory_tool_sources, "record_memory_result", "record")
         install(patch, team_memory_runtime, "read_entries", "team")
         install(patch, memory, "search_session_history", "legacy")
+        # SM1: governed recall is never model input (R1); the scan is skipped.
+        install(patch, memory, "has_authorized_past_session", "legacy")
         event.listen(Engine, "before_cursor_execute", before)
         event.listen(Engine, "after_cursor_execute", after)
         try:

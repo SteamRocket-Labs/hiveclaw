@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 from app.memory.rendering import quote_memory_text
-from app.services.session_recall import SessionRecallError, search_session_history
+from app.services.session_recall import SessionRecallError, has_authorized_past_session, search_session_history
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 from app.tools.result_envelope import ToolContentEnvelope
 
@@ -1223,26 +1223,17 @@ async def _search_memory(
             from app.tools.runtime import ToolExecutionRequest
 
             tenant_uuid = uuid.UUID(str(tenant_id)) if tenant_id else None
-            recalled = await search_session_history(
-                agent_id,
-                query,
-                limit=limit,
-                snippet_limit=3,
-                tenant_id=tenant_uuid,
-                runtime_request=ToolExecutionRequest(
-                    tool_name="search_memory", arguments=arguments, context=execution_context
+            recalled = []
+            if execution_context is not None:
+                # R1 withholds unverified recall projections from the model.
+                request = ToolExecutionRequest("search_memory", arguments, execution_context)
+                if await has_authorized_past_session(agent_id, tenant_uuid, request):
+                    issues.append({"status": "unavailable", "code": "session_recall_sources_unverified"})
+            else:
+                recalled = await search_session_history(
+                    agent_id, query, limit=limit, snippet_limit=3, tenant_id=tenant_uuid,
+                    runtime_request=None, issue_observer=issues,
                 )
-                if execution_context is not None
-                else None,
-                issue_observer=issues,
-            )
-            if recalled and execution_context is not None:
-                # A session ACL proves its reader, not the producer and upstream
-                # sources of a legacy transcript projection. Omit that projection
-                # alone; the independently receipted facts remain usable.
-                issues.append({"status": "unavailable", "code": "session_recall_sources_unverified",
-                    "count": len(recalled)})
-                recalled = []
             if recalled:
                 unbound.append("session_recall_sources")
                 results.append("## 相关对话")

@@ -61,6 +61,18 @@ async def _authorized_recall_session_ids(agent_id, tenant_id, runtime_request) -
         return {str(value) for value in rows.all()}
 
 
+async def has_authorized_past_session(agent_id: uuid.UUID, tenant_id: uuid.UUID | None, runtime_request) -> bool:
+    """Check for another authorized session without reading its transcript."""
+    try:
+        allowed = await _authorized_recall_session_ids(agent_id, tenant_id, runtime_request)
+        current_session_id = str(uuid.UUID(str(runtime_request.context.session_id)))
+    except SessionRecallError:
+        raise
+    except Exception as exc:
+        raise SessionRecallError("session_recall_authority_unavailable", "Session recall authority or evidence is temporarily unavailable. Retry later.") from exc
+    return any(session_id != current_session_id for session_id in allowed)
+
+
 def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "")).strip().lower()
 

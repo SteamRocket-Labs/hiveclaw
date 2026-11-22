@@ -6253,7 +6253,7 @@ async def _load_runtime_context(
         stored_metadata = dict(runtime_task.metadata_json or {})
         await db.commit()
         private_web_turn = None
-        if (
+        is_private_web_turn = (
             isinstance(user, User)
             and is_member_authored_run(runtime_task)
             and session.session_kind == "human_chat"
@@ -6261,7 +6261,8 @@ async def _load_runtime_context(
             and session.audience_kind in {None, "private"}
             and session.user_id == user.id
             and user.tenant_id == tenant_id
-        ):
+        )
+        if is_private_web_turn:
             private_web_turn = await resolve_private_web_turn(db, task=runtime_task, agent=agent, requester=user)
 
         metadata = dict(metadata)
@@ -6347,6 +6348,7 @@ async def _load_runtime_context(
         runtime_task._native_trigger_frame = native_frame
         runtime_task._system_plan_mode = system_plan_mode
         runtime_task._private_web_turn = private_web_turn
+        runtime_task._offload_skill_discovery = is_private_web_turn
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 
 

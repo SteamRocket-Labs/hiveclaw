@@ -221,6 +221,7 @@ class AgentInvocationRequest:
     # kernel feeds it into get_max_tokens (still clamped to the hard limit).
     max_output_tokens: int | None = None
     private_web_turn: PrivateWebTurn | None = None
+    offload_skill_discovery: bool = False
 
 
 @dataclass(slots=True)
@@ -1931,6 +1932,23 @@ def _resolve_effective_turn_route(
     }
 
 
+async def _discover_native_skill_instructions(agent_id, session_id):
+    from app.services.agent_context import skill_catalog_instructions
+
+    discovery = asyncio.create_task(asyncio.to_thread(skill_catalog_instructions, agent_id, session_id))
+    try:
+        return await asyncio.shield(discovery)
+    except asyncio.CancelledError:
+        # The caller must keep the workspace locked until the thread finishes.
+        finished = asyncio.gather(discovery, return_exceptions=True)
+        while not finished.done():
+            try:
+                await asyncio.shield(finished)
+            except asyncio.CancelledError:
+                pass
+        raise
+
+
 async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id, **kwargs) -> str:
     from app.core.execution_context import get_execution_identity
     from app.database import tenant_scoped_session
@@ -1953,9 +1971,10 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
     capture = SkillInputCapture(agent_id)
     scope = None
     async with AsyncExitStack() as stack:
+        instructions = None
         if turn is not None:
             await stack.enter_async_context(async_agent_workspace_lock(agent_id, data_root=data_root))
-        instructions = agent_context.skill_catalog_instructions(agent_id, kwargs.get("session_id")) if turn else None
+            instructions = await _discover_native_skill_instructions(agent_id, kwargs.get("session_id"))
         manifest_paths = None
         include_candidates = True
         if instructions is not None:
@@ -2035,6 +2054,8 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
             capture, request.tenant_id, runtime_request=principal if scope is not None else None,
             include_candidates=include_candidates,
         )
+        if turn is None and request.offload_skill_discovery:
+            instructions = await _discover_native_skill_instructions(agent_id, kwargs.get("session_id"))
         catalog = build_skill_catalog_section_for_agent(
             agent_id, **kwargs, source_observer=observed, source_authorizer=allowed, instructions=instructions,
         )

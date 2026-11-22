@@ -1219,6 +1219,7 @@ def _agent_invocation_request(
         model_routing_locked=bool(state.metadata.get("model_routing_locked"))
         or bool(getattr(state, "native_trigger_frame", None) and getattr(state, "native_trigger_frame", None).model_id),
         private_web_turn=private_web_turn,
+        offload_skill_discovery=getattr(state.runtime_task, "_offload_skill_discovery", False),
         **profile,
     )
 

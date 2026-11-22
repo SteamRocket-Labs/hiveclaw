@@ -615,7 +615,7 @@ def _model_input_bindings(result):
 
 
 def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
-    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
+    from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS, _immutable_model_digest
 
     snapshot = getattr(result, "model_request_snapshot_json", None)
     bindings = _model_input_bindings(result)
@@ -626,8 +626,10 @@ def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
         retained, value = scope.model_inputs[key]
         if retained is evidence:
             return value
-    if isinstance(snapshot, dict) and _hash(snapshot) != result.model_request_hash:
-        return [], False
+    if isinstance(snapshot, dict):
+        digest = _immutable_model_digest(snapshot)
+        if (digest if digest is not None else _hash(snapshot)) != result.model_request_hash:
+            return [], False
     if not isinstance(bindings, dict) or bindings.get("schema") != "hive.model_input_bindings.v1":
         return [], False
     dependencies = _stored_dependencies(bindings.get("dependencies"))

@@ -122,6 +122,7 @@ class _DisclosureSourceValidations:
         self.inputs = {}
         self.browser_reader = None
         self.source_catalog = source_catalog
+        self.model_digests = {}
         self.model_inputs = {}
         self.statements = {}
         self.source_ids = {}
@@ -150,15 +151,17 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
 
         for rows in scope.inputs.values():
             index_source_catalogue(rows)
+        scope.model_digests.update(parent.model_digests)
     token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
         yield scope
     finally:
         if source_catalog and parent is not None and parent.active and parent.source_catalog:
-            # Only written-once rows cross the tool's pre/post disclosure boundary.
+            # Written-once rows and their computed digests cross this boundary.
             parent.retained.update(scope.retained)
             for kind, ids in scope.source_ids.items():
                 parent.source_ids.setdefault(kind, set()).update(ids)
+            parent.model_digests.update(scope.model_digests)
             from app.services.source_read_queries import index_source_catalogue
 
             for rows in parent.inputs.values():
@@ -171,6 +174,7 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
         scope.actors.clear()
         scope.inputs.clear()
         scope.browser_reader = None
+        scope.model_digests.clear()
         scope.model_inputs.clear()
         scope.statements.clear()
         scope.source_ids.clear()
@@ -431,6 +435,23 @@ async def _input_model_request(db, source_id):
         model_request_fallback_column()).where(model.id == source_id))).first()
 
 
+def _immutable_model_digest(snapshot):
+    from app.services.session_model_inputs import _hash
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if scope is None or not scope.active:
+        return None
+    key = id(snapshot)
+    cached = scope.model_digests.get(key)
+    if cached is None or cached[0] is not snapshot:
+        return None
+    digest = cached[1]
+    if digest is None:
+        digest = _hash(snapshot)
+        scope.model_digests[key] = (snapshot, digest)
+    return digest
+
+
 def _model_request_digest(model_result):
     from app.services.session_tool_runtime import _sha256
 
@@ -438,7 +459,8 @@ def _model_request_digest(model_result):
     if (snapshot is None and getattr(model_result, "state", None) in SEALED_MODEL_STATES
         and isinstance(getattr(model_result, "input_bindings", None), dict)):
         return model_result.model_request_hash
-    return _sha256(snapshot)
+    digest = _immutable_model_digest(snapshot) if isinstance(snapshot, dict) else None
+    return digest if digest is not None else _sha256(snapshot)
 
 
 async def _input_agent_access(db, user, agent_id):

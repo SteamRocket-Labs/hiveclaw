@@ -397,6 +397,9 @@ async def load_source_catalogue(db, tenant_id, dependencies, closure_sql):
             rows[kind, row.id] = row
             continue
         rows[model, row.id] = row
+        if model is SessionModelResult and isinstance(row.model_request_snapshot_json, dict):
+            snapshot = row.model_request_snapshot_json
+            scope.model_digests[id(snapshot)] = (snapshot, None)
     index_source_catalogue(rows)
     scope.retained.update({key: set(row) if key == "catalogue_sources" else row
         for key, row in rows.items() if _catalogue_key(key, row)})

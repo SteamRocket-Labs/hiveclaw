@@ -1953,9 +1953,12 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
     capture = SkillInputCapture(agent_id)
     scope = None
     async with AsyncExitStack() as stack:
+        instructions = None
         if turn is not None:
             await stack.enter_async_context(async_agent_workspace_lock(agent_id, data_root=data_root))
-        instructions = agent_context.skill_catalog_instructions(agent_id, kwargs.get("session_id")) if turn else None
+            # A cold volume makes this read-only scan wait on disk; keep the event loop free.
+            instructions = await asyncio.to_thread(
+                agent_context.skill_catalog_instructions, agent_id, kwargs.get("session_id"))
         manifest_paths = None
         include_candidates = True
         if instructions is not None:

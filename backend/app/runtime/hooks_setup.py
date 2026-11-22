@@ -28,6 +28,7 @@ from app.runtime.hooks import (
     hook_registry,
     load_registration_specs,
 )
+from app.runtime.interactive_turn_gate import BackgroundWaitBudget, wait_for_no_interactive_turns
 from app.memory.t0.ledger import append_t0_session_event, seal_t0_session_segment
 from app.services.pending_reply_service import OUTBOUND_TOOL_NAMES
 from app.services.session_memory import (
@@ -1014,22 +1015,27 @@ def _schedule_t2_segment_package_job(
     if existing is not None and not existing.done():
         return
 
-    async def _run() -> None:
-        from app.memory.t2.job_sweep import T2_PACKAGE_JOB_LOCK, is_t2_job_queued
-        from app.memory.t2.segment_package import run_t2_segment_package_job
+    from app.memory.t2 import segment_package
 
-        async with T2_PACKAGE_JOB_LOCK:
-            if not is_t2_job_queued(data_root, agent_id, job_id):
-                return
-            result = await run_t2_segment_package_job(
-                data_root=data_root,
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-                session_id=session_id,
-                t0_segment_id=t0_segment_id,
-                job_id=job_id,
-                session_lineage=dict(session_lineage or {}),
-            )
+    async def _run() -> None:
+        wait_budget = BackgroundWaitBudget(segment_package.T2_JOB_WAIT_BUDGET_SECONDS)
+
+        from app.memory.t2.job_sweep import T2_PACKAGE_JOB_LOCK, is_t2_job_queued
+
+        await wait_budget.wait()
+        with wait_budget.share():
+            async with T2_PACKAGE_JOB_LOCK:
+                if not is_t2_job_queued(data_root, agent_id, job_id):
+                    return
+                result = await segment_package.run_t2_segment_package_job(
+                    data_root=data_root,
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    t0_segment_id=t0_segment_id,
+                    job_id=job_id,
+                    session_lineage=dict(session_lineage or {}),
+                )
         logger.info(
             "[Hooks] Detached T0->T2 job %s agent=%s session=%s segment=%s job=%s path=%s",
             result.status,
@@ -1165,6 +1171,7 @@ async def _evolution_maintenance_on_heartbeat(ctx: HookContext) -> None:
         logger.debug("[Hooks] Durable Dream admission failed for %s: %s", agent_id, exc)
 
     async def _run() -> None:
+        await wait_for_no_interactive_turns()
         try:
             from app.services.evolution_daemon import run_heartbeat_evolution_maintenance
 

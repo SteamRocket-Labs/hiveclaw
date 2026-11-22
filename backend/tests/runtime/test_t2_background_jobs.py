@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from app.memory.t2 import job_sweep, segment_package
-from app.runtime import hooks_setup
+from app.runtime import hooks_setup, interactive_turn_gate as gate
 
 # The module-level lock binds to the first event loop that has a waiter.
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -78,6 +78,47 @@ async def test_detached_jobs_run_fifo_before_next_sweep_retry(tmp_path, packagin
     report = await job_sweep.sweep_t2_jobs(agent_id=retry["agent_id"], data_root=tmp_path)
     assert events == [(event, job_id) for job_id in [*queued_ids, "sweep"] for event in ("start", "finish")]
     assert report.committed == ("sweep",)
+
+
+async def test_detached_jobs_do_not_stack_wait_budgets_after_one_idle_turn(tmp_path, monkeypatch):
+    budget_seconds = 0.6
+    monkeypatch.setattr(segment_package, "T2_JOB_WAIT_BUDGET_SECONDS", budget_seconds)
+    monkeypatch.setattr(gate, "BACKGROUND_WAIT_CAP_SECONDS", 0.15)
+    next_turn_held = asyncio.Event()
+    completed = []
+
+    async def run_package(*, job_id, **_kwargs):
+        await next_turn_held.wait()
+        event_budget = gate.BackgroundWaitBudget(budget_seconds)
+        for _ in range(4):
+            await event_budget.wait()
+            await asyncio.sleep(0.01)
+        completed.append(job_id)
+        return segment_package.T2SegmentPackageResult(
+            status="committed", job_id=job_id, package_dir=tmp_path, staging_dir=tmp_path,
+        )
+
+    monkeypatch.setattr(segment_package, "run_t2_segment_package_job", run_package)
+    job_ids = ["first", "second", "third"]
+    jobs = [_enqueue(tmp_path, job_id)[0] for job_id in job_ids]
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    async with gate.interactive_turn():
+        tasks = [_schedule(job) for job in jobs]
+        await asyncio.sleep(0)
+        locked_before_gap = job_sweep.T2_PACKAGE_JOB_LOCK.locked()
+    await asyncio.sleep(0)
+    locked_in_gap = job_sweep.T2_PACKAGE_JOB_LOCK.locked()
+    async with gate.interactive_turn():
+        next_turn_held.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+    elapsed = loop.time() - started
+
+    assert not locked_before_gap
+    assert locked_in_gap
+    assert completed == job_ids
+    assert elapsed < 1.2
 
 
 async def test_recovered_waiting_job_runs_only_once_even_if_retry_remains_held(tmp_path, packaging):

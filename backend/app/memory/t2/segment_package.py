@@ -37,6 +37,7 @@ from app.memory.t2.prompts import (
     SUMMARY_AGENT_PROMPT,
     SUMMARY_PROMPT_VERSION,
 )
+from app.runtime.interactive_turn_gate import BackgroundWaitBudget
 
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ MANIFEST_FILENAME = "manifest.json"
 SOURCE_BUNDLE_FILENAME = "source_bundle.json"
 SYNTHESIS_FILENAME = "synthesis.md"
 EPISODE_BUNDLE_FILENAME = "episode_bundle.json"
+T2_JOB_WAIT_BUDGET_SECONDS = 300.0
 _REVIEW_RUBRIC_SCORE_NAMES = frozenset(
     {"summary_fidelity", "source_ref_coverage", "label_alignment", "safety_scope", "package_closure"}
 )
@@ -841,10 +843,12 @@ async def _build_authorized_source_bundle(*, root, agent_id, tenant_id, session_
             by_id = {str(row.id): row.id for row in rows}
             by_t0 = {(row.metadata_json or {}).get("t0_bridge_event_id"): row.id for row in rows}
         # Carry only selected ids; reader and source state belong to each event's transaction.
+        wait_budget = BackgroundWaitBudget(T2_JOB_WAIT_BUDGET_SECONDS)
         for event in candidates if session_exists is not None else ():
             row_id = by_id.get(str(event.metadata.get("transcript_event_id"))) or by_t0.get(event.event_id)
             if row_id is None:
                 continue
+            await wait_budget.wait()
             async with tenant_scoped_session(str(tenant_id)) as db:
                 session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id,
                     ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))

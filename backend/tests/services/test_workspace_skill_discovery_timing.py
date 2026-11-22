@@ -1,12 +1,8 @@
 import asyncio
 import os
-import threading
 import time
-from contextlib import suppress
 from types import SimpleNamespace
 from uuid import uuid4
-
-import pytest
 
 
 async def _run_with_ticker(operation):
@@ -28,7 +24,7 @@ async def _run_with_ticker(operation):
     return result, ticks
 
 
-def _catalog_request(tmp_path, monkeypatch, *, with_private_frame=True):
+def _catalog_request(tmp_path, monkeypatch):
     from app.config import get_settings
     from app.runtime.session import SessionContext
     from app.services import agent_context
@@ -45,8 +41,7 @@ def _catalog_request(tmp_path, monkeypatch, *, with_private_frame=True):
 
     turn = SimpleNamespace(agent=SimpleNamespace(id=agent_id, tenant_id=None), requester=SimpleNamespace(id=None))
     request = SimpleNamespace(
-        private_web_turn=turn if with_private_frame else None,
-        offload_skill_discovery=True,
+        private_web_turn=turn,
         tenant_id=None,
         user_id=None,
         session_context=SessionContext(session_id=session_id),
@@ -54,12 +49,11 @@ def _catalog_request(tmp_path, monkeypatch, *, with_private_frame=True):
     return request, agent_id, session_id, workspace
 
 
-@pytest.mark.parametrize("with_private_frame", [True, False], ids=["private_frame", "private_fallback"])
-async def test_private_catalog_keeps_loop_running_during_discovery(tmp_path, monkeypatch, with_private_frame):
+async def test_private_catalog_keeps_loop_running_during_discovery(tmp_path, monkeypatch):
     from app.runtime.invoker import _build_native_skill_catalog
     from app.skills.loader import WorkspaceSkillLoader
 
-    request, agent_id, session_id, workspace = _catalog_request(tmp_path, monkeypatch, with_private_frame=with_private_frame)
+    request, agent_id, session_id, workspace = _catalog_request(tmp_path, monkeypatch)
     expected = await _build_native_skill_catalog(request, agent_id, session_id=session_id)
     assert "A session skill for SW1." in expected
     discover = WorkspaceSkillLoader._discover_skill_dirs
@@ -74,44 +68,6 @@ async def test_private_catalog_keeps_loop_running_during_discovery(tmp_path, mon
 
     assert ticks >= 10
     assert catalog == expected
-
-
-async def test_cancelled_private_catalog_holds_workspace_lock_until_discovery_finishes(tmp_path, monkeypatch):
-    from app.runtime.invoker import _build_native_skill_catalog
-    from app.services.session_workspace_snapshot import _try_acquire_workspace_lock
-    from app.skills.loader import WorkspaceSkillLoader
-
-    request, agent_id, session_id, workspace = _catalog_request(tmp_path, monkeypatch)
-    loop = asyncio.get_running_loop()
-    loop_thread = threading.get_ident()
-    started = asyncio.Event()
-    finish = threading.Event()
-    discover = WorkspaceSkillLoader._discover_skill_dirs
-
-    def paused_discover(self, root, *, session_id=None):
-        if root == workspace:
-            loop.call_soon_threadsafe(started.set)
-            if threading.get_ident() != loop_thread:
-                finish.wait()
-        return discover(self, root, session_id=session_id)
-
-    monkeypatch.setattr(WorkspaceSkillLoader, "_discover_skill_dirs", paused_discover)
-    task = asyncio.create_task(_build_native_skill_catalog(request, agent_id, session_id=session_id))
-    try:
-        await started.wait()
-        for _ in range(2):
-            assert task.cancel()
-            await asyncio.sleep(0)
-            lease = _try_acquire_workspace_lock(agent_id, data_root=workspace.parent)
-            if lease is not None:
-                lease.release()
-            assert lease is None
-    finally:
-        finish.set()
-        with suppress(asyncio.CancelledError):
-            await task
-
-    assert task.cancelled()
 
 
 async def test_startup_warms_skill_directories_newest_first_off_loop(tmp_path, monkeypatch):

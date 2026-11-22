@@ -1120,7 +1120,13 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # each maintenance step; the long tenant session split into shorter ones) and the
 # app/services/web_chat_runtime.py module source (the interactive turn scope
 # around execute_web_chat_run). No new bypass scope or write.
-RLS_BYPASS_SCOPES_SHA256 = "fdcc3b57619b0a4f834095d054da645880fed0c65cd88bf4368f3ff40ec0bcbe"
+# Land62 (RH1) versus land61: 123 callsites unchanged; 815 entries (-1). No longer
+# an entry: content_input_receipts._model_request_digest (it no longer takes the
+# session; it returns the stored hash of a sealed projected row or hashes the
+# loaded snapshot, with no database call). The other changed hashes are module
+# sources and functions of content_input_receipts.py and source_read_queries.py
+# (projected model request reads). No new bypass scope or write.
+RLS_BYPASS_SCOPES_SHA256 = "eae73b521790a3c95cc24a2fbcb5dc5bf0d1d0c8f5ad025a5b4cacf179e15210"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

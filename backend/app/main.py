@@ -180,7 +180,7 @@ def _warm_skill_workspace_directories() -> None:
     for _, workspace in sorted(directories, key=lambda item: item[0], reverse=True):
         try:
             loader.discover_instructions(workspace)
-        except OSError:
+        except Exception:  # Best effort: one bad workspace must not stop warming the rest.
             continue
         warmed += 1
     logger.info("[startup] Skill workspace warm-up scanned {} directories in {:.3f}s", warmed, perf_counter() - started)

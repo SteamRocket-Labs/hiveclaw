@@ -3,7 +3,6 @@
 import hashlib
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 from sqlalchemy import select, text
 
@@ -681,8 +680,8 @@ async def _writer_input(db, request, *, require_sources=True, read_only=False):
     principal, actor, session = await _actor(db, tenant_id, request)
     if context.runtime_task_id is None:
         raise ContentInputReceiptError("explicit_memory_input_unavailable", "The exact sealed memory invocation is unavailable.")
-    model_fields = (SessionModelResult.id.label("model_result_id"), SessionModelResult.state,
-        SessionModelResult.model_request_hash) if read_only else (SessionModelResult,)
+    model_fields = (SessionModelResult.id, SessionModelResult.state, SessionModelResult.model_request_hash
+        ) if read_only else (SessionModelResult,)
     rows = (await db.execute(select(SessionToolInvocation, *model_fields).join(SessionModelResult,
         SessionModelResult.provider_request_id == SessionToolInvocation.provider_request_id).where(
             SessionToolInvocation.tenant_id == tenant_id, SessionToolInvocation.session_id == session.id,
@@ -695,10 +694,7 @@ async def _writer_input(db, request, *, require_sources=True, read_only=False):
         ).limit(2).execution_options(populate_existing=True))).all()
     if len(rows) != 1:
         raise ContentInputReceiptError("explicit_memory_input_unavailable", "The exact sealed memory invocation is unavailable.")
-    row = rows[0]
-    invocation = row[0]
-    model = SimpleNamespace(id=row.model_result_id, state=row.state,
-        model_request_hash=row.model_request_hash) if read_only else row[1]
+    invocation, model = rows[0][0], rows[0] if read_only else rows[0][1]
     arguments_hash = _sha256({"tool_name": request.tool_name, "arguments": request.arguments})
     effective = invocation.effective_args_hash or invocation.args_hash
     dependencies, complete = ([], False) if read_only else model_output_dependencies(model)

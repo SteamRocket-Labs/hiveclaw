@@ -10,6 +10,7 @@ from app.database import tenant_scoped_session
 from app.models.invocation_span import InvocationSpan
 from app.services.content_input_receipts import ContentInputReceiptError
 from app.services.session_model_inputs import _hash, _model_dependencies, _unique_dependencies, tool_result_source_hash
+from app.services.source_read_queries import model_input_statement
 
 LEDGER_RESULT_TOOLS = frozenset(
     {
@@ -117,7 +118,6 @@ def _ledger_result_bound(*, row, session, tenant_id, agent_id, invocation, model
         and proof.get("model_result_id") == str(model.id)
         and proof.get("model_request_hash") == model.model_request_hash
         and model.state in {"sealed", "round_committed"}
-        and _hash(model.model_request_snapshot_json) == model.model_request_hash
         and session is not None
         and session.tenant_id == tenant_id
         and session.agent_id == agent_id
@@ -249,7 +249,7 @@ async def _snapshot_sources(db, *, tenant_id, agent_id, actor_id, session_id, sc
         call_id, model_id = uuid.UUID(proof["invocation_id"]), uuid.UUID(proof["model_result_id"])
         witness = (
             await db.execute(
-                select(SessionToolInvocation, SessionModelResult, ChatSession, ChatTranscriptEvent)
+                model_input_statement().add_columns(SessionToolInvocation, ChatSession, ChatTranscriptEvent)
                 .select_from(SessionToolInvocation)
                 .outerjoin(SessionModelResult, SessionModelResult.id == model_id)
                 .outerjoin(ChatSession, ChatSession.id == SessionToolInvocation.session_id)
@@ -260,7 +260,8 @@ async def _snapshot_sources(db, *, tenant_id, agent_id, actor_id, session_id, sc
         ).one_or_none()
         if witness is None:
             return [], False
-        call, model, session, event = witness
+        model = witness if witness.id is not None else None
+        call, session, event = witness.SessionToolInvocation, witness.ChatSession, witness.ChatTranscriptEvent
     except (ValueError, KeyError, TypeError):
         return [], False
     if (
@@ -359,7 +360,8 @@ async def _known_ledger(db, *, tenant_id, agent_id, actor_id, session_id, scope,
             continue
         try:
             call = await db.get(SessionToolInvocation, uuid.UUID(proof["invocation_id"]), populate_existing=True)
-            model = await db.get(SessionModelResult, uuid.UUID(proof["model_result_id"]), populate_existing=True)
+            model = (await db.execute(model_input_statement().where(
+                SessionModelResult.id == uuid.UUID(proof["model_result_id"])))).first()
         except (KeyError, ValueError):
             continue
         if call is None or model is None or not _model_dependencies(model)[1]:

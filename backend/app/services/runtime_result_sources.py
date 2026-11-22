@@ -24,6 +24,7 @@ from app.services.content_input_receipts import (
 from app.services.session_model_inputs import _model_dependencies, _stored_dependencies
 from app.services.source_read_queries import (
     RUNTIME_RESULT_FIELDS, SESSION_AUDIENCE_FIELDS, SESSION_ID_FIELDS, SESSION_SOURCE_FIELDS, TRANSCRIPT_EVENT_FIELDS,
+    model_input_statement,
 )
 
 
@@ -67,7 +68,9 @@ async def _canonical_checkpoint(db, tenant_id):
         ).limit(1).correlate(RuntimeTask, event).scalar_subquery()
         native = select(SessionModelResult.id).where(SessionModelResult.tenant_id == tenant_id,
             SessionModelResult.run_id == RuntimeTask.id).correlate(RuntimeTask).exists()
-        known_models = {key[1] for key in retained if isinstance(key, tuple) and key[0] is SessionModelResult}
+        known_snapshots = {key[1]: row.model_request_snapshot_json for key, row in retained.items()
+            if isinstance(key, tuple) and key[0] is SessionModelResult
+            and getattr(row, "model_request_snapshot_json", None) is not None}
         fields = "id tenant_id session_id run_id round_id turn_id provider_request_id " \
             "model_request_hash state seal_json round_committed_event_id"
         model = aliased(SessionModelResult, select(*(getattr(SessionModelResult, name)
@@ -75,7 +78,7 @@ async def _canonical_checkpoint(db, tenant_id):
                 SessionModelResult.id == chosen).correlate(RuntimeTask, event).offset(0).lateral("selected_model"))
         model_fields = fact_columns(model, fields)
         model_fields = model_fields.op("||")(func.jsonb_build_object("model_request_snapshot_json", case((
-            model.id.not_in(known_models) & model.state.in_(("sealed", "round_committed")),
+            model.id.not_in(known_snapshots) & model.state.in_(("sealed", "round_committed")),
             model.model_request_snapshot_json))))
         commit = aliased(ChatTranscriptEvent, select(*(getattr(ChatTranscriptEvent, name) for name in TRANSCRIPT_EVENT_FIELDS.split())).where(
             ChatTranscriptEvent.id == model.round_committed_event_id
@@ -92,13 +95,10 @@ async def _canonical_checkpoint(db, tenant_id):
         vector = await checkpoint_rows(db, "canonical_delegation", statement, lambda row: row[6],
             binding=(tenant_id,), entities={0: RuntimeTask, 1: ChatSession, 2: ChatTranscriptEvent,
                 3: SessionModelResult, 4: ChatTranscriptEvent})
-        if vector is not None:
-            for row in vector.values():
-                model = row[3]
-                if model is not None:
-                    original = retained.get((SessionModelResult, model.id))
-                    if original is not None:
-                        model.model_request_snapshot_json = original.model_request_snapshot_json
+        for row in (vector or {}).values():
+            model = row[3]
+            if model is not None and model.id in known_snapshots:
+                model.model_request_snapshot_json = known_snapshots[model.id]
         return vector
 
     return await checkpoint_query(db, 'canonical_delegation', read, binding=(tenant_id,))
@@ -340,14 +340,14 @@ async def _published_owned_delegation_input(
             )
         )
         payload = _event_payload(event) if event else {}
-        model = await db.scalar(
-            select(SessionModelResult).where(
+        model = (await db.execute(
+            model_input_statement().where(
                 SessionModelResult.tenant_id == task.tenant_id,
                 SessionModelResult.session_id == row.session_id,
                 SessionModelResult.run_id == task.id,
                 SessionModelResult.provider_request_id == row.provider_request_id,
             )
-        )
+        )).first()
         if model is None:
             return False
         if memory_read:
@@ -582,7 +582,7 @@ async def load_canonical_result_sources(db, result_object):
         raise ContentInputReceiptError(
             "runtime_result_sources_unbound", "Reconcile the canonical delegated result before reading it.", 503
         ) from exc
-    statement = select(SessionModelResult).where(
+    statement = model_input_statement().where(
         SessionModelResult.tenant_id == task.tenant_id,
         SessionModelResult.run_id == task.id,
         SessionModelResult.session_id == spec.terminal_event.session_id,
@@ -594,7 +594,7 @@ async def load_canonical_result_sources(db, result_object):
         statement = statement.where(SessionModelResult.id == uuid.UUID(str(native_final_id)))
     else:
         statement = statement.where(SessionModelResult.round_committed_event_id == spec.terminal_event.id)
-    model = current[3] if current is not None else await db.scalar(statement)
+    model = current[3] if current is not None else (await db.execute(statement)).first()
     return await _canonical_result_inputs(db, result_object, task, model)
 
 
@@ -702,7 +702,8 @@ async def _load_continuation_result_sources(db, result):
         binding = await build_web_terminal_boundary_binding(db, tenant_id=task.tenant_id, runtime_task_id=task.id,
             agent_id=agent.id, session_id=child.id, event_kind="turn_stop", terminal_status="completed",
             authority_ref="session_run_outcome", authority_id=outcome.id)
-        model = await db.get(SessionModelResult, uuid.UUID(binding["terminal_result_id"]), populate_existing=True)
+        model = (await db.execute(model_input_statement().where(
+            SessionModelResult.id == uuid.UUID(binding["terminal_result_id"])))).first()
         summary = model.seal_json["semantic_content"]
         # The publisher replaces the task summary with a result reference and
         # appends these three navigation fields after encoding the answer.

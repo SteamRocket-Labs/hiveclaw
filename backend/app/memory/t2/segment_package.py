@@ -908,6 +908,8 @@ async def _build_authorized_source_bundle(*, root, agent_id, tenant_id, session_
 
 async def _carried_t2_reader(db, *, task, session, row, dependencies):
     """Recover an existing carried reader; never infer a delegated identity."""
+    from sqlalchemy import select
+
     from app.models.session_v2 import SessionModelResult
     from app.services.delegation_input_origin import delegated_instruction_memory_reader
     from app.services.learned_skill_sources import _source_reader
@@ -925,10 +927,10 @@ async def _carried_t2_reader(db, *, task, session, row, dependencies):
             return None
     # Native delegated instructions already have an attested inherited-reader
     # mapping. Use it only if it covers every dependency of this derived row.
-    model = await db.get(SessionModelResult, row.result_id) if row.result_id else None
-    bindings = (model.model_request_snapshot_json or {}).get("input_bindings", {}) if model else {}
+    messages = await db.scalar(select(SessionModelResult.model_request_snapshot_json[("input_bindings", "messages")])
+        .where(SessionModelResult.id == row.result_id)) if row.result_id else None
     reader, covered = None, []
-    for entry in bindings.get("messages", []):
+    for entry in messages or ():
         if not entry.get("dependencies"):
             continue
         carried = await delegated_instruction_memory_reader(db, task=task, agent_id=session.agent_id,

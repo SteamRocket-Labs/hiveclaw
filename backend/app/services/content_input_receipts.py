@@ -19,6 +19,7 @@ from app.core.permissions import agent_access_from_facts
 
 from app.services.source_read_queries import (
     AGENT_READER_EXTRA_FIELDS, RUNTIME_ACTOR_FIELDS, SESSION_ACTOR_FIELDS, SESSION_SOURCE_FIELDS, USER_READER_FIELDS,
+    SEALED_MODEL_STATES, model_input_statement, model_request_fallback_column,
 )
 
 _ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
@@ -150,14 +151,13 @@ def group_source_read(*, batch_inputs=False, cache_authority=True, source_catalo
 
         for rows in scope.inputs.values():
             index_source_catalogue(rows)
-        scope.model_digests = dict(parent.model_digests)
+        scope.model_digests.update(parent.model_digests)
     token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
         yield scope
     finally:
         if source_catalog and parent is not None and parent.active and parent.source_catalog:
-            # A tool may have independent pre/post disclosure sessions. Only
-            # written-once rows and their computed digests cross that boundary.
+            # Written-once rows and their computed digests cross this boundary.
             parent.retained.update(scope.retained)
             for kind, ids in scope.source_ids.items():
                 parent.source_ids.setdefault(kind, set()).update(ids)
@@ -199,7 +199,7 @@ def _catalogue_key(key, row):
         name == "ChatTranscriptEvent" and isinstance(row.metadata_json, dict)
         and isinstance(row.metadata_json.get("v2_payload"), dict)) or (
         name == "SessionToolInvocation" and row.result_event_id is not None and row.permission_state != "waiting") or (
-        name == "SessionModelResult" and row.state in {"sealed", "round_committed"}) or (
+        name == "SessionModelResult" and row.state in SEALED_MODEL_STATES) or (
         name == "ContentInputReceipt" and row.carrier_kind == "workspace_artifact") or (
         name == "InvocationSpan" and row.span_type not in {"workspace_output", "remote_action"})
 
@@ -413,7 +413,11 @@ async def _input_row(db, model, source_id, *, populate_existing=True):
         options["options"] = [load_only(model.id, model.tenant_id, model.agent_id, model.user_id,
             model.runtime_task_id, model.session_id, model.trace_id, model.span_id, model.span_type,
             model.name, model.status, model.input_hash, model.metadata_json)]
-    row = await db.get(model, source_id, populate_existing=populate_existing, **options)
+    if model.__name__ == "SessionModelResult":
+        fields = (await db.execute(model_input_statement(recovery=True).where(model.id == source_id))).mappings().first()
+        row = SimpleNamespace(**fields) if fields else None
+    else:
+        row = await db.get(model, source_id, populate_existing=populate_existing, **options)
     if rows is not None and (not scope.source_catalog or _catalogue_key(key, row)):
         rows[key] = row
     return row
@@ -425,32 +429,38 @@ async def _input_model_request(db, source_id):
     rows = _preflight_inputs(db)
     if rows is not None and (SessionModelResult, source_id) in rows:
         return rows[SessionModelResult, source_id]
-    return await db.get(SessionModelResult, source_id, populate_existing=False, options=[load_only(
-        SessionModelResult.id, SessionModelResult.model_request_hash, SessionModelResult.model_request_snapshot_json)])
+    model = SessionModelResult
+    return (await db.execute(select(model.id, model.state, model.model_request_hash,
+        model.model_request_snapshot_json["input_bindings"].label("input_bindings"),
+        model_request_fallback_column()).where(model.id == source_id))).first()
 
 
-def _immutable_model_digest(model_result):
+def _immutable_model_digest(snapshot):
     from app.services.session_model_inputs import _hash
 
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    snapshot = model_result.model_request_snapshot_json
-    key = ("immutable_model_digest", id(snapshot))
-    if scope is None or not scope.active or key not in scope.model_digests:
+    if scope is None or not scope.active:
         return None
-    retained, digest = scope.model_digests[key]
-    if retained is not snapshot:
+    key = id(snapshot)
+    cached = scope.model_digests.get(key)
+    if cached is None or cached[0] is not snapshot:
         return None
+    digest = cached[1]
     if digest is None:
         digest = _hash(snapshot)
         scope.model_digests[key] = (snapshot, digest)
     return digest
 
 
-def _model_request_digest(db, model_result):
+def _model_request_digest(model_result):
     from app.services.session_tool_runtime import _sha256
 
-    digest = _immutable_model_digest(model_result)
-    return digest if digest is not None else _sha256(model_result.model_request_snapshot_json)
+    snapshot = getattr(model_result, "model_request_snapshot_json", None)
+    if (snapshot is None and getattr(model_result, "state", None) in SEALED_MODEL_STATES
+        and isinstance(getattr(model_result, "input_bindings", None), dict)):
+        return model_result.model_request_hash
+    digest = _immutable_model_digest(snapshot) if isinstance(snapshot, dict) else None
+    return digest if digest is not None else _sha256(snapshot)
 
 
 async def _input_agent_access(db, user, agent_id):
@@ -508,7 +518,6 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
     from app.models.workspace_resource import WorkspaceResourceManifest
 
     rows = _preflight_inputs(db)
-    immutable_only = _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog
     # A private recursive transit row expands each immutable model's bindings
     # once, even when many invocations share its request. It is neither stored
     # nor returned as a source; ordered validation still walks the original refs.
@@ -547,15 +556,16 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                         THEN split_part(s.id,chr(10),3)::uuid END LIMIT 1
             ) q ON TRUE
             LEFT JOIN LATERAL (
-                SELECT m.id,m.model_request_snapshot_json FROM session_model_results m WHERE m.tenant_id=:tenant_id
+                SELECT m.id,m.model_request_snapshot_json #> '{input_bindings,dependencies}' AS dependencies
+                FROM session_model_results m WHERE m.tenant_id=:tenant_id
                     AND s.kind IN ('session_model_result','__model_request_inputs') AND m.id=CASE
                         WHEN s.id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$' THEN s.id::uuid END
                 UNION ALL
-                SELECT m.id,m.model_request_snapshot_json FROM session_model_results m WHERE m.tenant_id=:tenant_id
+                SELECT m.id,NULL FROM session_model_results m WHERE m.tenant_id=:tenant_id
                     AND s.kind='session_tool_invocation' AND (m.session_id,m.run_id,m.provider_request_id)
                         =(t.session_id,t.run_id,t.provider_request_id)
                 UNION ALL
-                SELECT m.id,m.model_request_snapshot_json FROM session_model_results m WHERE m.tenant_id=:tenant_id
+                SELECT m.id,NULL FROM session_model_results m WHERE m.tenant_id=:tenant_id
                     AND s.kind='runtime_result' AND m.run_id=CASE
                         WHEN o.source_run_id ~* '^([a-f0-9]{32}|[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})$'
                         THEN o.source_run_id::uuid END
@@ -573,8 +583,7 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                     THEN jsonb_build_array(jsonb_build_object('source_kind', '__model_request_inputs', 'source_id', m.id::text))
                     ELSE '[]'::jsonb END
                 || CASE WHEN s.kind = '__model_request_inputs'
-                    AND jsonb_typeof(m.model_request_snapshot_json #> '{input_bindings,dependencies}') = 'array'
-                    THEN m.model_request_snapshot_json #> '{input_bindings,dependencies}' ELSE '[]'::jsonb END
+                    AND jsonb_typeof(m.dependencies) = 'array' THEN m.dependencies ELSE '[]'::jsonb END
                 || CASE WHEN jsonb_typeof(p.metadata_json #> '{workspace_execution_evidence,execution_inputs,sources}') = 'array'
                     THEN p.metadata_json #> '{workspace_execution_evidence,execution_inputs,sources}' ELSE '[]'::jsonb END
                 || CASE WHEN jsonb_typeof(p.metadata_json #> '{memory_result,sources}') = 'array'
@@ -594,7 +603,7 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
             ) child
         ) SELECT kind, id FROM sources WHERE kind != '__model_request_inputs'
     """
-    if immutable_only:
+    if _DISCLOSURE_SOURCE_VALIDATIONS.get().source_catalog:
         from app.services.source_read_queries import load_source_catalogue
 
         return await load_source_catalogue(db, tenant_id, dependencies, closure_sql)
@@ -606,86 +615,44 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
         except (ValueError, TypeError, AttributeError):
             pass  # The ordered source validator owns malformed-source errors.
 
-    async def _load_source_rows(model, source_ids, *, columns=None):
+    async def _load_source_rows(model, source_ids):
         source_ids = set(source_ids)
         missing = [source_id for source_id in source_ids if (model, source_id) not in rows]
         statement = select(model).where(model.tenant_id == tenant_id, model.id.in_(missing))
-        if columns is not None:
-            statement = statement.options(load_only(*columns))
-        if immutable_only and model is SessionToolInvocation:
-            statement = statement.where(SessionToolInvocation.result_event_id.is_not(None))
-        if immutable_only and model is InvocationSpan:
-            # Approval bookkeeping and remote actions have post-settle writers.
-            statement = statement.where(InvocationSpan.span_type.not_in(("workspace_output", "remote_action")))
         loaded = list(await db.scalars(statement.execution_options(populate_existing=True))) if missing else []
-        if not (immutable_only and model is InvocationSpan):
-            rows.update({(model, source_id): None for source_id in missing})
+        rows.update({(model, source_id): None for source_id in missing})
         rows.update({(model, row.id): row for row in loaded})
         return [rows[(model, source_id)] for source_id in source_ids if rows.get((model, source_id)) is not None]
 
     tools = await _load_source_rows(SessionToolInvocation, ids.get("session_tool_invocation", ()))
     receipts = await _load_source_rows(ContentInputReceipt, ids.get("workspace_artifact", set())
-        | (set() if immutable_only else ids.get("explicit_memory", set())))
+        | ids.get("explicit_memory", set()))
     for ref, receipt_id in (latest_receipts or {}).items():
         receipt = rows.get((ContentInputReceipt, receipt_id))
         if receipt is not None and receipt.carrier_kind == "workspace_artifact" and receipt.carrier_ref == ref:
             rows[("latest", "workspace_artifact", ref)] = receipt
-    model_columns = [SessionModelResult.id, SessionModelResult.tenant_id, SessionModelResult.session_id,
-        SessionModelResult.run_id, SessionModelResult.round_id, SessionModelResult.turn_id,
-        SessionModelResult.provider_request_id, SessionModelResult.model_request_hash,
-        SessionModelResult.model_request_snapshot_json, SessionModelResult.state]
-    statement = select(SessionModelResult).where(SessionModelResult.tenant_id == tenant_id,
+    statement = model_input_statement(recovery=True).where(SessionModelResult.tenant_id == tenant_id,
         or_(SessionModelResult.id.in_(ids.get("session_model_result", ())),
             SessionModelResult.id.in_(select(SessionModelResult.id).join(SessionToolInvocation,
                 (SessionModelResult.session_id == SessionToolInvocation.session_id)
                 & (SessionModelResult.run_id == SessionToolInvocation.run_id)
                 & (SessionModelResult.provider_request_id == SessionToolInvocation.provider_request_id))
                 .where(SessionToolInvocation.id.in_([row.id for row in tools])))))
-    if immutable_only:
-        statement = statement.with_only_columns(*model_columns)
-        models = [SimpleNamespace(**row._mapping) for row in await db.execute(statement)]
-    else:
-        models = list(await db.scalars(statement.execution_options(populate_existing=True)))
+    models = [SimpleNamespace(**row) for row in (await db.execute(statement)).mappings()]
     rows.update({(SessionModelResult, source_id): None for source_id in ids.get("session_model_result", ())})
     rows.update({(SessionModelResult, row.id): row for row in models})
-    for model in models:
-        if immutable_only and model.state in {"sealed", "round_committed"}:
-            _DISCLOSURE_SOURCE_VALIDATIONS.get().model_digests["immutable_model_digest", id(model.model_request_snapshot_json)] = (
-                model.model_request_snapshot_json, None)
-    commands = await _load_source_rows(SessionCommand, ids.get("session_command", ()), columns=[
-        SessionCommand.id, SessionCommand.tenant_id, SessionCommand.session_id, SessionCommand.namespace,
-        SessionCommand.principal_type, SessionCommand.principal_id, SessionCommand.command_kind,
-        SessionCommand.request_json, SessionCommand.request_hash, SessionCommand.target_json, SessionCommand.target_hash]
-        if immutable_only else None)
+    commands = await _load_source_rows(SessionCommand, ids.get("session_command", ()))
     session_ids = {row.session_id for row in [*models, *tools, *commands]}
     for receipt in receipts:
         try:
             session_ids.add(uuid.UUID(receipt.authority_json["source_session_id"]))
         except (KeyError, TypeError, ValueError, AttributeError):
             pass
-    if not immutable_only:
-        await _load_source_rows(ChatSession, session_ids)
+    await _load_source_rows(ChatSession, session_ids)
     event_ids = {row.result_event_id for row in tools if row.result_event_id}
-    if immutable_only:
-        # Bridge bookkeeping updates metadata_json, but never its v2_payload.
-        # Select only the settled payload and immutable binding/hash columns.
-        event_columns = [ChatTranscriptEvent.id, ChatTranscriptEvent.tenant_id, ChatTranscriptEvent.agent_id,
-            ChatTranscriptEvent.session_id, ChatTranscriptEvent.run_id, ChatTranscriptEvent.invocation_id,
-            ChatTranscriptEvent.result_id, ChatTranscriptEvent.content_hash,
-            ChatTranscriptEvent.item_kind, ChatTranscriptEvent.lifecycle]
-        events = []
-        for values in await db.execute(select(*event_columns,
-            ChatTranscriptEvent.metadata_json["v2_payload"].label("payload")).where(
-                ChatTranscriptEvent.id.in_(event_ids), ChatTranscriptEvent.tenant_id == tenant_id)):
-            fields = dict(values._mapping)
-            payload = fields.pop("payload")
-            if isinstance(payload, dict):
-                events.append(SimpleNamespace(**fields, metadata_json={"v2_payload": payload}))
-        rows.update({(ChatTranscriptEvent, row.id): row for row in events})
-    else:
-        events = await _load_source_rows(ChatTranscriptEvent, event_ids)
+    events = await _load_source_rows(ChatTranscriptEvent, event_ids)
     inputs = list(await db.scalars(select(SessionTurnInput).where(SessionTurnInput.tenant_id == tenant_id,
-        SessionTurnInput.command_id.in_([row.id for row in commands])))) if commands and not immutable_only else []
+        SessionTurnInput.command_id.in_([row.id for row in commands])))) if commands else []
     by_command = {row.command_id: row for row in inputs}
     for source in [*commands, *tools]:
         session = rows.get((ChatSession, source.session_id))
@@ -694,10 +661,9 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
         if linked is not None and (linked.session_id != source.session_id
             or (isinstance(source, SessionToolInvocation)
                 and (linked.run_id != source.run_id or linked.invocation_id != source.id))
-            or (not immutable_only and (session is None
-                or (isinstance(source, SessionToolInvocation) and linked.agent_id != session.agent_id)))):
+            or session is None or (isinstance(source, SessionToolInvocation) and linked.agent_id != session.agent_id)):
             linked = None
-        rows[("session_source", type(source), source.id)] = (source, session, linked) if immutable_only or session else None
+        rows[("session_source", type(source), source.id)] = (source, session, linked) if session else None
     rows["tool_models"] = dict.fromkeys((row.session_id, row.run_id, row.provider_request_id) for row in tools)
     rows["tool_models"].update({(row.session_id, row.run_id, row.provider_request_id): row for row in models})
     span_ids = {uuid.uuid5(row.id, name) for row in tools for name in (
@@ -712,11 +678,7 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
             except (KeyError, TypeError, ValueError, AttributeError):
                 pass
     spans = await _load_source_rows(InvocationSpan, span_ids | ids.get("session_actor_identity", set())
-        | ids.get("agent_directory_observation", set()) | ids.get("memory_resource_reference", set()),
-        columns=[InvocationSpan.id, InvocationSpan.tenant_id, InvocationSpan.agent_id, InvocationSpan.user_id,
-            InvocationSpan.runtime_task_id, InvocationSpan.session_id, InvocationSpan.trace_id, InvocationSpan.span_id,
-            InvocationSpan.span_type, InvocationSpan.name, InvocationSpan.status, InvocationSpan.input_hash, InvocationSpan.metadata_json]
-        if immutable_only else None)
+        | ids.get("agent_directory_observation", set()) | ids.get("memory_resource_reference", set()))
     actor_sessions, actor_tasks = set(), set()
     for span in spans:
         actor = (span.metadata_json or {}).get("session_actor_identity")
@@ -726,14 +688,12 @@ async def _preload_execution_sources(db, tenant_id, dependencies, *, latest_rece
                     selected_ids.add(uuid.UUID(actor[field]))
                 except (KeyError, TypeError, ValueError, AttributeError):
                     pass
-    if actor_sessions and not immutable_only:
+    if actor_sessions:
         await _load_source_rows(ChatSession, actor_sessions)
-    if actor_tasks and not immutable_only:
+    if actor_tasks:
         from app.models.runtime_task import RuntimeTask
 
         await _load_source_rows(RuntimeTask, actor_tasks)
-    if immutable_only:
-        return
     refs = {row.carrier_ref for row in receipts}
     latest_refs = {row.carrier_ref for row in receipts if ("latest", row.carrier_kind, row.carrier_ref) not in rows}
     latest = list(await db.scalars(select(ContentInputReceipt).where(ContentInputReceipt.tenant_id == tenant_id,
@@ -4144,7 +4104,7 @@ async def _load_native_read_evidence(
         or proof.get("invocation_id") != str(invocation.id)
         or proof.get("model_result_id") != str(model_result.id)
         or proof.get("model_request_hash") != model_result.model_request_hash
-        or _model_request_digest(db, model_result) != model_result.model_request_hash
+        or _model_request_digest(model_result) != model_result.model_request_hash
         or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
         or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
         or proof.get("tool_result_hash") != content_hash
@@ -4349,7 +4309,7 @@ async def load_skill_input_evidence(db, *, agent_id, invocation, model_result, a
         or proof.get("invocation_id") != str(invocation.id)
         or proof.get("model_result_id") != str(model_result.id)
         or proof.get("model_request_hash") != model_result.model_request_hash
-        or _model_request_digest(db, model_result) != model_result.model_request_hash
+        or _model_request_digest(model_result) != model_result.model_request_hash
         or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
         or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
         or proof.get("tool_result_hash") != content_hash
@@ -4490,7 +4450,7 @@ async def load_workspace_input_evidence(db, *, agent_id, invocation, model_resul
             or proof.get("invocation_id") != str(invocation.id)
             or proof.get("model_result_id") != str(model_result.id)
             or proof.get("model_request_hash") != model_result.model_request_hash
-            or _model_request_digest(db, model_result) != model_result.model_request_hash
+            or _model_request_digest(model_result) != model_result.model_request_hash
             or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
             or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
             or proof.get("tool_result_hash") != content_hash
@@ -4624,14 +4584,14 @@ async def load_approved_workspace_result(db, *, approval):
             or (job.metadata_json or {}).get("approval_id") != str(approval.id)
         ):
             return None
-        model = await db.scalar(
-            select(SessionModelResult).where(
+        model = (await db.execute(
+            model_input_statement().where(
                 SessionModelResult.run_id == invocation.run_id,
                 SessionModelResult.session_id == invocation.session_id,
                 SessionModelResult.tenant_id == invocation.tenant_id,
                 SessionModelResult.provider_request_id == invocation.provider_request_id,
             )
-        )
+        )).first()
         dependencies, complete = model_output_dependencies(model)
         if not complete:
             return None
@@ -4699,7 +4659,7 @@ async def load_workspace_execution_evidence(db, *, agent_id, invocation, model_r
             or proof.get("invocation_id") != str(invocation.id)
             or proof.get("model_result_id") != str(model_result.id)
             or proof.get("model_request_hash") != model_result.model_request_hash
-            or _model_request_digest(db, model_result) != model_result.model_request_hash
+            or _model_request_digest(model_result) != model_result.model_request_hash
             or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
             or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
             or proof.get("tool_result_hash") != content_hash

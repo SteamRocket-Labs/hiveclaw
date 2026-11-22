@@ -30,7 +30,7 @@ from app.services.session_model_inputs import model_output_dependencies
 from app.services.session_tool_runtime import _sha256
 
 from app.services.source_read_queries import (
-    AGENT_READER_EXTRA_FIELDS, SESSION_SOURCE_FIELDS, USER_READER_FIELDS,
+    AGENT_READER_EXTRA_FIELDS, SEALED_MODEL_STATES, SESSION_SOURCE_FIELDS, USER_READER_FIELDS,
 )
 
 AUTHORITY_SCHEMA = "hive.explicit_memory_authority.v1"
@@ -674,13 +674,15 @@ async def authorize_browser_memory_path(db, user, *, agent_id, path):
     return "explicit_memory_source"
 
 
-async def _writer_input(db, request, *, require_sources=True):
+async def _writer_input(db, request, *, require_sources=True, read_only=False):
     context = request.context
     tenant_id = uuid.UUID(str(context.tenant_id))
     principal, actor, session = await _actor(db, tenant_id, request)
     if context.runtime_task_id is None:
         raise ContentInputReceiptError("explicit_memory_input_unavailable", "The exact sealed memory invocation is unavailable.")
-    rows = (await db.execute(select(SessionToolInvocation, SessionModelResult).join(SessionModelResult,
+    model_fields = (SessionModelResult.id, SessionModelResult.state, SessionModelResult.model_request_hash
+        ) if read_only else (SessionModelResult,)
+    rows = (await db.execute(select(SessionToolInvocation, *model_fields).join(SessionModelResult,
         SessionModelResult.provider_request_id == SessionToolInvocation.provider_request_id).where(
             SessionToolInvocation.tenant_id == tenant_id, SessionToolInvocation.session_id == session.id,
             SessionToolInvocation.run_id == uuid.UUID(str(context.runtime_task_id)),
@@ -692,12 +694,12 @@ async def _writer_input(db, request, *, require_sources=True):
         ).limit(2).execution_options(populate_existing=True))).all()
     if len(rows) != 1:
         raise ContentInputReceiptError("explicit_memory_input_unavailable", "The exact sealed memory invocation is unavailable.")
-    invocation, model = rows[0]
+    invocation, model = rows[0][0], rows[0] if read_only else rows[0][1]
     arguments_hash = _sha256({"tool_name": request.tool_name, "arguments": request.arguments})
     effective = invocation.effective_args_hash or invocation.args_hash
-    dependencies, complete = model_output_dependencies(model)
-    if (effective != arguments_hash or model.state not in {"sealed", "round_committed"}
-        or _sha256(model.model_request_snapshot_json) != model.model_request_hash
+    dependencies, complete = ([], False) if read_only else model_output_dependencies(model)
+    if (effective != arguments_hash or model.state not in SEALED_MODEL_STATES
+        or (not read_only and _sha256(model.model_request_snapshot_json) != model.model_request_hash)
         or (require_sources and not complete)):
         raise ContentInputReceiptError("explicit_memory_input_unverified",
             "The memory write requires complete source bindings for its exact model inputs.")

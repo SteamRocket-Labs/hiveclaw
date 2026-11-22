@@ -644,7 +644,8 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             event = None
         payload = _event_payload(event) if event else {}
         model = (
-            (await _input_row(db, SessionModelResult, event.result_id) if cached is not None else await db.scalar(
+            (await _input_row(db, SessionModelResult, event.result_id)
+            if cached is not None and call.tool_name not in TASK_READ_TOOLS else await db.scalar(
                 select(SessionModelResult)
                 .where(
                     SessionModelResult.id == event.result_id,
@@ -668,7 +669,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             return False
         from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
 
-        if await native_tool_timeout_bound(db, agent_id=agent_id, invocation=call, model_result=model, payload=payload):
+        if await native_tool_timeout_bound(db, agent_id=agent_id, invocation=call, payload=payload):
             return True
         if (
             call.effect_state != "effect_committed"

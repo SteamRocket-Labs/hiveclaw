@@ -50,7 +50,7 @@ async def record_memory_result(request, *, content, entries=(), team_entries=(),
         if group_denials:
             raise next(iter(group_denials.values()))
         try:
-            facts = await _writer_input(db, request, require_sources=False)
+            facts = await _writer_input(db, request, require_sources=False, read_only=True)
         except ContentInputReceiptError as exc:
             # Compatibility callers can read their authorized content without a
             # canonical model invocation; that result grants no derived authority.

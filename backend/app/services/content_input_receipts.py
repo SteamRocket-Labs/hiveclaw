@@ -410,7 +410,7 @@ async def _input_row(db, model, source_id, *, populate_existing=True):
             model.runtime_task_id, model.session_id, model.trace_id, model.span_id, model.span_type,
             model.name, model.status, model.input_hash, model.metadata_json)]
     if model.__name__ == "SessionModelResult":
-        fields = (await db.execute(model_input_statement().where(model.id == source_id))).mappings().first()
+        fields = (await db.execute(model_input_statement(recovery=True).where(model.id == source_id))).mappings().first()
         row = SimpleNamespace(**fields) if fields else None
     else:
         row = await db.get(model, source_id, populate_existing=populate_existing, **options)
@@ -427,15 +427,18 @@ async def _input_model_request(db, source_id):
         return rows[SessionModelResult, source_id]
     model = SessionModelResult
     return (await db.execute(select(model.id, model.state, model.model_request_hash,
+        model.model_request_snapshot_json["input_bindings"].label("input_bindings"),
         model_request_fallback_column()).where(model.id == source_id))).first()
 
 
-def _model_request_digest(model_result, *, trust_sealed_request=True):
+def _model_request_digest(model_result):
     from app.services.session_tool_runtime import _sha256
 
-    if trust_sealed_request and getattr(model_result, "state", None) in SEALED_MODEL_STATES:
+    snapshot = getattr(model_result, "model_request_snapshot_json", None)
+    if (snapshot is None and getattr(model_result, "state", None) in SEALED_MODEL_STATES
+        and isinstance(getattr(model_result, "input_bindings", None), dict)):
         return model_result.model_request_hash
-    return _sha256(model_result.model_request_snapshot_json)
+    return _sha256(snapshot)
 
 
 async def _input_agent_access(db, user, agent_id):
@@ -3420,7 +3423,10 @@ async def _validate_artifact_content_receipt(db, tenant_id, user, artifact, *, r
             raise ContentInputReceiptError(
                 "artifact_selection_unavailable", "The artifact selection source is invalid.", 503
             ) from exc
-        model = (await db.execute(model_input_statement().where(SessionModelResult.id == model_id))).first()
+        model = await db.get(SessionModelResult, model_id, populate_existing=True, options=[load_only(
+            SessionModelResult.id, SessionModelResult.tenant_id, SessionModelResult.session_id,
+            SessionModelResult.run_id, SessionModelResult.state, SessionModelResult.model_request_hash,
+            SessionModelResult.model_request_snapshot_json)])
         dependencies, complete = model_output_dependencies(model)
         if not complete or (model.tenant_id, model.session_id, model.run_id) != (
             artifact.tenant_id,
@@ -4518,7 +4524,6 @@ async def load_workspace_execution_input_evidence(db, *, agent_id, invocation, m
         model_result=model_result,
         arguments=arguments,
         content_hash=content_hash,
-        trust_sealed_request=True,
     )
     retained = await _input_row(db, InvocationSpan, uuid.uuid5(invocation.id, "workspace-output-evidence"), populate_existing=False)
     return ref, _workspace_execution_input_sources(retained.metadata_json["workspace_execution_evidence"])
@@ -4576,7 +4581,6 @@ async def load_approved_workspace_result(db, *, approval):
             model_result=model,
             arguments=approval.normalized_arguments,
             content_hash=content_hash,
-            trust_sealed_request=True,
         )
         capture = ((approval.execution_receipt or {}).get("runtime_evidence") or {}).get(
             "workspace_execution_evidence"
@@ -4614,8 +4618,7 @@ async def load_approved_workspace_result(db, *, approval):
         return None
 
 
-async def load_workspace_execution_evidence(db, *, agent_id, invocation, model_result, arguments, content_hash,
-    trust_sealed_request=False):
+async def load_workspace_execution_evidence(db, *, agent_id, invocation, model_result, arguments, content_hash):
     from app.models.invocation_span import InvocationSpan
     from app.services.session_tool_runtime import _sha256
 
@@ -4634,7 +4637,7 @@ async def load_workspace_execution_evidence(db, *, agent_id, invocation, model_r
             or proof.get("invocation_id") != str(invocation.id)
             or proof.get("model_result_id") != str(model_result.id)
             or proof.get("model_request_hash") != model_result.model_request_hash
-            or _model_request_digest(model_result, trust_sealed_request=trust_sealed_request) != model_result.model_request_hash
+            or _model_request_digest(model_result) != model_result.model_request_hash
             or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
             or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
             or proof.get("tool_result_hash") != content_hash

@@ -9,7 +9,6 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import defer
 
 from app.models.chat_session import ChatSession
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation, SessionTurnInput
@@ -455,11 +454,13 @@ async def _build_model_input_bindings(
         if isinstance(ref, str) and ref.startswith(("session-provider-result:", "session-provider-tool-result:"))
     }
     model = SessionModelResult
-    result_lookup = (model_input_statement(recovery=True).add_columns(model)
-        .options(defer(model.model_request_snapshot_json)).execution_options(populate_existing=True)
+    result_lookup = (select(model).execution_options(populate_existing=True)
         if locked_session is not None else select(model.id, model.provider_request_id))
-    results = (await db.execute(result_lookup.where(model.tenant_id == tenant_id, model.session_id == session_id,
-        model.provider_request_id.in_(provider_ids)))).all() if provider_ids else []
+    results = []
+    if provider_ids:
+        selected = await db.execute(result_lookup.where(model.tenant_id == tenant_id, model.session_id == session_id,
+            model.provider_request_id.in_(provider_ids)))
+        results = (selected.scalars() if locked_session is not None else selected).all()
     result_refs = {row.provider_request_id: f"session-model-result:{row.id}" for row in results}
     model_ids = []
     for ref in refs:
@@ -469,7 +470,7 @@ async def _build_model_input_bindings(
             except ValueError:
                 continue
     if model_ids and locked_session is not None:
-        model_rows = await db.execute(
+        model_rows = await db.scalars(
             result_lookup
             .join(ChatSession, ChatSession.id == SessionModelResult.session_id)
             .where(
@@ -605,25 +606,27 @@ def model_output_dependencies(result) -> tuple[list[dict[str, str]], bool]:
 
 
 def _model_input_bindings(result):
-    if hasattr(result, "input_bindings") and result.state in SEALED_MODEL_STATES:
-        return result.input_bindings
-    snapshot = result.model_request_snapshot_json
-    return snapshot.get("input_bindings") if isinstance(snapshot, dict) else None
+    snapshot = getattr(result, "model_request_snapshot_json", None)
+    if isinstance(snapshot, dict):
+        return snapshot.get("input_bindings")
+    if snapshot is None and result.state in SEALED_MODEL_STATES:
+        return getattr(result, "input_bindings", None)
+    return None
 
 
 def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     from app.services.content_input_receipts import _DISCLOSURE_SOURCE_VALIDATIONS
 
-    sealed = getattr(result, "state", None) in SEALED_MODEL_STATES
+    snapshot = getattr(result, "model_request_snapshot_json", None)
     bindings = _model_input_bindings(result)
-    snapshot = bindings if sealed else result.model_request_snapshot_json
+    evidence = snapshot if isinstance(snapshot, dict) else bindings
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    key = ("model_snapshot_dependencies", id(snapshot), result.model_request_hash)
+    key = ("model_snapshot_dependencies", id(evidence), result.model_request_hash)
     if scope is not None and scope.active and scope.source_catalog and key in scope.model_inputs:
         retained, value = scope.model_inputs[key]
-        if retained is snapshot:
+        if retained is evidence:
             return value
-    if not sealed and (not isinstance(snapshot, dict) or _hash(snapshot) != result.model_request_hash):
+    if isinstance(snapshot, dict) and _hash(snapshot) != result.model_request_hash:
         return [], False
     if not isinstance(bindings, dict) or bindings.get("schema") != "hive.model_input_bindings.v1":
         return [], False
@@ -634,7 +637,7 @@ def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
         dependencies is not None and isinstance(coverage, dict) and coverage.get("complete") is True,
     )
     if scope is not None and scope.active and scope.source_catalog:
-        scope.model_inputs[key] = (snapshot, value)
+        scope.model_inputs[key] = (evidence, value)
     return value
 
 
@@ -1646,7 +1649,6 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
                 model_result=model,
                 arguments=arguments,
                 content_hash=payload["content_hash"],
-                trust_sealed_request=True,
             )
             return _unique_dependencies(dependencies), inherited_complete and arguments.get("path") in hashes
         except (ContentInputReceiptError, ValueError, TypeError):
@@ -1681,7 +1683,6 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref, current_
                     model_result=model,
                     arguments=arguments,
                     content_hash=payload["content_hash"],
-                    trust_sealed_request=True,
                 )
                 if (arguments.get("output_path") or arguments.get("path")) not in hashes:
                     return _unique_dependencies(dependencies), False

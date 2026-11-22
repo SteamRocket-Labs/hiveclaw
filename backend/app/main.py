@@ -2,7 +2,11 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 import re
+from stat import S_ISDIR
+from time import perf_counter
+from uuid import UUID
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -152,6 +156,36 @@ def _data_bootstrap_startup_enabled() -> bool:
     return _process_role() != "api"
 
 
+def _warm_skill_workspace_directories() -> None:
+    from app.services import agent_context
+    from app.skills.loader import WorkspaceSkillLoader
+
+    started = perf_counter()
+    directories: list[tuple[int, Path]] = []
+    for root in {agent_context.PERSISTENT_DATA, agent_context.TOOL_WORKSPACE}:
+        try:
+            for workspace in root.iterdir():
+                try:
+                    UUID(workspace.name)
+                    metadata = workspace.stat(follow_symlinks=False)
+                except (OSError, ValueError):
+                    continue
+                if S_ISDIR(metadata.st_mode):
+                    directories.append((metadata.st_mtime_ns, workspace))
+        except OSError:
+            continue
+
+    loader = WorkspaceSkillLoader()
+    warmed = 0
+    for _, workspace in sorted(directories, key=lambda item: item[0], reverse=True):
+        try:
+            loader.discover_instructions(workspace)
+        except OSError:
+            continue
+        warmed += 1
+    logger.info("[startup] Skill workspace warm-up scanned {} directories in {:.3f}s", warmed, perf_counter() - started)
+
+
 async def _maintain_skill_workspaces_after_startup() -> None:
     """Reconcile existing Agent Skill workspaces without delaying readiness."""
 
@@ -162,6 +196,11 @@ async def _maintain_skill_workspaces_after_startup() -> None:
 
     await cleanup_retired_builtin_skills()
     await push_default_skills_to_existing_agents()
+    # This only warms the OS directory cache. Memory pressure can evict it, but turn discovery stays off the loop.
+    try:
+        await asyncio.to_thread(_warm_skill_workspace_directories)
+    except Exception as exc:
+        logger.warning("[startup] Skill workspace warm-up failed ({})", type(exc).__name__)
 
 
 _API_ROLE_PREFIXES = (

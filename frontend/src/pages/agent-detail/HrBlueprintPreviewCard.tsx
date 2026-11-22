@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -146,6 +146,17 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const status = draft?.draft_status
     || (['completed', 'rejected', 'superseded', 'expired'].includes(preview.status) ? preview.status : '');
   const createdAgentId = draft?.created_agent_id;
+  const draftId = draft?.blueprint_id;
+  const observedCreation = useRef<{ draftId: string; hasCreatedAgent: boolean } | null>(null);
+  useEffect(() => {
+    if (!draftId) return;
+    if (observedCreation.current?.draftId !== draftId) {
+      observedCreation.current = { draftId, hasCreatedAgent: Boolean(createdAgentId) };
+    } else if (createdAgentId && !observedCreation.current.hasCreatedAgent) {
+      observedCreation.current.hasCreatedAgent = true;
+      void queryClient.invalidateQueries({ queryKey: ['agents'] });
+    }
+  }, [createdAgentId, draftId, queryClient]);
   const canonicalPreview = draft && Object.keys(draft.blueprint || {}).length > 0
     ? parsePreviewAgentBlueprintResult({ status: 'preview', ...draft }) || preview
     : preview;

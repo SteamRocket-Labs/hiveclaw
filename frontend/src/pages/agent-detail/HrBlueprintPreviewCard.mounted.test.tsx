@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render as renderWithoutRouter, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderWithoutRouter, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -92,6 +92,7 @@ async function renderCard(
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 it('confirms a private creation proposal with one click and shows its exact first task', async () => {
@@ -361,4 +362,41 @@ it('keeps a reloaded undone employee stopped without conversation or undo action
   expect(await screen.findByText('Stopped')).toBeTruthy();
   expect(screen.queryByRole('link', { name: 'Talk to it' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+});
+
+it('invalidates the sidebar agents once when a poll first returns the created employee', async () => {
+  vi.useFakeTimers();
+  const draft = { blueprint_id: preview.blueprintId, draft_status: 'confirmed', blueprint: {} };
+  hrMocks.get.mockResolvedValue(draft);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const agentsKey = ['agents', 'tenant'];
+  client.setQueryData(agentsKey, []);
+  const invalidate = vi.spyOn(client, 'invalidateQueries');
+  const card = <QueryClientProvider client={client}>
+    <HrBlueprintPreviewCard agentId="source" preview={{ ...preview, authorizationMode: 'policy_direct' }} />
+  </QueryClientProvider>;
+  const view = render(card);
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  expect(screen.getByText('Confirmed')).toBeTruthy();
+  expect(invalidate).not.toHaveBeenCalled();
+
+  const created = { ...draft, created_agent_id: 'employee' };
+  hrMocks.get.mockResolvedValue(created);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+  expect(screen.getByRole('link', { name: 'Talk to it' })).toBeTruthy();
+  expect(invalidate).toHaveBeenCalledExactlyOnceWith({ queryKey: ['agents'] });
+  expect(client.getQueryState(agentsKey)?.isInvalidated).toBe(true);
+
+  hrMocks.get.mockResolvedValue({ ...created, draft_status: 'creating' });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+  expect(screen.getByText('Creating')).toBeTruthy();
+  expect(invalidate).toHaveBeenCalledTimes(1);
+
+  view.unmount();
+  client.removeQueries({ queryKey: ['hr-creation-draft'] });
+  render(card);
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  expect(screen.getByRole('link', { name: 'Talk to it' })).toBeTruthy();
+  expect(invalidate).toHaveBeenCalledTimes(1);
 });

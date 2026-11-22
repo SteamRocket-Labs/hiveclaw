@@ -644,7 +644,8 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             event = None
         payload = _event_payload(event) if event else {}
         model = (
-            (await _input_row(db, SessionModelResult, event.result_id) if cached is not None else await db.scalar(
+            (await _input_row(db, SessionModelResult, event.result_id)
+            if cached is not None and call.tool_name not in TASK_READ_TOOLS else await db.scalar(
                 select(SessionModelResult)
                 .where(
                     SessionModelResult.id == event.result_id,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import sys
+import time
 import uuid
 from types import SimpleNamespace
 
@@ -263,3 +265,87 @@ async def test_chat_upload_rejects_oversized_file_before_workspace_or_personal_k
 
     assert exc.value.status_code == 413
     assert list(tmp_path.rglob("*")) == []
+
+
+@pytest.mark.asyncio
+async def test_chat_upload_conversion_keeps_the_event_loop_responsive(monkeypatch, tmp_path):
+    from app.api import upload
+    from app.services.document_conversion import DocumentConversionService
+
+    markdown = "# Uploaded\n\nConverted markdown"
+    slow = False
+
+    def parse(_service, _path, _data):
+        if slow:
+            time.sleep(0.3)
+        return markdown
+
+    async def save_upload():
+        return await upload.save_upload_for_agent(
+            file=UploadFile(io.BytesIO(b"<h1>raw</h1>"), filename="report.html"),
+            agent_id=None,
+            tenant_id=None,
+            user_id=None,
+        )
+
+    monkeypatch.setattr(DocumentConversionService, "_convert_with_markitdown", parse)
+    monkeypatch.setattr(upload, "WORKSPACE_ROOT", tmp_path / "fast")
+    fast = await save_upload()
+
+    monkeypatch.setattr(upload, "WORKSPACE_ROOT", tmp_path / "slow")
+    slow = True
+    ticks = 0
+
+    async def tick():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    try:
+        await asyncio.sleep(0)
+        delayed = await save_upload()
+    finally:
+        ticker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await ticker
+
+    assert markdown in fast["extracted_text"]
+    assert delayed["extracted_text"] == fast["extracted_text"]
+    assert ticks >= 10
+
+
+@pytest.mark.asyncio
+async def test_chat_upload_conversion_warning_preserves_trace_id(monkeypatch, tmp_path):
+    from loguru import logger
+
+    from app.api import upload
+    from app.core.logging_config import enrich_log_record, trace_id_var
+    from app.services.document_conversion import DocumentConversionService
+
+    def fail_conversion(_service, _path, _data):
+        raise RuntimeError("conversion failed")
+
+    monkeypatch.setattr(upload, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(DocumentConversionService, "_convert_with_markitdown", fail_conversion)
+    trace_ids: list[str] = []
+    handler_id = logger.add(
+        lambda message: trace_ids.append(message.record["extra"]["trace_id"]),
+        level="WARNING",
+        filter=lambda record: record["name"] == DocumentConversionService.__module__ and enrich_log_record(record),
+    )
+    trace_id = "upload-conversion-trace"
+    token = trace_id_var.set(trace_id)
+    try:
+        await upload.save_upload_for_agent(
+            file=UploadFile(io.BytesIO(b"plain text"), filename="report.txt"),
+            agent_id=None,
+            tenant_id=None,
+            user_id=None,
+        )
+    finally:
+        trace_id_var.reset(token)
+        logger.remove(handler_id)
+
+    assert trace_ids == [trace_id]

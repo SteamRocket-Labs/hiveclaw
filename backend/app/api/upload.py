@@ -1,5 +1,6 @@
 """File upload API for chat — saves files to agent workspace and extracts text."""
 
+import asyncio
 import base64
 import hashlib
 import os
@@ -403,7 +404,8 @@ async def save_upload_for_agent(
             workspace_root = (
                 (WORKSPACE_ROOT / str(agent_id)).resolve() if agent_id else uploads_dir.parent.parent.resolve()
             )
-            converted = DocumentConversionService().convert(
+            converted = await asyncio.to_thread(
+                DocumentConversionService().convert,
                 DocumentConversionRequest(
                     source_path=save_path,
                     workspace_root=workspace_root,
@@ -413,7 +415,7 @@ async def save_upload_for_agent(
                     user_id=user_id,
                     mode="auto",
                     force_refresh=False,
-                )
+                ),
             )
             extracted = render_conversion_preview(converted, max_chars=None)
             preview_text = render_conversion_preview(converted, max_chars=6000)

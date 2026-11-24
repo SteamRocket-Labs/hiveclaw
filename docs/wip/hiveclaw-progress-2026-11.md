@@ -328,6 +328,13 @@
     - GC 停顿从约 280 毫秒涨到约 500 毫秒，跑完后不回落，忙时每分钟约 4 次；
     - 上传文档的格式转换在事件循环上同步执行（`app/api/upload.py:406`），进程里第一次上传导入 markitdown 时整进程冻结 4.2 秒。
   - 证据：~/hiveclaw-evidence/p1/e2e/run49/、run49-ops/judgment.md。
+- [完成] land64 = LC1（main 30899ef7，11-24 06:14Z 两后端 SUCCESS，运行身份 fc108f75…/1288 = 预期；前端 06:19Z SUCCESS，index-GRd2U5zU.js；无迁移）：owner 要求部署后再手测。
+  - 上传文档的格式转换改在线程里跑（`app/api/upload.py`），不再冻住整个进程。
+  - 新助理建好后侧栏立即刷新：卡片草稿第一次出现 `created_agent_id` 时让 `['agents']` 失效一次。
+  - 生产 +16/−3。新测试都在改动前失败、改动后通过；Grok 无阻断、无应修。RLS 指纹 eae73b52 不变。
+  - 工具路径上的同步转换（workspace.py:1245 等四处）留作跟进。
+  - 原计划的 GC1（启动末尾冻结常驻对象）作废：生产早已在做（b86c076f）。
+  - 回滚：先前端、再两后端回 2ee2d942。
 - [完成] land54 = land53 + A2fp12 + PX1（main = backup c9405f40；11-20 07:44Z 两后端 SUCCESS，运行身份 8e0fa8d3…/1287 = 预期，前端不变，无迁移）。
   - RLS 指纹 0e6b9e8a→365300b1：123 调用点、810 条，只变 content_input_receipts.py 模块源码。
   - 回滚：两后端回 03bee6c9（land53 代码，521a8429…/1287）。
